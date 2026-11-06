@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createBiliApi, parseBiliReference, resolveBiliPart, prepareBiliMedia } from '../tools/lib/bili-media.mjs'
+import { createBiliApi, normalizeBiliPartTimeline, parseBiliReference, resolveBiliPart, prepareBiliMedia } from '../tools/lib/bili-media.mjs'
 import { createPerceptionClient, assertManagedAsset, buildBiliTranscriptionRequest } from '../tools/lib/perception-client.mjs'
 import { appendWatch } from '../tools/lib/watch-history.mjs'
 
@@ -11,6 +11,9 @@ const view = { bvid: 'BV1234567890', aid: 42, title: 'test', owner: {}, pages: [
 const ref = parseBiliReference('https://www.bilibili.com/video/BV1234567890?p=2')
 const part = resolveBiliPart(view, { page: ref.page })
 assert.equal(part.cid, '22')
+assert.equal(normalizeBiliPartTimeline(resolveBiliPart({ ...view, pages: [{ page: 1, cid: 11, duration: 175 }] }, { page: 1 }), { timelength: 174613 }).durationMs, 174613)
+assert.equal(normalizeBiliPartTimeline(resolveBiliPart({ ...view, pages: [{ page: 1, cid: 11, duration: 175 }] }, { page: 1 }), {}).durationMs, 175000)
+assert.throws(() => normalizeBiliPartTimeline(resolveBiliPart({ ...view, pages: [{ page: 1, cid: 11, duration: 175 }] }, { page: 1 }), { timelength: 174000 }), error => error.code === 'bili.duration.precise.inconsistent' && Boolean(error.hint))
 assert.throws(() => resolveBiliPart(view, { page: 2, cid: 11 }), { code: 'bili.part.conflict' })
 assert.throws(() => resolveBiliPart({ ...view, pages: [view.pages[0], { ...view.pages[1], duration: 0 }] }, { page: 2 }), { code: 'bili.duration.missing' })
 const history = path.join(root, 'history.jsonl')
