@@ -24,10 +24,10 @@ import {
 import { backupFile, listBackups, readUnified, writeJsonAtomic, writeTextAtomic } from './store.js';
 import {
   DEFAULT_MEMORY_CARD_CONFIG, addManualMemory, archiveDecayedToFull, clearFirstMeeting,
-  compactMemoryCard, createEmptyCard, designateFirstMeeting, fullMemoryCardStatus, loadMemoryCard,
+  compactMemoryCard, createEmptyCard, designateFirstMeeting, fullMemoryCardStatus, loadFullStats, loadMemoryCard,
   maintainMemoryCard, markOwnerNotified, memoryCardStatus, mergeMemories, normalizeMemoryCardConfig,
   readAllFullRecords, recallFullMemory, refreshInitialState, renderFullMemoryCard, renderMemoryCard,
-  saveFullMemoryCard, saveMemoryCardOutputs, shouldNotifyOwner,
+  saveFullMemoryCard, saveMemoryCardOutputs, shouldNotifyOwner, syncDurableDirectory,
 } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
 
 const EMPTY_CONFIG = normalizeMemoryCardConfig({});
@@ -49,6 +49,16 @@ function biliMemoryFile() {
 
 let chain = Promise.resolve();
 let promptCache = new Map();
+// In-memory diagnostics are bound to the captured role path, not the current role.
+const maintenanceFailures = new Map();
+function maintenanceKey(paths) { return path.resolve(paths.json); }
+function rememberMaintenanceFailure(paths, result) {
+  const failure = { ok: false, code: String(result?.code || 'MEMORY_MAINTENANCE_FAILED'),
+    error: String(result?.error || '记忆卡整理失败。'), hint: String(result?.hint || '检查角色记忆目录与磁盘空间后重试。') };
+  maintenanceFailures.set(maintenanceKey(paths), failure);
+  return failure;
+}
+function lastMaintenanceFailure(paths) { return maintenanceFailures.get(maintenanceKey(paths)) ?? null; }
 
 function serialize(task) {
   const next = chain.then(task, task);
@@ -117,6 +127,7 @@ export function memoryCardStatusNow(config = memoryCardConfig(), paths = pathsNo
   const full = fullMemoryCardStatus(paths, config);
   return {
     ...status,
+    lastFailure: lastMaintenanceFailure(paths),
     enabled: config.enabled !== false,
     alertLevel: Math.max(status.level, Number(card.alerts?.level) || 0),
     acknowledgedLevel: Number(card.alerts?.acknowledgedLevel) || 0,
@@ -137,7 +148,8 @@ export function memoryCardStatusNow(config = memoryCardConfig(), paths = pathsNo
 
 /** 给控制台：状态 + 全文 + 最近记录 + 备份。 */
 export function memoryCardSnapshot(config = memoryCardConfig()) {
-  const card = readCardSafe();
+  const paths = pathsNow();
+  const card = readCardSafe(paths);
   const now = Date.now();
   const status = memoryCardStatus(card, config);
   const records = [...card.records]
@@ -187,18 +199,19 @@ export function memoryCardSnapshot(config = memoryCardConfig()) {
     loadedLabel: '衰减记忆卡（日常加载）',
     status: {
       ...status,
+      lastFailure: lastMaintenanceFailure(paths),
       enabled: config.enabled !== false,
       alertLevel: status.level > 0 ? Math.max(status.level, Number(card.alerts?.level) || 0) : 0,
       acknowledgedLevel: Number(card.alerts?.acknowledgedLevel) || 0,
       loaded: 'decayed',
       loadedLabel: '衰减记忆卡（日常加载）',
       paths: {
-        json: maskPath(pathsNow().json),
-        markdown: maskPath(pathsNow().markdown),
-        promptQq: maskPath(pathsNow().promptQq),
-        promptBili: maskPath(pathsNow().promptBili),
-        inbox: maskPath(pathsNow().inbox),
-        ...fullPathsSummary(),
+        json: maskPath(paths.json),
+        markdown: maskPath(paths.markdown),
+        promptQq: maskPath(paths.promptQq),
+        promptBili: maskPath(paths.promptBili),
+        inbox: maskPath(paths.inbox),
+        ...fullPathsSummary(paths),
       },
     },
     markdown: renderMemoryCard(card, { config, full: true, now }),
@@ -339,64 +352,112 @@ export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCa
   return serialize(async () => {
     const role = readCurrentCharacter();
     const paths = pathsNow();
-    if (config.enabled === false) {
-      // 关掉记忆卡时要清空注入块：桥接只认文件，留着旧文件等于「设置关了但提示词还在」。
-      try { writeTextAtomic(paths.promptQq, ''); } catch {}
-      try { writeTextAtomic(paths.promptBili, ''); } catch {}
-      try {
+    let stagedJson = null;
+    let cardRenamed = false;
+    try {
+      if (config.enabled === false) {
+        // 关掉记忆卡时要清空注入块：桥接只认文件，留着旧文件等于「设置关了但提示词还在」。
+        writeTextAtomic(paths.promptQq, '');
+        writeTextAtomic(paths.promptBili, '');
         writeTextAtomic(path.join(paths.dir, 'memory-card-prompt-qq-groups.json'),
           `${JSON.stringify({ version: 1, updatedAt: new Date(now).toISOString(), blocks: {} }, null, 2)}\n`);
-      } catch {}
-      promptCache = new Map();
-      return { ok: true, disabled: true, status: memoryCardStatusNow(config, paths) };
-    }
-    fs.mkdirSync(paths.dir, { recursive: true });
-    const before = loadMemoryCard(paths);
-    // 坏卡不能静默覆盖：先留一份原始文件（load 失败时 before=null）。
-    if (!before && fs.existsSync(paths.json)) {
-      try { backupFile(paths.json, 'memory-card-corrupt'); } catch {}
-      return { ok: false, code: 'MEMORY_CARD_CORRUPT', error: '记忆卡读取失败，已停止整理。', hint: '保留原卡并从备份恢复后重试。' };
-    }
-    // 一天最多备份一次；每天整理前留一份可回滚的卡。
-    if (before && (forceDecay || before.lastDecayDate !== todayKey(now))) {
-      try { backupFile(paths.json, 'memory-card'); } catch {}
-    }
-    // 全量卡是 append-only JSONL，不做整份备份；每天备份很小的 stats 文件即可。
-    try {
-      const stat = fs.statSync(paths.fullStats);
-      if (new Date(stat.mtimeMs).toLocaleDateString('sv-SE') !== todayKey(now)) {
-        backupFile(paths.fullStats, 'memory-card-full-stats');
+        promptCache = new Map();
+        return { ok: true, disabled: true, status: memoryCardStatusNow(config, paths) };
       }
-    } catch {}
-    const aggregation = await aggregateBiliExperiences(role, now);
-    if (!aggregation.ok) return aggregation;
-    const queue = readExperienceInbox(paths, { offset: before?.meta?.experienceOffset || 0 });
-    if (!queue.ok) return { ...queue, error: '经历收件箱读取失败。', hint: '保留收件箱并检查文件和游标后重试。' };
-    const result = maintainMemoryCard({
-      paths: paths,
-      config,
-      biliEntries: role ? [] : readBiliEntries(),
-      experienceEvents: queue.events,
-      experienceNextOffset: queue.nextOffset,
-      inboxLines: readInboxLines(paths),
-      now,
-      forceDecay,
-      fullPaths: paths,
-      fullConfig: config,
-    });
-    promptCache = new Map();
-    return {
-      ok: true,
-      changed: result.changed,
-      addedBili: result.bili,
-      addedExperience: result.experience,
-      addedQq: result.qq,
-      addedPet: result.pet ?? 0,
-      addedFull: result.full?.added ?? 0,
-      status: memoryCardStatusNow(config, paths),
-      fullStatus: result.full?.status ?? fullMemoryCardStatus(paths, config, now),
-      card: result.card,
-    };
+      fs.mkdirSync(paths.dir, { recursive: true });
+      // A prior rename with an uncertain directory sync must be durable before pruning archive receipts.
+      syncDurableDirectory(path.dirname(paths.json));
+      const before = loadMemoryCard(paths);
+      // 坏卡不能静默覆盖：先留一份原始文件（load 失败时 before=null）。
+      if (!before && fs.existsSync(paths.json)) {
+        try { backupFile(paths.json, 'memory-card-corrupt'); } catch {}
+        return rememberMaintenanceFailure(paths, { code: 'MEMORY_CARD_CORRUPT', error: '记忆卡读取失败，已停止整理。', hint: '保留原卡并从备份恢复后重试。' });
+      }
+      // 一天最多备份一次；每天整理前留一份可回滚的卡。
+      if (before && (forceDecay || before.lastDecayDate !== todayKey(now))) {
+        try { backupFile(paths.json, 'memory-card'); } catch {}
+      }
+      // 全量卡是 append-only JSONL，不做整份备份；每天备份很小的 stats 文件即可。
+      try {
+        const stat = fs.statSync(paths.fullStats);
+        if (new Date(stat.mtimeMs).toLocaleDateString('sv-SE') !== todayKey(now)) {
+          backupFile(paths.fullStats, 'memory-card-full-stats');
+        }
+      } catch {}
+      const aggregation = await aggregateBiliExperiences(role, now);
+      if (!aggregation.ok) return rememberMaintenanceFailure(paths, aggregation);
+      const queue = readExperienceInbox(paths, { offset: before?.meta?.experienceOffset || 0 });
+      if (!queue.ok) return rememberMaintenanceFailure(paths, { ...queue, error: queue.error || '经历收件箱读取失败。', hint: queue.hint || '保留收件箱并检查文件和游标后重试。' });
+      const archiveStats = loadFullStats(paths);
+      const watermarkValue = archiveStats?.experienceArchiveOffset;
+      const watermark = watermarkValue === undefined ? 0 : watermarkValue;
+      let experienceIdentity = null;
+      try {
+        const inboxFile = paths.experienceInbox || path.join(paths.dir, 'experience-inbox.jsonl');
+        const stat = fs.statSync(inboxFile);
+        experienceIdentity = { dev: String(stat.dev), ino: String(stat.ino), birthtimeMs: stat.birthtimeMs };
+        if (watermark > stat.size) throw new Error('archive watermark beyond inbox');
+      } catch (error) {
+        if (watermark > 0 || error?.code !== 'ENOENT') return rememberMaintenanceFailure(paths, { code: 'EXPERIENCE_ARCHIVE_INBOX_MISMATCH', error: '经历收件箱与归档位置不一致。', hint: '保留收件箱和全量统计文件，恢复对应的追加式收件箱后重试。' });
+      }
+      if (watermark > 0 && archiveStats.experienceInboxIdentity && JSON.stringify(archiveStats.experienceInboxIdentity) !== JSON.stringify(experienceIdentity)) return rememberMaintenanceFailure(paths, { code: 'EXPERIENCE_ARCHIVE_INBOX_MISMATCH', error: '经历收件箱已被替换。', hint: '保留当前文件并恢复原追加式收件箱后重试。' });
+      if (!Number.isSafeInteger(watermark) || watermark < 0) return rememberMaintenanceFailure(paths, { code: 'EXPERIENCE_ARCHIVE_INBOX_MISMATCH', error: '经历归档位置无效。', hint: '保留收件箱和全量统计文件，检查归档位置后重试。' });
+      let alreadyArchivedExperienceIds = [];
+      if (watermark > (before?.meta?.experienceOffset || 0)) {
+        const suffix = readExperienceInbox(paths, { offset: watermark });
+        if (!suffix.ok || suffix.events.length > queue.events.length) return rememberMaintenanceFailure(paths, { code: 'EXPERIENCE_ARCHIVE_INBOX_MISMATCH', error: '经历收件箱与归档位置不一致。', hint: '保留收件箱和全量统计文件，恢复对应的追加式收件箱后重试。' });
+        alreadyArchivedExperienceIds = queue.events.slice(0, queue.events.length - suffix.events.length).map((event) => event.eventId);
+      }
+      stagedJson = `${paths.json}.maintain-${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
+      if (before) fs.copyFileSync(paths.json, stagedJson, fs.constants.COPYFILE_EXCL);
+      const stagedPaths = { ...paths, json: stagedJson };
+      const result = maintainMemoryCard({
+        paths: stagedPaths,
+        config,
+        biliEntries: role ? [] : readBiliEntries(),
+        experienceEvents: queue.events,
+        experienceNextOffset: queue.nextOffset,
+        alreadyArchivedExperienceIds,
+        experienceIdentity,
+        inboxLines: readInboxLines(paths),
+        now,
+        forceDecay,
+        fullPaths: paths,
+        fullConfig: config,
+      });
+      // Prepare status while the old card and its cursor remain authoritative.
+      const status = memoryCardStatusNow(config, stagedPaths);
+      status.paths.json = maskPath(paths.json);
+      status.lastFailure = null;
+      const fullStatus = result.full?.status ?? fullMemoryCardStatus(paths, config, now);
+      // Derived writes and append-only archive must succeed before the card cursor commits.
+      const stagedFd = fs.openSync(stagedJson, 'r+');
+      try { fs.fsyncSync(stagedFd); } finally { fs.closeSync(stagedFd); }
+      fs.renameSync(stagedJson, paths.json);
+      cardRenamed = true;
+      stagedJson = null;
+      syncDurableDirectory(path.dirname(paths.json));
+      maintenanceFailures.delete(maintenanceKey(paths));
+      promptCache = new Map();
+      return {
+        ok: true,
+        changed: result.changed,
+        addedBili: result.bili,
+        addedExperience: result.experience,
+        addedQq: result.qq,
+        addedPet: result.pet ?? 0,
+        addedFull: result.full?.added ?? 0,
+        status,
+        fullStatus,
+        card: result.card,
+      };
+    } catch (error) {
+      if (cardRenamed) return rememberMaintenanceFailure(paths, { code: 'MEMORY_COMMIT_UNCERTAIN', error: '记忆卡可能已提交，但目录同步失败。', hint: '保留当前文件，检查目录和磁盘状态后重新整理以核对。' });
+      if (error?.code === 'MEMORY_ARCHIVE_RECOVERY_REQUIRED') return rememberMaintenanceFailure(paths, { code: error.code, error: '全量记忆追加批次不完整。', hint: error.hint });
+      return rememberMaintenanceFailure(paths, { code: 'MEMORY_MAINTENANCE_FAILED', error: '记忆卡整理未完成。', hint: '保留当前记忆文件，检查磁盘空间和目录写入权限后重试。' });
+    } finally {
+      if (stagedJson) try { fs.unlinkSync(stagedJson); } catch {}
+    }
   });
 }
 

@@ -757,8 +757,36 @@ export function loadFullStats(paths) {
   }
 }
 
+/** Sync rename metadata where the platform supports directory fsync; other I/O errors propagate. */
+export function syncDurableDirectory(dir) {
+  let fd;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch (error) {
+    if (!['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS'].includes(error?.code)) throw error;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
 function writeFullStats(paths, stats) {
-  writeTextAtomic(paths.fullStats, `${JSON.stringify(stats, null, 2)}\n`);
+  fs.mkdirSync(path.dirname(paths.fullStats), { recursive: true });
+  const tmp = `${paths.fullStats}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+  let fd;
+  try {
+    fd = fs.openSync(tmp, 'wx', 0o600);
+    fs.writeFileSync(fd, `${JSON.stringify(stats, null, 2)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tmp, paths.fullStats);
+    syncDurableDirectory(path.dirname(paths.fullStats));
+  } catch (error) {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+    try { fs.unlinkSync(tmp); } catch {}
+    throw error;
+  }
 }
 
 function fullSectionOf(record) {
@@ -850,34 +878,99 @@ export function ensureFullArchive(paths, config = {}, now = Date.now()) {
  * 把衰减卡里还没进全量卡的记录**追加**到 JSONL。
  * 必须在衰减/压缩/遗忘之前调用；只写新增行，不重写整个档案。
  */
-export function archiveDecayedToFull(paths, decayed, config = {}, now = Date.now()) {
+const MAX_ARCHIVE_BATCH_BYTES = 64 * 1024 * 1024;
+
+function fullArchiveKey(record) {
+  return record.eventId ? `event:${record.eventId}` : `record:${record.id}`;
+}
+
+function fullArchiveRecoveryError() {
+  const error = new Error('全量记忆追加批次不完整。');
+  error.code = 'MEMORY_ARCHIVE_RECOVERY_REQUIRED';
+  error.hint = '保留全量档案和统计文件，检查未完成的追加批次后重试。';
+  return error;
+}
+
+/** Recover only the recorded append range; never scan the existing JSONL archive. */
+function recoverFullArchiveAppend(paths, stats) {
+  const pending = stats.pendingAppend;
+  if (!pending) return;
+  const { offset, length, digest } = pending;
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1
+      || length > MAX_ARCHIVE_BATCH_BYTES || !/^[0-9a-f]{64}$/.test(String(digest ?? ''))
+      || !Array.isArray(pending.keys) || !Number.isSafeInteger(pending.records) || pending.records < 0
+      || !Number.isFinite(pending.chars) || pending.chars < 0 || !pending.counts || typeof pending.counts !== 'object') throw fullArchiveRecoveryError();
+  const size = fs.statSync(paths.fullJsonl).size;
+  if (size === offset) { delete stats.pendingAppend; writeFullStats(paths, stats); return; }
+  if (size !== offset + length) throw fullArchiveRecoveryError();
+  const bytes = Buffer.alloc(length);
+  const fd = fs.openSync(paths.fullJsonl, 'r+');
+  try {
+    if (fs.readSync(fd, bytes, 0, length, offset) !== length) throw fullArchiveRecoveryError();
+    if (crypto.createHash('sha256').update(bytes).digest('hex') !== digest) throw fullArchiveRecoveryError();
+    // A readable page-cache hit is not proof that an earlier failed append fsync reached disk.
+    // Keep the journal pending until this exact archive file sync succeeds.
+    try { fs.fsyncSync(fd); } catch {
+      const error = fullArchiveRecoveryError();
+      error.hint = '保留全量档案和统计文件，检查磁盘同步错误后重试。';
+      throw error;
+    }
+  } finally { fs.closeSync(fd); }
+  stats.records += pending.records;
+  stats.chars += pending.chars;
+  stats.bytes = size;
+  for (const key of Object.keys(stats.counts)) stats.counts[key] = (Number(stats.counts[key]) || 0) + (Number(pending.counts[key]) || 0);
+  stats.updatedAt = pending.at;
+  stats.lastArchiveAt = pending.at;
+  stats.uncommittedArchiveKeys = [...new Set([...asArray(stats.uncommittedArchiveKeys), ...pending.keys])];
+  if (Number.isSafeInteger(pending.experienceOffset) && pending.experienceOffset >= 0) {
+    stats.experienceArchiveOffset = Math.max(Number(stats.experienceArchiveOffset) || 0, pending.experienceOffset);
+    if (pending.experienceIdentity) stats.experienceInboxIdentity = pending.experienceIdentity;
+  }
+  delete stats.pendingAppend;
+  writeFullStats(paths, stats);
+}
+
+export function archiveDecayedToFull(paths, decayed, config = {}, now = Date.now(), { committedKeys = [], alreadyArchivedExperienceIds = [], experienceNextOffset = null, experienceIdentity = null } = {}) {
   if (!paths || !decayed) return 0;
-  // 归档前先把「最初 / 初次相遇」标记算好，否则全量卡里的早期互动会缺这些字段。
   refreshInitialState(decayed);
   const stats = ensureFullArchive(paths, config, now);
+  recoverFullArchiveAppend(paths, stats);
+  const committed = new Set(committedKeys);
+  const tracked = new Set(asArray(stats.uncommittedArchiveKeys).filter((key) => !committed.has(key)));
+  const priorTracked = asArray(stats.uncommittedArchiveKeys).length;
+  if (tracked.size !== priorTracked) { stats.uncommittedArchiveKeys = [...tracked]; writeFullStats(paths, stats); }
   const pending = asArray(decayed.records).filter((record) => record && record.id && !record.fullArchivedAt);
   if (!pending.length) return 0;
+  const previouslyArchived = new Set(asArray(alreadyArchivedExperienceIds).map((id) => `event:${id}`));
+  const fresh = pending.filter((record) => !tracked.has(fullArchiveKey(record)) && !previouslyArchived.has(fullArchiveKey(record)));
   const lines = [];
+  const keys = [];
   let chars = 0;
   const counts = { owner: 0, bili: 0, qq: 0, other: 0 };
-  for (const record of pending) {
+  for (const record of fresh) {
     const line = archivedLine(record, now);
     if (!line) continue;
     lines.push(line);
+    keys.push(fullArchiveKey(record));
     chars += String(record.text ?? '').length;
     counts[fullSectionOf(record)] += 1;
   }
   if (lines.length) {
-    fs.appendFileSync(paths.fullJsonl, `${lines.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
-    stats.records += lines.length;
-    stats.chars += chars;
-    stats.bytes = fs.statSync(paths.fullJsonl).size;
-    for (const key of Object.keys(counts)) stats.counts[key] = (Number(stats.counts[key]) || 0) + counts[key];
-    stats.updatedAt = iso(now);
-    stats.lastArchiveAt = iso(now);
+    const bytes = Buffer.from(`${lines.join('\n')}\n`, 'utf8');
+    if (bytes.length > MAX_ARCHIVE_BATCH_BYTES) throw fullArchiveRecoveryError();
+    const offset = fs.statSync(paths.fullJsonl).size;
+    const at = iso(now);
+    stats.pendingAppend = { offset, length: bytes.length, digest: crypto.createHash('sha256').update(bytes).digest('hex'), keys, records: lines.length, chars, counts, at, ...(Number.isSafeInteger(experienceNextOffset) && experienceNextOffset >= 0 ? { experienceOffset: experienceNextOffset, experienceIdentity } : {}) };
+    writeFullStats(paths, stats);
+    const fd = fs.openSync(paths.fullJsonl, 'a', 0o600);
+    try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    recoverFullArchiveAppend(paths, stats);
+  } else if (Number.isSafeInteger(experienceNextOffset) && experienceNextOffset > (Number(stats.experienceArchiveOffset) || 0)) {
+    stats.experienceArchiveOffset = experienceNextOffset;
+    if (experienceIdentity) stats.experienceInboxIdentity = experienceIdentity;
     writeFullStats(paths, stats);
   }
-  // 追加成功后才标记，避免「标记了但没写进去」。即使 normalize 失败也标记，避免反复重试同一条坏数据。
   const stamp = iso(now);
   for (const record of pending) record.fullArchivedAt = stamp;
   return lines.length;
@@ -2207,6 +2300,8 @@ export function maintainMemoryCard({
   inboxLines = [],
   experienceEvents = [],
   experienceNextOffset = null,
+  alreadyArchivedExperienceIds = [],
+  experienceIdentity = null,
   now = Date.now(),
   forceDecay = false,
   fullPaths = null,
@@ -2215,6 +2310,10 @@ export function maintainMemoryCard({
   const cfg = normalizeMemoryCardConfig(config);
   const fullCfg = normalizeMemoryCardConfig(fullConfig ?? config);
   let card = loadMemoryCard(paths) || createEmptyCard(now);
+  const committedArchiveKeys = [
+    ...asArray(card.meta?.experienceSeen).map((id) => `event:${id}`),
+    ...asArray(card.records).filter((record) => record.fullArchivedAt).map(fullArchiveKey),
+  ];
   let changed = false;
   const experience = ingestExperienceEvents(card, experienceEvents, cfg, now);
   if (experience.added || experience.duplicates || experience.rejected) changed = true;
@@ -2224,7 +2323,7 @@ export function maintainMemoryCard({
   if (qq.added) changed = true;
   // **先归档再衰减**：刚进来的旧记忆/冷门记忆也可能在同一次补跑里被忘掉。
   // 全量卡是 JSONL：这里只 append 新行，不读整个档案、也不重写。
-  const fullAdded = fullPaths ? archiveDecayedToFull(fullPaths, card, fullCfg, now) : 0;
+  const fullAdded = fullPaths ? archiveDecayedToFull(fullPaths, card, fullCfg, now, { committedKeys: committedArchiveKeys, alreadyArchivedExperienceIds, experienceNextOffset, experienceIdentity }) : 0;
   if (fullAdded) changed = true;
   if (forceDecay || needsDailyDecay(card, cfg, now)) {
     // 插件/DSH 关了一周再开：按「错过几天」补跑，而不是只降一档。

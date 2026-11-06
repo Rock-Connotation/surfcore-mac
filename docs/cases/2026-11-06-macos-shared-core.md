@@ -46,3 +46,21 @@
 ## 组合时补齐的失败契约
 
 经历读取的路径缺失、不可读取和游标超前均返回 code/error/hint；生活状态遇到未知版本或损坏原文件时拒绝覆盖，防止降级程序把未来活动字段归一化丢失。隔离断言核对错误三字段及未来版本文件字节不变。组合验收统一见 `2026-11-06-macos-host-integration.md`；子树早期基线失败记录保留，不替代最终组合结果。
+
+## 维护失败可见性与追加档案重放（追加）
+
+- **链路与机制**：Host 固定本次角色路径，汇总及卡维护错误统一返回 `ok:false/code/error/hint`，最近失败按角色路径保存在进程内，并由 `memoryCardStatusNow` 和 `memoryCardSnapshot().status` 读取；成功重试清除。卡先写同目录临时文件，派生输出及归档成功后才原子提交卡和收件箱游标。
+- **归档幂等**：旧归档先追加 JSONL、仅在卡内标记 `fullArchivedAt`，输出失败或快照回档可能使同一事件再次归档。统计文件新增小批次日志：预记 JSONL 末尾偏移、长度、摘要和记录键；追加并 fsync 后确认。重启只检查该批次区间，不扫描旧全量 JSONL；部分追加拒绝并保留原档。持久化 experience 收件箱归档水位和文件身份，快照保留原追加式收件箱，回档重放水位之前的事件可恢复卡但不重复归档；文件替换或截断 fail closed。
+- **影响与取舍**：小日志与水位避免每次扫描 10GB 档案，增加小型状态与恢复逻辑；永久 eventId 索引或全档扫描可覆盖更多历史但迁移与长期成本更高。进程内失败状态在宿主重载后重新检查，不写额外用户诊断文件。真实设备、进程断电与文件系统崩溃未演练。
+- **验证**：`node --test scripts/test-macos-shared-core.mjs` 14/14：覆盖聚合与派生输出失败、等待期间切角隔离、游标不推进、重试清除、未完成批次恢复/部分写失败、快照重放去重、收件箱替换/截断及旧布局；`node scripts/test-memory-card.mjs` 27/27；插件 `node scripts/test-memory-card-api.mjs` 通过。日志 `/tmp/surfcore-maintenance-failure.log` 和 `/tmp/surfcore-maintenance-memory.log`。
+- **回滚与残余**：停写并保留新 stats、JSONL、收件箱、角色快照后恢复前版代码；已有 stats 没有归档水位的升级前历史无法无扫描地证明去重。身份使用系统设备号、inode、创建时间，文件复制或恢复改变身份时需保留文件并人工核对，不能自动重置水位；同 inode、同大小的原地改写不一定被识别，不可宣称内容防篡改。诊断 UI 由主会话接线，完整组合验证和真实宿主验收尚未进行。
+
+## 归档提交的持久性屏障（追加）
+
+此前追加日志和最终记忆卡只经临时文件写入及 rename，没有证明先同步到磁盘；异常掉电可能丢失日志或卡的目录项，却保留已经同步的 JSONL，从而重复归档。现在仅对这两条关键提交路径采用文件 fsync → rename → 父目录 fsync：统计日志同步成功前不追加 JSONL；记忆卡目录同步成功后才报告维护成功。若卡已 rename 而目录同步失败，返回 `MEMORY_COMMIT_UNCERTAIN` 和核对建议，保留归档收据；下一轮先同步卡目录，失败则不清收据。目录 fsync 明确返回不支持的 `EINVAL/ENOTSUP/EOPNOTSUPP/ENOSYS` 时兼容；其他错误不吞。Windows 真实目录 fsync 行为尚未验证，若返回其他错误会保守失败。
+
+定向验证 `node --test scripts/test-macos-shared-core.mjs` 19/19：实际同步调用顺序、统计文件及目录 fsync 注入 EIO 后未追加且可重试、卡目录 fsync 注入 EIO 后的不确定提交与收据保留、明确不支持和 I/O 错误的区分均通过。未进行真实断电或 Windows 测试；全套组合检查由主会话执行。
+
+## 追加日志恢复的档案同步（追加）
+
+完整读取与摘要一致只能证明字节可从缓存读取，不能证明上一次失败的 JSONL fsync 已持久化。恢复未完成批次时，现对已核验的全量档案文件再次 fsync，成功后才清 pending 并提交统计；同步失败返回 `MEMORY_ARCHIVE_RECOVERY_REQUIRED` 和保留文件、检查磁盘后重试的建议，游标不推进。隔离测试先后对首次追加和恢复同步注入 EIO，验证两次均保留日志和游标，第三次同步成功后只归档一次：`node --test scripts/test-macos-shared-core.mjs` 20/20，日志 `/tmp/surfcore-archive-recovery-sync.log`；既有记忆卡测试 27/27。未做真实断电或 Windows 测试。
