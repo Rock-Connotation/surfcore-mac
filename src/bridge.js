@@ -17028,7 +17028,7 @@ async function main() {
               }
               return s;
             });
-            const questionHint = cfg.interaction.requireRequestId ? `（回复「${entry.requestId} 答案」）` : '（直接回复选项文字或输入你的回答）';
+            const questionHint = cfg.interaction.requireRequestId ? `（回复时先写编号 ${entry.requestId}，空格后写你选的完整选项文字或自己的回答；不要照抄“答案”）` : '（直接回复选项文字或输入你的回答）';
             void sendToQQ(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n' + questionHint).catch((error) => log(`提问通知失败 (${key}): ${error?.message ?? error}`));
           } else if (frame.type === 'approval/requested') {
             const key = reverse.get(frame.sessionId);

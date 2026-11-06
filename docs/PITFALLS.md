@@ -4116,3 +4116,9 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 - 切角色前只 cancel 一次不足以覆盖中间 await；整个 Host switch/restore 要由抖音 withTransition 持有准入门闸。
 - Playwright context close 也可能源于 transport 断开；不能据此删锁。只复用首次主动 close Promise，超时保持锁；非主动断连显式拒绝重开。
 - 对应 [完整案例](cases/2026-11-07-douyin-native-integration.md)，专项：`node plugins/surfcore/scripts/test-douyin-service.mjs`、`node plugins/surfcore/scripts/test-douyin-browser.mjs`。
+
+
+## 2026-11-07 QQ编号提示的占位词误答
+
+- 真机两次照抄“编号 答案”只能证明自由文本回路；不要将占位词放进可复制回复引号。提示应写实际编号并说明空格后输入完整选项文字或自己的回答，不替用户把“答案”解析成某选项。
+- 回归必须穿过真实mux通知与handleIncoming，并断言官方answers.selected命中选项、来源保留、无普通模型唤醒。见[case](cases/2026-11-07-qq-answer-hint.md)。

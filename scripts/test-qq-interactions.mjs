@@ -22,6 +22,23 @@ function eventStream(h) {
   return (payload) => { queue.push({ rpcId: payload.eventId, payload }); wake?.(); wake = null; };
 }
 const privateMessage = (text, messageId = 100) => ({ user_id: 123, self_id: 1, message_id: messageId, sender: { nickname: 'fixture' }, message: [{ type: 'text', data: { text } }] });
+await test('question notification explains actual answer text and exact option roundtrips', async (h) => {
+  h.cfg.sendDelayMs = 0; const replies = [];
+  h.api.respond = async value => { replies.push(value); return { result: { ok: true } }; };
+  const sessionId = await h.ensureSession('private:123'); const emit = eventStream(h);
+  emit({ type: 'question/requested', sessionId, clientId: 'client', eventId: 'copyable-question', questions: [{ id: 'q', question: '请选择', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] }] });
+  for (let i = 0; i < 50 && !h.calls.sent.length; i++) await tick();
+  const entry = h.pending.get('private:123'); assert.ok(entry);
+  const notification = JSON.stringify(h.calls.sent);
+  assert.ok(notification.includes(entry.requestId));
+  assert.match(notification, /完整选项文字/);
+  assert.ok(!notification.includes(`${entry.requestId} 答案`), 'do not offer placeholder as a copyable answer');
+  await h.handleIncoming('private', '123', privateMessage(`${entry.requestId} A`), h.cfg);
+  assert.equal(replies.length, 1);
+  assert.deepEqual(replies[0].outcome.value.answers[0].selected, ['A']);
+  assert.match(replies[0].outcome.value.answers[0].custom, /回答者：主人/);
+  assert.equal(h.calls.prompts.length, 0);
+});
 await test('numbered stale reply without pending is visible and never prompts', async (h) => {
   h.setMode('chat'); h.cfg.sendDelayMs = 0;
   for (const text of ['拒绝 273d4825', '通过 abcdef12', 'abcdef12 A', 'approve 0123abcd']) {
