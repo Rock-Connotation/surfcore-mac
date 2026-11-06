@@ -131,7 +131,7 @@ export function normalizeBiliPartTimeline(part, playurl) {
   const declaredDurationMs = Number(part?.declaredDurationMs ?? part?.durationMs)
   if (!Number.isSafeInteger(declaredDurationMs) || declaredDurationMs < 1) throw fail('bili.duration.missing', '所选分 P 没有可验证的声明时长。', '刷新视频信息后重试。')
   const raw = playurl?.timelength
-  if (raw == null || raw === '') return { ...part, durationMs: declaredDurationMs, declaredDurationMs, durationSource: 'view.pages' }
+  if (raw === undefined) return { ...part, durationMs: declaredDurationMs, declaredDurationMs, durationSource: 'view.pages' }
   if (!/^\d+$/.test(String(raw)) || !Number.isSafeInteger(Number(raw)) || Number(raw) < 1) throw fail('bili.duration.precise.invalid', '播放信息的精确时长无效。', '刷新播放地址后重试。')
   const preciseDurationMs = Number(raw)
   if (preciseDurationMs !== declaredDurationMs && Math.ceil(preciseDurationMs / 1000) * 1000 !== declaredDurationMs) throw fail('bili.duration.precise.inconsistent', '播放信息与分 P 声明时长不一致。', '刷新视频信息和播放地址后重试。', { declaredDurationMs, preciseDurationMs })
