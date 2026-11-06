@@ -41,7 +41,7 @@ const prefixPaths = (value) => typeof value === 'string' && value.startsWith('./
   : Array.isArray(value) ? value.map(prefixPaths)
   : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, v]) => [key, prefixPaths(v)])) : value;
 const metadata = { ...plugin, main: prefixPaths(plugin.main), exports: prefixPaths(plugin.exports), dsh: prefixPaths(plugin.dsh),
-  scripts: { postinstall: source.scripts.postinstall }, dependencies: { ...source.dependencies, ...plugin.dependencies },
+  scripts: {}, dependencies: { ...source.dependencies, ...plugin.dependencies },
   bundledDependencies: Object.keys({ ...source.dependencies, ...plugin.dependencies }),
   files: ['src', 'scripts', 'dsh', 'plugins', 'config.example.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md', '.surfcore-install.json', 'artifact-manifest.json', 'npm-shrinkwrap.json'] };
 put('package.json', Buffer.from(JSON.stringify(metadata, null, 2) + '\n'));
@@ -51,6 +51,7 @@ lock.version = plugin.version;
 lock.packages[''].version = plugin.version;
 lock.packages[''].name = plugin.name;
 lock.packages[''].dependencies = metadata.dependencies;
+delete lock.packages[''].hasInstallScript;
 put('npm-shrinkwrap.json', Buffer.from(JSON.stringify(lock, null, 2) + '\n'));
 put('.surfcore-install.json', Buffer.from(JSON.stringify({ schemaVersion: 1, sourceRepo: 'Rock-Connotation/surfcore-mac', sourceCommit: commit,
   version: plugin.version, kind: 'package', updateOwner: 'dsh-package-manager' }, null, 2) + '\n'));
@@ -58,5 +59,8 @@ put('artifact-manifest.json', Buffer.from(JSON.stringify({ schemaVersion: 1, sou
 // npm ignores .npmrc in published packages; freeze the original legacy-peer-deps graph here
 // and bundle the installed runtime dependencies so the consumer needs no implicit flags.
 execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm',
-  ['ci', '--legacy-peer-deps', '--no-audit', '--no-fund'], { cwd: payload, stdio: 'inherit' });
+  ['ci', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund'], { cwd: payload, stdio: 'inherit' });
+// Materialize the source checkout compatibility fix into the bundled dependencies.
+// Consumer package installation must not execute any lifecycle script.
+execFileSync(process.execPath, [path.join(payload, 'scripts', 'patch-snowluma-sdk.mjs')], { cwd: payload, stdio: 'inherit' });
 console.log(JSON.stringify({ sourceCommit: commit, payload, files: Object.keys(hashes).length, bundled: metadata.bundledDependencies }));
