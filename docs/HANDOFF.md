@@ -18,8 +18,8 @@
 - CORE-T04：基于真实只读素材的人工评分/日记写本地账本，实际Host导入一次经历、统一卡，新Node的B站上下文读回两标记，QQ视图隐藏；重复maintain不重复事件/6条卡。不是模型自主评价或实际供应商会话回忆。
 - 原生角色编辑：短卡失败可见，合法测试卡保存成功；本地ASR运行中app/epoch2→artifact/epoch3，旧job保持app2、对新角色JOB_FORBIDDEN且不写新卡。编辑器丢弃旧未保存草稿、读取目标卡；旧人格请求实际409，两个文件hash不变。返回app/epoch4后再读正确97字卡。
 - 独立App停止时官方CLI回退b722222再装回b9，160持久文件摘要不变，含扫码后绑定/模型/人格/作业/评分/日记/记忆。旧包未执行，只证明包安装回滚保留数据，不能称schema降级迁移通过。
-- 新发现必要修复：原生10秒精确全零PCM被whisper幻觉成生日歌。现加入严格RIFF/PCM/data验证，全样本数值0才跳推理返回no_speech；±1非零保留识别，空/坏格式拒绝，partial/未知源时长仍unknown。缓存算法v3不复用旧幻觉/检查点，历史不删。独立Astra审核无新实质P1/P2；官方Node下新增静音、完整service/资源/CLI局部检查通过。新组合已通过audit163/163、regressions及完整插件测试，原始结果 native-fixes/checks-20261106T152703Z/results.json；随后提交/清单/包/原生复验。
-- 未改版本0.8.8、tag、push或发布；常用profile未安装本候选。直接Finder启动、关窗/热重载/睡眠、真实durl多段、全面中文质量、Intel/Windows/其他macOS及真实外发未验，**不满足设计06全面通过或发布条件**。下一步只完成新静音候选的组合、安装和真实静音/语音复验，结束关闭调试端口，保留所有新增数据。
+- 新发现必要修复：原生10秒精确全零PCM被whisper幻觉成生日歌。现加入严格RIFF/PCM/data验证，全样本数值0才跳推理返回no_speech；±1非零保留识别，空/坏格式拒绝，partial/未知源时长仍unknown。缓存算法v3不复用旧幻觉/检查点，历史不删。独立Astra审核无新实质P1/P2；官方Node下新增静音、完整service/资源/CLI局部检查通过。最终程序/制品47e7e73（静音功能dc075d8），audit163/163、regressions及完整插件exit0；555程序文件逐blob同源，manifest756/756，原始结果 native-fixes/checks-20261106T152703Z/results.json。新包真实零PCM/241秒/96秒B站复验全部通过，原生UI说明/转写/经历完成均可见；最终新Node读回仍成立。
+- 未改版本0.8.8、tag、push或发布；常用profile未安装本候选。直接双击常用App默认profile、热重载/物理睡眠、真实durl多段、全面中文质量、Intel/Windows/其他macOS及真实外发未验，**不满足设计06全面通过或发布条件**。本轮测试实例与所有调试/Host端口已关闭，测试账号和新增数据保留；原常用App仍运行。Finder通过显式环境本地启动器启动官方App并完成新ASR，关窗保留Host/真正退出才回收也已实测。下一步按设计06补剩余设备/质量/热重载/睡眠/真实durl/外发矩阵，常用profile安装是另一对象。
 
 ---
 
