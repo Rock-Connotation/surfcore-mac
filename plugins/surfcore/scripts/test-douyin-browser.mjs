@@ -2,77 +2,66 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { createDouyinBrowser } from '../lib/douyin-browser.mjs';
 
 const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'douyin-browser-test-'));
-const executable = path.join(root, 'fake-browser');
-const fakeJs = path.join(root, 'fake-browser.cjs');
-fs.writeFileSync(fakeJs, `const fs = require('node:fs');
-const read = fs.createReadStream(null, { fd: 3 });
-const write = fs.createWriteStream(null, { fd: 4 });
-fs.writeFileSync(process.env.FAKE_ARGS, JSON.stringify({args:process.argv.slice(2), electron:process.env.ELECTRON_RUN_AS_NODE}));
-let buf=Buffer.alloc(0);
-function send(o,split=false) { const b=Buffer.from(JSON.stringify(o)+'\\0'); if(split) { const i=b.indexOf(Buffer.from('中'))+1; write.write(b.subarray(0,i)); write.write(b.subarray(i)); } else write.write(b); }
-read.on('data', c => { buf=Buffer.concat([buf,c]); let n; while ((n=buf.indexOf(0))>=0) { let m=JSON.parse(buf.subarray(0,n)); buf=buf.subarray(n+1); let result={};
-if(m.method==='Target.createTarget') result={targetId:'target'};
-if(m.method==='Target.attachToTarget') result={sessionId:'session'};
-if(m.method==='Runtime.evaluate') result={result:{value:JSON.stringify({title:'中文',url:'https://www.douyin.com/?secret=hidden',text:'正文'})}};
-if(m.method==='Page.captureScreenshot' && process.env.FAKE_PIPE_FAILURE) { const mode=process.env.FAKE_PIPE_FAILURE; if(mode==='close') write.end(); if(mode==='error') read.destroy(); if(mode==='oversize') write.write(Buffer.alloc(4*1024*1024+1, 65)); setTimeout(()=>process.exit(0), 900); continue; }
-if(m.method==='Page.captureScreenshot') result={data:'cG5n'};
-if(m.method==='Network.getResponseBody') result={body:JSON.stringify({item:'中文'})};
-if(m.method==='Page.navigate') { fs.writeFileSync(process.env.FAKE_URL,m.params.url); setTimeout(()=>{ for(const [id,url,size] of [['good','https://www.douyin.com/aweme/v1/web/tab/feed/?secret=hidden',10],['bad','https://evil.example/aweme/v1/web/tab/feed/',10],['large','https://www.douyin.com/aweme/v1/web/tab/feed/',3000000],['other','https://www.douyin.com/private',10]]) { send({sessionId:'session',method:'Network.requestWillBeSent',params:{requestId:id,request:{url}}}); send({sessionId:'session',method:'Network.responseReceived',params:{requestId:id,response:{url,status:200,mimeType:'application/json'}}}); send({sessionId:'session',method:'Network.loadingFinished',params:{requestId:id,encodedDataLength:size}}); } const url='https://www.douyin.com/aweme/v1/web/tab/feed/'; for(const flag of ['fromDiskCache','fromServiceWorker','fromPrefetchCache','served']) { send({sessionId:'session',method:'Network.requestWillBeSent',params:{requestId:flag,request:{url}}}); if(flag==='served') send({sessionId:'session',method:'Network.requestServedFromCache',params:{requestId:flag}}); send({sessionId:'session',method:'Network.responseReceived',params:{requestId:flag,response:{url,status:200,mimeType:'application/json',[flag]:true}}}); send({sessionId:'session',method:'Network.loadingFinished',params:{requestId:flag,encodedDataLength:10}}); } for (const id of ['missing','redirect','wrong-session']) { if(id!=='missing') send({sessionId:id==='wrong-session'?'other':'session',method:'Network.requestWillBeSent',params:{requestId:id,request:{url}}}); if(id==='redirect') send({sessionId:'session',method:'Network.requestWillBeSent',params:{requestId:id,request:{url},redirectResponse:{}}}); send({sessionId:'session',method:'Network.responseReceived',params:{requestId:id,response:{url,status:200,mimeType:'application/json'}}}); send({sessionId:'session',method:'Network.loadingFinished',params:{requestId:id,encodedDataLength:10}}); } }, 10); }
-if(m.method==='Browser.close') { send({id:m.id,result}); setTimeout(()=>process.exit(0),20); continue; }
-if(process.env.FAKE_TIMEOUT && m.method==='Page.captureScreenshot') continue;
-if(process.env.FAKE_ERROR && m.method==='Page.captureScreenshot') { send({id:m.id,error:{code:-1,message:'private'}}); continue; }
-send({id:m.id,result},m.method==='Runtime.evaluate');
-} });
-`);
-fs.writeFileSync(executable, `#!/bin/sh\nexec '${process.execPath}' '${fakeJs}' "$@"\n`);
-fs.chmodSync(executable, 0o700);
-process.env.FAKE_ARGS = path.join(root, 'args'); process.env.FAKE_URL = path.join(root, 'url'); process.env.ELECTRON_RUN_AS_NODE = '1';
 const profile = path.join(root, 'profile');
-const received = [], requests = [];
-const browser = createDouyinBrowser({ profileDir: profile, browserPath: executable, onResponse: (body, meta) => received.push({ body, meta }), onRequest: meta => requests.push(meta), timeouts: { command: 2000, close: 1000 } });
-const started = await browser.start(); if (!started.ok) console.error(started); assert.equal(started.ok, true);
-assert.equal(fs.readFileSync(process.env.FAKE_URL, 'utf8'), 'https://www.douyin.com/');
-const args = JSON.parse(fs.readFileSync(process.env.FAKE_ARGS));
-assert(args.args.includes('--remote-debugging-pipe')); assert(!args.args.some(x => x.includes('remote-debugging-port'))); assert.equal(args.electron, undefined);
-assert.equal(fs.statSync(profile).mode & 0o077, 0);
-const duplicate = createDouyinBrowser({ profileDir: profile, browserPath: executable });
-const locked = await duplicate.start(); assert.equal(locked.code, 'PROFILE_LOCKED'); assert(locked.hint);
-await new Promise(resolve => setTimeout(resolve, 70));
-assert.equal(received.length, 1); assert(browser.status().requestSeq >= received[0].meta.requestSeq); assert.equal(received[0].body.item, '中文'); assert.equal(received[0].meta.requestId, 'good'); assert.equal(received[0].meta.sessionId, 'session'); assert(received[0].meta.requestSeq > 0 && received[0].meta.requestStartedAt > 0); assert(!JSON.stringify(requests).includes('secret'));
-const snap = await browser.snapshot(); assert.equal(snap.title, '中文'); assert.equal(snap.url, 'https://www.douyin.com/');
-assert.equal((await browser.screenshot()).png, 'cG5n'); assert((await browser.reload()).ok);
-fs.writeFileSync(path.join(profile, 'login-data'), 'keep');
-const closed = await browser.close(); if (!closed.ok) console.error(closed); assert(closed.ok); assert(fs.existsSync(path.join(profile, 'login-data'))); assert(!fs.existsSync(path.join(profile, '.surfcore-douyin.lock')));
-const absent = await browser.snapshot(); assert.equal(absent.code, 'BROWSER_NOT_RUNNING'); assert(absent.error && absent.hint);
-const foreign = path.join(root, 'foreign'); fs.mkdirSync(foreign, {mode: 0o700}); fs.writeFileSync(path.join(foreign, 'existing'), 'keep');
-const rejected = await createDouyinBrowser({profileDir: foreign, browserPath: executable}).start(); assert.equal(rejected.code, 'PROFILE_FOREIGN'); assert(rejected.hint); assert.equal(fs.readFileSync(path.join(foreign, 'existing'), 'utf8'), 'keep');
-const unsafe = path.join(root, 'link'); fs.symlinkSync(profile, unsafe); assert.equal((await createDouyinBrowser({profileDir: unsafe, browserPath: executable}).start()).code, 'PROFILE_UNSAFE');
-process.env.FAKE_TIMEOUT = '1';
-const timeoutBrowser = createDouyinBrowser({profileDir: profile, browserPath: executable, timeouts: {command: 500, close: 1000}});
-assert((await timeoutBrowser.start()).ok); const timed = await timeoutBrowser.screenshot(); assert.equal(timed.code, 'CDP_TIMEOUT'); assert(timed.hint); assert((await timeoutBrowser.close()).ok);
-delete process.env.FAKE_TIMEOUT; process.env.FAKE_ERROR = '1';
-const errorBrowser = createDouyinBrowser({profileDir: profile, browserPath: executable, timeouts: {command: 2000, close: 1000}});
-assert((await errorBrowser.start()).ok); const failed = await errorBrowser.screenshot(); assert.equal(failed.code, 'CDP_ERROR'); assert(failed.hint && !failed.error.includes('private')); assert((await errorBrowser.close()).ok);
-delete process.env.FAKE_ERROR;
-for (const mode of ['close','error','oversize']) {
-  process.env.FAKE_PIPE_FAILURE = mode;
-  const dir = path.join(root, 'broken-'+mode);
-  const instance = createDouyinBrowser({profileDir: dir, browserPath: executable, timeouts:{command:200, close:100}});
-  assert((await instance.start()).ok);
-  const result = await instance.screenshot();
-  if(mode==='error') await instance.reload();
-  await new Promise(resolve => setTimeout(resolve, 40));
-  const state = instance.status(); assert.equal(state.ok, false, mode); assert.equal(state.running, false); assert(state.code && state.error && state.hint);
-  assert(fs.existsSync(path.join(dir, '.surfcore-douyin.lock')));
-  assert.equal((await instance.start()).code, 'BROWSER_DISCONNECTED');
-  const closing = await instance.close(); assert.equal(closing.ok, false); assert(closing.code && closing.hint);
-  assert(fs.existsSync(path.join(dir, '.surfcore-douyin.lock')));
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  assert(!fs.existsSync(path.join(dir, '.surfcore-douyin.lock')));
-  delete process.env.FAKE_PIPE_FAILURE; assert((await instance.start()).ok); assert((await instance.close()).ok);
+const endpoint = 'https://www.douyin.com/aweme/v1/web/tab/feed/?private=hidden';
+const home = 'https://www.douyin.com/?recommend=1&from_nav=1';
+class FakePage {
+  urls = []; keys = []; text = ''; editable = false; tutorialClicked = false;
+  keyboard = { press: async key => this.keys.push(key) };
+  async goto(url) { this.urls.push(url); }
+  async close() { this.closed = true; }
+  isClosed() { return false; }
+  async evaluate(fn) { return fn.toString().includes('activeElement') ? this.editable : { title: '抖音', url: 'https://www.douyin.com/', text: this.text }; }
+  getByRole() { return { isVisible: async () => true, click: async () => { this.tutorialClicked = true; } }; }
+  async screenshot() { if (this.failScreenshot) throw Object.assign(new Error('private secret'), {code:'EIO'}); return Buffer.from('jpeg'); }
 }
-delete process.env.FAKE_PIPE_FAILURE;
+class FakeContext extends EventEmitter {
+  page = new FakePage(); extraPage = new FakePage(); blockClose = false;
+  pages() { return [this.page, this.extraPage]; }
+  async route(pattern, fn) { this.routePattern = pattern; this.routeHandler = fn; }
+  async close() { if (this.blockClose) return new Promise(() => {}); this.emit('close'); }
+}
+const contexts = [], launches = [], bodies = [], metadata = [];
+const launch = async (dir, options) => { launches.push({dir, options}); const ctx = new FakeContext(); contexts.push(ctx); return ctx; };
+const browser = createDouyinBrowser({profileDir: profile, browserPath:'/fake/chrome', launchPersistentContext:launch, timeouts:{close:30, command:1000}, onResponse:(body, meta)=>bodies.push({body,meta}), onRequest:meta=>metadata.push(meta)});
+assert((await browser.start()).ok);
+let ctx = contexts.at(-1);
+assert.equal(ctx.page.urls[0], home); assert.equal(ctx.routePattern, '**/*'); assert(ctx.extraPage.closed);
+assert.deepEqual(launches[0].options.args, ['--restore-last-session']); if (process.platform === 'darwin') assert.deepEqual(launches[0].options.ignoreDefaultArgs, ['--password-store=basic', '--use-mock-keychain']);
+assert.equal(launches[0].options.serviceWorkers, 'block'); assert.equal(launches[0].options.env.DEBUG, undefined); assert.equal(launches[0].options.env.PWDEBUG, undefined); assert.equal(launches[0].options.viewport.width,1280);
+assert.equal(fs.statSync(profile).mode & 0o077, 0);
+const duplicate = createDouyinBrowser({profileDir:profile, browserPath:'/fake/chrome', launchPersistentContext:launch});
+assert.equal((await duplicate.start()).code,'PROFILE_LOCKED');
+function emit(url, { redirect = false, serviceWorker = false, size = 4, data = '{"ok":true}', missing = false, delayed = false } = {}) {
+  const req = {url:()=>url, redirectedFrom:()=>redirect ? {} : null, redirectedTo:()=>null, sizes:async()=>({responseBodySize:size})};
+  let resolveBody;
+  const res = {request:()=>req, url:()=>url, status:()=>200, fromServiceWorker:()=>serviceWorker, body:()=> delayed ? new Promise(r=>{resolveBody=r;}) : Promise.resolve(Buffer.from(data))};
+  if (!missing) ctx.emit('request',req);
+  ctx.emit('response',res);
+  return () => resolveBody?.(Buffer.from(data));
+}
+emit(endpoint); emit(endpoint,{serviceWorker:true}); emit(endpoint,{redirect:true}); emit(endpoint,{missing:true}); emit(endpoint,{size:9*1024*1024}); emit(endpoint,{size:1,data:' '.repeat(8*1024*1024+1)}); emit('https://www.douyin.com/aweme/v1/web/related/feed/'); emit('https://evil.test/aweme/v1/web/tab/feed/');
+await new Promise(r=>setImmediate(r));
+assert.equal(bodies.length,1); assert.equal(bodies[0].body.ok,true); assert(bodies[0].meta.requestSeq > 0); assert(bodies[0].meta.requestStartedAt > 0); assert(bodies[0].meta.requestId); assert(bodies[0].meta.sessionId); assert(!JSON.stringify(metadata).includes('private'));
+assert(metadata.every(x=>x.sessionId===bodies[0].meta.sessionId));
+assert.equal((await browser.snapshot()).url,'https://www.douyin.com/');
+assert.equal((await browser.screenshot()).mimeType,'image/jpeg');
+ctx.page.failScreenshot = true; const failedScreenshot = await browser.screenshot(); assert.equal(failedScreenshot.code, 'BROWSER_ERROR'); assert(failedScreenshot.hint && !failedScreenshot.error.includes('secret')); ctx.page.failScreenshot = false;
+ctx.page.text = '滚动“鼠标”或点按“键盘上下键”查看更多推荐视频';
+assert.equal((await browser.loadRecommendations()).keyStepsSent,4); assert(ctx.page.tutorialClicked); assert.equal(ctx.page.keys.length,4); assert.equal(ctx.page.urls.at(-1),home);
+ctx.page.text = '请完成安全验证'; const verification = await browser.loadRecommendations(); assert.equal(verification.code,'DOUYIN_VERIFICATION_REQUIRED'); assert(verification.hint);
+ctx.page.text = ''; ctx.page.editable = true; assert.equal((await browser.loadRecommendations()).keyStepsSent,0); assert.equal(ctx.page.keys.length,4);
+const late = emit(endpoint,{delayed:true}); await new Promise(r=>setImmediate(r));
+fs.writeFileSync(path.join(profile,'login-data'),'keep'); ctx.blockClose = true;
+const timed = await browser.close(); assert.equal(timed.code,'BROWSER_CLOSE_TIMEOUT'); assert(timed.hint); assert(fs.existsSync(path.join(profile,'.surfcore-douyin.lock'))); assert.equal((await duplicate.start()).code,'PROFILE_LOCKED');
+late(); await new Promise(r=>setImmediate(r)); assert.equal(bodies.length,1);
+ctx.emit('close'); assert(!fs.existsSync(path.join(profile,'.surfcore-douyin.lock'))); assert.equal(fs.readFileSync(path.join(profile,'login-data'),'utf8'),'keep');
+assert((await browser.start()).ok); ctx=contexts.at(-1); emit(endpoint); await new Promise(r=>setImmediate(r)); assert.equal(bodies.length,2); assert.notEqual(bodies[0].meta.sessionId,bodies[1].meta.sessionId); assert((await browser.close()).ok);
+const foreign = path.join(root,'foreign'); fs.mkdirSync(foreign,{mode:0o700}); fs.writeFileSync(path.join(foreign,'data'),'keep');
+const result = await createDouyinBrowser({profileDir:foreign,browserPath:'/fake/chrome',launchPersistentContext:launch}).start(); assert.equal(result.code,'PROFILE_FOREIGN'); assert(result.hint);
+const link = path.join(root,'link'); fs.symlinkSync(profile,link); assert.equal((await createDouyinBrowser({profileDir:link,browserPath:'/fake/chrome',launchPersistentContext:launch}).start()).code,'PROFILE_UNSAFE');
 console.log('douyin browser mock tests passed');
