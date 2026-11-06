@@ -4078,4 +4078,4 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 - QQ单条初始消息可能触发两笔费用：官方session-title-first-prompt-llm会继承主路由并发生成标题。本轮真实会话的session/title-llm-request证实这一点；2笔Hy4均算入3笔预算，QQ只回1条。费用上限应放在实际LLM入口，不按QQ消息条数估算。收工恢复独立profile原默认模型，保留两笔用量，不因恢复而重置账本。
 - 设置保存现场只确认了草稿未落盘、白名单为空以及fetch failed提示；复查原生配置GET为200，保全草稿后经重新读取/加入管理员/保存恢复。原失败请求响应未捕获，不能把启动时序当已证实根因；未新增自动重试逻辑。
 
-- 本轮功能提交后最终文档audit出现163/164：唯一失败是test-release-manifest，清单仍对应旧HEAD，并非QQ功能失败。先提交本批文档，再从最新Git对象生成清单并verify-ref，清单单独提交后对最终HEAD重新跑audit；保留原失败日志，不把旧工作区通过当作新HEAD已通过。
+- 本轮功能提交后最终文档audit出现163/164：唯一失败是test-release-manifest，清单仍对应旧HEAD，并非QQ功能失败。--verify-ref HEAD读取的是已提交清单，不能在清单提交前拿旧HEAD验证新工作区清单。顺序应为：提交本批文档→从最新Git对象生成清单→提交清单→verify-ref HEAD→最终HEAD audit。保留原失败日志，不把旧工作区通过当作新HEAD已通过。
