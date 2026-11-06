@@ -4000,3 +4000,10 @@ npm run test:audit
   读写不对称（GET `/dsh/model` 已代理）导致“能显示、改不动”。
 - **修法**：补 `proxyDshFollowDefault` + 路由；新增静态契约测试，钉住前端路径 ⊆ 宿主路由。
 - **教训**：**中间代理层也是接口**；桥接新增一条路由，宿主必须同步开代理，否则前端只能 404。
+
+
+## 2026-11-06：开发工具按任务选择
+
+- **现象**：开发工具没有项目入口，其他项目的高频调用容易被直接套到 Node/DSH 工作流。
+- **原因与处置**：开发 Agent 与 QQ/B站产品 Agent 是两个权限面；AGENTS 只挂条件入口，详细路由集中在 [开发工具指南](guides/DEVELOPMENT-TOOLS.md)，本机安装与历史抽样留在忽略的 research 目录。
+- **验证与回滚**：检查入口和相对链接；保留完整门禁的失败事实；编辑前文件位于 `_backups/20261106-tooling-docs/`。案例见 [开发工具路由](cases/2026-11-06-development-tools-and-macos-design.md)。

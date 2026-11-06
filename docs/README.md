@@ -12,6 +12,7 @@
 | 文档 | 一句话说明 | 状态 |
 | --- | --- | --- |
 | [../AGENTS.md](../AGENTS.md) | 本工作区自动注入的干活纪律：开工动线、十条铁律、环境事实、交付定义 | ✅ DSH 会自动加载 |
+| [guides/DEVELOPMENT-TOOLS.md](guides/DEVELOPMENT-TOOLS.md) | 按开发任务选择工具与 skills：代码检索、官方文档、UI/宿主验收、故障诊断与门禁 | ✅ 开发侧指引，不改变运行时工具白名单 |
 | [ROADMAP.md](ROADMAP.md) | **路线守则**（先分析→算收益→不佳就回退→不补屎山→不盲跑探针）+ 项目目标/底线/可接受妥协 + 路线候选 + 人工决策点 + 已放弃路线 | ✅ 改路线先改这里 |
 | [PITFALLS.md](PITFALLS.md) | 踩坑档案：现象 / 根因 / 处置 / 怎么验证 / 残余风险（含 2026-10-22 会话日志事故全流程） | ✅ 新坑先记这里 |
 | [HANDOFF.md](HANDOFF.md) | 交接快照：现在做到哪、什么没验证、下一步顺序、环境指纹、收工检查单 | ✅ 每次收工更新 |
@@ -115,6 +116,7 @@
 | 我想…… | 看这个 |
 | --- | --- |
 | 开工前先知道规矩/上次做到哪 | [../AGENTS.md](../AGENTS.md)、[ROADMAP.md](ROADMAP.md)、[HANDOFF.md](HANDOFF.md) |
+| 为开发任务选择工具与 skills | [DEVELOPMENT-TOOLS.md](guides/DEVELOPMENT-TOOLS.md) |
 | 搞懂整体架构 / 全部配置项 | [guides/ARCHITECTURE.md](guides/ARCHITECTURE.md)（总纲）、[guides/DATA-AND-CONFIG.md](guides/DATA-AND-CONFIG.md)（配置与状态文件全表） |
 | 在新设备上把 qq-bridge 接进 DSH | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) |
 | 看 AI 烧了多少钱 / 计价口径 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md)、[audits/TOKEN_COST_ANALYSIS.md](audits/TOKEN_COST_ANALYSIS.md) |
