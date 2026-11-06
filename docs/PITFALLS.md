@@ -4009,3 +4009,5 @@ npm run test:audit
 - **处置**：AGENTS 只挂条件入口，任务路由集中在 [开发工具指南](guides/DEVELOPMENT-TOOLS.md)；设计原稿完整复制到本地 `docs/design/macos/`，加阅读顺序，保留待实现状态与原件。
 - **验证与回滚**：原稿逐字节比较、相对链接检查、Git 忽略检查；编辑前备份在 `_backups/20261106-tooling-docs/`。按原文件恢复前先保留后续修改，新增资料通过隔离移出回滚。
 - **案例与门禁结果**：[工具路由与 macOS 设计归档](cases/2026-11-06-development-tools-and-macos-design.md)。完整审计在本机存在失败，不能把文档检查通过写成运行时验收通过。
+
+- **开发交接补充**：新工作树不会继承被忽略的设计原稿；[本地开发提示词](guides/MACOS-DEVELOPMENT-PROMPT.md)要求先核对并复制设计，再按 WP0—WP5 实施。历史 Windows-only 路线需在本次 macOS 开发目标下显式更新，设计归档与本提示词编写本身仍不是实现完成证据。

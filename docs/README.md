@@ -126,6 +126,7 @@
 | --- | --- |
 | 开工前先知道规矩/上次做到哪 | [../AGENTS.md](../AGENTS.md)、[ROADMAP.md](ROADMAP.md)、[HANDOFF.md](HANDOFF.md) |
 | 为开发任务选择工具与 skills | [DEVELOPMENT-TOOLS.md](guides/DEVELOPMENT-TOOLS.md) |
+| 让本地 Agent 按技术设计开发 macOS 首期 | [本地开发提示词](guides/MACOS-DEVELOPMENT-PROMPT.md)（WP0—WP5、实机验收与提交交接） |
 | 阅读 macOS / ASR / B站技术设计 | [macOS 设计入口](design/macos/README.md)（本地资料，待实施） |
 | 搞懂整体架构 / 全部配置项 | [guides/ARCHITECTURE.md](guides/ARCHITECTURE.md)（总纲）、[guides/DATA-AND-CONFIG.md](guides/DATA-AND-CONFIG.md)（配置与状态文件全表） |
 | 在新设备上把 qq-bridge 接进 DSH | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) |
