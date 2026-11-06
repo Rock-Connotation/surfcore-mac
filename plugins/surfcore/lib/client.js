@@ -3988,6 +3988,15 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     }
 
     function BiliTab({ cfg, set, qq, setQqPath, admin, setAdmin, unified, setUnified, qqPrivate, qqAllowAll, overview, busy, setBusy, toast, reload, onSave, onAdminDiscardContext, dirty }) {
+      const roundFrame = useRef(null);
+      useEffect(() => {
+        const changed = event => {
+          if (event.source !== roundFrame.current?.contentWindow || event.data?.type !== 'surfcore-bili-mode') return;
+          if (!dirty) reload(); else toast('单轮模式已保存；请处理当前草稿并刷新配置后继续。');
+        };
+        window.addEventListener('message', changed);
+        return () => window.removeEventListener('message', changed);
+      }, [dirty, reload, toast]);
       const [query, setQuery] = useState("");
       const [cookie, setCookie] = useState({ sessdata: "", bili_jct: "", buvid3: "" });
       const [cookieMsg, setCookieMsg] = useState("");
@@ -4102,6 +4111,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("p", null, "推荐扫码登录小肥鱼（用 B站 App 扫一扫）；手动粘贴 cookie 和待审核队列在「高级设置」里。"),
           h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "6px", paddingTop: "0" } },
             h(Btn, { onClick: () => setQrFish(true), disabled: !!busy }, "扫码登录小肥鱼"))),
+        h("iframe", { ref: roundFrame, key: String(overview?.character?.id || "") + ":" + String(overview?.character?.epoch || ""), title: "B站自主单轮", src: API + "/bili/round-page", style: { width: "100%", height: "650px", border: "1px solid var(--qbw-line)", borderRadius: "8px", margin: "10px 0" } }),
         h(QqShareSection, { qq, set: setQqPath, data: automation, busy, setBusy, toast }),
         h(Section, { title: "作息窗口", note: "C 模式：每个窗口至少 1 次；全天上限见「每天最多醒来」，剩余次数按该时段最近评分分配，相邻两次至少隔「最小间隔」", defaultOpen: true },
           h("div", { style: { padding: "6px 0" } }, h(WindowsEditor, { value: cfg?.night?.windows, onChange: (v) => set(["night", "windows"], v) }))),

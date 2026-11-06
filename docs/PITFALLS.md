@@ -4041,3 +4041,16 @@ npm run test:audit
 - queued缓存键升级时，逐文件catch内persist会吞ENOSPC而丢列表项。键只在内存重算，后续正式入队持久化让错误传播成Host未就绪；注错断言保留原queued文件。
 - 原生角色页“当前角色”更新不代表子编辑器已换草稿。没有id/epoch key的编辑器只在mount读一次；随后保存会把旧草稿发往当前角色。真实验收发现后未保存。新编辑器需按身份重建、读取匹配后启用，每层和restore固定expectedCharacter；Host在读完整请求后、任何备份写入前比对，过期409+下一步；旧客户端省略字段保持兼容。
 - partial卡不能只显示100%和缺1段。显示确切范围、warning、嵌套错误码和恢复入口；cancelled仍终态。细节与发布交接见对应同日四个cases。
+
+
+## 2026-11-07：B站受控单轮不能把提交当完成，也不能把“已取消”当准入锁
+
+旧debrief只返回queued，必须等待Host父作业completed、精确角色/BV/P/cid和完整覆盖，才能把完整转写交给模型。两次显式llm.stream无工具，必须finish=stop和用量回执；partial、截断或用量缺失停止后续。完整音轨处理不是视觉理解，也不是准确率保证。
+
+切角色/关渠道的cancelActive只是一份快照；取消后到指针提交之间仍需transition挡住新round。取消等待必须放在配置版本校验与快照读取之前，防止另一请求在等待期间保存后被旧草稿覆盖。返回点评前的最后一次await后再次核对角色；父界面按id/epoch重建单轮panel。
+
+动态HTTP退出成功不等于平台成功。受控JSON正式发送绑定expected-mid和固定actionId，POST前独占持久意图；超时、缺ID、磁盘失败都不能自动重发。账号绑定与本地记账要分开证明；默认非分享动态额度没有“一条”上限，单次测试依靠动作编号和明确次数。
+
+新增CLI夹具必须从仓库根和npm --prefix插件目录分别验证，路径由import.meta.url解析；fetch桩要通过NODE_OPTIONS覆盖dispatcher的子进程。首轮动态夹具曾可能用虚构凭据尝试nav GET，未POST，实际出网未知，修正及原始限制保留在case。
+
+详见cases/2026-11-07-bili-round-integration.md、cases/2026-11-07-bili-controlled-round.md、cases/2026-11-07-bili-dynamic-receipts.md。

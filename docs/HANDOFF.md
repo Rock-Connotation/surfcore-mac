@@ -6,6 +6,19 @@
 ---
 
 
+## 快照：2026-11-07（B站自主单轮补验，离线完成）
+
+- 用户补验自动选题、模型自主点评与真实互动；本轮选择先只发已扫码测试账号自身一条测试动态，分享限定B站内转发。模型指定Magpie WorkBuddy Hy4，精确模型ID`workbuddy/hy4free`；评论/点赞/转发尚无目标。
+- 从dda2058继续独立实施树，Terra分别在独立round/receipts工作树产出；主线组合API/UI/调度隔离，Astra独立审查。未改常用App/profile，无版本或发布动作。
+- 已实现Host受控单轮：固定feed→模型选择→debrief父作业完成与严格覆盖/身份→模型点评→评分原子写/读回→Host记忆维护；无模型工具，初始最多2次stream、每次≤2000输出tokens，输入超限拒绝。仅产草稿，无自动外发。
+- 显式night.controlledOnly保持旧巡航暂停；切角色/回档/停渠道使用完整transition准入与主动取消，配置版本在取消等待后校验。返回点评前复核身份，原生panel按角色epoch重建并显示失败。
+- 动态：JSON go绑定固定actionId与expected-mid，POST前持久意图；未知/重放不再发送；平台已确认ID时本地失败要求对账；dry检查互动/身份/额度。角色和账号在最后发送前复核。
+- 官方Node24三专项通过；最终组合checks-3：audit164/164、regressions及完整插件均exit0。使用隔离HOME/DSH_HOME且sandbox禁非loopback外联；此前sandbox语法和新夹具cwd失败保留日志，已修正。Astra R5无新增实质P1/P2。
+- 尚无实际供应商调用或真实写动作。独立App已停止；其profile已备份并添加Magpie路由、重试0、仅文本和保守容量，默认模型保持原DeepSeek不变；渠道仍关、互动仍关。Magpie模型目录只读GET200确认有目标别名，不能作为路由成功证据。
+- 下一步：按功能本地提交、从git对象打包，官方App独立profile加载同源候选并实际Hy4/模型选题点评；具体草稿确认后仅一次测试动态并独立读回。详见cases/2026-11-07-bili-round-integration.md，所有原始记录本地_backups/20261107-bili-round/。不把受控单轮称全天自主巡航通过，不称金额硬上限。
+
+---
+
 ## 快照：2026-11-06（macOS 官方 App 实测与静音补修）
 
 - 目标是官方原生 `/Applications/DeepSeek Harness.app` 0.2.2-rc.1，Electron44.7.0 / App Node24.21.0 / macOS26.6.2 / Apple M4 arm64。不是网页版或另一个 DSH Desktop.app。

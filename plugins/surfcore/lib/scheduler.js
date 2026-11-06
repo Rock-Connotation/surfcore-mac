@@ -192,6 +192,13 @@ function identityContextLines() {
   ].filter(Boolean)
 }
 
+/** Same Bili persona/memory composition, bound to one role revision. */
+export function biliContextForRound(request) {
+  const checked = buildCharacterContext({ ...request, scene: 'bili', audience: { channel: 'bili' } })
+  if (!checked.ok) return checked
+  return { ...checked, text: identityContextLines().join('\n\n') }
+}
+
 /** 今天已经搭了几条话（读账本，给唤醒提示看进度） */
 function taToday() {
   try {

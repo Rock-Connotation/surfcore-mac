@@ -65,7 +65,8 @@ import {
 import { PlatformRegistry } from './platforms.js';
 import { ExtensionHost } from './extensions.js';
 import { isLoopbackReq, json, readBody, sameOrigin } from './http-guard.js';
-import { startScheduler } from './scheduler.js';
+import { startScheduler, biliContextForRound } from './scheduler.js';
+import { createBiliRoundController } from './bili-round-controller.js';
 import { createPerceptionService } from './perception.js';
 import { createPerceptionApiService } from './perception-api.js';
 import { createBiliPerceptionService } from './bili-perception.js';
@@ -380,6 +381,10 @@ export function apply(ctx) {
   // 失败后也能手动拉起。
   function startSchedulerNow() {
     if (scheduler && schedulerStatus.running) return schedulerStatus;
+    if (readBiliConfig().config.night?.controlledOnly === true) {
+      schedulerStatus = idleSchedulerStatus('controlled-only');
+      return schedulerStatus;
+    }
     if (!platformStartEnabled('bili')) {
       schedulerStatus = idleSchedulerStatus('disabled');
       pluginLog('生物钟未启动：B站 启动开关关闭（设置 → B站 → 启动 B站）');
@@ -549,6 +554,11 @@ export function apply(ctx) {
 
   async function switchCharacterEverywhere(id) {
     const current = readCurrentCharacter();
+    if (current?.id === id) return { ok: true, already: true, current };
+    return biliRoundController.withTransition(() => switchCharacterImplementation(id));
+  }
+  async function switchCharacterImplementation(id) {
+    const current = readCurrentCharacter();
     if (current && current.id === id) return { ok: true, already: true, current };
     const target = characterDetail(id).character;
     const skipPlatform = process.env.SURFCORE_DISABLE_PLATFORM_RESTART === '1';
@@ -635,6 +645,15 @@ export function apply(ctx) {
       if (!after || after.id !== role.id || after.epoch !== role.epoch) return { ok: false, code: 'CHARACTER_STALE', error: '角色已切换，原经历保留在原角色队列', hint: '以当前角色重新发起活动；旧证据不会进入新角色' };
       return { ok: true, eventId: appended.eventId };
     },
+  });
+  const biliRoundController = createBiliRoundController({
+    ctx, stateDir: STATE_DIR, tokenBudget, perception, runBili,
+    getCharacter: readCurrentCharacter, buildContext: biliContextForRound,
+    maintainMemory: async () => { const result = await runMemoryCardMaintenance({}); return { ...result, ok: result.ok !== false }; },
+    readConfig: () => readBiliConfig().config, saveConfig: value => saveBiliConfig(value),
+    platformEnabled: () => platformStartEnabled('bili'), legacyRunning: () => Boolean(scheduler),
+    stopLegacy: async () => { await scheduler?.retire?.(); scheduler = null; schedulerStatus = idleSchedulerStatus('controlled-only'); },
+    json, readBody,
   });
   platforms.setRuntime('bili', {
     status: async () => ({ state: readUnified().config?.platforms?.start?.bili === false ? 'disabled' : fs.existsSync(BILI_CRED) ? 'ready' : 'needs_auth' }),
@@ -880,6 +899,10 @@ export function apply(ctx) {
       return;
     }
     const body = JSON.parse(await readBody(req) || '{}');
+    const transition = platformStartEnabled('bili') && body.unified?.platforms?.start?.bili === false ? biliRoundController.beginTransition() : null;
+    try {
+    // Await cancellation BEFORE reading snapshots or checking their optimistic versions.
+    if (transition) await transition.ready;
     // 乐观并发：设置页加载后，如果配置被控制台/别的窗口改过，这里拒绝整份回写，
     // 否则会把别人的修改覆盖掉（2026-10-29：语音开关"自己回弹"）。
     const baseStamp = body?.baseStamp && typeof body.baseStamp === 'object' ? body.baseStamp : null;
@@ -953,6 +976,7 @@ export function apply(ctx) {
       result.biliBackup = saved.backup;
       if (Array.isArray(saved.warnings) && saved.warnings.length) result.warnings.push(...saved.warnings);
       result.notes.push('B站配置已保存；生物钟每轮重读配置，下一轮即生效。');
+      if (saved.config.night?.controlledOnly === true && scheduler) await biliRoundController.pause();
     }
     // 角色名校验：tts.character 必须是 [voice.characters] 里的名字，不能填音色 id。
     const incomingCharacter = body?.unified?.socialV2?.voice?.tts?.character;
@@ -1081,6 +1105,7 @@ export function apply(ctx) {
       unified: fileStamp(path.join(STATE_DIR, 'config.json')),
     };
     json(res, 200, result);
+    } finally { transition?.finish(); }
   }
 
   // ── 角色人格 ────────────────────────────────────────────────────────────
@@ -1133,6 +1158,9 @@ export function apply(ctx) {
         if (!id) throw new Error('缺少角色 id');
         const current = readCurrentCharacter();
         if (!current || current.id !== id) throw new Error('只能回档当前角色；先加载这个角色再回档');
+        const transition = biliRoundController.beginTransition();
+        try {
+        await transition.ready;
         const skipPlatform = process.env.SURFCORE_DISABLE_PLATFORM_RESTART === '1';
         const wasRunning = skipPlatform ? false : (await bridgeStatus()).running;
         await memoryCardIdle();
@@ -1155,6 +1183,7 @@ export function apply(ctx) {
         if (!skipPlatform) startSchedulerNow();
         json(res, 200, { ...restored, bridgeRestarted: wasRunning, scheduler: schedulerStatus });
         return;
+        } finally { transition.finish(); }
       }
       if (action === 'migrate') {
         json(res, 200, ensureCharacterSystem());
@@ -2786,8 +2815,10 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         });
       }
       if (id === 'bili') {
-        const r = stopSchedulerNow();
-        return launchItem(id, true, { message: r.wasRunning ? 'B站生物钟已停止' : 'B站生物钟本来就没在跑', detail: r });
+        return biliRoundController.withTransition(() => {
+          const r = stopSchedulerNow();
+          return launchItem(id, true, { message: r.wasRunning ? 'B站生物钟已停止' : 'B站生物钟本来就没在跑', detail: r });
+        });
       }
       if (id === 'pet') {
         const r = await petService.stop();
@@ -2982,13 +3013,19 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   }
 
   // ── B站动作：依赖体检 / cookie / 待审 / 通知测试 ────────────────────────
-  function runBili(args, timeoutMs = 120_000) {
+  function runBili(args, timeoutMs = 120_000, options = {}) {
     let runtime;
     try { runtime = resolveNodeRuntime(); }
     catch (error) { return Promise.resolve({ ok: false, code: error.code || 'NODE_RUNTIME_NOT_FOUND', error: error.message, hint: error.hint || '检查本地 Node 后重试', out: '', err: 'Node 运行时不可用' }); }
+    // Controlled rounds run a fixed leaf command, so abort also stops its actual process.
+    const controlled = Boolean(options.envPatch?.SURFCORE_EXPECTED_CHARACTER_ID);
+    const fixed = new Set(['feed', 'debrief', 'score', 'dynamic']);
+    if (controlled && !fixed.has(args[0])) return Promise.resolve({ ok: false, code: 'BILI_COMMAND_FORBIDDEN', error: '单轮命令不在白名单', hint: '使用固定的B站单轮流程', out: '', err: '' });
+    const command = controlled ? [path.join(BILI_TOOLS_DIR, 'commands', args[0] + '.mjs'), ...args.slice(1)] : [BILI_MJS, ...args];
     return new Promise((resolve) => {
-      execFile(runtime.executable, [...runtime.argvPrefix, BILI_MJS, ...args], {
-        env: { ...process.env, ...runtime.envPatch },
+      execFile(runtime.executable, [...runtime.argvPrefix, ...command], {
+        env: { ...process.env, ...runtime.envPatch, ...(options.envPatch ?? {}) },
+        ...(options.signal ? { signal: options.signal } : {}),
         cwd: BILI_TOOLS_DIR,
         timeout: timeoutMs,
         windowsHide: true,
@@ -3075,6 +3112,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   }
 
   async function handleBili(req, res, url) {
+    if (await biliRoundController.handle(req, res, url)) return;
     const pathname = url.pathname;
     if (req.method === 'GET' && pathname.endsWith('/fish-guard')) {
       const dir = activePlatformStateDir(BILI_DIR);
@@ -3818,6 +3856,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
     try { scheduler?.stop?.(); } catch {}
+    void biliRoundController.dispose().catch(() => pluginLog('[B站单轮] 停止失败，请检查中断状态'));
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);

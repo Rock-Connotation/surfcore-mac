@@ -33,6 +33,7 @@ const BIDI_DEFAULTS = {
   persona: { name: '', ownerTitle: '主人', selfClaim: '我' },
   night: {
     windows: [{ start: '20:00', end: '24:00', wakes: 1 }],
+    controlledOnly: false,
     skipChance: 0.3,
     maxVideos: 5,
     maxWakesPerDay: 1,
@@ -521,6 +522,7 @@ export function normalizeBiliConfig(input) {
     cfg.night.windows.reduce((sum, w) => sum + (Number(w.wakes) || 1), 0),
     0, 12, { integer: true },
   );
+  cfg.night.controlledOnly = cfg.night.controlledOnly === true;
   cfg.night.skipChance = finiteNumber(cfg.night.skipChance, 0.3, 0, 0.95);
   cfg.night.maxVideos = finiteNumber(cfg.night.maxVideos, 5, 1, 20, { integer: true });
   cfg.night.minGapMin = finiteNumber(cfg.night.minGapMin, 20, 0, 120, { integer: true });

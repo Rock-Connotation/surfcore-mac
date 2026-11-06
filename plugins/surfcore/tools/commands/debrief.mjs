@@ -5,7 +5,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
 import { readCurrentCharacter, characterPaths } from '../../../../src/character-persona.js'
-import { SURFCORE_DIR, biliState } from '../lib/state-paths.mjs'
+import { SURFCORE_DIR, biliState, assertExpectedCharacter } from '../lib/state-paths.mjs'
 import { config } from '../lib/config.mjs'
 import { shotsPath, pruneShots, formatShotsStats } from '../lib/shots-cache.mjs'
 import { appendWatch } from '../lib/watch-history.mjs'
@@ -63,9 +63,9 @@ function render(result, json) {
 }
 async function lightMaterials(part, view, clean, options) {
   const headers = { 'user-agent': 'Mozilla/5.0', referer: `https://www.bilibili.com/video/${part.bvid}/` }
-  const request = async (url) => { const r = await fetch(url, { headers, signal: AbortSignal.timeout(15000) }); if (!r.ok) throw new Error(`HTTP ${r.status}`); return r }
+  const request = async (url) => { const r = await fetch(url, { headers, signal: AbortSignal.timeout(15000) }); assertExpectedCharacter(); if (!r.ok) throw new Error(`HTTP ${r.status}`); return r }
   const [cover, danmaku, comments] = await Promise.all([
-    (async () => { try { const u = new URL(view.pic); if (u.protocol !== 'https:' || !u.hostname.endsWith('.hdslb.com')) throw new Error('cover host'); const r = await request(u); const bytes = Buffer.from(await r.arrayBuffer()); if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new Error('cover size'); const dir = shotsPath('covers'); fs.mkdirSync(dir, { recursive: true }); const file = path.join(dir, `${part.bvid}-p${part.page}-${crypto.randomUUID()}.jpg`); fs.writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 }); return { status: 'completed', file } } catch { return { status: 'failed' } } })(),
+    (async () => { try { const u = new URL(view.pic); if (u.protocol !== 'https:' || !u.hostname.endsWith('.hdslb.com')) throw new Error('cover host'); const r = await request(u); const bytes = Buffer.from(await r.arrayBuffer()); assertExpectedCharacter(); if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new Error('cover size'); const dir = shotsPath('covers'); fs.mkdirSync(dir, { recursive: true }); const file = path.join(dir, `${part.bvid}-p${part.page}-${crypto.randomUUID()}.jpg`); fs.writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 }); return { status: 'completed', file } } catch { return { status: 'failed' } } })(),
     (async () => { try { const r = await request(`https://comment.bilibili.com/${part.cid}.xml`); const bytes = Buffer.from(await r.arrayBuffer()); let xml = bytes.toString('utf8'); if (!xml.includes('<d ') && !xml.includes('<i>')) { for (const fn of ['inflateRawSync', 'inflateSync', 'gunzipSync', 'brotliDecompressSync']) { try { const decoded = zlib[fn](bytes, { maxOutputLength: 16 * 1024 * 1024 }).toString('utf8'); if (decoded.includes('<d ') || decoded.includes('<i>')) { xml = decoded; break } } catch {} } } const rows = [...xml.matchAll(/<d p="([^"]*)">([^<]*)<\/d>/g)].map(m => ({ t: Number(m[1].split(',')[0]), text: clean(m[2]) })).filter(x => Number.isFinite(x.t)); const bucket = Math.max(1, Number(options.bucket) || 30), groups = new Map(), counts = new Map(); const norm = text => text.replace(/[\s\p{P}\p{S}]/gu, '') || '<纯符号>'; for (const row of rows) { const key = norm(row.text); counts.set(key, (counts.get(key) ?? 0) + 1) } const spam = new Set([...counts].filter(([, count]) => count >= 20 && count / rows.length > 0.3).map(([key]) => key)); for (const row of rows) { if (spam.has(norm(row.text))) continue; const k = Math.floor(row.t / bucket) * bucket; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(row.text) } const peaks = [...groups].sort((a,b) => b[1].length-a[1].length).slice(0, Math.max(0, Math.min(30, Number(options.top ?? 5)))); const items = peaks.map(([time, lines]) => `[${time}s–${time + bucket}s] ${lines.length} 条（采样）：${lines.slice(0, 6).join(' | ')}`); return { status: rows.length ? 'completed' : 'missing', count: rows.length, items } } catch { return { status: 'failed', items: [] } } })(),
     (async () => { try { const r = await request(`https://api.bilibili.com/x/v2/reply?type=1&oid=${encodeURIComponent(part.aid)}&sort=2&ps=${Math.max(1, Math.min(20, Number(options.comments ?? 8) || 8))}&pn=1`); const data = await r.json(); if (data.code !== 0) throw new Error('api'); const items = (data.data?.replies ?? []).map(x => clean(`👍${x.like ?? 0} rpid=${x.rpid ?? ''} ${x.member?.uname ?? ''}: ${String(x.content?.message ?? '').slice(0, 160)}`)); return { status: items.length ? 'completed' : 'missing', items } } catch { return { status: 'failed', items: [] } } })(),
   ])
@@ -75,6 +75,7 @@ async function main() {
   const { options, reference } = parseArgs(process.argv.slice(2))
   if (options.help) { process.stdout.write(options.json ? JSON.stringify({ ok: true, usage: 'debrief <BV|URL> [--page N] [--cid N] [--shallow] [--asr auto|force] [--no-frames] [--json]' }) + '\n' : 'debrief <BV|URL> [--page N] [--cid N] [--shallow] [--asr auto|force] [--no-frames] [--json]\n'); return }
   if (!reference) throw Object.assign(new Error('缺少 BV 号或视频链接。'), { code: 'bili.reference.missing', hint: '传入 BV 号或视频链接。' })
+  assertExpectedCharacter()
   const current = readCurrentCharacter()
   const character = current?.id ? { id: String(current.id), epoch: Number(current.epoch) || 1 } : null
   const historyFile = character ? path.join(characterPaths(character.id).biliDir, 'watch-history.jsonl') : biliState('watch-history.jsonl')
@@ -82,13 +83,16 @@ async function main() {
   const parsed = parseBiliReference(reference, { page: options.page })
   const api = createBiliApi()
   const view = await api.fetchView(parsed.bvid)
+  assertExpectedCharacter()
   const part = resolveBiliPart(view, { page: parsed.page, cid: options.cid, urlPage: parsed.urlPage })
   const clean = redactor(), warnings = []
   const materials = { subtitle: { status: 'missing' }, speech: { status: options.shallow ? 'skipped' : 'pending' }, frames: { status: 'skipped' } }
   const light = await lightMaterials(part, view, clean, options)
+  assertExpectedCharacter()
   Object.assign(materials, light)
   let subtitle
   try { subtitle = await api.fetchSubtitle(part) } catch (e) { warnings.push(structuredError(e)); subtitle = { status: 'failed' } }
+  assertExpectedCharacter()
   if (subtitle.status === 'completed') {
     const dir = shotsPath('subs'); fs.mkdirSync(dir, { recursive: true })
     const file = path.join(dir, `${part.bvid}-p${part.page}-${part.cid}-debrief.txt`)
@@ -105,13 +109,23 @@ async function main() {
       if (!character) throw Object.assign(new Error('当前角色不可用。'), { code: 'character.unavailable', hint: '选择角色后重试。' })
       const client = createPerceptionClient({ stateDir: SURFCORE_DIR })
       const { jobId } = await client.submitBili({ bvid: part.bvid, page: part.page, cid: part.cid, characterId: character.id, characterEpoch: character.epoch, activityId, asr: needAsr, frames: needFrames, recordHistory: !options['no-history'], recordExperience: !options['no-history'], grid: options.grid ?? '3x3', uniform: !!options.uniform, subtitleEvery: options.substrip ? (options.substrip === true ? 7 : Number(options.substrip)) : null, languageHint: 'auto' })
+      try { assertExpectedCharacter() } catch (error) {
+        if (error?.code === 'STALE_CHARACTER') {
+          let cancelled = false
+          try { await client.cancel(jobId, { signal: AbortSignal.timeout(5000) }); cancelled = true } catch {}
+          error.materials = { speech: { status: cancelled ? 'cancelled' : 'unknown', jobId }, frames: { status: cancelled ? 'cancelled' : 'unknown', jobId } }
+          error.hint = cancelled ? `已请求取消素材作业 ${jobId}；请检查其状态后再重试。` : `素材作业 ${jobId} 的取消结果未知；请检查该作业并确认停止后再重试。`
+        }
+        throw error
+      }
       materials.speech = needAsr ? { status: 'queued', source: 'asr', jobId } : { status: 'partial', source: 'platform-subtitle', cid: part.cid }
       materials.frames = needFrames ? { status: 'queued', jobId } : { status: 'skipped' }
-    } catch (e) { const err = structuredError(e); warnings.push(err); if (needAsr) materials.speech = { status: 'failed', ...err }; if (needFrames) materials.frames = { status: 'failed', ...err } }
+    } catch (e) { if (e?.code === 'STALE_CHARACTER') throw e; const err = structuredError(e); warnings.push(err); if (needAsr) materials.speech = { status: 'failed', ...err }; if (needFrames) materials.frames = { status: 'failed', ...err } }
   } else if (!options.shallow) materials.speech = { status: 'partial', source: 'platform-subtitle', cid: part.cid }
+  assertExpectedCharacter()
   const history = options['no-history'] ? { status: 'skipped' } : appendWatch({ at: new Date().toISOString(), observationId: activityId, bvid: part.bvid, aid: part.aid, cid: part.cid, page: part.page, pageCount: part.pageCount, title: clean(part.title), up: clean(part.owner.name), upMid: part.owner.mid, duration: part.durationMs / 1000, tname: part.tname, mode: options.shallow ? 'meta' : 'full', source: 'debrief', frames: Boolean(materials.frames.sheet), frameStatus: materials.frames.status, sheet: materials.frames.sheet ?? '', speechStatus: materials.speech.status, speechSource: materials.speech.source ?? '', jobId: materials.speech.jobId ?? '', transcriptId: materials.speech.result?.transcriptId ?? '', coverage: materials.speech.result?.coverage ?? null }, { file: historyFile })
   let cache = ''
   try { cache = formatShotsStats(pruneShots()) } catch { warnings.push({ code: 'bili.cache.prune-failed', error: '缓存清理失败。', hint: '检查 shots 目录权限。' }) }
   render({ ok: true, cache, mode: options.shallow ? 'shallow' : options.asr ?? 'auto', part: { bvid: part.bvid, cid: part.cid, page: part.page, pageCount: part.pageCount, durationMs: part.durationMs, title: clean(part.title), owner: clean(part.owner.name), description: clean(view.desc).slice(0, 300) }, materials, warnings, history: { status: history.status ?? (history.ok ? 'recorded' : history.reason === 'duplicate' ? 'duplicate' : 'failed') } }, !!options.json)
 }
-main().catch(error => { const result = { ok: false, ...structuredError(error) }; render(result, process.argv.includes('--json')); process.exitCode = 1 })
+main().catch(error => { const result = { ok: false, ...structuredError(error), ...(error?.materials ? { materials: error.materials } : {}) }; render(result, process.argv.includes('--json')); process.exitCode = 1 })
