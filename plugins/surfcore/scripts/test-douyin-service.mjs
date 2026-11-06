@@ -1,0 +1,81 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createDouyinService } from '../lib/douyin-service.mjs';
+
+const SELF = '/aweme/v1/web/user/profile/self/', FEED = '/aweme/v1/web/tab/feed/';
+const self = uid => ({ status_code: 0, user: { uid, sec_uid: 'sec', nickname: '测试' } });
+const feed = { status_code: 0, aweme_list: Array.from({ length: 8 }, (_, i) => ({ aweme_id: String(i + 1), desc: '说明' })) };
+const fail = (r, code) => { assert.equal(r.ok, false); assert.equal(r.code, code); assert.ok(r.error && r.hint); };
+let config = {}, browsers = [], role = { id: 'role1', epoch: 1 };
+const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-service-test-'));
+function browserFactory(opts) {
+  let seq = 0, reloads = 0, running = false;
+  fs.mkdirSync(opts.profileDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(opts.profileDir, 'profile-sentinel'), 'preserve');
+  const emit = (payload, pathname, n = ++seq, sessionId = 'session') => opts.onResponse(payload, { pathname, status: 200, requestSeq: n, sessionId, requestId: `r${n}`, requestStartedAt: n });
+  const b = { opts, emit, get seq() { return seq; }, status: () => config.broken ? { ok: false, code: 'BROKEN', error: '连接失败', hint: '关闭浏览器' } : ({ ok: true, running, requestSeq: seq }),
+    async start() { running = true; emit(self('123456'), SELF); return { ok: true }; },
+    async reload() { reloads++; if (config.late && reloads === 1) { const old = seq; seq++; emit(feed, FEED, old); } else if (reloads === 1) { emit(config.feed ?? feed, FEED); emit(self(config.midUid ?? '123456'), SELF); } else emit(self(config.postUid ?? '123456'), SELF); return { ok: true }; },
+    async snapshot() { return { ok: true, title: '请验证', text: '验证码', url: 'https://www.douyin.com/?private=1' }; },
+    async close() { running = false; return config.closeFail ? { ok: false, code: 'CLOSE', error: '关闭失败', hint: '手动关闭' } : { ok: true }; } };
+  browsers.push(b); return b;
+}
+const svc = createDouyinService({ stateDir, getCharacter: () => role, browserFactory, waitMs: 35 });
+const ctx = () => ({ characterId: role.id, characterEpoch: role.epoch });
+fail(await svc.readFeed(ctx()), 'DOUYIN_DISABLED');
+assert.equal((await svc.setEnabled(true, ctx())).enabled, true);
+let login = await svc.beginLogin(ctx());
+assert.equal(login.candidate.nickname, '测试');
+assert.doesNotMatch(JSON.stringify(login), /123456|sec|private/);
+fail(await svc.confirmAccount({ ...ctx(), candidateId: 'wrong' }), 'DOUYIN_CANDIDATE_MISMATCH');
+fail(await svc.readFeed(ctx()), 'DOUYIN_BUSY');
+assert.equal((await svc.confirmAccount({ ...ctx(), candidateId: login.candidate.candidateId })).account.uidSuffix, '3456');
+const accountPath = path.join(stateDir, 'characters/role1/douyin/account.json');
+assert.equal(fs.statSync(accountPath).mode & 0o777, 0o600);
+assert.equal((await svc.readFeed(ctx())).items.length, 5);
+config = { broken: true }; fail(await svc.readFeed(ctx()), 'BROKEN');
+config = { late: true }; fail(await svc.readFeed(ctx()), 'DOUYIN_FEED_UNAVAILABLE');
+config = { midUid: '999999' }; fail(await svc.readFeed(ctx()), 'DOUYIN_ACCOUNT_CHANGED');
+config = { postUid: '999999' }; fail(await svc.readFeed(ctx()), 'DOUYIN_ACCOUNT_CHANGED');
+config = { feed: { status_code: 0, aweme_list: [] } }; fail(await svc.readFeed(ctx()), 'DOUYIN_FEED_EMPTY');
+config = { feed: { something: true } }; fail(await svc.readFeed(ctx()), 'DOUYIN_FEED_INVALID');
+config = {}; login = await svc.beginLogin(ctx());
+assert.equal((await svc.confirmAccount({ ...ctx(), candidateId: login.candidate.candidateId })).ok, true);
+assert.ok(fs.readdirSync(path.dirname(accountPath)).some(n => n.startsWith('account.json.backup-')));
+const old = ctx(); login = await svc.beginLogin(old); role = { id: 'role2', epoch: 2 };
+fail(await svc.confirmAccount({ ...old, candidateId: login.candidate.candidateId }), 'DOUYIN_STALE');
+assert.equal((await svc.status()).account, null);
+await svc.invalidate();
+assert.equal((await svc.setEnabled(true, ctx())).ok, true);
+login = await svc.beginLogin(ctx());
+const prior = browsers.at(-1); await svc.setEnabled(false, ctx()); prior.emit(self('123456'), SELF);
+fail(await svc.confirmAccount({ ...ctx(), candidateId: login.candidate.candidateId }), 'DOUYIN_BUSY');
+assert.equal((await svc.status()).candidate, null);
+await svc.setEnabled(true, ctx()); await svc.beginLogin(ctx()); config = { closeFail: true };
+fail(await svc.closeLogin(ctx()), 'CLOSE'); config = {}; assert.equal((await svc.dispose()).ok, true);
+fail(await svc.status(), 'DOUYIN_STALE');
+assert.ok(fs.existsSync(accountPath));
+assert.equal(fs.readFileSync(path.join(stateDir, 'characters/role1/douyin/browser/profile-sentinel'), 'utf8'), 'preserve');
+// A character directory symlink must not redirect state writes.
+const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-outside-'));
+fs.symlinkSync(outside, path.join(stateDir, 'characters', 'role3'));
+role = { id: 'role3', epoch: 3 };
+const guarded = createDouyinService({ stateDir, getCharacter: () => role, browserFactory });
+fail(await guarded.setEnabled(true, ctx()), 'DOUYIN_STATE_ERROR');
+assert.deepEqual(fs.readdirSync(outside), []);
+role = { id: 'role2', epoch: 2 };
+// Invalidation during startup must wait for and close only that owned browser.
+let releaseStart, started, closed = 0, delayedCallback;
+const delayed = createDouyinService({ stateDir, getCharacter: () => role, waitMs: 20, browserFactory: options => {
+  delayedCallback = options.onResponse;
+  return { start: () => new Promise(resolve => { releaseStart = resolve; started = true; }), close: async () => { closed++; return { ok: true }; }, status: () => ({ ok: true, running: true, requestSeq: 1 }), snapshot: async () => ({ ok: true, title: '', text: '' }) };
+} });
+await delayed.setEnabled(true, ctx());
+const pending = delayed.beginLogin(ctx()); assert.equal(started, true);
+const stopping = delayed.dispose();
+delayedCallback(self('123456'), { pathname: SELF, status: 200, requestSeq: 1, sessionId: 'old' });
+releaseStart({ ok: true });
+fail(await pending, 'DOUYIN_STALE'); assert.equal((await stopping).ok, true); assert.equal(closed, 1);
+console.log('douyin service: ok');
