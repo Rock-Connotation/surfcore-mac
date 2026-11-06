@@ -18,7 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
-| **QQ 常驻/审批 2026-11-07** | `../surfcore-qq-resident`；独立 worker qq-approval/qq-lifecycle/qq-start-lock及repair/health保留 | `feat/qq-resident`，实装f68fa63 | 手动后台常驻、审批/提问编号与安全恢复验收 | 进行中：原生注册修复/3MCP/L2及后台首条私聊通过；audit169/169、回归/插件0；原生关窗后连接仍活。2/12次Hy4、1/30文本，待用户真实审批；临时诊断待移除。累计不重置，常用App/profile不动，不发布 |
+| **QQ 常驻/审批 2026-11-07** | `../surfcore-qq-resident`；全部独立worker保留 | `feat/qq-resident`，实装0502afa | 手动后台、审批/问答与安全恢复 | 本轮有界验收收口：注册/3MCP、后台私聊、允许/拒绝/文字问答/取消、过期零LLM、完整stop/扫码resume、无debug实际私聊双端及Quit9进程退出后恢复通过。audit169/169及回归/插件0，325文件一致；11/12模型、19/30文本，诊断和QR清场，独立受控实例留开。选项A/24h/睡眠未验，不续额、不发布 |
 | **QQ macOS 补齐 2026-11-07** | `../surfcore-macos-implementation`；worker独立qq-model/qq-host/qq-runtime/qq-gateway保留 | `feat/macos-implementation`，程序e013302，文档后续 | QQ传输、原生宿主与模型失败保护/真实私聊 | 受控私聊收口：扫码/包内SDK/官方App/Hy4/QQ回执及用户收到均通过；2/3模型含自动标题、1/6文本；audit164/164、回归/插件0、Astra R2无新增P1/P2；实例/代理/容器/端口全停，数据保留、默认选择恢复，常用App不动；群/问答审批/常驻未验，未发布 |
 | **B站自主单轮补验 2026-11-07** | `../surfcore-macos-implementation`；worker独立round/receipts/partial-review保留 | `feat/macos-implementation`，程序744d64a，文档后续 | Host受控单轮、评分/动态失败可见、显式部分续评与真实App | 本轮收口：Hy4真实自主选题及范围临时点评通过、仅一条测试动态匿名读回通过；正式评分/主观记忆/其它外发未验。audit164/164、回归/插件0；3次Hy4，实例/端口关闭，常用App不动；未发布 |
 | **macOS 工具与文档整理** | `../surfcore-tooling-docs` | `docs/tooling-macos`（基线 `0deb826`） | 开发工具路由、macOS 设计归档、开发提示词；仅文档 | 文档及提示词完成，按功能分三批本地提交、未推送；audit 首轮 136/143，安装修正后 1 项复测通过、余 6 项；插件更新器基线失败；本地设计另行交接 |

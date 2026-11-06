@@ -29,3 +29,7 @@ case 文档路径：docs/cases/2026-11-07-package-patch-anchor.md
 ```
 
 主线复核补充：官方 App 锚定专项只加入 Darwin audit；现有 Windows 构建器使用 execFileSync(npm.cmd) 的限制不因本轮进入通用门禁。macOS 进程实测也显式限定 Darwin，其它平台输出 NOT RUN，未把未验平台写成真实通过。
+
+## 主线同源制品补验（2026-11-07）
+
+官方App独立profile此前第二包已实际四组件运行；f68fa63第三包真实CLI安装和三MCP active通过，后续0502afa第四包325文件逐hash一致、369持久文件安装前后不变。官方Node24冻结audit169/169、regressions和完整插件均exit0。由此补齐上文当时待验的macOS构建安装与组件分支；Windows/其它平台没有实测结论。原始安装、MCP及生命周期证据见[组合case](2026-11-07-qq-resident-approval.md)，账号/凭据与私有辅助入口不进包。
