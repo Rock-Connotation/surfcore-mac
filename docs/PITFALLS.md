@@ -4107,3 +4107,12 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 - NapCat缓存登录被拒绝时，每次明确start最多一次，保留服务并扫码后resume；不要靠反复start或删除锁“修复”。无debug常驻用进程身份、桥接状态和Host父链验证，端口存在本身不算就绪。
 - 本机urllib默认仍可能继承环境HTTP代理；带本机凭据的QR助手须显式ProxyHandler({})。离线测试必须禁止socket连接；本次首次假handler误配导致一条fake bearer本机只读请求，后续断网7项通过，不能把误触算纯离线证据。
 - 30分钟监测含45/61次计划维护，最长ready6分30秒，不能报告30分钟连续在线。详见[手动恢复case](cases/2026-11-07-qq-manual-recovery.md)。
+
+
+## 2026-11-07：抖音推荐来源、角色转场与浏览器退出
+
+- `/?recommend=1` 可能跳转精选；本轮真实推荐入口需 `/?recommend=1&from_nav=1`。固定 feed 来源与 self 身份均须验证；游客/作者作品不算该账号推荐。
+- 手写 CDP 捕获不稳定后改用 Playwright core；profile 存在不代表会话 cookie 能跨重启。原生 keychain 与 session restore 只能作为兼容措施，必须重启实证，不能靠参数宣布恢复。
+- 切角色前只 cancel 一次不足以覆盖中间 await；整个 Host switch/restore 要由抖音 withTransition 持有准入门闸。
+- Playwright context close 也可能源于 transport 断开；不能据此删锁。只复用首次主动 close Promise，超时保持锁；非主动断连显式拒绝重开。
+- 对应 [完整案例](cases/2026-11-07-douyin-native-integration.md)，专项：`node plugins/surfcore/scripts/test-douyin-service.mjs`、`node plugins/surfcore/scripts/test-douyin-browser.mjs`。

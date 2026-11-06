@@ -71,6 +71,8 @@ import { createBiliRoundController } from './bili-round-controller.js';
 import { createPerceptionService } from './perception.js';
 import { createPerceptionApiService } from './perception-api.js';
 import { createBiliPerceptionService } from './bili-perception.js';
+import { createDouyinService } from './douyin-service.mjs';
+import { createDouyinApi } from './douyin-api.mjs';
 import { appendExperienceEvent } from '../../../src/core/experience.js';
 import { resolveMediaRuntime } from '../tools/lib/ffmpeg.mjs';
 import { readInstallationIdentity } from '../../../src/install-identity.js';
@@ -556,7 +558,7 @@ export function apply(ctx) {
   async function switchCharacterEverywhere(id) {
     const current = readCurrentCharacter();
     if (current?.id === id) return { ok: true, already: true, current };
-    return biliRoundController.withTransition(() => switchCharacterImplementation(id));
+    return douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id)));
   }
   async function switchCharacterImplementation(id) {
     const current = readCurrentCharacter();
@@ -632,6 +634,24 @@ export function apply(ctx) {
       ffprobePath: config.ffprobePath || media.ffprobePath };
   };
   const transcription = createPerceptionService({ ...perceptionOptions(), dataRoot: STATE_DIR, getCharacter: readCurrentCharacter });
+  const douyin = createDouyinService({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter });
+  const unregisterDouyin = platforms.register({
+    id: 'douyin', name: '抖音', version: '0.1.0', status: 'active', builtin: true,
+    capabilities: ['identity', 'prompt.block'],
+    status: () => douyin.status(),
+    promptBlock: () => '【抖音来源】仅依据用户主动读取的账号首页推荐文案；推荐不等于观看、点赞或认可。账号登录与绑定在设置页完成。',
+  }, 'surfcore');
+  const unregisterDouyinRuntime = platforms.setRuntime('douyin', {
+    status: async () => {
+      const state = await douyin.status();
+      return { state: state.ok === false ? 'error' : !state.enabled ? 'disabled' : state.account?.configured ? 'ready' : 'needs_auth' };
+    },
+    observe: (_request, context) => douyin.readFeed(context),
+    dispose: () => douyin.dispose(),
+  });
+  const douyinApi = createDouyinApi({ service: douyin, getCharacter: readCurrentCharacter,
+    observeFeed: context => platforms.observe('douyin', { operation: 'homepage-feed' }, { ...context, activityId: `douyin-${randomUUID()}` }),
+  });
   const perception = createBiliPerceptionService({ asrService: transcription, stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
     onExperience: async (event) => {
       const role = readCurrentCharacter();
@@ -1159,6 +1179,7 @@ export function apply(ctx) {
         if (!id) throw new Error('缺少角色 id');
         const current = readCurrentCharacter();
         if (!current || current.id !== id) throw new Error('只能回档当前角色；先加载这个角色再回档');
+        return await douyin.withTransition(async () => {
         const transition = biliRoundController.beginTransition();
         try {
         await transition.ready;
@@ -1185,6 +1206,7 @@ export function apply(ctx) {
         json(res, 200, { ...restored, bridgeRestarted: wasRunning, scheduler: schedulerStatus });
         return;
         } finally { transition.finish(); }
+        });
       }
       if (action === 'migrate') {
         json(res, 200, ensureCharacterSystem());
@@ -3720,6 +3742,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   route('prefix', API_PREFIX, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
+    if (pathname === `${API_PREFIX}/douyin`) { await douyinApi(req, res); return; }
     if (pathname === `${API_PREFIX}/perception`) { await perceptionApi.handle(req, res, url, { trusted: true }); return; }
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
@@ -3883,6 +3906,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
+    void douyin.dispose().then(result => { if (!result?.ok) pluginLog('[抖音] 专用浏览器退出未确认，请手动关闭该窗口；资料保留'); }).catch(() => pluginLog('[抖音] 专用浏览器退出未确认，请手动关闭该窗口；资料保留'));
+    if (typeof unregisterDouyinRuntime === 'function') unregisterDouyinRuntime();
+    unregisterDouyin();
     try { scheduler?.stop?.(); } catch {}
     void biliRoundController.dispose().catch(() => pluginLog('[B站单轮] 停止失败，请检查中断状态'));
     try { updates.dispose(); } catch {}

@@ -3990,6 +3990,72 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }) : null);
     }
 
+    function DouyinTab() {
+      const [data, setData] = useState(null);
+      const [items, setItems] = useState([]);
+      const [busy, setBusy] = useState("");
+      const [error, setError] = useState(null);
+      const live = useRef(true), sequence = useRef(0), busyRef = useRef(false), roleRef = useRef("");
+      const failureText = (value) => [value?.code, value?.error || value?.message, value?.hint].filter(Boolean).join("\n");
+      const load = async () => {
+        if (busyRef.current) return;
+        const token = ++sequence.current;
+        try {
+          const next = await api("/douyin");
+          if (!live.current || token !== sequence.current) return;
+          const role = `${next.character?.id}:${next.character?.epoch}`;
+          if (roleRef.current && roleRef.current !== role) { setItems([]); setError(null); }
+          roleRef.current = role; setData(next);
+          if (next.lastError) setError(next.lastError);
+        } catch (e) { if (live.current && token === sequence.current) { setError(e); setItems([]); } }
+      };
+      useEffect(() => {
+        live.current = true; void load();
+        const timer = setInterval(() => { void load(); }, 2000);
+        return () => { live.current = false; sequence.current++; clearInterval(timer); };
+      }, []);
+      const run = async (action, extra = {}) => {
+        if (busyRef.current || !data?.character) return;
+        busyRef.current = true; setBusy(action); setError(null); sequence.current++;
+        const context = { characterId: data.character.id, characterEpoch: data.character.epoch };
+        try {
+          const result = await api("/douyin", { method: "POST", body: { action, ...extra, ...context } });
+          if (!live.current) return;
+          if (action === "read") setItems(result.items || []);
+          else setItems([]);
+        } catch (e) { if (live.current) { setError(e); setItems([]); } }
+        finally {
+          busyRef.current = false;
+          if (live.current) { setBusy(""); void load(); }
+        }
+      };
+      const stateLabel = { verification_required: "请在专用窗口完成验证", login_required: "请在专用窗口扫码登录", candidate: "请确认登录账号", reading: "正在核对账号并读取推荐" };
+      const label = stateLabel[data?.state] || (data?.account?.configured ? "已有绑定账号，读取时复核登录" : "尚未绑定账号");
+      return h("div", null,
+        h("div", { className: "qbw-card" },
+          h("h3", null, "抖音账号与首页推荐"),
+          h("p", { className: "qbw-hint" }, "使用独立登录窗口；每次返回最多 5 条首页推荐文案。"),
+          h("p", null, data ? label : "正在读取抖音状态…"),
+          data ? h("label", { className: "qbw-hint" },
+            h("input", { type: "checkbox", checked: data.enabled === true, disabled: !!busy, onChange: e => run("enable", { enabled: e.target.checked }) }), " 启用当前角色的抖音（立即生效）") : null,
+          data?.account?.configured ? h("p", null, `绑定账号：${data.account.nickname} · 尾号 ${data.account.uidSuffix || "—"}`) : null,
+          h("div", { className: "qbw-actions" },
+            h(Btn, { onClick: () => run("login"), disabled: !!busy || !data?.enabled }, busy === "login" ? "正在打开…" : "打开专用登录窗口"),
+            h(Btn, { onClick: () => run("read"), disabled: !!busy || !data?.enabled || !data?.account?.configured }, busy === "read" ? "正在读取…" : "读取本页推荐"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => { setError(null); void load(); }, disabled: !!busy }, "刷新状态"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => run("close"), disabled: !!busy || !data || data.state === "idle" }, "关闭专用窗口")),
+          data?.candidate?.configured ? h("div", { className: "qbw-infobox" },
+            h("p", null, `此次登录：${data.candidate.nickname} · 尾号 ${data.candidate.uidSuffix || "—"}`),
+            h(Btn, { onClick: () => run("confirm", { candidateId: data.candidate.candidateId }), disabled: !!busy }, "确认绑定此账号")) : null,
+          error ? h("div", { className: "qbw-err", role: "alert", style: { whiteSpace: "pre-wrap" } }, failureText(error)) : null),
+        items.length ? h("div", { className: "qbw-card" },
+          h("h4", null, "本次首页推荐文案"),
+          h("p", { className: "qbw-hint" }, "这里记录了推荐来源与文案，不代表已经完整观看、转写或点评。"),
+          items.map(item => h("div", { key: item.id, style: { borderTop: "1px solid var(--qbw-line)", padding: "12px 0" } },
+            h("a", { href: item.url, target: "_blank", rel: "noreferrer" }, item.title || `抖音视频 ${item.id}`),
+            item.author?.nickname ? h("p", { className: "qbw-hint" }, `作者：${item.author.nickname}`) : null))) : null);
+    }
+
     function BiliTab({ cfg, set, qq, setQqPath, admin, setAdmin, unified, setUnified, qqPrivate, qqAllowAll, overview, busy, setBusy, toast, reload, onSave, onAdminDiscardContext, dirty }) {
       const roundFrame = useRef(null);
       useEffect(() => {
@@ -5711,7 +5777,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           "后续功能从这里接：杀戮尖塔启动器、B站自主直播、贴吧，都不需要改主流程。",
           "扩展默认关闭；开启等于允许它在本机执行代码，请只打开你信得过的。"),
         h(AdvancedSettings, { note: "平台接入 / 扩展目录：内置平台和文档入口，平时不用改" },
-          h("div", { className: "qbw-group" }, "平台接入 ", h("small", null, "QQ/B站内置，贴吧预留")),
+          h("div", { className: "qbw-group" }, "平台接入 ", h("small", null, "QQ/B站/抖音适配已安装，贴吧预留；账号连接另行验收")),
           h("div", { className: "qbw-grid" }, platforms.map((p) => h("div", { className: "qbw-card", key: p.id },
             h("h4", null, p.name, h("span", { className: "qbw-badge " + (p.status === "active" ? "ok" : "warn") }, p.status === "active" ? "已接入" : "预留")),
             h("p", null, `${p.capabilities?.join(" · ") || "—"}`),
@@ -6675,6 +6741,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       ["voice", "语音"],
       ["pet", "桌宠"],
       ["bili", "B站"],
+      ["douyin", "抖音"],
       ["tokens", "Token 额度"],
       ["watch", "观看历史"],
       ["memory", "记忆"],
@@ -6900,6 +6967,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "purpose") return h(PurposeTab, { qq, setQq: setQqPath, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab });
         if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
         if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
+        if (tab === "douyin") return h(DouyinTab);
         if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify });
         if (tab === "watch") return h(WatchTab, { busy, setBusy, toast: notify, goTab: setTab });
         if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy });
