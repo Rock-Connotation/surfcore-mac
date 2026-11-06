@@ -6,15 +6,18 @@
 ---
 
 
-## 快照：2026-11-06（macOS 首期实施，WP0）
+## 快照：2026-11-06（macOS 首期组合，官方 App 待授权验收）
 
-- 用户授权执行 MACOS-DEVELOPMENT-PROMPT；目标明确为 `/Applications/DeepSeek Harness.app` 官方桌面 App 0.2.2-rc.1，使用 desktop profile，不以 Web 版代验。
-- 主树 `../surfcore-macos-implementation` / `feat/macos-implementation`，从交接 `0c51bf2` 创建；本克隆无 dev。设计 macos/ 整目录已复制，继续本地忽略；原树不切换、不清理。
-- WP0：依赖按锁安装、真实环境已记录；修复语音 fixture `/var` 别名、离线表情读取真实配置、Git 仓库路径比较、helper 跨平台可执行名、Mac ZIP 解压与实际复制链。完整验证待组合日志完成，不能发布。
-- ASR 资产：已构建锁定 whisper.cpp 源码（程序报告 1.9.5-dev），base/small 上游摘要一致；真实中文短样本两档均生成原始毫秒转写，但实体识别有错误，尚未决定默认质量门槛，也尚未接入 Host 队列/B站。
-- 证据/备份：主树 `_backups/20261106-macos-wp0/`；[WP0 case](cases/2026-11-06-macos-wp0.md) 有环境、编号状态和发布交接。
-- 下一步按依赖：WP0 完整门禁 → WP1 核心 / WP2 运行层 → WP3 共享作业 → WP4 B站闭环 → WP5 制品与真实 App 验收。真实 profile 安装、重启尚未进行，需具体改动可审阅后核对授权。
-- 没有修改 version、tag、push 或发布；尚未满足首期完成条件。
+- 目标是 `/Applications/DeepSeek Harness.app` 官方桌面 App **0.2.2-rc.1**，不是网页版或 DSH Desktop.app。实际 Electron44.7.0 / 随附 Node24.21.0；macOS26.6.2、Apple M4、原生arm64。
+- 主树 `../surfcore-macos-implementation` / `feat/macos-implementation`，交接基线 `0c51bf2`，本克隆无 dev；原树不切换、不清理。设计 macos/ 继续本地忽略，模型与日志不入库。
+- WP0 已提交 `2f932e8` / 清单 `52ced0f`。WP1共享核心 `84d9777`；WP2运行层 `29eac74`；WP3共享ASR `90c98e6`；WP4 B站 `26d388d`；WP5更新身份 `060e6a4`；计时夹具 `cb0da38`；资源准入 `bd7d174`；记忆持久提交 `08f2e30`；自测目标 `a91bb0c`；Windows目录兼容 `9871424`。最终Host/API/UI/制品候选见下方本地证据。
+- 已实现：Host单写记忆、受限经历与下一上下文；统一运行时；共享本地ASR与完整范围/分块/缓存/取消/恢复；B站完整媒体父作业和分P历史；渠道运行契约、安装身份与DSH包更新所有者；Host设置页失败报告、作业详情与经历重试。
+- 本机真实识别：官方Node + 便携FFmpeg/FFprobe/whisper + small，纯系统PATH、无DYLD、中文空格新根，CPU/Metal两轮均覆盖0–6463ms，无缺口但有错字。两个AISHELL短样本small优于base，仅作本机候选选择，不是完整质量门槛。
+- 已有组合 audit157/157、插件全套和regressions通过；收尾资源准入及最终制品仍须重跑适用检查。所有 numbered 验收、原始日志与失败记录统一在 [组合 case](cases/2026-11-06-macos-host-integration.md)，子树早期结果不能替代最终候选。
+- 最终候选SHA、各检查实际exit、制品与原生资产摘要统一写入本地 `_backups/20261106-macos-wp0/final-results.json`；跨机交接需单独携带该证据和忽略的资产，不能用先前组合结果替代。
+- 官方App只做CUA只读确认，**未安装、未重启**。独立DSH_HOME和user-data-dir仍共享macOS崩溃日志，App启动会清理旧报告；无官方关闭开关。需在最终包与恢复方案可审阅后取得“保全共享日志并启动隔离App”的具体授权。真实B站扫码需人工，尚无凭据；未外发或调用付费模型。
+- 下一步：完成候选/清单/自包含包 → 解包后官方Node独立装载 → 用户授权后官方App隔离desktop验收/扫码/只读无字幕视频闭环。真实常用profile安装与重启是另一个授权对象。
+- 未改version、tag、push或发布。Intel/Windows/其他macOS、Finder、App生命周期、真实B站和全面中文质量未验；**尚不满足首期全部完成或发布条件**。
 
 ---
 

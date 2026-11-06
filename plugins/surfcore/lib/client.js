@@ -4451,6 +4451,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           "。全量记忆卡（所有记忆保持清晰、永不遗忘）只存档，不会自动注入；在下方「全量记忆卡」里查看 / 搜索。",
           h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
             `QQ 注入文件：${status.paths?.promptQq ?? "—"} · B站 注入文件：${status.paths?.promptBili ?? "—"}`)),
+        status.lastFailure ? h("div", { className: "qbw-err", role: "alert" },
+          `${status.lastFailure.code || "MEMORY_MAINTENANCE_FAILED"}：${status.lastFailure.error}；${status.lastFailure.hint}`,
+          h(Btn, { kind: "qbw-btn2", disabled: !!busy, onClick: () => act("maintain") }, "重试整理")) : null,
         h("div", { className: "qbw-card", style: { borderColor: level >= 2 ? "rgba(229,72,77,.45)" : level >= 1 ? "rgba(255,176,32,.45)" : undefined } },
           h("div", { className: "qbw-meter-head" },
             h("div", null, h("b", null, "记忆卡"), h("span", { className: "qbw-hint" }, "长期记忆 · 角色卡管“她是谁”，这张卡管“她记得什么”")),
@@ -5731,6 +5734,68 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h(Btn, { kind: "qbw-btn2", onClick: () => { setQuery(""); }, disabled: !!busy }, "清空搜索")));
     }
 
+    function PerceptionPanel() {
+      const [data, setData] = useState(null);
+      const [form, setForm] = useState(null);
+      const [failure, setFailure] = useState(null);
+      const [loadFailure, setLoadFailure] = useState(null);
+      const [selectedJob, setSelectedJob] = useState(null);
+      const [pending, setPending] = useState(false);
+      const load = useCallback(async () => {
+        try {
+          const next = await api("/perception");
+          setData(next);
+          setForm((old) => old || next.config || {});
+          setLoadFailure(null);
+        } catch (e) { setLoadFailure({ code: e.code, error: e.message, hint: e.hint || "确认插件已加载，再点刷新" }); }
+      }, []);
+      useEffect(() => { void load(); }, [load]);
+      const hasActiveJob = (data?.jobs || []).some((job) => ["queued", "running"].includes(job.state) || job.memoryState === "pending");
+      useEffect(() => { if (!hasActiveJob) return; const timer = setInterval(() => { void load(); }, 3000); return () => clearInterval(timer); }, [load, hasActiveJob]);
+      const act = async (body) => {
+        setPending(true);
+        try { await api("/perception", { method: "POST", body }); setFailure(null); await load(); }
+        catch (e) { setFailure({ code: e.code, error: e.message, hint: e.hint || "刷新状态，检查本地依赖后重试" }); }
+        finally { setPending(false); }
+      };
+      const inspect = async (jobId) => {
+        setPending(true);
+        try { const result = await api(`/perception?jobId=${encodeURIComponent(jobId)}`); setSelectedJob(result.job); setFailure(null); }
+        catch (e) { setSelectedJob(null); setFailure({ code: e.code, error: e.message, hint: e.hint || "刷新列表后重新选择作业" }); }
+        finally { setPending(false); }
+      };
+      const value = (key) => key.split(".").reduce((object, part) => object?.[part], form) || "";
+      const edit = (key, text) => setForm((old) => { const next = JSON.parse(JSON.stringify(old || {})); setPath(next, key.split("."), text); return next; });
+      const doctor = data?.doctor;
+      const visibleFailure = failure || loadFailure;
+      const fields = [["engine.executable", "本地转写引擎"], ["engine.model.path", "多语言模型文件"], ["engine.model.id", "模型名称（如 small）"], ["engine.model.sha256", "模型 SHA-256"], ["ffmpegPath", "FFmpeg"], ["ffprobePath", "FFprobe"]];
+      return h(Section, { title: "共享本地语音识别", defaultOpen: true },
+        h("div", { className: "qbw-kv" }, h("strong", null, doctor?.ready || doctor?.ok ? "依赖已校验" : "待准备"), h(Btn, { kind: "qbw-btn2", onClick: load, disabled: pending }, "刷新")),
+        (data?.channels || []).map((channel) => h("div", { key: channel.id, className: "qbw-hint" }, `B站：${({ ready: "可读取素材", disabled: "已关闭，请在平台设置中启用", needs_auth: "待登录，请在B站账号设置中扫码", needs_setup: "待配置", degraded: "部分能力可用", unsupported: "尚未接入", error: "状态异常，请刷新后检查配置" })[channel.state] || channel.state}`)),
+        doctor && !(doctor.ready || doctor.ok) ? h("div", { className: "qbw-err", role: "status" }, `${doctor.code || "ASR_NOT_READY"}：${doctor.error || "本地识别尚未就绪"}；${doctor.hint || "请准备引擎、模型与媒体工具"}`) : null,
+        h(AdvancedSettings, { note: "选择已有的本地引擎和模型；保存后检查完整性与运行能力" },
+          fields.map(([key, label]) => h("label", { key, className: "qbw-kv" }, h("span", null, label), h("input", { className: "qbw-input", value: value(key), onChange: (e) => edit(key, e.target.value), disabled: pending }))),
+          h(Btn, { kind: "qbw-btn", disabled: pending || !form, onClick: () => act({ action: "configure", config: { ...form, engine: { ...form.engine, provider: "whisper.cpp" } } }) }, pending ? "处理中…" : "保存并检查")),
+        visibleFailure ? h("div", { className: "qbw-err", role: "alert" }, `${visibleFailure.code || "PERCEPTION_FAILED"}：${visibleFailure.error}；${visibleFailure.hint}`) : null,
+        (data?.jobs || []).length ? h("div", null, data.jobs.map((job) => h("div", { key: job.jobId, className: "qbw-card" },
+          h("strong", null, `${job.jobId} · ${job.state}`),
+          h("div", { className: "qbw-hint" }, job.stage || job.progress?.stage || job.progress?.phase || ""),
+          job.progress ? h(ProgressBar, { pct: job.progress.chunksTotal ? Math.min(100, job.progress.chunksDone / job.progress.chunksTotal * 100) : 0, phase: job.stage || job.progress.stage || job.progress.phase || "处理中", indeterminate: !job.progress.chunksTotal }) : null,
+          (job.coverage || job.result?.coverage) ? h("div", null, (job.coverage || job.result.coverage).complete ? "请求范围已完整处理" : `部分处理，缺失 ${(job.coverage || job.result.coverage).missingRanges?.length || 0} 段`) : null,
+          h(Btn, { kind: "qbw-btn2", disabled: pending, onClick: () => inspect(job.jobId) }, "查看作业与转写"),
+          selectedJob?.jobId === job.jobId ? h("div", null,
+            h("div", { className: "qbw-hint" }, `详情状态：${selectedJob.state}；点击“查看作业与转写”可更新`),
+            selectedJob.result?.segments?.length ? h("pre", { style: { whiteSpace: "pre-wrap" } }, selectedJob.result.segments.slice(-12).map((segment) => `[${segment.startMs}–${segment.endMs} ms] ${segment.text}`).join("\n")) : h("div", { className: "qbw-hint" }, "此作业尚无转写文本")) : null,
+          job.result?.segments?.length ? h("details", null, h("summary", null, "查看末段转写"), h("pre", { style: { whiteSpace: "pre-wrap" } }, job.result.segments.slice(-12).map((segment) => `[${segment.startMs}–${segment.endMs} ms] ${segment.text}`).join("\n"))) : null,
+          job.error ? h("div", { className: "qbw-err" }, `${job.code || "ASR_FAILED"}：${typeof job.error === "string" ? job.error : job.error.error || "作业失败"}；${job.hint || job.error.hint || "检查依赖后重新提交"}`) : null,
+          ["queued", "running"].includes(job.state) ? h(Btn, { kind: "qbw-btn2", disabled: pending, onClick: () => act({ action: "cancel", jobId: job.jobId }) }, "取消") : null,
+          job.frames ? h("div", { className: job.frames.status === "failed" ? "qbw-err" : "qbw-hint" }, `画面采样：${job.frames.status} ${job.frames.error || ""} ${job.frames.hint || ""}`) : null,
+          job.memoryState ? h("div", { className: job.memoryState === "failed" ? "qbw-err" : "qbw-hint", role: job.memoryState === "failed" ? "alert" : "status" },
+            `经历入库：${job.memoryState}${job.memoryError ? `；${job.memoryError.code || "MEMORY_FAILED"}：${job.memoryError.error || "写入失败"}；${job.memoryError.hint || "点击重试经历入库"}` : ""}`) : null,
+          (job.state === "interrupted" || job.memoryState === "failed") ? h(Btn, { kind: "qbw-btn2", disabled: pending, onClick: () => act({ action: "resume", jobId: job.jobId }) }, job.memoryState === "failed" ? "重试经历入库" : "恢复") : null)))
+          : h("div", { className: "qbw-hint" }, "还没有转写作业；从 B站深读提交后可在这里查看。"));
+    }
+
     // ── 诊断 ────────────────────────────────────────────────────────────────
     function DiagnosticsTab({ busy, setBusy, toast, reload }) {
       const [diag, setDiag] = useState(null);
@@ -5933,6 +5998,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             flow.phase === "done" || flow.phase === "error" ? h(Btn, { kind: "qbw-btn", onClick: () => setFlow(null) }, "关闭") : null))) : null;
 
       return h("div", null,
+        h(PerceptionPanel),
         actionBar,
         cards,
         installModal,

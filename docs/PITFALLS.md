@@ -4016,3 +4016,14 @@ npm run test:audit
 ## 2026-11-06 macOS 路径别名与更新平台边界
 
 `/var` 与 `/private/var` 指向同一文件，安全路径解析返回 realpath，fixture 和 Git 仓库根比较也必须使用真实路径；POSIX 比较不能全局转小写。离线测试不能依赖含密钥的用户 config.json。Windows chcp/CRLF 字节检查保留在相应平台，所有平台检查 Git eol 属性。更新 ZIP 在解压前校验本地头/中央目录名字与类型，拒绝穿越、符号链接；POSIX helper 在复制前检查源/目标链接，只覆盖程序文件，保留用户数据与目标独有文件。细节、恢复与未验项见同日 macOS WP0/platform/updates cases。
+
+
+## 2026-11-06 macOS组合：桌面隔离、资源与完成证据
+
+- 官方 DeepSeek Harness.app 的 DSH_HOME/profile 与 Electron userData/单例可分别隔离，但 macOS App 日志取 OS home + bundle name；启动无条件轮转崩溃日志，不随 user-data-dir 改变。不可把第二实例描述为零触碰用户数据；先保全共享日志、明确授权，再启动。已存在用户工作窗口，未为本次验收退出它。
+- CLI、设置页必须接同一 Host 队列；提交与恢复媒体处理都经过渠道可用性检查。completed 仅表示材料处理终态，memoryState=pending 仍须轮询，否则失败提示会丢。经历重投影属于本地维护，不重新下载或外发。
+- 剩余静默时间从最后来信计算，handler waitedMs 从请求进入后计算。HTTP/事件循环耗时会减少后者；测试应在服务端响应时校验静默截止，不能要求固定100ms。新夹具保留提前1ms必失败的下界检查。
+- 本机 Node import、真实CPU/Metal和HTTP fixture各有证据层级，均不能替代官方App装载、Finder、真实B站无字幕闭环或Windows实机。最终编号与证据见 cases/2026-11-06-macos-host-integration.md。
+- 本地自包含评审包内置已安装npm运行依赖（包含现有@snowluma SDK/MCP包，不含SnowLuma本体或原生组件）。这些SDK声明许可文件但上游包缺失，现有LICENSE已有记录；任何对外分发前须解决该边界，不能沿用源码归档“不含依赖字节”的判断。本次未发布或推送。
+
+- 旧Host冒烟脚本不是只读：ESM静态import先加载真实路径，apply/对齐夹具会建默认状态。现强制临时home+源码根后动态import，最终全套另设隔离环境；默认home既有诊断产物保留，详见组合case。

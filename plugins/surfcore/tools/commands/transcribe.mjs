@@ -72,9 +72,10 @@ async function main() {
   }
   if (action === 'resume') {
     const result = await client.resume(options.resume)
-    const job = await client.getJob(options.resume).catch(() => null)
+    const resumedId = result.jobId || result.job?.jobId || options.resume
+    const job = await client.getJob(resumedId).catch(() => null)
     const history = job?.history ?? { status: 'pending' }
-    writeOutput({ ok: true, action: 'resume', jobId: options.resume, result, job: job ? normalizeTranscriptionResult(job) ?? { state: job.state } : null, history }, json)
+    writeOutput({ ok: true, action: 'resume', jobId: resumedId, result, job: job ? normalizeTranscriptionResult(job) ?? { state: job.state } : null, history }, json)
     return
   }
   if (action === 'status') {

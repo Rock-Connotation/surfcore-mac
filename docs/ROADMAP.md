@@ -45,7 +45,7 @@
 
 - 设计目标：目标 Mac 的真实 DSH 中统一人格、关系、记忆和生活状态；共享本地 ASR；B站首个完整渠道。QQ/TTS/桌宠未配置不阻断核心和 B站。
 - 依赖：WP0 基线门禁 → WP1 核心与 WP2 运行能力 → WP3 ASR → WP4 B站 → WP5 自包含制品、迁移回滚。
-- 实施进度：独立工作树 `../surfcore-macos-implementation`，从交接分支 `0c51bf2` 开始（本克隆无 dev）。目前 WP0 基线修复与资产准备进行中；WP1—WP5 尚未通过。
+- 实施进度：独立工作树 `../surfcore-macos-implementation`，从交接分支 `0c51bf2` 开始（本克隆无 dev）。WP0 基线已通过并提交；WP1—WP4 已组合共享核心/运行时/本地ASR/分P媒体，WP5 已实现安装身份与自包含包构建。组合 audit157/157、插件与桥接回归已有通过记录，最终资源/制品检查见 HANDOFF；官方 App 与真实 B站未验收。
 - 验收状态：按本地设计 06 的 CORE/ASR/MAC/ACTION 编号记录；真实中文无字幕 ASR、目标 DSH、取消/恢复、角色归属、记忆闭环和回滚全部通过才可称首期完成。
 - 保留 Windows 兼容；Intel/Windows 未实测项如实待验。不改版本、不发布；真实 profile 安装/重启及账号外发需有对象明确的授权。
 

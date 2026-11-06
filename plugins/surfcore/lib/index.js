@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ALIGN_FILE, BACKUP_DIR, BILI_AI_DIR, BILI_ALIGNMENT_FILE, BILI_CONFIG, BILI_CRED, BILI_DIR, BILI_MJS,
   BILI_TOOLS_DIR, DSH_HOME, EXTENSIONS_DIR, MEMORY_DIR, PLUGIN_ROOT, PLUGIN_LOG, QQ_ALIGNMENT_BRIEF,
-  QQ_CONFIG, QQBOT_ROOT, STATE_DIR, UNIFIED_FILE, ensureDirs, findNodeExe, maskPath,
+  QQ_CONFIG, QQBOT_ROOT, STATE_DIR, UNIFIED_FILE, ensureDirs, resolveNodeRuntime, maskPath,
 } from './paths.js';
 import { resolvePersonaFile } from './persona.js';
 import { discoverSnowLumaConnection } from '../../../src/snowluma-conn.js';
@@ -38,7 +38,7 @@ import {
   deleteCharacter, manualSnapshot, migrateIfNeeded, restoreCharacterSnapshot, switchToCharacter,
   updateCharacterFromPayload,
 } from './characters.js';
-import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
+import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, characterPaths, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
 import {
   backupFile, listBackups, pathSummary,
@@ -66,6 +66,12 @@ import { PlatformRegistry } from './platforms.js';
 import { ExtensionHost } from './extensions.js';
 import { isLoopbackReq, json, readBody, sameOrigin } from './http-guard.js';
 import { startScheduler } from './scheduler.js';
+import { createPerceptionService } from './perception.js';
+import { createPerceptionApiService } from './perception-api.js';
+import { createBiliPerceptionService } from './bili-perception.js';
+import { appendExperienceEvent } from '../../../src/core/experience.js';
+import { resolveMediaRuntime } from '../tools/lib/ffmpeg.mjs';
+import { readInstallationIdentity } from '../../../src/install-identity.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../../src/gate-events.js';
@@ -184,7 +190,7 @@ export function apply(ctx) {
 
   // 上次的"退出后应用"可能没跑起来（Electron 宿主没带 ELECTRON_RUN_AS_NODE）：
   // 这里重新排队，用户下次退出 DSH 就会应用（2026-10-28 反馈：点几次都还是旧版本）。
-  try { resumePendingApply({ stateDir: STATE_DIR, pluginLog }); } catch (error) { pluginLog('[updates] 启动重试失败：', String(error?.message ?? error)); }
+  try { resumePendingApply({ stateDir: STATE_DIR, installRoot: QQBOT_ROOT, resolveNodeRuntime, pluginLog }); } catch (error) { pluginLog('[updates] 启动重试失败：', String(error?.message ?? error)); }
 
   // 2026-10-22 起：`surface_core` 迁移期的一次性逻辑**已整段删除**。
   // 原因：当年为了把旧工作区改名，留了「有 .legacy-workspace 标记就删/移旧目录」的代码；
@@ -266,11 +272,16 @@ export function apply(ctx) {
   // 组件清单每次动态解析：换路径 / 新装包 / 新扩展都不用重启插件。
   const updates = createUpdatesService({
     stateDir: STATE_DIR,
+    resolveNodeRuntime,
     pluginLog,
     githubToken: () => String(readUnified().config?.updates?.githubToken ?? ''),
     // 更新通道：stable（默认，只走正式 Release）/ dev（只走 Pre-release 的 -dev.N）
     channel: () => String(readUnified().config?.updates?.channel ?? 'stable'),
     blockedReason: (component) => {
+      if (component.id === 'surfcore') {
+        const identity = readInstallationIdentity(QQBOT_ROOT);
+        if (identity.ok && identity.identity.updateOwner === 'dsh-package-manager') return '此安装由 DSH 包管理器管理，请从 DSH 插件管理更新';
+      }
       if (component.kind === 'pet' || component.id === 'surfpet') {
         try {
           const st = petService.status();
@@ -283,7 +294,7 @@ export function apply(ctx) {
       const list = [];
       const updCfg = readUnified().config?.updates ?? {};
       // 1) SurfCore 本体：源码树，走 git
-      list.push({ id: 'surfcore', name: 'SurfCore 本体', dir: QQBOT_ROOT, kind: 'git', branch: 'main', versionRepo: 'Mieksido/surfcore' });
+      list.push({ id: 'surfcore', name: 'SurfCore 本体', dir: QQBOT_ROOT, kind: 'git', branch: 'main', versionRepo: 'Rock-Connotation/surfcore-mac' });
       // 2) 语音包**不进入自动更新列表**：它是离线运行时/模型/vendor 包，
       //    不是 SurfCore 那种代码 zip；统一 updateFromZip 会按 surfcore-* + package.json
       //    解析而必然失败（2026-10-30 用户反馈）。需要新包时在「语音」页重新导入离线包，
@@ -600,6 +611,56 @@ export function apply(ctx) {
   // 记忆卡：插件宿主是唯一维护者。启动 8 秒后整理一次（摄取桥接 inbox + B站记忆），
   // 之后每 10 分钟一次；每日衰减由 memory-card 自己按 dailyHour 判断。
   memoryCardTimer = startMemoryCardTimer({ log: pluginLog, callBridge });
+
+  const perceptionConfig = () => readUnified().config?.perception ?? {};
+  const perceptionOptions = (config = perceptionConfig()) => {
+    const media = resolveMediaRuntime({ env: { ...process.env,
+      ...(config.ffmpegPath ? { FFMPEG: config.ffmpegPath } : {}),
+      ...(config.ffprobePath ? { FFPROBE_PATH: config.ffprobePath } : {}) } });
+    return { engine: config.engine, ffmpegPath: config.ffmpegPath || media.ffmpegPath,
+      ffprobePath: config.ffprobePath || media.ffprobePath };
+  };
+  const transcription = createPerceptionService({ ...perceptionOptions(), dataRoot: STATE_DIR, getCharacter: readCurrentCharacter });
+  const perception = createBiliPerceptionService({ asrService: transcription, stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
+    onExperience: async (event) => {
+      const role = readCurrentCharacter();
+      if (!role || role.id !== event.characterId || role.epoch !== event.characterEpoch) {
+        return { ok: false, code: 'CHARACTER_STALE', error: '角色已切换，经历未投影', hint: '保留原作业证据，以当前角色发起新活动' };
+      }
+      const appended = appendExperienceEvent(characterPaths(role.id), event);
+      if (!appended.ok) return appended;
+      const projected = await runMemoryCardMaintenance({});
+      if (projected.ok === false) return projected;
+      const after = readCurrentCharacter();
+      if (!after || after.id !== role.id || after.epoch !== role.epoch) return { ok: false, code: 'CHARACTER_STALE', error: '角色已切换，原经历保留在原角色队列', hint: '以当前角色重新发起活动；旧证据不会进入新角色' };
+      return { ok: true, eventId: appended.eventId };
+    },
+  });
+  platforms.setRuntime('bili', {
+    status: async () => ({ state: readUnified().config?.platforms?.start?.bili === false ? 'disabled' : fs.existsSync(BILI_CRED) ? 'ready' : 'needs_auth' }),
+    observe: async (request, context) => {
+      try { return { ok: true, ...await (request.operation === 'resume' ? perception.resume(request.jobId) : perception.submitBili({ ...request.request, ...context })) }; }
+      catch (error) { return { ok: false, code: error.code || 'BILI_JOB_SUBMIT_FAILED', error: 'B站作业未能提交', hint: error.hint || '检查视频、角色和本地依赖后重新提交' }; }
+    },
+  });
+  const perceptionApi = createPerceptionApiService({
+    service: perception, stateDir: STATE_DIR, currentDshUrl, getCharacter: readCurrentCharacter, getConfig: perceptionConfig,
+    observeBili: (request, context) => platforms.observe('bili', { operation: 'submit', request }, context),
+    resumeBili: (job, context) => platforms.observe('bili', { operation: 'resume', jobId: job.jobId }, context),
+    getChannels: async () => [await platforms.channelCapabilities('bili')],
+    configure: async (config) => {
+      const previous = perceptionConfig();
+      if (!config || typeof config !== 'object' || Array.isArray(config)) {
+        return { ok: false, code: 'ASR_CONFIG_INVALID', error: '感知设置格式错误', hint: '填写本地引擎、模型与媒体工具后重新保存' };
+      }
+      config = { engine: config.engine, ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath };
+      await perception.configure(perceptionOptions(config));
+      try { saveUnified({ perception: config }); }
+      catch (error) { await perception.configure(perceptionOptions(previous)); throw error; }
+      return { ok: true, doctor: await perception.doctor() };
+    },
+  });
+
 
   // 角色自动存档：启动 10 秒后跑一次，之后每 6 小时检查（每天最多一份 + 11 个年龄档轮换）。
   const runCharacterAutoSave = () => {
@@ -1376,6 +1437,7 @@ ${body}`;
     const action = String(body.action ?? '');
     if (action === 'maintain') {
       const result = await runMemoryCardMaintenance({ forceDecay: body.forceDecay === true, config });
+      if (result.ok === false) { json(res, 409, result); return; }
       const snapshot = memoryCardSnapshot(config);
       json(res, 200, { ...snapshot, changed: result.changed, addedBili: result.addedBili, addedQq: result.addedQq, addedPet: result.addedPet });
       return;
@@ -1558,8 +1620,14 @@ ${body}`;
     let snowState = { state: 'unknown', hint: '' };
     try { snowState = await diagnoseSnowLuma(runtimeBridge?.snowluma ?? {}, { bridge: runtimeBridge }); } catch {}
     const bridgeSrc = path.join(QQBOT_ROOT, 'src', 'bridge.js');
-    return buildInstallChecks({
-      nodeVersion: process.versions.node,
+    let nodeRuntime;
+    try { nodeRuntime = resolveNodeRuntime(); }
+    catch (error) { nodeRuntime = { ok: false, code: error.code, error: error.message, hint: error.hint }; }
+    const enabledChannels = readUnified().config?.platforms?.start ?? {};
+    const checks = buildInstallChecks({
+      nodeRuntime,
+      enabledChannels,
+      mediaRuntime: enabledChannels.bili !== false ? resolveMediaRuntime() : undefined,
       hasUnified: readUnified().hasUserFile,
       unifiedMasked: maskPath(UNIFIED_FILE),
       ownerQQ: String(all.unified?.admin?.qq ?? '').trim(),
@@ -1573,6 +1641,11 @@ ${body}`;
       profile: dshProfileWithSurfcore(),
       token: String(qqCfg.consoleToken ?? '').trim(),
     });
+    const asr = await perception.doctor();
+    const ready = asr.ready === true || asr.ok === true;
+    checks.push({ name: '共享本地 ASR', level: ready ? 'ok' : 'fail', ok: ready,
+      detail: ready ? '引擎与模型校验通过' : `${asr.code || 'ASR_NOT_READY'}：${asr.error || '识别尚未就绪'}`, fix: ready ? '' : asr.hint });
+    return checks;
   }
 
   let installJob = { running: false, startedAt: null, finishedAt: null, steps: [] };
@@ -1583,9 +1656,9 @@ ${body}`;
     return step;
   }
 
-  function runCommand(cmd, args, { cwd, timeoutMs = 600_000 } = {}) {
+  function runCommand(cmd, args, { cwd, timeoutMs = 600_000, env = process.env } = {}) {
     return new Promise((resolve) => {
-      const child = spawn(cmd, args, { cwd, windowsHide: true, shell: process.platform === 'win32' });
+      const child = spawn(cmd, args, { cwd, env, windowsHide: true, shell: process.platform === 'win32' });
       let out = '';
       const timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
       child.stdout?.on('data', (d) => { out += String(d).slice(0, 4000); });
@@ -1623,7 +1696,8 @@ ${body}`;
             profile = names.includes('web') ? 'web' : (names[0] ?? 'web');
           } catch { profile = 'web'; }
         }
-        const r = await runCommand(process.execPath, [path.join(QQBOT_ROOT, 'scripts', 'setup-dsh.mjs'), profile], { cwd: QQBOT_ROOT, timeoutMs: 120_000 });
+        const runtime = resolveNodeRuntime();
+        const r = await runCommand(runtime.executable, [...runtime.argvPrefix, path.join(QQBOT_ROOT, 'scripts', 'setup-dsh.mjs'), profile], { cwd: QQBOT_ROOT, timeoutMs: 120_000, env: { ...process.env, ...runtime.envPatch } });
         done(dshStep, r.ok, r.ok ? '已注册（重启 DSH 生效）' : (r.out.slice(-400)));
       }
 
@@ -2890,8 +2964,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // ── B站动作：依赖体检 / cookie / 待审 / 通知测试 ────────────────────────
   function runBili(args, timeoutMs = 120_000) {
+    let runtime;
+    try { runtime = resolveNodeRuntime(); }
+    catch (error) { return Promise.resolve({ ok: false, code: error.code || 'NODE_RUNTIME_NOT_FOUND', error: error.message, hint: error.hint || '检查本地 Node 后重试', out: '', err: 'Node 运行时不可用' }); }
     return new Promise((resolve) => {
-      execFile(findNodeExe(), [BILI_MJS, ...args], {
+      execFile(runtime.executable, [...runtime.argvPrefix, BILI_MJS, ...args], {
+        env: { ...process.env, ...runtime.envPatch },
         cwd: BILI_TOOLS_DIR,
         timeout: timeoutMs,
         windowsHide: true,
@@ -3135,9 +3213,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       } catch (error) {
         pluginLog(`[扫码登录] 打开失败：${String(error?.message ?? error)}`);
         json(res, 503, {
-          ok: false, code: 'bili.qr-start-failed',
+          ok: false, code: error.code || 'bili.qr-start-failed',
           error: String(error?.message ?? error),
-          hint: '确认本机有 Edge（扫码用 headless Edge 打开 B站 登录页）；再试一次或重启 DSH 后重试',
+          hint: error.hint || '确认本机有可用 Edge 或 Chrome，再重试扫码',
         });
       }
       return;
@@ -3273,12 +3351,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       return;
     }
     if (action === 'notify-test') {
-      const notifyMjs = path.join(BILI_TOOLS_DIR, 'commands', 'notify.mjs');
-      const result = await new Promise((resolve) => {
-        execFile(findNodeExe(), [notifyMjs, '--test'], { cwd: BILI_TOOLS_DIR, timeout: 60_000, windowsHide: true }, (error, stdout, stderr) => resolve({
-          ok: !error, out: String(stdout ?? '').slice(0, 2000), err: String(stderr ?? '').slice(0, 2000),
-        }));
-      });
+      const result = await runBili(['notify', '--test'], 60_000);
       json(res, 200, { ok: result.ok, ...result });
       return;
     }
@@ -3340,7 +3413,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // ── 平台 ────────────────────────────────────────────────────────────────
   async function handlePlatforms(req, res) {
-    json(res, 200, { ok: true, platforms: await platforms.statusAll(), capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] });
+    json(res, 200, { ok: true, platforms: await platforms.statusAll(), channels: await Promise.all(platforms.list().map(item => platforms.channelCapabilities(item.id))), capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] });
   }
 
   // ── DSH 注册修复（2026-11-01）───────────────────────────────────────────
@@ -3435,15 +3508,15 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       });
       return;
     }
-    const args = [script, ...(profile ? [profile] : [])];
-    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', PYTHONIOENCODING: 'utf-8' };
+    let runtime;
+    try { runtime = resolveNodeRuntime(); }
+    catch (error) { json(res, 503, { ok: false, code: error.code || 'NODE_RUNTIME_NOT_FOUND', error: error.message, hint: error.hint || '修复 DSH Node 运行时后重试' }); return; }
+    const args = [...runtime.argvPrefix, script, ...(profile ? [profile] : [])];
+    const env = { ...process.env, ...runtime.envPatch, PYTHONIOENCODING: 'utf-8' };
     const run = (cmd) => new Promise((resolve) => {
       execFile(cmd, args, { cwd: repoRoot, timeout: 180_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env }, (error, stdout, stderr) => resolve({ error, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') }));
     });
-    let result = await run(process.execPath);
-    if (result.error && (result.error.code === 'ENOENT' || result.error.code === 'EACCES')) {
-      result = await run('node');
-    }
+    const result = await run(runtime.executable);
     const output = `${result.stdout}\n${result.stderr}`.trim();
     if (result.error) {
       json(res, 500, {
@@ -3562,6 +3635,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   route('prefix', API_PREFIX, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
+    if (pathname === `${API_PREFIX}/perception`) { await perceptionApi.handle(req, res, url, { trusted: true }); return; }
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
@@ -3685,6 +3759,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     },
   }));
 
+  disposers.push(ctx.webServer.register({ kind: 'prefix', path: perceptionApi.prefix,
+    handler: (req, res) => perceptionApi.handle(req, res, new URL(req.url, 'http://127.0.0.1')) }));
+  try { perceptionApi.writeHostFile(); } catch (error) { pluginLog('[感知] 服务发现文件不可写，请检查当前数据根权限'); }
+  const perceptionHostTimer = setInterval(() => { try { perceptionApi.writeHostFile(); } catch {} }, 120_000);
+  perceptionHostTimer.unref?.();
+
   route('exact', '/dsh-surfcore/health', async (req, res) => {
     json(res, 200, { ok: true, name, version: VERSION, privacyPolicyVersion: PRIVACY_POLICY_VERSION });
   });
@@ -3726,11 +3806,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { billing.dispose(); } catch {}
     try { tokenBudget.dispose(); } catch {}
     try { memoryCardTimer?.stop?.(); } catch {}
+    clearInterval(perceptionHostTimer);
+    try { void Promise.resolve(perception.dispose()).catch(() => pluginLog('[感知] 停止作业失败，请检查中断记录')); } catch {}
     try { closeAllQrLogins(); } catch {}
+    clearTimeout(characterInitial);
     if (characterTimer) clearInterval(characterTimer);
     if (syncTimer) clearInterval(syncTimer);
     if (bridgeRepairTimer) clearInterval(bridgeRepairTimer);
-    void extensionHost.deactivateAll();
+    void extensionHost.deactivateAll().finally(() => platforms.dispose());
     for (const dispose of disposers) { try { dispose(); } catch {} }
   });
 

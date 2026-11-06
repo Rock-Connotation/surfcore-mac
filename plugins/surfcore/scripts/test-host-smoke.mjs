@@ -2,17 +2,27 @@
  * 宿主冒烟测试（不启动 DSH）：
  *   · 用 mock ctx 装配插件；
  *   · 验证路由注册、配置读取、隐私闸门、身份对齐、扩展清单；
- *   · 不写真实配置（只读），不启停桥接。
+ *   · 只写隔离夹具，绝不继承真实配置；不启停桥接。
  *
  * 运行：node scripts/test-host-smoke.mjs
  */
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+// Never inherit a user's active data root, even when the caller forgot isolation.
+const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-host-smoke-'));
+process.env.DSH_HOME = path.join(fixtureRoot, 'dsh');
+process.env.SURFCORE_ROOT = path.join(fixtureRoot, 'repo');
+fs.mkdirSync(path.join(process.env.SURFCORE_ROOT, 'src'), { recursive: true });
+fs.copyFileSync(new URL('../../../config.example.json', import.meta.url), path.join(process.env.SURFCORE_ROOT, 'config.json'));
+fs.writeFileSync(path.join(process.env.SURFCORE_ROOT, 'src', 'bridge.js'), '// fixture; never executed\n');
 // 冒烟测试不启动真实桥接（即使本机 unified 配置开了 autoStart）。
 process.env.SURFCORE_SKIP_AUTOSTART = '1';
 process.env.SURFCORE_DISABLE_CHARACTER_MIGRATION = '1';
 // 不写真实记忆卡 / 不跑后台整理。
 process.env.SURFCORE_DISABLE_MEMORY_TIMER = '1';
-import { apply } from '../lib/index.js';
+const { apply } = await import('../lib/index.js');
 
 const routes = [];
 const effects = [];

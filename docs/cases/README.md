@@ -6,9 +6,17 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-06 | [macOS Host组合与编号验收](2026-11-06-macos-host-integration.md) | 共享队列、界面、制品与44项验收边界 | 实机待验 |
+| 2026-11-06 | [macOS共享核心](2026-11-06-macos-shared-core.md) | Host单写记忆、经历、上下文、life与渠道契约 | 本地候选 |
+| 2026-11-06 | [macOS运行时](2026-11-06-macos-runtime.md) | 统一Node、浏览器所有权、媒体工具与分层诊断 | 本地候选 |
+| 2026-11-06 | [共享本地ASR](2026-11-06-macos-shared-asr.md) | 完整范围、持久队列、取消恢复与真实CPU/Metal | App待验 |
+| 2026-11-06 | [B站分P媒体](2026-11-06-macos-bili-media.md) | DASH/全durl、字幕cid、Host父作业与经历 | 真实账号待验 |
+| 2026-11-06 | [安装身份与更新](2026-11-06-macos-update-identity.md) | 绑定安装根/来源/所有者，拒绝跨安装pending | 隔离通过 |
+| 2026-11-06 | [原生媒体资产](2026-11-06-macos-native-assets.md) | 固定源码构建arm64媒体工具，保留许可/签名边界 | 本机通过 |
+| 2026-11-06 | [回复静默计时夹具](2026-11-06-reply-wait-timing.md) | 比较服务端静默截止，抵抗请求调度误报 | 夹具通过 |
 | 2026-11-06 | [macOS WP0 基线与隔离](2026-11-06-macos-wp0.md) | 真实路径预期、离线配置与首期环境 | 实施中 |
-| 2026-11-06 | [macOS 平台更新基线](2026-11-06-macos-platform-baseline.md) | ZIP 安全解压、POSIX helper 与 Windows 边界 | 待验证组合 |
-| 2026-11-06 | [macOS 更新检查路径](2026-11-06-macos-updates-baseline.md) | 规范路径比较与跨系统可执行名 | 待验证组合 |
+| 2026-11-06 | [macOS 平台更新基线](2026-11-06-macos-platform-baseline.md) | ZIP 安全解压、POSIX helper 与 Windows 边界 | 组合通过，未发布 |
+| 2026-11-06 | [macOS 更新检查路径](2026-11-06-macos-updates-baseline.md) | 规范路径比较与跨系统可执行名 | 组合通过，未发布 |
 | 2026-11-06 | [本地 Agent 开发提示词](2026-11-06-macos-development-prompt.md) | 将设计工作包接成可执行交接，保留实机验收与发布边界 | 文档，未发布 |
 | 2026-11-06 | [开发工具路由与 macOS 设计归档](2026-11-06-development-tools-and-macos-design.md) | 项目相关工具按任务调用；8 份设计原稿保留本地资料边界 | 文档，未发布 |
 | 2026-11-03 | [人格语气层重复/未进目的提示词](2026-11-03-persona-tone-dedup.md) | tone 不再回退 core；相同内容去重；purpose 接语气层 | 待发布 |

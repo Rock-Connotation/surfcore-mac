@@ -6,6 +6,15 @@ import { spawnSync } from 'node:child_process';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
   'test-update-archive.mjs',
+  'test-self-test-target.mjs',
+  'test-install-identity.mjs', 'test-runtime-media.mjs', 'test-macos-shared-core.mjs',
+  '../plugins/surfcore/scripts/test-perception-api.mjs',
+  '../plugins/surfcore/scripts/test-channel-contract.mjs',
+  '../plugins/surfcore/scripts/test-bili-media.mjs',
+  '../plugins/surfcore/scripts/test-bili-media-host.mjs',
+  '../plugins/surfcore/scripts/test-bili-media-frames.mjs',
+  '../plugins/surfcore/scripts/test-bili-media-lifecycle.mjs',
+  '../plugins/surfcore/scripts/test-bili-media-no-history.mjs',
   'test-audit-bridge.mjs', 'test-audit-protocol.mjs', 'test-audit-protocol-helpers.mjs',
   'test-audit-security.mjs', 'test-audit-security-mcp.mjs',
   'test-audit-setup.mjs', 'test-audit-setup-guards.mjs',
@@ -287,6 +296,11 @@ const tests = [
   // 唤醒人格卡注入：二代唤醒必须带人格卡正文，且与 qq_get_prompt 同源（2026-11-01 A1）。
   'test-persona-wake-injection.mjs',
 ];
+if (process.platform === 'darwin') {
+  tests.push('test-perception-resources.mjs', 'test-perception-service.mjs', 'test-perception-cli.mjs', 'test-perception-host.mjs');
+} else {
+  console.log('NOT RUN: native ASR integration fixtures currently require the macOS execution matrix; Windows/Intel ASR acceptance remains unverified.');
+}
 let failed = 0;
 for (const test of tests) {
   console.log(`\nRunning ${test}`);
