@@ -38,17 +38,31 @@ await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(cancelDone, 
 releaseResult({ state: 'completed', result: { segments: [], coverage: { complete: true } } })
 assert.equal((await cancel).state, 'cancelled'); assert.equal((await lateService.getJob(late.jobId)).state, 'cancelled'); assert.ok(childCancelled >= 1)
 if (process.platform !== 'win32') {
-const helper = path.join(root, 'helper.mjs'), readyFile = path.join(root, 'helper-ready'), exitFile = path.join(root, 'helper-exit')
-fs.writeFileSync(helper, `#!/usr/bin/env node\nimport fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready'); process.on('SIGTERM',()=>setTimeout(()=>{fs.writeFileSync(${JSON.stringify(exitFile)}, 'exited');process.exit(0)}, 200)); setInterval(()=>{},1000);\n`, { mode: 0o755 })
+// A GUI Host can have an empty PATH. The executable fixture must use the
+// same Node as the test runner, including when its absolute path has spaces.
+const shellQuote = value => `'${String(value).replace(/'/g, "'\\''")}'`
+function makeHelper(name, source) {
+  const script = path.join(root, `${name}.mjs`), wrapper = path.join(root, `${name}.sh`)
+  fs.writeFileSync(script, source, { mode: 0o600, flag: 'wx' })
+  fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(script)} "$@"\n`, { mode: 0o755, flag: 'wx' })
+  return wrapper
+}
+const readyFile = path.join(root, 'helper-ready'), exitFile = path.join(root, 'helper-exit')
+const helper = makeHelper('helper', `import fs from 'node:fs'; process.on('SIGTERM',()=>setTimeout(()=>{fs.writeFileSync(${JSON.stringify(exitFile)}, 'exited');process.exit(0)}, 200)); fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready'); setInterval(()=>{},1000);\n`)
 const controller = new AbortController()
-const decode = verifyMediaDecode(path.join(root, 'fixture'), { ffmpegPath: helper, signal: controller.signal }).then(() => null, error => error)
-for (let i = 0; i < 100 && !fs.existsSync(readyFile); i++) await new Promise(resolve => setTimeout(resolve, 10))
-assert.ok(fs.existsSync(readyFile)); controller.abort(); const failure = await decode
+let earlyFailure = null, helperSettled = false
+const decode = verifyMediaDecode(path.join(root, 'fixture'), { ffmpegPath: helper, signal: controller.signal }).then(() => { helperSettled = true; return null }, error => { helperSettled = true; earlyFailure = error; return error })
+const readyDeadline = Date.now() + 15_000
+while (!fs.existsSync(readyFile) && !helperSettled && Date.now() < readyDeadline) await new Promise(resolve => setTimeout(resolve, 25))
+const helperReady = fs.existsSync(readyFile), settledAtReadiness = helperSettled, failureAtReadiness = earlyFailure
+if (!helperReady) { controller.abort(); await decode } // Reap our child even when readiness fails.
+assert.ok(helperReady, `helper 未就绪：${failureAtReadiness?.code ?? (settledAtReadiness ? '提前退出' : '等待超时')} ${failureAtReadiness?.message ?? ''}`)
+controller.abort(); const failure = await decode
 assert.equal(failure.code, 'media.tool.cancelled'); assert.ok(fs.existsSync(exitFile), 'FFmpeg wrapper must wait for the child to exit')
-const timeoutExit = path.join(root, 'timeout-exit'), timeoutHelper = path.join(root, 'timeout-helper.mjs')
-fs.writeFileSync(timeoutHelper, `#!/usr/bin/env node\nimport fs from 'node:fs'; process.on('SIGTERM',()=>setTimeout(()=>{fs.writeFileSync(${JSON.stringify(timeoutExit)}, 'exited');process.exit(0)}, 100)); setInterval(()=>{},1000);\n`, { mode: 0o755 })
-const timeoutFailure = await verifyMediaDecode(path.join(root, 'fixture'), { ffmpegPath: timeoutHelper, timeoutMs: 2000 }).then(() => null, error => error)
-assert.equal(timeoutFailure.code, 'media.tool.timeout'); assert.ok(fs.existsSync(timeoutExit), 'timeout must wait for helper exit')
+const timeoutExit = path.join(root, 'timeout-exit'), timeoutReady = path.join(root, 'timeout-ready')
+const timeoutHelper = makeHelper('timeout-helper', `import fs from 'node:fs'; process.on('SIGTERM',()=>setTimeout(()=>{fs.writeFileSync(${JSON.stringify(timeoutExit)}, 'exited');process.exit(0)}, 100)); fs.writeFileSync(${JSON.stringify(timeoutReady)}, 'ready'); setInterval(()=>{},1000);\n`)
+const timeoutFailure = await verifyMediaDecode(path.join(root, 'fixture'), { ffmpegPath: timeoutHelper, timeoutMs: 5000 }).then(() => null, error => error)
+assert.equal(timeoutFailure.code, 'media.tool.timeout'); assert.ok(fs.existsSync(timeoutReady), 'timeout helper exited before its signal handler became ready'); assert.ok(fs.existsSync(timeoutExit), 'timeout must wait for helper exit')
 }
 await service.dispose(); await lateService.dispose()
 console.log('serialized media, queued cancellation, helper reaping and late ASR result cancellation passed')
