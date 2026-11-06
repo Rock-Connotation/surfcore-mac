@@ -79,3 +79,6 @@ Case：本页、2026-11-07-bili-controlled-round.md、2026-11-07-bili-dynamic-re
 
 
 显式部分续评组合门禁：checks-7-provisional的audit164/164、regressions和完整插件均exit0；相关无同意/无效范围/重复/取消/切角/无评分/无维护断言通过。Astra R7只读复审无新增实质P1/P2。准备从本轮提交制包，原生最后一次模型请求仍待执行。
+
+
+续评预算可见性补验：页面明确区分“新单轮”预算与续评沿用的原模型/8192上限，点击前展示最多一次。checks-8-final-ui的audit164/164、regressions、完整插件均exit0；本轮只改变预算说明，未改变原作业调用上限或评分门槛。

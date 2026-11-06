@@ -19,13 +19,13 @@ section{border-top:1px solid color-mix(in srgb,CanvasText 20%,Canvas);margin-top
 <p>自动取候选、选择一条、等待转写完成，再生成点评与动态草稿。每轮最多两次模型请求，按下方预算限制输出；消耗所选渠道额度。草稿保存在本机。</p>
 <p class="muted">本轮依据完整音轨转写评价；画面采样可另行查看。自动巡航保持暂停。</p>
 <div class="actions"><button id="pause">仅运行单轮</button><button id="refresh">刷新</button></div>
-<label for="model">本轮模型</label><br><select id="model" aria-label="本轮模型"></select>
-<label for="tokens">每次输出上限</label><br><select id="tokens"><option value="2000">2000 tokens</option><option value="8192">8192 tokens</option></select>
+<label for="model">新单轮模型</label><br><select id="model" aria-label="本轮模型"></select>
+<label for="tokens">新单轮每次输出上限</label><br><select id="tokens"><option value="2000">2000 tokens</option><option value="8192">8192 tokens</option></select>
 <div class="actions"><button id="start" disabled>自主选题并点评</button><button id="cancel" disabled>取消本轮</button></div>
 <p id="notice" role="status" aria-live="polite">正在读取状态…</p>
 <p id="progress" class="muted"></p>
 <p id="coverage" class="muted"></p>
-<div id="partial-action" hidden><p>素材尚未完整。可只评价已处理部分，生成临时点评与草稿；仍保留缺口，不作正式评分、不发布。将先复核处理范围。</p><button id="partial">仅评价已处理部分</button></div>
+<div id="partial-action" hidden><p>素材尚未完整。可只评价已处理部分，生成临时点评与草稿；仍保留缺口，不作正式评分、不发布。将先复核处理范围。</p><p id="partial-budget" class="muted"></p><button id="partial">仅评价已处理部分</button></div>
 <section id="selection" hidden><h4>选中的视频</h4><p id="video"></p></section>
 <section id="review" hidden><h4 id="review-title">观后点评</h4><p id="scope" class="muted"></p><p id="score"></p><p id="commentary"></p><h4 id="draft-title">动态草稿</h4><pre id="draft"></pre><p class="muted">尚未发布。</p></section>
 <details><summary>诊断详情</summary><pre id="result" aria-label="单轮诊断结果"></pre></details>
@@ -63,6 +63,7 @@ function render(value) {
   $('coverage').textContent = coverage ? '已处理：' + ranges(coverage.processedRanges) + (coverage.complete ? ' · 覆盖完整' : ' · 未知缺口：' + ranges(coverage.missingRanges)) : '';
   $('partial-action').hidden = !(job?.state === 'failed' && job.code === 'ROUND_MEDIA_INCOMPLETE' && job.calls === 1);
   $('partial').disabled = working;
+  $('partial-budget').textContent = job ? '本次续评沿用原模型 ' + job.provider + ' / ' + job.model + '，最多1次请求，输出上限 ' + job.maxTokens + ' tokens。' : '';
   $('selection').hidden = !job?.selection;
   $('video').textContent = job?.selection?.title || '';
   $('review').hidden = !job?.review;
