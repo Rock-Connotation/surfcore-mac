@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createPerceptionService } from '../src/perception/index.js';
+import { requireAssets, requireAssetFiles, requireMedia } from './perception-test-runtime.mjs';
+const base=requireAssets(); requireAssetFiles(base,['build/bin/whisper-cli','ggml-base.bin','zh-sample.wav']); const {ffmpeg,ffprobe}=requireMedia();
+const root=path.resolve('_backups',`asr-real-${Date.now()}-${process.pid}`); const assets=path.join(root,'perception/assets'); fs.mkdirSync(assets,{recursive:true});
+const input=path.join(assets,'sample.wav'); fs.copyFileSync(path.join(base,'zh-sample.wav'),input,fs.constants.COPYFILE_EXCL);
+const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const engine={provider:'whisper.cpp',executable:path.join(base,'build/bin/whisper-cli'),runtimeVersion:'1.9.5-dev',backend:'cpu',model:{id:'base',path:path.join(base,'ggml-base.bin'),sha256:'60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe'}};
+const svc=createPerceptionService({dataRoot:root,engine,ffmpegPath:ffmpeg,ffprobePath:ffprobe,getCharacter:()=>({id:'fixture',epoch:1})}); await svc.ready; const doctor=await svc.doctor(); assert.equal(doctor.ready,true,JSON.stringify(doctor));
+const request={activityId:'real-sample',asset:{assetId:'sample',contentSha256:sha(input),localPath:input,durationMs:6463,sourceDurationMs:6463,acquiredRanges:[{startMs:0,endMs:6463}],timelineMap:[{localStartMs:0,localEndMs:6463,sourceStartMs:0,sourceEndMs:6463}]},provenance:{channel:'local',sourceId:'public-sample',acquiredAtMs:0},source:{channel:'local'},requestedRanges:[{startMs:0,endMs:6463}],languageHint:'zh'};
+const {jobId}=await svc.submit(request); let job; for(let i=0;i<1800;i++){job=await svc.getJob(jobId);if(['completed','failed','partial'].includes(job.state))break;await new Promise(r=>setTimeout(r,100));} console.log(JSON.stringify({state:job.state,error:job.error,coverage:job.coverage,segments:job.result?.segments,engine:job.result?.engine,evidenceRoot:root},null,2)); await svc.dispose(); assert.equal(job.state,'completed'); assert.deepEqual(job.coverage.processedRanges,[{startMs:0,endMs:6463}]); assert.deepEqual(job.coverage.missingRanges,[]); assert(job.result.segments.length>0);
