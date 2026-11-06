@@ -21,6 +21,50 @@ function eventStream(h) {
   h.pumpMux();
   return (payload) => { queue.push({ rpcId: payload.eventId, payload }); wake?.(); wake = null; };
 }
+const privateMessage = (text, messageId = 100) => ({ user_id: 123, self_id: 1, message_id: messageId, sender: { nickname: 'fixture' }, message: [{ type: 'text', data: { text } }] });
+await test('numbered stale reply without pending is visible and never prompts', async (h) => {
+  h.setMode('chat'); h.cfg.sendDelayMs = 0;
+  for (const text of ['拒绝 273d4825', '通过 abcdef12', 'abcdef12 A', 'approve 0123abcd']) {
+    const before = h.calls.sent.length;
+    await h.handleIncoming('private', '123', privateMessage(text), h.cfg);
+    assert.equal(h.calls.prompts.length, 0, `stale response must not call model: ${text}`);
+    assert.equal(h.calls.sent.length, before + 1);
+    assert.match(JSON.stringify(h.calls.sent.at(-1)), /编号已结束或不存在/);
+  }
+});
+await test('cancelled event followed by its numbered reply does not prompt', async (h) => {
+  h.setMode('chat'); h.cfg.sendDelayMs = 0;
+  const sessionId = await h.ensureSession('private:123'); const emit = eventStream(h);
+  emit({ type: 'approval/requested', sessionId, clientId: 'client', eventId: 'expired-case', toolName: 'safe-test' });
+  for (let i = 0; i < 50 && !h.pending.has('private:123'); i++) await tick();
+  const code = h.pending.get('private:123').requestId;
+  emit({ type: 'interaction/cancelled', clientId: 'client', eventId: 'expired-case' });
+  for (let i = 0; i < 50 && h.pending.has('private:123'); i++) await tick();
+  assert.equal(h.pending.has('private:123'), false);
+  await h.handleIncoming('private', '123', privateMessage(`拒绝 ${code}`), h.cfg);
+  assert.equal(h.calls.prompts.length, 0); assert.match(JSON.stringify(h.calls.sent.at(-1)), /编号已结束或不存在/);
+});
+await test('legacy mode treats numbered text as ordinary chat', async (h) => {
+  h.setMode('chat'); h.cfg.sendDelayMs = 0; h.cfg.interaction.requireRequestId = false;
+  await h.handleIncoming('private', '123', privateMessage('拒绝 273d4825'), h.cfg);
+  assert.equal(h.calls.prompts.length, 1);
+});
+await test('strict mode still delivers ordinary non-interaction chat', async (h) => {
+  h.setMode('chat'); h.cfg.sendDelayMs = 0;
+  await h.handleIncoming('private', '123', privateMessage('你好，今天天气怎样？'), h.cfg);
+  assert.equal(h.calls.prompts.length, 1);
+});
+await test('active request still rejects wrong ID and accepts current owner ID', async (h) => {
+  h.setMode('chat'); h.cfg.sendDelayMs = 0; const replies = [];
+  h.api.respond = async (value) => { replies.push(value); return { result: { ok: true } }; };
+  await h.registerPending('private:123', { kind: 'approval', clientId: 'client', eventId: 'current' });
+  const entry = h.pending.get('private:123');
+  const wrong = entry.requestId === '00000000' ? 'ffffffff' : '00000000';
+  await h.handleIncoming('private', '123', privateMessage(`通过 ${wrong}`), h.cfg);
+  assert.equal(replies.length, 0); assert.equal(h.calls.prompts.length, 0); assert.equal(h.pending.get('private:123'), entry);
+  await h.handleIncoming('private', '123', privateMessage(`拒绝 ${entry.requestId}`), h.cfg);
+  assert.equal(replies.length, 1); assert.equal(replies[0].outcome.value, 'rejected'); assert.equal(h.calls.prompts.length, 0);
+});
 await test('notification is registered before transport completes', async (h) => {
   h.cfg.sendDelayMs = 0; const sessionId = await h.ensureSession('private:123');
   let started, release, responses = 0;

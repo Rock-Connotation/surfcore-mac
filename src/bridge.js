@@ -15688,6 +15688,20 @@ async function main() {
     const displayName = kind === 'group'
       ? (event.sender?.card || event.sender?.nickname || String(event.user_id))
       : '私聊';
+    const p = pending.get(key);
+    // Strict numbered replies are interaction protocol messages, even after
+    // their pending request was cancelled or expired; never turn them into chat.
+    if (!p && cfg.interaction.requireRequestId) {
+      const text = String(plainContent ?? '').trim();
+      const approval = /^(\S+)\s+([a-f0-9]{8})$/i.exec(text);
+      const action = String(approval?.[1] ?? '').toLowerCase();
+      const isApprovalReply = approval && (APPROVE_WORDS.has(action) || REJECT_WORDS.has(action));
+      const isQuestionReply = /^[a-f0-9]{8}\s+\S/i.test(text);
+      if (isApprovalReply || isQuestionReply) {
+        await sendToQQ(key, '⚠️ 该编号已结束或不存在，请等待新请求。');
+        return;
+      }
+    }
     // 记忆卡原料：在静默/审批/命令等分支之前记录，避免「主人说的话没进记忆」。
     noteSecretInInbound(key, plainContent || textContent, isOwner);
     recordMemoryInboxEvent({ key, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf });
@@ -15700,7 +15714,6 @@ async function main() {
 
     // 若该会话有挂起的提问/审批，先当作回答处理（用当前消息自己的文字，不含引用原文）。
     // 审批只有管理员消息会被消费；群友消息不能因为“审批挂起”而被吞掉，应继续走正常处理。
-    const p = pending.get(key);
     if (canConsumePending(p, isOwner)) {
       await handlePendingAnswer(p, plainContent, key, isOwner, String(event.user_id ?? ''), displayName);
       return;
