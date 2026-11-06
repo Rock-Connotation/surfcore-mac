@@ -46,18 +46,19 @@ function acquireProfile(dir) {
 }
 
 export function createDouyinBrowser({ profileDir, browserPath, headless = false, onResponse, onRequest, timeouts = {} } = {}) {
-  let child, sessionId, release, browserName = '', buffer = Buffer.alloc(0), nextId = 0, running = false, starting = false, exitPromise;
+  let child, sessionId, release, browserName = '', buffer = Buffer.alloc(0), nextId = 0, running = false, starting = false, disconnected = false, closing = false, exitPromise;
   const pending = new Map(), tracked = new Map(), starts = new Map(), recent = [];
   let requestSeq = 0;
   const timeout = timeouts.command ?? 10000, closeTimeout = timeouts.close ?? 5000;
   const resetPending = () => { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(fail('BROWSER_CLOSED', '浏览器连接已关闭', '重新启动浏览器后重试。')); } pending.clear(); };
+  const disconnect = () => { disconnected = true; running = false; buffer = Buffer.alloc(0); starts.clear(); tracked.clear(); resetPending(); };
   function command(method, params = {}, session = sessionId) {
-    if (!child || !child.stdio[3]?.writable) return Promise.reject(fail('BROWSER_CLOSED', '浏览器连接已关闭', '重新启动浏览器后重试。'));
+    if (disconnected || !child || !child.stdio[3]?.writable) return Promise.reject(fail('BROWSER_CLOSED', '浏览器连接已关闭', '重新启动浏览器后重试。'));
     const id = ++nextId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { pending.delete(id); reject(fail('CDP_TIMEOUT', '浏览器操作超时', '检查浏览器是否响应，再重试。')); }, timeout);
       pending.set(id, { resolve, reject, timer });
-      child.stdio[3].write(JSON.stringify({ id, method, params, ...(session ? { sessionId: session } : {}) }) + '\0', (e) => { if (e && pending.has(id)) { clearTimeout(timer); pending.delete(id); reject(fail('CDP_WRITE_FAILED', '浏览器连接写入失败', '关闭并重新启动浏览器。')); } });
+      child.stdio[3].write(JSON.stringify({ id, method, params, ...(session ? { sessionId: session } : {}) }) + '\0', (e) => { if (e) disconnect(); });
     });
   }
   function receive(message) {
@@ -72,6 +73,7 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       if (starts.size >= 200) starts.delete(starts.keys().next().value);
       starts.set(id, { requestId: id, sessionId, requestSeq: ++requestSeq, requestStartedAt: Date.now(), host: u.host, pathname: u.pathname });
     }
+    if (message.method === 'Network.requestServedFromCache') { const started = starts.get(p.requestId); if (started) started.cached = true; tracked.delete(p.requestId); }
     if (message.method === 'Network.responseReceived') {
       const u = safeUrl(p.response?.url), status = p.response?.status;
       if (!u || u.protocol !== 'https:' || !HOSTS.has(u.host)) return;
@@ -81,13 +83,14 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       const meta = { pathname: u.pathname.slice(0, 256), status: Number(status) || 0, requestId, sessionId, requestSeq, requestStartedAt };
       recent.push(meta); if (recent.length > 40) recent.shift();
       try { onRequest?.(meta); } catch {}
-      if (PATHS.has(u.pathname) && /(?:^|\/)json(?:\s*;|$)/i.test(p.response?.mimeType || '')) { if (tracked.size >= 100) tracked.delete(tracked.keys().next().value); tracked.set(p.requestId, meta); }
+      if (!started.cached && !p.response?.fromDiskCache && !p.response?.fromServiceWorker && !p.response?.fromPrefetchCache && PATHS.has(u.pathname) && /(?:^|\/)json(?:\s*;|$)/i.test(p.response?.mimeType || '')) { if (tracked.size >= 100) tracked.delete(tracked.keys().next().value); tracked.set(p.requestId, meta); }
     }
     if (message.method === 'Network.loadingFailed') { tracked.delete(p.requestId); starts.delete(p.requestId); }
     if (message.method === 'Network.loadingFinished' && tracked.has(p.requestId)) {
       const meta = tracked.get(p.requestId); tracked.delete(p.requestId); starts.delete(p.requestId);
       if (p.encodedDataLength > MAX_BODY) return;
       command('Network.getResponseBody', { requestId: p.requestId }).then(result => {
+        if (disconnected) return;
         const body = result.base64Encoded ? Buffer.from(result.body || '', 'base64') : Buffer.from(result.body || '', 'utf8');
         if (body.length > MAX_BODY) return;
         try { const json = JSON.parse(body.toString('utf8')); Promise.resolve(onResponse?.(json, meta)).catch(() => {}); } catch {}
@@ -95,13 +98,15 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
     } else if (message.method === 'Network.loadingFinished') starts.delete(p.requestId);
   }
   function consume(chunk) {
+    if (disconnected) return;
     buffer = Buffer.concat([buffer, chunk]);
-    while (true) { const end = buffer.indexOf(0); if (end < 0) break; const frame = buffer.subarray(0, end); buffer = buffer.subarray(end + 1); if (frame.length > MAX_FRAME) { resetPending(); child?.stdio[4]?.destroy(); return; } try { receive(JSON.parse(frame.toString('utf8'))); } catch {} }
-    if (buffer.length > MAX_FRAME) { buffer = Buffer.alloc(0); resetPending(); child?.stdio[4]?.destroy(); }
+    while (true) { const end = buffer.indexOf(0); if (end < 0) break; const frame = buffer.subarray(0, end); buffer = buffer.subarray(end + 1); if (frame.length > MAX_FRAME) { disconnect(); child?.stdio[4]?.destroy(); return; } try { receive(JSON.parse(frame.toString('utf8'))); } catch {} }
+    if (buffer.length > MAX_FRAME) { buffer = Buffer.alloc(0); disconnect(); child?.stdio[4]?.destroy(); }
   }
   async function start() {
+    if (child && disconnected) return problem('BROWSER_DISCONNECTED', '浏览器连接已中断，原进程尚未退出', '关闭独立浏览器并等待退出后重新启动。');
     if (running || starting || child) return problem('BROWSER_RUNNING', '浏览器已经启动或正在关闭', '先关闭当前浏览器再重试。');
-    starting = true;
+    starting = true; disconnected = false;
     try {
       release = acquireProfile(profileDir);
       const found = browserPath ? { executable: browserPath, name: path.basename(browserPath) } : findBrowser();
@@ -110,9 +115,9 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
       child = spawn(found.executable, ['--remote-debugging-pipe', `--user-data-dir=${path.resolve(profileDir)}`, '--no-first-run', '--no-default-browser-check', ...(headless ? ['--headless=new'] : []), 'about:blank'], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env, windowsHide: true });
       const owned = child;
-      exitPromise = new Promise(resolve => { owned.once('close', () => { running = false; resetPending(); starts.clear(); tracked.clear(); if (child === owned) { child = undefined; release?.(); release = undefined; } resolve(); }); });
-      owned.on('error', () => resetPending());
-      owned.stdio[4].on('data', consume); owned.stdio[4].on('error', resetPending); owned.stdio[4].on('close', resetPending); owned.stdio[3].on('error', resetPending);
+      exitPromise = new Promise(resolve => { owned.once('close', () => { if (!closing) disconnected = true; else disconnected = false; running = false; resetPending(); starts.clear(); tracked.clear(); if (child === owned) { child = undefined; release?.(); release = undefined; } resolve(); }); });
+      owned.on('error', disconnect);
+      owned.stdio[4].on('data', consume); owned.stdio[4].on('error', disconnect); owned.stdio[4].on('close', disconnect); owned.stdio[3].on('error', disconnect); owned.stdio[3].on('close', disconnect);
       const target = await command('Target.createTarget', { url: 'about:blank' }, null);
       const attached = await command('Target.attachToTarget', { targetId: target.targetId, flatten: true }, null); sessionId = attached.sessionId;
       await command('Network.enable'); await command('Page.enable'); await command('Page.navigate', { url: HOME_URL }); running = true;
@@ -123,13 +128,13 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       return safeError(e);
     } finally { starting = false; }
   }
-  async function guarded(action) { if (!running) return problem('BROWSER_NOT_RUNNING', '浏览器未启动', '先启动浏览器。'); try { return await action(); } catch (e) { return safeError(e); } }
+  async function guarded(action) { if (disconnected) return problem('BROWSER_DISCONNECTED', '浏览器连接已中断', '关闭独立浏览器并等待退出后重新启动。'); if (!running) return problem('BROWSER_NOT_RUNNING', '浏览器未启动', '先启动浏览器。'); try { return await action(); } catch (e) { return safeError(e); } }
   return {
     start,
     reload: () => guarded(async () => { await command('Page.navigate', { url: HOME_URL }); return { ok: true }; }),
     snapshot: () => guarded(async () => { const result = await command('Runtime.evaluate', { expression: 'JSON.stringify({title:document.title,url:location.origin+location.pathname,text:(document.body?.innerText||"").slice(0,12000)})', returnByValue: true }); const v = JSON.parse(result.result?.value || '{}'); const u = safeUrl(v.url); return { ok: true, title: String(v.title || '').slice(0, 300), url: u ? `${u.protocol}//${u.host}${u.pathname}`.slice(0, 1000) : '', text: String(v.text || '').slice(0, 12000) }; }),
     screenshot: () => guarded(async () => { const result = await command('Page.captureScreenshot', { format: 'png' }); return { ok: true, png: result.data }; }),
-    status: () => ({ ok: true, running, browserName: child ? browserName : '', requestSeq, recent: recent.slice() }),
-    close: async () => { if (!child) return { ok: true }; const ownedExit = exitPromise; let closeError; try { await command('Browser.close', {}, null); child?.stdio[3]?.end(); } catch (e) { closeError = e; } const exited = await Promise.race([ownedExit.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), closeTimeout))]); return exited ? { ok: true } : closeError ? safeError(closeError) : problem('BROWSER_CLOSE_TIMEOUT', '浏览器未正常退出', '手动关闭此独立浏览器后重试；资料会保留。'); },
+    status: () => ({ ...(disconnected ? problem('BROWSER_DISCONNECTED', '浏览器连接已中断', '关闭独立浏览器并等待退出后重新启动。') : { ok: true }), running, browserName: child ? browserName : '', requestSeq, recent: recent.slice() }),
+    close: async () => { if (!child) return { ok: true }; closing = true; running = false; const ownedExit = exitPromise; let closeError; try { if (disconnected) { child.stdio[3]?.end(); } else { await command('Browser.close', {}, null); child?.stdio[3]?.end(); } } catch (e) { closeError = e; } const exited = await Promise.race([ownedExit.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), closeTimeout))]); closing = false; return exited ? { ok: true } : closeError ? safeError(closeError) : problem('BROWSER_CLOSE_TIMEOUT', '浏览器未正常退出', '手动关闭此独立浏览器后重试；资料会保留。'); },
   };
 }

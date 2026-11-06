@@ -17,9 +17,10 @@ read.on('data', c => { buf=Buffer.concat([buf,c]); let n; while ((n=buf.indexOf(
 if(m.method==='Target.createTarget') result={targetId:'target'};
 if(m.method==='Target.attachToTarget') result={sessionId:'session'};
 if(m.method==='Runtime.evaluate') result={result:{value:JSON.stringify({title:'中文',url:'https://www.douyin.com/?secret=hidden',text:'正文'})}};
+if(m.method==='Page.captureScreenshot' && process.env.FAKE_PIPE_FAILURE) { const mode=process.env.FAKE_PIPE_FAILURE; if(mode==='close') write.end(); if(mode==='error') read.destroy(); if(mode==='oversize') write.write(Buffer.alloc(4*1024*1024+1, 65)); setTimeout(()=>process.exit(0), 900); continue; }
 if(m.method==='Page.captureScreenshot') result={data:'cG5n'};
 if(m.method==='Network.getResponseBody') result={body:JSON.stringify({item:'中文'})};
-if(m.method==='Page.navigate') { fs.writeFileSync(process.env.FAKE_URL,m.params.url); setTimeout(()=>{ for(const [id,url,size] of [['good','https://www.douyin.com/aweme/v1/web/tab/feed/?secret=hidden',10],['bad','https://evil.example/aweme/v1/web/tab/feed/',10],['large','https://www.douyin.com/aweme/v1/web/tab/feed/',3000000],['other','https://www.douyin.com/private',10]]) { send({sessionId:'session',method:'Network.requestWillBeSent',params:{requestId:id,request:{url}}}); send({sessionId:'session',method:'Network.responseReceived',params:{requestId:id,response:{url,status:200,mimeType:'application/json'}}}); send({sessionId:'session',method:'Network.loadingFinished',params:{requestId:id,encodedDataLength:size}}); } const url='https://www.douyin.com/aweme/v1/web/tab/feed/'; for (const id of ['missing','redirect','wrong-session']) { if(id!=='missing') send({sessionId:id==='wrong-session'?'other':'session',method:'Network.requestWillBeSent',params:{requestId:id,request:{url}}}); if(id==='redirect') send({sessionId:'session',method:'Network.requestWillBeSent',params:{requestId:id,request:{url},redirectResponse:{}}}); send({sessionId:'session',method:'Network.responseReceived',params:{requestId:id,response:{url,status:200,mimeType:'application/json'}}}); send({sessionId:'session',method:'Network.loadingFinished',params:{requestId:id,encodedDataLength:10}}); } }, 10); }
+if(m.method==='Page.navigate') { fs.writeFileSync(process.env.FAKE_URL,m.params.url); setTimeout(()=>{ for(const [id,url,size] of [['good','https://www.douyin.com/aweme/v1/web/tab/feed/?secret=hidden',10],['bad','https://evil.example/aweme/v1/web/tab/feed/',10],['large','https://www.douyin.com/aweme/v1/web/tab/feed/',3000000],['other','https://www.douyin.com/private',10]]) { send({sessionId:'session',method:'Network.requestWillBeSent',params:{requestId:id,request:{url}}}); send({sessionId:'session',method:'Network.responseReceived',params:{requestId:id,response:{url,status:200,mimeType:'application/json'}}}); send({sessionId:'session',method:'Network.loadingFinished',params:{requestId:id,encodedDataLength:size}}); } const url='https://www.douyin.com/aweme/v1/web/tab/feed/'; for(const flag of ['fromDiskCache','fromServiceWorker','fromPrefetchCache','served']) { send({sessionId:'session',method:'Network.requestWillBeSent',params:{requestId:flag,request:{url}}}); if(flag==='served') send({sessionId:'session',method:'Network.requestServedFromCache',params:{requestId:flag}}); send({sessionId:'session',method:'Network.responseReceived',params:{requestId:flag,response:{url,status:200,mimeType:'application/json',[flag]:true}}}); send({sessionId:'session',method:'Network.loadingFinished',params:{requestId:flag,encodedDataLength:10}}); } for (const id of ['missing','redirect','wrong-session']) { if(id!=='missing') send({sessionId:id==='wrong-session'?'other':'session',method:'Network.requestWillBeSent',params:{requestId:id,request:{url}}}); if(id==='redirect') send({sessionId:'session',method:'Network.requestWillBeSent',params:{requestId:id,request:{url},redirectResponse:{}}}); send({sessionId:'session',method:'Network.responseReceived',params:{requestId:id,response:{url,status:200,mimeType:'application/json'}}}); send({sessionId:'session',method:'Network.loadingFinished',params:{requestId:id,encodedDataLength:10}}); } }, 10); }
 if(m.method==='Browser.close') { send({id:m.id,result}); setTimeout(()=>process.exit(0),20); continue; }
 if(process.env.FAKE_TIMEOUT && m.method==='Page.captureScreenshot') continue;
 if(process.env.FAKE_ERROR && m.method==='Page.captureScreenshot') { send({id:m.id,error:{code:-1,message:'private'}}); continue; }
@@ -55,4 +56,23 @@ assert((await timeoutBrowser.start()).ok); const timed = await timeoutBrowser.sc
 delete process.env.FAKE_TIMEOUT; process.env.FAKE_ERROR = '1';
 const errorBrowser = createDouyinBrowser({profileDir: profile, browserPath: executable, timeouts: {command: 2000, close: 1000}});
 assert((await errorBrowser.start()).ok); const failed = await errorBrowser.screenshot(); assert.equal(failed.code, 'CDP_ERROR'); assert(failed.hint && !failed.error.includes('private')); assert((await errorBrowser.close()).ok);
+delete process.env.FAKE_ERROR;
+for (const mode of ['close','error','oversize']) {
+  process.env.FAKE_PIPE_FAILURE = mode;
+  const dir = path.join(root, 'broken-'+mode);
+  const instance = createDouyinBrowser({profileDir: dir, browserPath: executable, timeouts:{command:200, close:100}});
+  assert((await instance.start()).ok);
+  const result = await instance.screenshot();
+  if(mode==='error') await instance.reload();
+  await new Promise(resolve => setTimeout(resolve, 40));
+  const state = instance.status(); assert.equal(state.ok, false, mode); assert.equal(state.running, false); assert(state.code && state.error && state.hint);
+  assert(fs.existsSync(path.join(dir, '.surfcore-douyin.lock')));
+  assert.equal((await instance.start()).code, 'BROWSER_DISCONNECTED');
+  const closing = await instance.close(); assert.equal(closing.ok, false); assert(closing.code && closing.hint);
+  assert(fs.existsSync(path.join(dir, '.surfcore-douyin.lock')));
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  assert(!fs.existsSync(path.join(dir, '.surfcore-douyin.lock')));
+  delete process.env.FAKE_PIPE_FAILURE; assert((await instance.start()).ok); assert((await instance.close()).ok);
+}
+delete process.env.FAKE_PIPE_FAILURE;
 console.log('douyin browser mock tests passed');
