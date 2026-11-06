@@ -1,16 +1,18 @@
 # macOS 首期组合：Host 接线、制品与验收边界
 
-状态：WP1–WP5 实现已组合；本机离线与原生资产验证通过，官方 App 装载、真实 B站和 Finder 生命周期待验。版本仍为 0.8.8，不是发布记录。提交以 HANDOFF 顶部候选为准；本页保留设计 06 的编号，不新建进度系统。
+状态：WP0–WP5 已组合，b9a42b2 已装入官方原生 App 0.2.2-rc.1 的独立 profile 完成下述实际链路；其后补修真实数字静音幻觉，最终候选以 HANDOFF 与本地 final-results.json 为准。版本仍为 0.8.8，未发布；不宣称设计 06 全部通过。下方历史段落保留当时状态，不能覆盖本页最新结果。
+
+本轮实际平台为 macOS26.6.2 / Apple M4 arm64 / Electron44.7.0 / App 随附 Node24.21.0。原有常用 App 未重启、常用 profile 未修改；用户另行授权了共享日志备份、新实例/profile、本机 Electron 接口和现场扫码的只读测试账号。二维码、Cookie、令牌及签名媒体地址不入交接。
 
 ## 完整逻辑
 
 1. **链路**：官方 desktop Host 的 `plugins/surfcore/lib/index.js` 创建唯一 ASR 服务、B站媒体父作业和受保护 HTTP 入口；设置页与 CLI 使用同一个实例。B站 API 提交先经 `PlatformRegistry.observe` 检查渠道状态与固定活动身份，再获取分 P 媒体、提交 ASR、写观看历史、追加受限 ExperienceEvent，由 Host 单写者投影记忆。下一次 B站上下文读取统一卡；QQ 不可见这条受限观察。设置页显示作业、处理范围、末段文本、取消/恢复与经历失败重试；记忆页显示按角色绑定的最近维护失败与重试。
 2. **机制**：本地 ASR 恢复产生关联新尝试时，API/CLI 返回新 jobId 与新状态；B站父作业保持原 ID。CLI 请求用当前 Host 生成的本机令牌，发现文件 0600、感知目录 0700；管理界面复用原 DSH 管理认证。服务端校验来源、角色及 epoch、受管素材真实路径。configure/persist/rollback 与提交共享串行门；本地请求不能自称公开 B站材料。B站下载/抽帧单槽，ASR 推理单槽，退出只取消本实例的受管进程；错误保留 code/error/hint。通用渠道 execute 未接外发实现，现有预算、静默和互动回执仍由原工具守闸。
-3. **爆炸半径**：Host、CLI、设置页、bridge 是不同读者，状态串角或失去取消会形成高影响静默错误；本次新增目录在 SurfCore 数据根，涉及角色记忆、作业、素材与本地模型路径。隔离测试不读取真实账号，不调用模型供应商或外发。未改版本、tag、远端、真实 profile 或当前 App 进程。
+3. **爆炸半径**：Host、CLI、设置页、bridge 是不同读者，状态串角或失去取消会形成高影响静默错误；本次新增目录在 SurfCore 数据根，涉及角色记忆、作业、素材与本地模型路径。早期夹具不读取真实账号；后续用户现场扫码只绑定独立测试 profile，允许只读身份及公开视频。未调用宿主模型供应商或平台外发。未改版本、tag、远端、常用 profile 或原常用 App。
 4. **取舍**：A 让每个 CLI 自行下载和识别，接线少但长命令超时、重复推理和退出所有权难解；B 由 Host 管理持久父/子作业，增加状态与生命周期成本，获得统一取消、重启和结果归属。选 B。制品选择保留仓库相对布局并内置运行依赖；把散文件复制为插件虽小，却会依赖包外 `src` 和开发机 node_modules。模型/原生运行时另作有摘要的资产，不把机器与账号资料塞进 npm 包。
-5. **生效与重启**：需将最终 npm 制品装入官方 App 的 desktop profile，再由 App 重新装载 Host/客户端。QQ bridge 若使用新源码也需单独重启；QQ 关闭时不需启动它。当前仅观察到官方 App 正在运行，未启动第二实例或重启共享实例。`DSH_HOME` 与 `--user-data-dir` 可以隔离 profile、用户目录和单例锁，但官方 App 会使用共享 macOS 日志目录并启动清理旧崩溃日志，不能称完全无副作用的并行启动。
-6. **验证**：组合 `npm run test:audit` 156/156；新增渠道接线后须最终复跑。插件全套、regressions 和 HTTP 链路结果见下方证据。真实中文样本在官方 Node24.21.0、便携 FFmpeg/FFprobe、便携 whisper、small 模型、纯系统 PATH、无 DYLD、中文空格新目录中，CPU/Metal 均处理 0–6463ms 无缺口；文本仍有错字。清晰 AISHELL 两条样本的 base/small 对比只有局部基线，small 为本机安装候选，未形成全面准确率门槛。
-7. **回滚与残余**：代码备份在主树 `_backups/20261106-macos-wp0/`，子任务各自 case 有原始证据。回滚先停止新任务、保存新增经历/作业，再还原上一制品和兼容快照；不得删除整个数据根。真实 profile 安装前保全配置、安装记录及共享日志，明确恢复路径；尚未执行真实迁移。Intel、Windows、新旧其他 macOS、Finder、休眠/唤醒与真实账号仍待验；不能宣告首期全部完成。
+5. **生效与重启**：需将最终 npm 制品装入官方 App 的 desktop profile，再由 App 重新装载 Host/客户端。QQ bridge 若使用新源码也需单独重启；QQ 关闭时不需启动它。已在用户授权后实际启动、安装和多次重启独立测试实例；原常用实例保持运行。`DSH_HOME` 与 `--user-data-dir` 可以隔离 profile、用户目录和单例锁，但官方 App 会使用共享 macOS 日志目录并启动清理旧崩溃日志，不能称完全无副作用的并行启动。
+6. **验证**：b9a42b2 组合 `npm run test:audit` 162/162、regressions、完整插件套件通过，554 个程序输入与 git blob 同源；静音修复组合结果与候选另记。插件全套、regressions 和 HTTP 链路结果见下方证据。真实中文样本在官方 Node24.21.0、便携 FFmpeg/FFprobe、便携 whisper、small 模型、纯系统 PATH、无 DYLD、中文空格新目录中，CPU/Metal 均处理 0–6463ms 无缺口；文本仍有错字。清晰 AISHELL 两条样本的 base/small 对比只有局部基线，small 为本机安装候选，未形成全面准确率门槛。
+7. **回滚与残余**：代码备份在主树 `_backups/20261106-macos-wp0/`，子任务各自 case 有原始证据。回滚先停止新任务、保存新增经历/作业，再还原上一制品和兼容快照；不得删除整个数据根。独立测试 profile 已保全配置、安装记录与共享日志；官方 CLI 回滚旧包再装回新包，160 个持久文件摘要不变，包含新扫码绑定/评分/日记/记忆。旧包未执行，不将安装回滚说成降级数据迁移通过。Intel、Windows、其他 macOS、直接 Finder 启动、关窗/热重载和休眠/唤醒仍待验；不能宣告首期全部完成。
 
 新增资源准入默认限制单素材2GiB、6小时、32个等待消费者；转码前按512MiB余量与预计PCM/分块空间预检，不自动删素材。已在运行的共享推理可增加消费者，不占等待名额。空间检查是时点估算，不是磁盘空间租约。
 
@@ -36,39 +38,39 @@
 | CORE-T01 | 同角色 local/B站/QQ 身份一致 | 夹具通过，共享上下文、id/epoch/revision | shared-core 7/7 |
 | CORE-T02 | 超长核心卡，总预算及层保留 | 夹具通过，分层预留/裁剪诊断 | shared-core / persona tests |
 | CORE-T03 | QQ/B站均关闭，核心仍维护 | 夹具通过，Host 本地维护与目的读取 | shared-core |
-| CORE-T04 | QQ关闭，B站账本→经历→卡→下次上下文 | 夹具通过四环；真实 B站未执行 | composed-perception-host-channel.log / shared-core |
-| CORE-T05 | 重复导入/完成不重复消费 | 夹具通过，事件/游标重放一次 | shared-core / Host integration |
-| CORE-T06 | 长作业中切角色 | 夹具通过；真实App切换后旧作业隐藏/读API拒绝；运行中切角晚到仍待验 | ASR service / bili-media-host |
+| CORE-T04 | QQ关闭，B站账本→经历→卡→下次上下文 | 真实96秒无字幕素材；人工评分/日记→实际Host导入→新Node的B站上下文召回，QQ视图隐藏；不是自主模型评价/实际模型回忆 | native-b9-memory-{input,maintain,readback}.json |
+| CORE-T05 | 重复导入/完成不重复消费 | 夹具通过；实际Host重复maintain后事件数与6条卡ID保持不变 | native-b9-memory-dedup.json |
+| CORE-T06 | 长作业中切角色 | 实际本地ASR运行中app/epoch2→artifact/epoch3；旧作业完成仍归app2、新角色查询JOB_FORBIDDEN、不写新卡；B站/QQ晚到仅夹具 | native-b9-role-isolation-result.json |
 | CORE-T07 | 私密/未知材料进入公开上下文 | 夹具通过，restricted/未知 fail closed | shared-core / API |
 | CORE-T08 | 清理可再生缓存不删人格记忆 | 缓存范围/lease 夹具通过；全程清理后证据状态实机未执行 | shots-cache / bili frames |
 | CORE-T09 | 模拟新 local adapter | 夹具通过，提交受限事件与允许视图，不复制核心 | channel-contract 8/8 |
 | CORE-T10 | 登出/绑定变化保留核心 | 真实账号未执行 | 待 App 登录验收 |
-| CORE-T11 | 退出重启恢复，过期活动不补发 | 实际App退出时Host/原生推理全部回收，重启旧作业interrupted；新linked尝试partial，修复后复验中 | ASR service / shared-core |
-| ASR-T01 | 无字幕中文到末尾 | 实际App处理新4204ms中文完整/13字匹配；E2 6463ms，真实B站仍未执行 | native result.json |
-| ASR-T02 | 有字幕视频 force 仍调 ASR | 夹具通过，未用字幕替代识别 | bili-media |
-| ASR-T03 | P2 音轨/字幕/画面/历史一致 | 夹具通过，真实多P待验 | bili-media / Host integration |
+| CORE-T11 | 退出重启恢复，过期活动不补发 | 实际App退出回收Host/whisper，重启旧job interrupted，原生UI恢复为关联新尝试并覆盖241000ms；自治过期活动仍为夹具 | native-b9-recovery-result.json |
+| ASR-T01 | 无字幕中文到末尾 | 真实BV1WW411a7qQ/P1/cid27455257无平台字幕，whisper完整0–96000ms；用户试听末句与识别一致（忽略繁简/标点），不是整段CER | native-b9-bili-old-result.json / native-b9-real-bili-human-tail.json |
+| ASR-T02 | 有字幕视频 force 仍调 ASR | 实际109秒口播有62行AI字幕，仍运行whisper；媒体末尾29ms未确认，partial如实保留 | native-b9-bili-readonly-result.json |
+| ASR-T03 | P2 音轨/字幕/画面/历史一致 | 真实古诗P2/cid284493364：字幕、ASR、9帧、历史对齐，末尾390ms缺口；教程P2帧成功但ASR越界失败；弹幕实机未验，不能全通过 | native-b9-bili-{more,p2-poem}-result.json |
 | ASR-T04 | 全 durl，跨段不归零 | 夹具通过所有分段/映射；真实平台待验 | bili-media |
-| ASR-T05 | DASH仅音轨 | 夹具通过，不要求视频轨 | bili-media |
-| ASR-T06 | 中间失败/截断 | 夹具通过 partial/failed 与缺口 | bili-media / ASR service |
-| ASR-T07 | 超过工具等待的长作业 | 真实App241秒两块、进程与中断恢复已执行，边界越界partial明确；新算法待复验 | ASR service |
-| ASR-T08 | 静音/音乐/低声/BGM | 精确静音与空文本 unknown 夹具通过；BGM短中文实测；完整质量集未执行 | ASR service / shared-asr |
-| ASR-T09 | 分块边界/真实重复句 | 真实241秒发现越界及中心过滤丢句，已补严格一次core重试/交集/双边界；待新包复验 | ASR service |
-| ASR-T10 | 取消/退出/恢复 | 实际App原生推理取消确认退出；退出重启旧job interrupted/linked retry可执行，最终完整性复验中 | ASR service / bili lifecycle |
+| ASR-T05 | DASH仅音轨 | 真实96秒无字幕样本仅请求音轨，本地ASR完整；未因缺视频轨拒绝 | native-b9-bili-old-result.json |
+| ASR-T06 | 中间失败/截断 | 夹具覆盖中间失败；真实音轨与页面时长差29/390/832ms均保留partial和精确缺口，未把差值直接认定真实截断 | 原生多样本结果 / bili-media / ASR service |
+| ASR-T07 | 超过工具等待的长作业 | 实际241秒合成重复语音为持久作业，提交后返回jobId、跨多次查询完成；不是241秒真实B站长视频 | native-b9a42b2-asr-result.json |
+| ASR-T08 | 静音/音乐/低声/BGM | 实际10秒全零PCM暴露生日歌幻觉；已补严格全零跳过推理与非零保留，待新包复验；一般静音/完整质量集未通过 | native-b9-silence-result.json / exact-pcm-silence case |
+| ASR-T09 | 分块边界/真实重复句 | 实际241秒合成重复片段两块完成、保留跨界句并显示ASR_CORE_RETRY；auto恢复末块无词，保留质量限制；不宣称真实自然重复语音完美 | native-b9a42b2-asr-result.json / recovery result |
+| ASR-T10 | 取消/退出/恢复 | 实际原生推理取消后退出；App退出回收、重启interrupted、原生恢复按钮产生linked新job并完成；取消为终态不恢复 | native-asr-result.json / native-b9-recovery-result.json |
 | ASR-T11 | 同音频并发 | 夹具通过，共享推理与独立消费者 | ASR service |
 | ASR-T12 | 改模型/语言/访问范围 | 夹具通过，摘要与缓存隔离 | ASR service |
 | ASR-T13 | 缺模型/损坏/错误架构 | 失败分支夹具通过；E2 缺资产实际 failed+hint | ASR service / native result.json |
-| ASR-T14 | 本地/B站共用且ASR不读Cookie | 组合夹具通过；E2本地真实识别通过；真实B站待验 | Host integration / native result.json |
+| ASR-T14 | 本地/B站共用且ASR不读Cookie | 实际App同一Host处理本地241秒和真实B站96秒；账号不进入ASR请求的源码/契约断言通过 | 原生结果 / perception-client / service tests |
 | MAC-T01 | Finder与终端能力同源 | 终端/纯系统PATH通过；Finder未执行 | runtime / native result.json |
 | MAC-T02 | 实际.app资源Node，缓存未备 | 实际探测24.21与能力通过 | runtime case |
 | MAC-T03 | Electron Node模式显式环境 | 选择/隔离环境夹具通过；实际Electron版本只读核验 | node-path tests |
-| MAC-T04 | Edge/Chrome位置与错误路径 | 路径/能力夹具通过；真实扫码未执行 | bili-qr-login tests |
-| MAC-T05 | 扫码成功/取消/过期/早退 | owned子进程错误/退出夹具通过；真实扫码未执行 | bili-qr-login tests |
+| MAC-T04 | Edge/Chrome位置与错误路径 | 实际隔离二维码显示并完成身份核验；错误路径与所有权仍由夹具覆盖 | native-b9-qr-verified.json / QR tests |
+| MAC-T05 | 扫码成功/取消/过期/早退 | 用户现场扫码成功、只绑定fish、owner仍空；取消/过期/早退为夹具，未把成功样本扩大为全通过 | native-b9-qr-verified.json |
 | MAC-T06 | 扫错账号原凭据不变 | 既有身份校验夹具；真实扫码未执行 | 插件测试 / 待实机 |
 | MAC-T07 | 显式媒体路径、缺失与不可执行 | E1/E2实际工具与失败夹具通过 | runtime-media / native-assets |
-| MAC-T08 | 中文空格/自定义数据根 | E2真实服务通过；设置页/CLI/App同根待验 | native result.json |
-| MAC-T09 | QQ未启用不阻断核心/B站 | doctor+Host夹具通过，未启动QQ | doctor / Host integration |
-| MAC-T10 | 关窗/真正退出/热重载 | 真实App SIGTERM退出/Host及whisper回收并重启已执行；关窗/热重载尚待验 | ASR service |
-| MAC-T11 | desktop安装重启、Host和client可见 | 已授权备份日志、独立desktop本地安装并启用，Host与原生client可见；新修复包复验中 | 本页安装方案 |
+| MAC-T08 | 中文空格/自定义数据根 | 实际官方设置页、随附Node CLI、Host、人格/作业/记忆均使用同一中文空格根；未写包内config/state/roles | 原生persona/ASR/memory与listener记录 |
+| MAC-T09 | QQ未启用不阻断核心/B站 | 实际QQ关、B站ready、生物钟false，真实素材/人工账本/Host记忆维护成功；九项主动和外发开关关闭 | native-b9-readonly-ready.json / memory结果 |
+| MAC-T10 | 关窗/真正退出/热重载 | 实际owned App退出回收Host/whisper并恢复；关窗/热重载/睡眠唤醒尚未验证 | native-b9-install-roundtrip/result.json / recovery结果 |
+| MAC-T11 | desktop安装重启、Host和client可见 | 官方CLI离线安装b9并实际重启，Host/原生客户端/人格保存/错误与恢复入口可见；静音新包复验另记 | upgrade-b9a42b2 / native UI证据 |
 | MAC-T12 | helper失败/旧pending | 真实隔离复制和身份拒绝通过；未动真实安装 | install-identity / update tests |
 | ACTION-T01 | dry不写平台/成功额度 | 既有离线回归通过，未外发 | 插件+regressions |
 | ACTION-T02 | 静默/额度/目标门禁 | 既有回归通过；通用execute未接外发 | 插件+channel-contract |
@@ -82,9 +84,9 @@
 
 `privacy-scan --strict` 在最终候选前与冻结基线52ced0f均报告46处、逐项相同（历史Windows路径/占位标识等），不改规则或清理无关资料来转绿。日志 `privacy-final.log`、`privacy-baseline52.log` 保留在 WP0 证据目录。本次未发现新增扫描命中；该结果不等于公开发布隐私门禁已通过。
 
-## 待授权的最小实机步骤
+## 首次授权前的最小实机方案（历史，1/2已获授权并执行）
 
-先完成最终 git 对象包、摘要、独立解包与官方 Node 装载；再申请具体动作：
+以下保留最初的授权边界；本轮已授权独立实例与只读扫码，常用profile仍不是同一对象：
 
 1. 保全官方 App 共享日志后，以独立 DSH_HOME 与 user-data-dir 启动同一官方 App，不退出用户当前实例。安装只进入测试 desktop profile，QQ、B站自动活动和更新检查保持关闭，不复制真实账号；用新角色验证 Host/client、成功/失败显示和退出重启。
 2. 人工在该实例完成 B站扫码（不读取/抄录凭据），明确只读选定视频；用本地 small/Metal 执行无字幕视频和末尾核对、记忆闭环。评论、点赞、动态、分享与付费模型调用均不包含在此步骤。
@@ -141,3 +143,18 @@ b722222制品在官方App内确实加载Host与settings.section客户端。用�
 本轮独立Astra检查关闭queued迁移持久化静默吞错P2，复核人格请求完整body之后、写入之前的身份检查及同步路径快照；未发现新的实质缺陷。四个新增case含完整七步逻辑和发布交接，最终组合与原生证据仍统一在final-results.json。
 
 本轮组合门禁已完成：官方Node24.21.0、独立DSH_HOME、便携媒体路径，audit162/162、regressions、完整插件测试均exit0。程序输入SHA-256保存在 `native-fixes/checks-20261106T144303Z/results.json`，本地功能提交后逐blob核验同源；新的npm包仍须实际官方CLI安装和原生界面复验，尚未以此门禁声称完成。
+
+## b9a42b2 原生结果与静音补修
+
+原生证据目录为 `_backups/20261106-macos-wp0/官方App 验收候选/`。b9包 SHA-256 `040b784d49433b0352674263e6192fd8c5c6bc93b2ccb9e53b9eaa1f7588bbf4`，官方pnpm11离线安装无生命周期审批，单独解包Host夹具也通过319项源码清单。新包不把运行依赖指向包外源码；账户和可写数据保留在测试DSH_HOME。
+
+- 角色：原生保存先显示 `PERSONA_CORE_TOO_SHORT`，修正测试卡后成功落盘；运行中切角后编辑器立即读到目标卡，旧未保存标记消失。实际过期人格POST在备份/写入前409拒绝，两角色文件摘要未变化。
+- 退出：只停止确认PID/userData的测试实例，原常用App持续存活。新作业 `008f380a-406f-4df0-9bd1-d277cb812bb3` 在退出时中断，重启后由原生恢复按钮创建 `e2dcf718-99e6-4e18-8855-9c990fce6bca` 并完整处理；auto识别尾块无文本保留为质量限制，不把这次生命周期成功等同边界文字准确。
+- 回滚：官方CLI在测试App停止期间回退b722222、再装b9，160个选定持久文件（含新增账号绑定、模型、作业、人格和记忆）摘要不变。旧包未启动，不能宣称数据schema降级迁移验证。
+- 平台：用户现场扫码，fish身份只读复核通过，owner未绑定。B站手动渠道ready时生物钟始终false；QQ、目的、桌宠聊天、QQ→B站、互动、动态、分享均关闭。读取完以普通设置保存关闭B站，之后才退出/切角。`SURFCORE_SKIP_AUTOSTART`不是全局调度禁用器，此顺序不能省略。
+- 质量：真实无字幕96秒完整处理，用户确认末句“生活你给我压力，我还你奇迹”；只有结尾人工比对，不是全段准确率门槛。其他真实样本的partial/OUTPUT_INVALID照实保留，未扩大时间戳容差、裁掉越界句或填补未取到的源范围。
+- 静音：10秒数字全零PCM实测产生8段生日歌幻觉，原脚本只断言完成和覆盖，错误地不足以验证静音语义。已保留原结果并增加严格PCM全零检测、空segments/no_speech断言、±1非零仍推理、畸形/旧缓存/取消测试；最终安装复验结果以静音case及final-results记录为准。
+
+三个临时验收脚本曾分别误用URL pathname、遗漏必需asset摘要、依赖summary不返回的retryOf；另把auto识别结果必须出现末块文字当作生命周期判据。均保留原失败和修正后的独立结果，不改产品契约迎合脚本。它们不是对应产品故障；数字静音的真实错误则已转为必要修复。
+
+发布交接：本批仍为0.8.8本地候选；建议功能性minor由发布会话决定。代码/接口与失败路径见本页七步及静音case；最终audit/回归/插件/清单、源码commit和制品摘要见HANDOFF与final-results。直接Finder启动、关窗/热重载/睡眠、真实durl多段、完整中文质量、Intel/Windows/其他macOS和真实外发未通过；不得直接发布或宣称首期全面完成。回滚须先保留扫码后新增数据，只操作独立实例，不覆盖常用profile或共享活动日志。

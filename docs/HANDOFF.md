@@ -6,21 +6,20 @@
 ---
 
 
-## 快照：2026-11-06（macOS 首期组合，官方 App 隔离验收进行中）
+## 快照：2026-11-06（macOS 官方 App 实测与静音补修）
 
-- 目标是 `/Applications/DeepSeek Harness.app` 官方桌面 App **0.2.2-rc.1**，不是网页版或 DSH Desktop.app。实际 Electron44.7.0 / 随附 Node24.21.0；macOS26.6.2、Apple M4、原生arm64。
-- 主树 `../surfcore-macos-implementation` / `feat/macos-implementation`，交接基线 `0c51bf2`，本克隆无 dev；原树不切换、不清理。设计 macos/ 继续本地忽略，模型与日志不入库。
-- WP0 已提交 `2f932e8` / 清单 `52ced0f`。WP1共享核心 `84d9777`；WP2运行层 `29eac74`；WP3共享ASR `90c98e6`；WP4 B站 `26d388d`；WP5更新身份 `060e6a4`；计时夹具 `cb0da38`；资源准入 `bd7d174`；记忆持久提交 `08f2e30`；自测目标 `a91bb0c`；Windows目录兼容 `9871424`。最终Host/API/UI/制品候选见下方本地证据。
-- 已实现：Host单写记忆、受限经历与下一上下文；统一运行时；共享本地ASR与完整范围/分块/缓存/取消/恢复；B站完整媒体父作业和分P历史；渠道运行契约、安装身份与DSH包更新所有者；Host设置页失败报告、作业详情与经历重试。
-- 本机真实识别：官方Node + 便携FFmpeg/FFprobe/whisper + small，纯系统PATH、无DYLD、中文空格新根，CPU/Metal两轮均覆盖0–6463ms，无缺口但有错字。两个AISHELL短样本small优于base，仅作本机候选选择，不是完整质量门槛。
-- 最新组合使用官方Node24.21.0和新隔离根，audit161/161、regressions及完整插件测试全部通过。结果在 `_backups/20261106-macos-wp0/native-fixes/checks-20261106T140408Z/results.json`，记录了逐文件程序摘要，提交后核对同源；真实制品/宿主验收另记。所有编号验收与失败边界见[组合 case](cases/2026-11-06-macos-host-integration.md)。
-- 最终候选SHA、各检查实际exit、制品与原生资产摘要统一写入本地 `_backups/20261106-macos-wp0/final-results.json`；跨机交接需单独携带该证据和忽略的资产，不能用先前组合结果替代。
-- 用户已明确授权共享日志备份、官方App独立实例启动及向新测试profile安装本地包；10份共享日志已保全。原常用App未重启，其profile未修改。实际官方CLI首次离线安装被pnpm11的postinstall审批拒绝，依赖已加入而bundle未激活；失败证据保留在验收候选目录。
-- 已修包生命周期和持久数据路径：SDK补丁在构建时物化，制品不执行安装脚本；验证package时QQ配置/状态使用DSH_HOME/surfcore/qq，程序根仍指新包；旧包数据冲突失败关闭，未自动迁移。对应三个新增case见案例索引。源码路径、显式旧数据根和角色人格主链保留。
-- 用户已明确允许Electron调试接口，仅控制独立测试实例；端口只监听127.0.0.1并核对PID。官方原生设置页已实际加载SurfCore，Node24/ASR就绪/真实作业列表可见，常用App无写入。B站无凭据、未扫码/外发或付费模型调用。
-- 原生候选b722222实际短中文4204ms完整且13字参考全匹配；241s真实推理取消后子进程已退出，App退出重启保留interrupted作业，关联恢复因边界时间戳返回partial。现已组合一次严格核心重解码、跨界去重和可行动作业卡；官方Node下audit162/162、regressions及完整插件测试全部通过，原始结果在 `_backups/20261106-macos-wp0/native-fixes/checks-20261106T144303Z/results.json`，提交后核对程序摘要同源。新建角色已在界面执行，旧作业对新角色隐藏且API拒绝。另发现角色切换后编辑器留旧草稿，未点保存；已组合按id/epoch重建及Host可选expectedCharacter护栏。
-- 下一步：新组合检查/本地提交/清单/包 → 隔离官方App更新，核验数据保留及完整长作业/人格保存/失败提示 → 经授权扫码及只读视频。常用profile安装与重启仍是另一授权对象；结束时关闭测试调试端口。
-- 未改version、tag、push或发布。Intel/Windows/其他macOS、Finder、App生命周期、真实B站和全面中文质量未验；**尚不满足首期全部完成或发布条件**。
+- 目标是官方原生 `/Applications/DeepSeek Harness.app` 0.2.2-rc.1，Electron44.7.0 / App Node24.21.0 / macOS26.6.2 / Apple M4 arm64。不是网页版或另一个 DSH Desktop.app。
+- 独立树 `../surfcore-macos-implementation` / `feat/macos-implementation` 从交接0c51bf2开始，本克隆无dev；原树与常用App/profile不改、不重启。WP0–WP5功能提交保留，候选与证据统一在本地 `_backups/20261106-macos-wp0/final-results.json`，忽略的设计/资产/日志跨机须另行携带。
+- 已实现：共享人格/上下文/经历与Host唯一记忆维护者、角色life和epoch；统一运行时；本地ASR持久队列、精确覆盖、分块、缓存、取消恢复；B站分P完整媒体/画面/历史/经历；渠道闸、安装身份、自包含包与DSH包更新所有者。每项case含七步逻辑、失败与回滚，编号验收沿用[组合case](cases/2026-11-06-macos-host-integration.md)的44项表。
+- b9a42b2已在官方App独立profile实际加载Host和原生settings客户端。官方CLI/pnpm11离线安装无脚本审批；包摘要040b784d…，实际Node24与媒体/ASR同根。原10份共享日志已保全，测试实例只监听PID核验过的loopback调试端口。最初pnpm根postinstall失败与包内可写数据问题均修复并保留原证据。
+- b9组合：audit162/162、regressions、完整插件测试通过；554程序输入逐blob匹配b9。真实241秒合成重复音频两块完整覆盖、边界句保留、ASR_CORE_RETRY可见。取消确认whisper退出；App退出回收Host/whisper，重启原job interrupted，由原生恢复按钮创建linked新job并完成。auto尾块无词是质量限制，不影响这次生命周期判据。
+- 用户现场扫码到独立fish测试账号，owner未绑定；只读身份核验和公开素材。QQ、生物钟、目的、桌宠聊天、跨端同步、互动、动态和分享保持关闭；B站仅在同一运行进程内普通保存启用手动读取，结束先普通保存关闭再重启/切角。未执行平台外发或宿主付费模型调用。
+- 真实BV1WW411a7qQ/P1/cid27455257无平台字幕，本地small/whisper完整0–96000ms。用户试听末句“生活你给我压力，我还你奇迹”，与转写繁简/标点归一后相同。另有带AI字幕仍调用ASR、真实P2字幕/画面/历史一致；29/390/832ms尾部未确认保留partial，教程P2非法时间戳保留OUTPUT_INVALID。不是全段CER或所有素材可用性保证。
+- CORE-T04：基于真实只读素材的人工评分/日记写本地账本，实际Host导入一次经历、统一卡，新Node的B站上下文读回两标记，QQ视图隐藏；重复maintain不重复事件/6条卡。不是模型自主评价或实际供应商会话回忆。
+- 原生角色编辑：短卡失败可见，合法测试卡保存成功；本地ASR运行中app/epoch2→artifact/epoch3，旧job保持app2、对新角色JOB_FORBIDDEN且不写新卡。编辑器丢弃旧未保存草稿、读取目标卡；旧人格请求实际409，两个文件hash不变。返回app/epoch4后再读正确97字卡。
+- 独立App停止时官方CLI回退b722222再装回b9，160持久文件摘要不变，含扫码后绑定/模型/人格/作业/评分/日记/记忆。旧包未执行，只证明包安装回滚保留数据，不能称schema降级迁移通过。
+- 新发现必要修复：原生10秒精确全零PCM被whisper幻觉成生日歌。现加入严格RIFF/PCM/data验证，全样本数值0才跳推理返回no_speech；±1非零保留识别，空/坏格式拒绝，partial/未知源时长仍unknown。缓存算法v3不复用旧幻觉/检查点，历史不删。独立Astra审核无新实质P1/P2；官方Node下新增静音、完整service/资源/CLI局部检查通过。新组合已通过audit163/163、regressions及完整插件测试，原始结果 native-fixes/checks-20261106T152703Z/results.json；随后提交/清单/包/原生复验。
+- 未改版本0.8.8、tag、push或发布；常用profile未安装本候选。直接Finder启动、关窗/热重载/睡眠、真实durl多段、全面中文质量、Intel/Windows/其他macOS及真实外发未验，**不满足设计06全面通过或发布条件**。下一步只完成新静音候选的组合、安装和真实静音/语音复验，结束关闭调试端口，保留所有新增数据。
 
 ---
 

@@ -19,7 +19,7 @@
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
 | **macOS 工具与文档整理** | `../surfcore-tooling-docs` | `docs/tooling-macos`（基线 `0deb826`） | 开发工具路由、macOS 设计归档、开发提示词；仅文档 | 文档及提示词完成，按功能分三批本地提交、未推送；audit 首轮 136/143，安装修正后 1 项复测通过、余 6 项；插件更新器基线失败；本地设计另行交接 |
-| **macOS 首期实施 2026-11-06** | `../surfcore-macos-implementation` | `feat/macos-implementation` @ `0c51bf2` | WP0–WP5，独立数据根，本地提交 | 进行中：3a480c3候选audit159/159与原生ASR通过；已授权并备份共享日志、启动独立官方App；真实安装发现生命周期/包内数据路径，修补已组合且audit161/161、回归与插件全套通过，待新制品/原生窗口；Electron测试窗口控制已获授权，真实UI发现ASR边界和人格草稿问题已组合修补、audit162/162及回归/插件全套通过，准备新包原生复验；原窗口不写入，真实扫码待授权；本克隆无dev |
+| **macOS 首期实施 2026-11-06** | `../surfcore-macos-implementation` | `feat/macos-implementation`（交接0c51bf2，本克隆无dev） | WP0–WP5，独立数据根，本地提交 | b9已真实官方App/只读扫码/96秒无字幕ASR/人工记忆闭环/角色护栏/退出恢复/包回滚；原App与常用profile不动，无外发或付费模型。新数字全零幻觉补修通过局部与独立审阅，audit163/163及回归/完整插件通过，新包原生复验进行中；收工关闭测试调试端口 |
 | **协调/发布**（本对话） | `D:\deepseekwork\surfcore` | `dev` | 规则、登记表、合并、发版 | 进行中 |
 | **bug 修复** | `D:\deepseekwork\surfcore-bugfix` | `fix/release-0.8.7` @ `e20a464` | 3c99c54..e20a464 的修复 | ✅ 已在 dev 历史内；等新交接 |
 | **Minecraft 拓展** | `D:\deepseekwork\surfcore-mc` | `feat/minecraft` @ `f3bd46f` | MC 平台适配器/工具集/卡片/记忆 scope | ⏸ 已从 dev 撤回，分支保留；等完成 |

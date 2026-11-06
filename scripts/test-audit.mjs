@@ -299,7 +299,7 @@ const tests = [
   'test-persona-wake-injection.mjs',
 ];
 if (process.platform === 'darwin') {
-  tests.push('test-perception-resources.mjs', 'test-perception-service.mjs', 'test-perception-cli.mjs', 'test-perception-host.mjs');
+  tests.push('test-perception-silence.mjs', 'test-perception-resources.mjs', 'test-perception-service.mjs', 'test-perception-cli.mjs', 'test-perception-host.mjs');
 } else {
   console.log('NOT RUN: native ASR integration fixtures currently require the macOS execution matrix; Windows/Intel ASR acceptance remains unverified.');
 }

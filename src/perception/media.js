@@ -87,17 +87,26 @@ export function measurePcm16(file) {
     let dataOffset = -1;
     let dataBytes = 0;
     const size = fs.fstatSync(descriptor).size;
+    const invalid = () => fail('OUTPUT_INVALID', 'The normalized WAV is incomplete or has an unsupported PCM format.', 'Verify the FFmpeg output is complete 16 kHz mono 16-bit PCM, then retry.', { stage: 'normalize' });
+    if (header.readUInt32LE(4) + 8 !== size) throw invalid();
+    let formatValid = false, sawFormat = false;
     while (offset + 8 <= size) {
       const chunkHeader = Buffer.alloc(8);
-      if (fs.readSync(descriptor, chunkHeader, 0, 8, offset) !== 8) break;
+      if (fs.readSync(descriptor, chunkHeader, 0, 8, offset) !== 8) throw invalid();
       const name = chunkHeader.toString('ascii', 0, 4);
       const length = chunkHeader.readUInt32LE(4);
-      if (name === 'data') { dataOffset = offset + 8; dataBytes = Math.min(length, size - dataOffset); break; }
+      if (offset + 8 + length + (length % 2) > size) throw invalid();
+      if (name === 'fmt ') {
+        if (sawFormat || length < 16) throw invalid();
+        const fmt = Buffer.alloc(16);
+        if (fs.readSync(descriptor, fmt, 0, 16, offset + 8) !== 16) throw invalid();
+        sawFormat = true;
+        formatValid = fmt.readUInt16LE(0) === 1 && fmt.readUInt16LE(2) === 1 && fmt.readUInt32LE(4) === 16000 && fmt.readUInt32LE(8) === 32000 && fmt.readUInt16LE(12) === 2 && fmt.readUInt16LE(14) === 16;
+      }
+      if (name === 'data') { if (dataOffset >= 0) throw invalid(); dataOffset = offset + 8; dataBytes = length; }
       offset += 8 + length + (length % 2);
     }
-    if (dataOffset < 0 || dataBytes < 2 || dataBytes % 2 !== 0) {
-      throw fail('OUTPUT_INVALID', 'The normalized WAV has no valid PCM data chunk.', 'Verify FFmpeg output and retry the ASR job.', { stage: 'normalize' });
-    }
+    if (offset !== size || !formatValid || dataOffset < 0 || dataBytes < 2 || dataBytes % 2 !== 0) throw invalid();
     const buffer = Buffer.alloc(64 * 1024);
     let position = dataOffset;
     let remaining = dataBytes;
@@ -107,7 +116,7 @@ export function measurePcm16(file) {
     while (remaining > 0) {
       const wanted = Math.min(buffer.length, remaining);
       const read = fs.readSync(descriptor, buffer, 0, wanted - (wanted % 2), position);
-      if (read <= 0) break;
+      if (read <= 0 || read % 2 !== 0) throw invalid();
       for (let i = 0; i + 1 < read; i += 2) {
         const sample = buffer.readInt16LE(i);
         const absolute = Math.abs(sample);

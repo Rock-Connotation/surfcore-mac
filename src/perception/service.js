@@ -789,6 +789,26 @@ export function createPerceptionService({
         return;
       }
 
+      if (normalizedStats.exactSilence) {
+        if (runner.controller.signal.aborted || !activeConsumers(runner).length) return;
+        const processedRanges = normalizeRanges(chunks.map(chunk => chunk.processedRange), 'processedRanges', { allowEmpty: true });
+        const missingRanges = subtractRanges(request.requestedRanges, intersectRanges(processedRanges, acquiredRanges));
+        const complete = missingRanges.length === 0 && request.asset.sourceDurationMs !== null;
+        const warnings = [...runner.warnings, warning('EXACT_ZERO_PCM', 'The verified normalized PCM samples are all zero; inference was skipped.')];
+        runner.processedRanges = processedRanges;
+        runner.warnings = warnings;
+        updateRunnerProgress(runner, 'silence-verified', { chunksDone: chunks.length, chunksTotal: chunks.length, processedRanges });
+        await completeWithNeutral(runner, {
+          language: request.languageHint,
+          engine: { provider: config.engine.provider || 'whisper.cpp', runtimeVersion, modelId: model.descriptor.model.id, modelDigest: model.modelDigest, ...(config.engine.backend ? { backend: config.engine.backend } : {}) },
+          segments: [],
+          coverage: { requestedRanges: request.requestedRanges, acquiredRanges, processedRanges, missingRanges, complete },
+          speechState: complete ? 'no_speech' : 'unknown',
+          warnings,
+        });
+        return;
+      }
+
       let chunkErrors = [];
       let chunkDone = 0;
       for (const chunk of chunks) {

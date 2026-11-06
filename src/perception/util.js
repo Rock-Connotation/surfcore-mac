@@ -310,7 +310,7 @@ export function makeCacheKey(request, execution) {
     acquiredRanges: request.asset.acquiredRanges,
     timelineMap: request.asset.timelineMap,
     normalizer: 'pcm-s16le-16000-mono-v1',
-    processingAlgorithmVersion: 'strict-core-retry-boundary-v2',
+    processingAlgorithmVersion: 'strict-core-retry-boundary-exact-zero-v3',
     chunking: { coreMs: 240000, overlapMs: 1500 },
     provider: execution.engine?.provider || 'whisper.cpp',
     runtimeVersion: execution.engine?.runtimeVersion || null,
