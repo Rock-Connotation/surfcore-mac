@@ -161,7 +161,7 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
       const afterFeed = await findEvent(op, SELF, cutoff); if (!afterFeed.ok) return finish(op, afterFeed);
       if (!same(afterFeed.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '读取时登录账号发生变化', '重新登录并确认账号。'));
       state = browserStatus(op); if (!state.ok || !state.running) return finish(op, state.ok ? auth() : state);
-      cutoff = state.requestSeq; op.identityCutoff = cutoff; result = await navigate(op); if (!result.ok) return finish(op, result);
+      cutoff = state.requestSeq; result = await navigate(op); if (!result.ok) return finish(op, result);
       const after = await findEvent(op, SELF, cutoff); if (!after.ok) return finish(op, after);
       if (!same(after.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '读取后登录账号发生变化', '重新登录并确认账号。'));
       if (!Array.isArray(feed.items) || !feed.items.length) return finish(op, error('DOUYIN_FEED_EMPTY', '首页推荐为空', '检查首页内容和账号状态后重试。'));
