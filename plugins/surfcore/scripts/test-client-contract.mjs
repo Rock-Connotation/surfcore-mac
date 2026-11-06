@@ -12,7 +12,7 @@ import path from 'node:path';
 
 const idle = () => {};
 const React = {
-  createElement: () => null,
+  createElement: (type, props, ...children) => ({ type, props: { ...(props || {}), children } }),
   useCallback: (fn) => fn,
   useEffect: idle,
   useMemo: (fn) => fn(),
@@ -468,4 +468,39 @@ assert.ok(source.includes("dshModelSelect"), "模型必须是目录驱动的下�
 assert.ok(source.includes("dshEffortSelect"), "思考强度必须是下拉框");
 assert.ok(!source.includes("low / medium / high / max"), "不能再提示后端不支持的 medium");
 assert.ok(source.includes("会同时修改 DSH 全局默认模型"), "模型切换必须提示全局副作用");
+// Exercise actual card rendering and button callbacks with React element fixtures.
+const renderTree = value => {
+  if (Array.isArray(value)) return value.flatMap(renderTree);
+  if (value == null || typeof value === 'boolean') return [];
+  if (typeof value !== 'object') return [String(value)];
+  if (typeof value.type === 'function') return renderTree(value.type(value.props));
+  return [{ type: value.type, props: value.props }, ...renderTree(value.props?.children || [])];
+};
+const card = client.__test.PerceptionJobCard;
+assert.equal(typeof card, 'function');
+const actions = [];
+const cardTree = job => renderTree(card({ job, selectedJob: null, pending: false, inspect: () => {}, act: action => actions.push(action) }));
+const textOf = tree => tree.filter(item => typeof item === 'string').join(' ');
+const buttons = tree => tree.filter(item => item && typeof item === 'object' && item.type === 'button');
+const partial = cardTree({ jobId: 'partial-1', state: 'partial', progress: { chunksDone: 1, chunksTotal: 1 }, coverage: { complete: false, missingRanges: [{ startMs: 1234, endMs: 5678 }] }, warnings: [{ code: 'OUTPUT_INVALID', message: '无效输出', hint: '检查本地引擎' }], result: { warnings: [{ code: 'CHUNK_PROCESSING_FAILED', message: '分块失败', hint: '修复后恢复' }, { code: 'REDECODE_FALLBACK', message: '已重解码 https://example.invalid/secret', hint: '确认采样结果' }] } });
+const partialText = textOf(partial);
+for (const expected of ['OUTPUT_INVALID', '无效输出', '检查本地引擎', 'CHUNK_PROCESSING_FAILED', '修复后恢复', 'REDECODE_FALLBACK', '确认采样结果', '1234–5678 ms', '已尝试分块（不代表覆盖完整）', '100%']) assert.ok(partialText.includes(expected), `partial UI missing ${expected}`);
+assert.ok(!partialText.includes('https://example.invalid/secret'), 'warning must not expose URLs');
+const recover = buttons(partial).find(button => button.props.children.flat(Infinity).includes('恢复'));
+assert.ok(recover, 'partial should offer resume'); recover.props.onClick(); assert.deepEqual(actions.pop(), { action: 'resume', jobId: 'partial-1' });
+for (const state of ['failed', 'interrupted', 'cancelled']) {
+  const tree = cardTree({ jobId: state, state, code: 'WRONG_OUTER', error: { code: `REAL_${state}`, error: '具体原因', hint: '具体下一步' } });
+  assert.ok(textOf(tree).includes(`REAL_${state}`)); assert.ok(!textOf(tree).includes('WRONG_OUTER')); assert.ok(textOf(tree).includes('具体下一步'));
+  const resume = buttons(tree).find(button => button.props.children.flat(Infinity).includes('恢复'));
+  assert.equal(Boolean(resume), state !== 'cancelled', `${state} resume availability`);
+  if (resume) { resume.props.onClick(); assert.deepEqual(actions.pop(), { action: 'resume', jobId: state }); }
+}
+const staleDetail = renderTree(card({ job: { jobId: 'stale', state: 'completed' }, selectedJob: { jobId: 'stale', state: 'partial', warnings: [{ code: 'REDECODE_FALLBACK', message: '回退完成' }] }, pending: false, inspect: () => {}, act: action => actions.push(action) }));
+assert.ok(textOf(staleDetail).includes('REDECODE_FALLBACK'));
+assert.ok(!buttons(staleDetail).some(button => button.props.children.flat(Infinity).includes('恢复')), 'stale selected detail cannot re-enable resume');
+const cancelledMemory = cardTree({ jobId: 'cancelled-memory', state: 'cancelled', memoryState: 'failed' });
+assert.ok(!buttons(cancelledMemory).some(button => button.props.children.flat(Infinity).includes('重试经历入库')), 'cancelled cannot be resumed');
+const memory = cardTree({ jobId: 'memory', state: 'completed', memoryState: 'failed', memoryError: { code: 'MEMORY_FAILED', error: '写入失败', hint: '点击重试' } });
+const memoryButton = buttons(memory).find(button => button.props.children.flat(Infinity).includes('重试经历入库'));
+assert.ok(memoryButton); memoryButton.props.onClick(); assert.deepEqual(actions.pop(), { action: 'resume', jobId: 'memory' });
 console.log('client contract tests OK');
