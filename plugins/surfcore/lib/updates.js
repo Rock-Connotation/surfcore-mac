@@ -20,6 +20,7 @@
  */
 import fs from 'node:fs';
 import { validateUpdateArchive } from './update-archive.js';
+import { readInstallationIdentity, validatePending } from '../../../src/install-identity.js';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -235,6 +236,40 @@ export function helperSpawnEnv(execPath = process.execPath, baseEnv = process.en
   const base = String(execPath || '').split(/[\\/]/).pop().toLowerCase();
   if (base !== 'node' && base !== 'node.exe') env.ELECTRON_RUN_AS_NODE = '1';
   return env;
+}
+
+/** Build a shell-free helper command from the already-probed Host runtime descriptor. */
+export function buildApplyHelperCommand(runtime, helperPath, pendingFile, baseEnv = process.env) {
+  const executable = String(runtime?.executable ?? '').trim();
+  if (!executable || !path.isAbsolute(executable)) {
+    return { ok: false, code: 'stage.runtime-unavailable', error: '没有可用的绝对路径 Node 运行时', hint: '重启 DSH 后重试；若持续失败，请修复 DSH 的 Node 运行时配置。' };
+  }
+  const argvPrefix = Array.isArray(runtime.argvPrefix) ? runtime.argvPrefix.map(String) : [];
+  const envPatch = runtime.envPatch && typeof runtime.envPatch === 'object' ? runtime.envPatch : {};
+  return {
+    ok: true,
+    executable,
+    args: [...argvPrefix, helperPath, '--pending', pendingFile],
+    env: { ...helperSpawnEnv(executable, baseEnv), ...envPatch },
+  };
+}
+
+function getApplyHelperRuntime(resolveNodeRuntime) {
+  if (typeof resolveNodeRuntime !== 'function') {
+    return { ok: false, code: 'stage.runtime-unavailable', error: 'Host 没有提供已验证的 Node 运行时', hint: '重启 DSH 后重试；若持续失败，请修复 DSH 的 Node 运行时配置。' };
+  }
+  try {
+    const runtime = resolveNodeRuntime();
+    if (!runtime || typeof runtime !== 'object') throw new Error('运行时解析器没有返回描述对象');
+    return { ok: true, runtime };
+  } catch (error) {
+    return {
+      ok: false,
+      code: String(error?.code || 'stage.runtime-unavailable'),
+      error: String(error?.message ?? error).slice(0, 240),
+      hint: String(error?.hint || '检查 DSH 的 Node 运行时配置后重试。').slice(0, 240),
+    };
+  }
 }
 
 export function readInstalledMeta(dir) {
@@ -1008,7 +1043,7 @@ export async function downloadReleaseAsset(component, report, { stateDir, plugin
   return { ok: true, path: dest, bytes: downloaded.bytes };
 }
 
-export function createUpdatesService({ stateDir, components, blockedReason = () => '', pluginLog = () => {}, githubToken = () => '', channel = () => 'stable' }) {
+export function createUpdatesService({ stateDir, components, blockedReason = () => '', pluginLog = () => {}, githubToken = () => '', channel = () => 'stable', resolveNodeRuntime = null }) {
   const file = path.join(stateDir, 'updates.json');
   const now = () => Date.now();
   let state = { dismissed: {}, lastCheckAt: 0, results: [], lastError: '', lastApplyFailure: null, applyBackoff: {} };
@@ -1696,33 +1731,49 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     try { fs.rmSync(path.join(stateDir, 'updates-pending.json.failed'), { force: true }); } catch {}
 
     const pendingFile = path.join(stateDir, 'updates-pending.json');
+    const identity = readInstallationIdentity(job.target);
+    if (!identity.ok) return { ok: false, code: identity.code, reason: identity.error, hint: identity.hint || '检查安装身份后重试', pendingFile };
     const payload = {
       ...job,
+      target: identity.root,
+      sourceRepo: String(identity.identity.sourceRepo ?? ''),
+      updateOwner: String(identity.identity.updateOwner ?? ''),
+      installationKind: String(identity.identity.kind ?? ''),
+      fromVersion: identity.actualVersion,
       waitPid: process.pid,
       logFile: path.join(stateDir, 'apply-update.log'),
       createdAt: new Date().toISOString(),
     };
+    const checked = validatePending(payload, { installRoot: identity.root });
+    if (!checked.ok) return { ok: false, code: checked.code, reason: checked.error, hint: checked.hint || '请从当前安装重新检查更新', pendingFile };
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(pendingFile, `${JSON.stringify(payload, null, 2)}
-`, 'utf8');
     // 测试里不想真的起"等宿主退出"的进程时，设 SURFCORE_UPDATE_NO_SPAWN=1
-    if (process.env.SURFCORE_UPDATE_NO_SPAWN === '1') return { ok: true, pid: null, pendingFile, spawned: false };
-    const helper = String(process.env.SURFCORE_UPDATE_HELPER || '').trim() || path.join(REPO_ROOT, 'scripts', 'apply-update.mjs');
+    const helper = String(process.env.SURFCORE_UPDATE_HELPER || '').trim() || path.join(identity.root, 'scripts', 'apply-update.mjs');
     if (!fs.existsSync(helper)) {
       return {
         ok: false, code: 'stage.helper-missing',
         reason: `更新助手文件不存在：${helper}`,
+        hint: '请安装包含 scripts/apply-update.mjs 的当前制品后重试',
         pendingFile,
       };
     }
+    if (process.env.SURFCORE_UPDATE_NO_SPAWN === '1') {
+      fs.writeFileSync(pendingFile, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+      return { ok: true, pid: null, pendingFile, spawned: false };
+    }
+    const resolved = getApplyHelperRuntime(resolveNodeRuntime);
+    if (!resolved.ok) return { ...resolved, reason: resolved.error, pendingFile };
+    const command = buildApplyHelperCommand(resolved.runtime, helper, pendingFile);
+    if (!command.ok) return { ...command, reason: command.error, pendingFile };
+    fs.writeFileSync(pendingFile, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
     let child;
     try {
-      child = spawn(process.execPath, [helper, '--pending', pendingFile], {
+      child = spawn(command.executable, command.args, {
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
         cwd: stateDir,
-        env: helperSpawnEnv(),
+        env: command.env,
       });
     } catch (error) {
       return {
@@ -1819,7 +1870,11 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
             kind: 'git', component: String(item.id), target: dir,
             branch: String(item.branch || report.branch || 'main'), to: String(report.latest ?? ''),
           });
-          if (staged.ok) stagedTargets.set(String(item.id), targetKeyOf(report));
+          if (!staged.ok) {
+            results.push({ id: item.id, ok: false, status: 'failed', code: staged.code ?? 'stage.failed', error: staged.reason ?? staged.error ?? '更新助手没有启动', hint: staged.hint ?? '检查安装身份和 DSH 运行时后重试' });
+            continue;
+          }
+          stagedTargets.set(String(item.id), targetKeyOf(report));
           pluginLog(`[updates] ${item.id} 已排队 git 更新，等 DSH 退出后执行（pid=${staged.pid ?? '?'}）`);
           results.push({
             id: item.id, ok: true, staged: true, needRestart: true,
@@ -1982,27 +2037,53 @@ export { resumePendingApply };
  * 启动时重试未完成的更新：上次的助手可能没跑起来（Electron 没带 RUN_AS_NODE）。
  * 这里把 waitPid 改成当前进程并重新拉起 —— 用户下一次退出 DSH 就会应用。
  */
-function resumePendingApply({ stateDir, pluginLog = () => {} } = {}) {
+function resumePendingApply({ stateDir, installRoot, pluginLog = () => {}, resolveNodeRuntime = null } = {}) {
+  const pendingFile = path.join(stateDir, 'updates-pending.json');
+  if (!fs.existsSync(pendingFile)) return false;
+  let pending = {};
+  const saveFailure = (code, error, hint) => {
+    const failed = { ...pending, code: String(code || 'pending.resume-failed'), error: String(error || '更新恢复失败'), hint: String(hint || '检查安装身份与 DSH 运行时后重试'), at: new Date().toISOString() };
+    fs.writeFileSync(`${pendingFile}.failed`, `${JSON.stringify(failed, null, 2)}\n`, 'utf8');
+    pluginLog(`[updates] 未恢复旧更新：${failed.error}`);
+    return false;
+  };
   try {
-    const pendingFile = path.join(stateDir, 'updates-pending.json');
-    if (!fs.existsSync(pendingFile)) return false;
-    const pending = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+    pending = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+  } catch (error) {
+    return saveFailure('pending.invalid-json', `旧更新任务无法读取：${String(error?.message ?? error).slice(0, 160)}`, '保留 pending 供诊断；请从当前安装重新检查更新。');
+  }
+  try {
+    // installRoot 是 Host 提供的可信路径；绝不能从 pending.target 反向选择身份来源。
+    const checked = validatePending(pending, { installRoot });
+    if (!checked.ok) return saveFailure(checked.code, checked.error, checked.hint);
+
+    const helper = path.join(checked.installRoot, 'scripts', 'apply-update.mjs');
+    if (!fs.existsSync(helper)) return saveFailure('stage.helper-missing', `更新助手文件不存在：${helper}`, '请安装包含 scripts/apply-update.mjs 的当前制品后重试。');
+    const resolved = getApplyHelperRuntime(resolveNodeRuntime);
+    if (!resolved.ok) return saveFailure(resolved.code, resolved.error, resolved.hint);
+    const command = buildApplyHelperCommand(resolved.runtime, helper, pendingFile);
+    if (!command.ok) return saveFailure(command.code, command.error, command.hint);
+
     const started = `${pendingFile}.started`;
     try { fs.rmSync(started, { force: true }); } catch {}
     pending.waitPid = process.pid;
     pending.resumedAt = new Date().toISOString();
-    fs.writeFileSync(pendingFile, `${JSON.stringify(pending, null, 2)}
-`, 'utf8');
-    const helper = path.join(REPO_ROOT, 'scripts', 'apply-update.mjs');
-    const child = spawn(process.execPath, [helper, '--pending', pendingFile], {
-      detached: true, stdio: 'ignore', windowsHide: true, cwd: stateDir, env: helperSpawnEnv(),
+    fs.writeFileSync(pendingFile, `${JSON.stringify(pending, null, 2)}\n`, 'utf8');
+    const child = spawn(command.executable, command.args, {
+      detached: true, stdio: 'ignore', windowsHide: true, cwd: stateDir, env: command.env,
+    });
+    child.on('error', (error) => {
+      try { saveFailure('stage.spawn-failed', `启动更新助手失败：${String(error?.message ?? error).slice(0, 160)}`, '检查 DSH 运行时权限后重试；pending 已保留。'); } catch {}
     });
     child.unref();
     pluginLog(`[updates] 发现未完成的更新（${pending.component} → v${pending.to ?? '?'}），已重新排队（pid=${child.pid ?? '?'}）`);
     return true;
   } catch (error) {
-    pluginLog('[updates] 重试未完成更新失败：', String(error?.message ?? error));
-    return false;
+    try { return saveFailure('pending.resume-failed', String(error?.message ?? error).slice(0, 200), '检查安装目录权限与 DSH 运行时后重试；pending 已保留。'); }
+    catch (writeError) {
+      pluginLog('[updates] 重试未完成更新失败：', String(error?.message ?? error), '；诊断写入失败：', String(writeError?.message ?? writeError));
+      return false;
+    }
   }
 }
 

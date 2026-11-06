@@ -18,7 +18,12 @@ const ok = (cond, label, extra = '') => {
 function makeTarget(name, version = '0.6.22', { withMeta = false } = {}) {
   const dir = path.join(base, name);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'surfcore', version }));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'surfcore', version, type: 'module' }));
+  fs.writeFileSync(path.join(dir, '.surfcore-install.json'), JSON.stringify({ schemaVersion: 1, kind: 'source', sourceRepo: 'test/repo', updateOwner: 'surfcore-updater', version }));
+  for (const rel of ['scripts/apply-update.mjs', 'src/install-identity.js']) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.copyFileSync(path.resolve(rel), path.join(dir, rel));
+  }
   if (withMeta) fs.writeFileSync(path.join(dir, '.installed-meta.json'), JSON.stringify({ version, sha: 'deadbeef' }));
   return dir;
 }
@@ -468,7 +473,6 @@ try {
   // 5.5) 更新助手跑完后校验：版本不符 → .failed(verify.version-mismatch)；一致 → 记录 verified
   {
     const { execFileSync } = await import('node:child_process');
-    const helper = path.resolve('scripts/apply-update.mjs');
     const runHelper = (name, stagedVersion, toVersion, opts = {}) => {
       const target = makeTarget(name, '0.7.0', { withMeta: true });
       if (name === 'verify-ok') {
@@ -480,24 +484,31 @@ try {
         fs.mkdirSync(path.join(target, 'perception'), { recursive: true });
         fs.writeFileSync(path.join(target, 'perception', 'state.json'), '{"keep":true}');
         fs.writeFileSync(path.join(target, 'target-only.txt'), 'keep target-only');
+        fs.writeFileSync(path.join(target, 'new-experience.txt'), 'keep post-upgrade data');
       }
       const staging = path.join(base, `${name}-staging`);
       fs.mkdirSync(path.join(staging, 'release'), { recursive: true });
-      fs.writeFileSync(path.join(staging, 'package.json'), JSON.stringify({ name: 'surfcore', version: stagedVersion }));
+      fs.writeFileSync(path.join(staging, 'package.json'), JSON.stringify({ name: 'surfcore', version: stagedVersion, type: 'module' }));
+      if (name === 'verify-ok') {
+        fs.writeFileSync(path.join(staging, 'config.json'), 'must not replace user config');
+        fs.mkdirSync(path.join(staging, 'characters', 'main'), { recursive: true });
+        fs.writeFileSync(path.join(staging, 'characters', 'main', 'persona.md'), 'must not replace role');
+        fs.writeFileSync(path.join(staging, 'new-program.txt'), 'new program content');
+      }
       fs.writeFileSync(path.join(staging, 'release', 'install-manifest.json'), JSON.stringify({ version: stagedVersion, files: {} }));
       if (opts.symlink) fs.symlinkSync(opts.symlink, path.join(staging, 'escape'));
       const stateDir = path.join(base, `${name}-state`);
       fs.mkdirSync(stateDir, { recursive: true });
       const pendingFile = path.join(stateDir, 'updates-pending.json');
       fs.writeFileSync(pendingFile, JSON.stringify({
-        kind: 'zip', component: 'surfcore', target, staging, to: toVersion,
+        kind: 'zip', component: 'surfcore', target, staging, to: toVersion, sourceRepo: 'test/repo', updateOwner: 'surfcore-updater', installationKind: 'source', fromVersion: '0.7.0',
         waitPid: 999999, txn: name, from: '0.7.0', logFile: path.join(stateDir, 'apply.log'),
         meta: { version: toVersion, sha: REMOTE_SHA },
       }));
       if (opts.staleFailed) fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({ component: 'surfcore', error: '旧失败', code: 'apply.failed', at: '2020-01-01T00:00:00.000Z' }));
       let code = 0;
       try {
-        execFileSync(process.execPath, [helper, '--pending', pendingFile], { stdio: 'ignore' });
+        execFileSync(process.execPath, [path.join(target, 'scripts/apply-update.mjs'), '--pending', pendingFile], { stdio: 'ignore' });
       } catch (e) { code = e.status ?? 1; }
       return { target, stateDir, pendingFile, code };
     };
@@ -522,6 +533,8 @@ try {
     ok(fs.readFileSync(path.join(okRun.target, 'model', 'local.json'), 'utf8') === '{"keep":true}', 'POSIX 覆盖保留模型数据');
     ok(fs.readFileSync(path.join(okRun.target, 'perception', 'state.json'), 'utf8') === '{"keep":true}', 'POSIX 覆盖保留感知数据');
     ok(fs.readFileSync(path.join(okRun.target, 'target-only.txt'), 'utf8') === 'keep target-only', 'POSIX 覆盖保留目标独有文件');
+    ok(fs.readFileSync(path.join(okRun.target, 'new-experience.txt'), 'utf8') === 'keep post-upgrade data', 'POSIX 覆盖保留新增数据');
+    ok(fs.readFileSync(path.join(okRun.target, 'new-program.txt'), 'utf8') === 'new program content', 'POSIX 覆盖写入新程序文件');
     if (process.platform !== 'win32') {
       const linkRun = runHelper('symlink-rejected', '9.9.9', '9.9.9', { symlink: base });
       ok(linkRun.code !== 0, 'POSIX 符号链接越界：助手失败', String(linkRun.code));
@@ -535,14 +548,13 @@ try {
   // 5.55) 未知 kind：结构化失败，不默认当 zip
   {
     const { execFileSync } = await import('node:child_process');
-    const helper = path.resolve('scripts/apply-update.mjs');
     const target = makeTarget('unknown-kind', '0.7.0', { withMeta: true });
     const stateDir = path.join(base, 'unknown-kind-state');
     fs.mkdirSync(stateDir, { recursive: true });
     const pendingFile = path.join(stateDir, 'updates-pending.json');
-    fs.writeFileSync(pendingFile, JSON.stringify({ kind: 'weird', component: 'surfcore', target, to: '0.7.0', waitPid: 999999 }));
+    fs.writeFileSync(pendingFile, JSON.stringify({ kind: 'weird', component: 'surfcore', target, to: '0.7.0', waitPid: 999999, sourceRepo: 'test/repo', updateOwner: 'surfcore-updater', installationKind: 'source', fromVersion: '0.7.0' }));
     let code = 0;
-    try { execFileSync(process.execPath, [helper, '--pending', pendingFile], { stdio: 'ignore' }); } catch (e) { code = e.status ?? 1; }
+    try { execFileSync(process.execPath, [path.join(target, 'scripts/apply-update.mjs'), '--pending', pendingFile], { stdio: 'ignore' }); } catch (e) { code = e.status ?? 1; }
     ok(code !== 0, '助手：未知 kind 非 0 退出', String(code));
     const jf = JSON.parse(fs.readFileSync(`${pendingFile}.failed`, 'utf8'));
     ok(jf.code === 'apply.unknown-kind', '助手：code=apply.unknown-kind', String(jf.code));

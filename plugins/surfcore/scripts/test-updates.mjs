@@ -39,6 +39,12 @@ try {
   git(['clone', remote, work], base);
   git(['checkout', '-b', 'main'], work);
   fs.writeFileSync(path.join(work, 'README.md'), '# demo\n');
+  fs.writeFileSync(path.join(work, 'package.json'), JSON.stringify({ name: 'surfcore', version: '1.0.0', type: 'module' }));
+  fs.writeFileSync(path.join(work, '.surfcore-install.json'), JSON.stringify({ schemaVersion: 1, kind: 'source', sourceRepo: 'test/repo', updateOwner: 'surfcore-updater' }));
+  for (const rel of ['scripts/apply-update.mjs', 'src/install-identity.js']) {
+    fs.mkdirSync(path.dirname(path.join(work, rel)), { recursive: true });
+    fs.copyFileSync(path.resolve('../../', rel), path.join(work, rel));
+  }
   git(['add', '.'], work);
   git(['commit', '-m', 'init'], work);
   git(['push', '-u', 'origin', 'main'], work);

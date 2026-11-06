@@ -29,16 +29,22 @@ try {
   const target = path.join(base, 'target');
   fs.mkdirSync(staging, { recursive: true });
   fs.mkdirSync(target, { recursive: true });
-  fs.writeFileSync(path.join(staging, 'package.json'), '{"version":"9.9.9"}');
+  fs.writeFileSync(path.join(staging, 'package.json'), '{"name":"surfcore","version":"9.9.9","type":"module"}');
+  fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name: 'surfcore', version: '1.0.0', type: 'module' }));
+  fs.writeFileSync(path.join(target, '.surfcore-install.json'), JSON.stringify({ schemaVersion: 1, kind: 'source', sourceRepo: 'test/repo', updateOwner: 'surfcore-updater' }));
+  for (const rel of ['scripts/apply-update.mjs', 'src/install-identity.js']) {
+    fs.mkdirSync(path.dirname(path.join(target, rel)), { recursive: true });
+    fs.copyFileSync(path.resolve('../../', rel), path.join(target, rel));
+  }
   fs.writeFileSync(path.join(target, 'config.json'), '{"keep":true}');
   fs.mkdirSync(stateDir, { recursive: true });
   const pendingFile = path.join(stateDir, 'updates-pending.json');
   fs.writeFileSync(pendingFile, JSON.stringify({
-    kind: 'zip', component: 'surfcore', target, staging, to: '9.9.9', waitPid: 999999,
+    kind: 'zip', component: 'surfcore', target, staging, to: '9.9.9', waitPid: 999999, sourceRepo: 'test/repo', updateOwner: 'surfcore-updater', installationKind: 'source', fromVersion: '1.0.0',
     logFile: path.join(stateDir, 'apply.log'),
   }, null, 2));
 
-  const applyScript = fileURLToPath(new URL('../../../scripts/apply-update.mjs', import.meta.url));
+  const applyScript = path.join(target, 'scripts/apply-update.mjs');
   execFileSync(process.execPath, [applyScript, '--pending', pendingFile], { stdio: 'ignore' });
 
   ok(fs.existsSync(path.join(target, 'package.json')), '助手真的执行了（目标目录有 package.json）');
@@ -46,10 +52,30 @@ try {
   ok(!fs.existsSync(pendingFile), '成功后 pending 被删除');
   ok(!fs.existsSync(`${pendingFile}.started`), '成功后 .started 被清理');
 
+  // Guard executes in the helper's own install, even if another install supplies a valid identity.
+  const other = path.join(base, 'other');
+  fs.mkdirSync(other, { recursive: true });
+  fs.writeFileSync(path.join(other, 'package.json'), JSON.stringify({ name: 'surfcore', version: '9.9.9', type: 'module' }));
+  fs.copyFileSync(path.join(target, '.surfcore-install.json'), path.join(other, '.surfcore-install.json'));
+  const identityPending = { kind: 'zip', component: 'surfcore', target, staging, to: '9.9.9', waitPid: 999999, sourceRepo: 'test/repo', updateOwner: 'surfcore-updater', installationKind: 'source', fromVersion: '9.9.9' };
+  for (const [label, changes, expected] of [
+    ['cross-install', { target: other }, 'pending.target-mismatch'],
+    ['source', { sourceRepo: 'wrong/repo' }, 'pending.sourceRepo-mismatch'],
+    ['owner', { updateOwner: 'other' }, 'pending.updateOwner-mismatch'],
+    ['version', { fromVersion: '1.0.0' }, 'pending.from-version-mismatch'],
+  ]) {
+    fs.writeFileSync(pendingFile, JSON.stringify({ ...identityPending, ...changes }));
+    let status = 0;
+    try { execFileSync(process.execPath, [applyScript, '--pending', pendingFile], { stdio: 'ignore' }); } catch (error) { status = error.status ?? 1; }
+    const failed = JSON.parse(fs.readFileSync(`${pendingFile}.failed`, 'utf8'));
+    ok(status !== 0 && failed.code === expected && failed.error && failed.hint, `${label} 拒绝且带 code/error/hint`);
+    ok(fs.existsSync(pendingFile), `${label} pending 保留`);
+  }
+
   // 3) 失败要留证据：staging 不存在 → .failed，pending 保留，便于下次重试
   const badPending = path.join(stateDir, 'updates-pending.json');
   fs.writeFileSync(badPending, JSON.stringify({
-    kind: 'zip', component: 'surfcore', target, staging: path.join(base, 'nope'), to: '9.9.9', waitPid: 999999,
+    kind: 'zip', component: 'surfcore', target, staging: path.join(base, 'nope'), to: '9.9.9', waitPid: 999999, sourceRepo: 'test/repo', updateOwner: 'surfcore-updater', installationKind: 'source', fromVersion: '9.9.9',
     logFile: path.join(stateDir, 'apply2.log'),
   }, null, 2));
   let exitCode = 0;

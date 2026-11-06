@@ -26,6 +26,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { validatePending } from '../src/install-identity.js';
+
+const HELPER_INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const args = process.argv.slice(2);
 const valueOf = (name, fallback = '') => {
@@ -176,6 +180,21 @@ try {
     process.exit(3);
   }
   log(`[apply-update] 宿主已退出，开始应用 ${pending.kind} → ${pending.target}`);
+
+  // 最后一道身份闸：等待宿主退出期间安装目录/身份可能已变化；在任何覆盖或 merge 前重新核对。
+  const identityCheck = validatePending(pending, { installRoot: HELPER_INSTALL_ROOT });
+  if (!identityCheck.ok) {
+    const reason = identityCheck.error;
+    log(`[apply-update] 身份校验失败：${reason}`);
+    try {
+      fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({
+        ...pending, error: reason, hint: identityCheck.hint, code: identityCheck.code, at: new Date().toISOString(),
+      }, null, 2));
+      // 故意保留 pending 原件，供诊断与人工处理；不启动任何覆盖操作。
+      fs.rmSync(`${pendingFile}.started`, { force: true });
+    } catch {}
+    process.exit(4);
+  }
 
   const result = jobKind === 'git'
     ? gitPull(pending.target, pending.branch)
