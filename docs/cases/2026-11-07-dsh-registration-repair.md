@@ -15,6 +15,12 @@
 - 包安装：身份与 profile 实际链接通过 → 校验原补丁 → 独占备份及同步 → 原子替换三个 MCP 的托管块 → 完全重启。
 - 源码安装：沿用原 `setup-dsh.mjs` 的 preset、链接与安装逻辑；它与包的只修复 MCP 语义不同。
 
+## 组合主线真实补验（2026-11-07）
+
+第三包源 `f68fa63c88d338989924b8f1e40d7e9cf13e8697`，SHA256 `dbd6a3d63aca752a58bc90680f37a6821a73c9038f32c5b1a7e665ff271edb64`。官方CLI离线安装361持久文件未变、325包文件一致；主线实际点击原生同一修复按钮，成功及完全重启提示可见，`rootPkg is not defined` 消失。前后安装位置、package.json、325包文件、B站凭据摘要不变；三个托管MCP各一次，管理块标记唯一。未点告警“确认”，选稍后后完整重启独立App，三个官方MCP插件均active，stdio真实列工具32/1/2，qq_status只读调用成功。上述结论仅适用于授权独立profile；常用profile未改。
+
+冻结组合检查：官方Node24，audit169/169、regressions/完整插件exit0，HEAD全程f68fa63未变；清单790/790问题0。私有证据 `_backups/20261107-qq-resident/` 的 checks-4-repair、package-3、native-registration-button.json、registration-after.json、mcp-plugin-status-after-restart-shape.json、mcp-stdio-readiness.json。未发版、不改版本。
+
 ## 发布交接
 
 - **范围**：DSH 修复路由与包安装的最小 MCP 注册修复，不改版本、不发布。

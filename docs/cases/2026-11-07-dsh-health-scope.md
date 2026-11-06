@@ -18,6 +18,10 @@
 
 `DSH_PROFILE_AMBIGUOUS` / `DSH_PROFILE_UNKNOWN` / `DSH_PROFILE_PATCH_UNREADABLE` 不说明 MCP 缺失；在当前 DSH 实例明确 `DSH_PROFILE` 并检查该实例 DSH_HOME 和 patch 文件。确认当前 profile 实际缺 MCP 时，使用宿主提供的显式修复入口，修后按提示重启；不能由模型私自修复。
 
+## 组合主线真实补验（2026-11-07）
+
+独立官方App安装f68fa63同源第三包，实际修复当前desktop注册后完整退出重启。官方RPC列出的三个MCP均enabled/active，独立stdio真实握手列工具32/1/2且qq_status只读调用成功。两条历史dsh-profile-mcp-missing记录均由健康检查变为ack:true；主线只点“稍后”，没有用用户确认掩盖检测。私有证据见 `_backups/20261107-qq-resident/registration-gates-after-restart.json` 及同根MCP证据。冻结audit169/169、回归/完整插件exit0；不是常用profile或其它平台的实测结果。
+
 ## 发布交接
 
 - 现象：健康提示扫描错误 DSH 数据根，或被其他 profile 的健康状态掩盖。

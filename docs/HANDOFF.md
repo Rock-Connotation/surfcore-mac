@@ -5,6 +5,17 @@
 
 ---
 
+## 快照：2026-11-07 04:05（原生注册补修通过，审批现场进行中）
+
+- 程序及实装源 `f68fa63`；官方 Node24 最终冻结检查 checks-4：audit169/169、regressions/完整插件exit0，检查期间HEAD未变；Git对象清单790/790。独立官方CLI第三包离线安装361持久文件未变、325包文件一致，版本仍0.8.8。
+- 实际点击截图对应的原生“修复DSH注册”按钮，成功与重启提示可见、rootPkg错误消失；三个托管MCP各一次，安装/package.json/325包哈希和B站凭据不变。完整重启后官方插件列表三个MCP均active，stdio分别列32/1/2工具，qq_status实调只读成功；旧缺失L2已由健康检查自动确认，未点击“确认”掩盖。
+- 窗口页面关闭后的后台真实私聊成功：平台get_msg账号/正文与“后台常驻验收-1107”一致，用户已确认手机收到。该关闭是CDP Page.close导致renderer销毁，尚不算原生关窗隐藏通过。当前实际2/12次Hy4（含新会话自动标题）、1/30文本，累计不重置。
+- 安全停机助手首次因未显式DSH_NODE而误选常用缓存Node，所有权核验按设计拒绝且未发信号；明确官方内置Node后原stop全套核验成功。已保留诊断原始证据。独立App重启加载一次性无害诊断工具，绑定实际新QQ会话，临时精确guard例外；官方插件active。等待用户按QQ通知完成审批/提问，结束必须移除临时项并恢复325包哈希。
+- 原始证据 `_backups/20261107-qq-resident/`：checks-4-repair、package-3、native-registration-button、registration-after、mcp-plugin-status-after-restart-shape、mcp-stdio-readiness、first-background-reply、live-diagnostic-plugin-status。常用App/profile不动，NapCat与本轮代理保留，无发布。
+- 04:14补记：原生红色close经精确窗口dry三闸通过后实点，动画结束on=0而原App/renderer/Host/bridge/QQ仍活；目前尚未收到用户的诊断工具请求，2/12模型、1/30文本不变。私有manual候选离线11项和配置测试通过，Astra关闭全机ps引号/YAML跨块anchor/停止助手继承别名及framework Python身份问题，最后指纹匹配、无新增P1/P2；完整手动启停尚未实测。旧手启runner使用相对脚本，严格新入口拒绝接管是预期，下一次须由主线按原拥有证据停旧实例后实测新入口，不放宽为名字匹配。临时诊断仍在已授权独立profile中等待现场操作，不能跳过清场收口。
+
+---
+
 
 ## 快照：2026-11-07（QQ 常驻期间用户原生修复弹窗补修）
 
