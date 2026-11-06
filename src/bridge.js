@@ -722,13 +722,14 @@ function recordModelRequested(requested = {}) {
     lastError: null,
   });
 }
-function recordModelApplied({ ok, sessionId, selected = null, error = '', code = '', requested = null } = {}) {
+function recordModelApplied({ ok, sessionId, selected = null, error = '', code = '', hint = '', requested = null } = {}) {
   const apply = {
     ok: ok === true,
     sessionId: String(sessionId ?? ''),
     selected: selected && typeof selected === 'object' ? selected : null,
     error: String(error ?? ''),
     code: String(code ?? ''),
+    hint: String(hint ?? ''),
     at: new Date().toISOString(),
     evidence: 'session.selectModel',
   };
@@ -6007,11 +6008,11 @@ async function main() {
               sendJson({ ok: true, key, sessionId });
             } else {
               popSilent();
-              sendJson({ ok: false, error: result.error || '投递失败' }, 500);
+              sendJson({ ok: false, error: result.error || '投递失败', ...(result.code ? { code: result.code, hint: result.hint } : {}) }, 500);
             }
           } catch (error) {
             if (popSilent) popSilent();
-            sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+            sendJson({ ok: false, error: error?.message ?? String(error), ...(error?.code === 'MODEL_APPLY_FAILED' ? { code: error.code, hint: error.hint } : {}) }, 500);
           }
           return;
         }
@@ -10537,7 +10538,7 @@ async function main() {
       defaultSelection: followed,
       defaultError: followed === null ? defaultModelCache.error : '',
     });
-    const selectionKey = `${chosen.source}|${chosen.provider}|${chosen.model}|${chosen.reasoningEffort || ''}`;
+    const selectionKey = `${chosen.source}|${chosen.provider}|${chosen.model}|${chosen.reasoningEffort || ''}|fallback:${cfg.dsh?.allowModelFallback !== false}`;
     if (modelAppliedSessions.get(sessionId) === modelSelectionEpoch
         && modelAppliedKeys.get(sessionId) === selectionKey) {
       return 'applied';
@@ -10591,7 +10592,7 @@ async function main() {
         log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${message}`);
         // 配置里的默认 provider/model 可能属于旧 DSH（如 deepseek-official 在 rc.5 已不存在）。
         // 只在 DSH 明确说模型不可用时，从真实目录挑一个可用项重试一次。
-        if (!fallbackTried && /model-unavailable|select an available model|unknown model|model.*(?:not available|not found|unavailable)/i.test(message)) {
+        if (cfg.dsh?.allowModelFallback !== false && !fallbackTried && /model-unavailable|select an available model|unknown model|model.*(?:not available|not found|unavailable)/i.test(message)) {
           fallbackTried = true;
           try {
             if (!modelCatalogInFlight) {
@@ -10622,12 +10623,14 @@ async function main() {
       modelAppliedKeys.delete(sessionId);
       recordModelApplied({
         ok: false, sessionId, error: message || 'DSH 会话不存在', code: 'MODEL_SESSION_NOT_FOUND',
+        hint: '检查 DSH 会话与模型设置，修复后重新发送。',
         requested: { provider, model, reasoningEffort: effort },
       });
       return 'not-found';
     }
     recordModelApplied({
       ok: false, sessionId, error: message || 'DSH 拒绝了模型选择', code: 'MODEL_APPLY_FAILED',
+      hint: '检查 DSH 模型连接与 QQ 模型设置，修复后重新发送。',
       requested: { provider, model, reasoningEffort: effort },
     });
     return 'failed';
@@ -10650,6 +10653,7 @@ async function main() {
           log(`会话 ${key} 在 DSH 侧已不存在，退役本地映射并在本次调用中重建`);
           retireSession(key);
         } else {
+          if (applied !== 'applied') throw modelSelectionFailure();
           if (epoch !== sessionEpoch || !isCurrentSession(key, existing)) throw new Error('会话创建期间已重置或权限已变化');
           return existing;
         }
@@ -10711,10 +10715,14 @@ async function main() {
       state.sessionPolicies[key] = policy;
       reverse.set(sessionId, key);
       saveState();
-      await ensureChatModel(sessionId);
+      const applied = await ensureChatModel(sessionId);
       if (epoch !== sessionEpoch || !isCurrentSession(key, sessionId)) {
         if (state.sessions[key] === sessionId) retireSession(key);
         throw new Error('会话创建期间已重置或权限已变化');
+      }
+      if (applied !== 'applied') {
+        if (applied === 'not-found') retireSession(key);
+        throw modelSelectionFailure();
       }
       log(`新会话 ${key} -> ${sessionId}（模式 ${currentMode}，preset: ${modePreset(key, currentMode, cfg) ?? '默认'}）`);
       return sessionId;
@@ -10726,6 +10734,13 @@ async function main() {
       // 只有仍持有该条目的 promise 才删除，避免旧 promise 误删 reset 后新建的 promise。
       if (sessionPromises.get(key) === promise) sessionPromises.delete(key);
     }
+  }
+
+  function modelSelectionFailure() {
+    const error = new Error('QQ 会话模型选择失败，消息未投递。');
+    error.code = 'MODEL_APPLY_FAILED';
+    error.hint = '检查 DSH 模型连接与 QQ 模型设置，修复后重新发送。';
+    return error;
   }
 
   // ── 仿真群友社交引擎（仿真模式，内部标识 reserved） ────────────────────────
@@ -12955,6 +12970,10 @@ async function main() {
       if (String(error?.message ?? error).includes('会话创建期间已重置')) {
         enqueueForRetry(key, promptText, opts);
         return { ok: true, retried: true };
+      }
+      if (error?.code === 'MODEL_APPLY_FAILED') {
+        if (!opts.silent) await sendToQQ(key, `⚠️ ${error.message} ${error.hint}`);
+        return { ok: false, code: error.code, error: error.message, hint: error.hint };
       }
       throw error;
     }
@@ -16103,6 +16122,10 @@ async function main() {
     } catch (error) {
       if (String(error?.message ?? error).includes('会话创建期间已重置')) {
         enqueueForRetry(key, promptText, { media: mediaList });
+        return;
+      }
+      if (error?.code === 'MODEL_APPLY_FAILED') {
+        await sendToQQ(key, `⚠️ ${error.message} ${error.hint}`);
         return;
       }
       throw error;

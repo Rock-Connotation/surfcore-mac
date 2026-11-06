@@ -69,6 +69,102 @@ await test('same-policy sessions are reused but legacy unlabelled sessions are r
   delete h.state.sessionPolicies['private:123'];
   assert.notEqual(await h.ensureSession('private:123'), first);
 });
+for (const existing of [false, true]) for (const failure of ['response', 'throw']) {
+  await test(`model selection ${failure} blocks ${existing ? 'existing' : 'new'} session prompt`, async (h) => {
+    h.setReady(true);
+    if (existing) {
+      await h.ensureSession('private:123');
+      h.cfg.dsh.model = 'changed-fixture-model';
+    }
+    h.api.sessions.selectModel = async () => {
+      if (failure === 'throw') throw new Error('fixture selection failed');
+      return { result: { ok: false, error: { code: 'fixture-failure', message: 'selection failed' } } };
+    };
+    const result = await h.deliverPrompt('private:123', 'fixture');
+    assert.equal(h.calls.prompts.length, 0);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'MODEL_APPLY_FAILED');
+    assert.ok(result.error && result.hint);
+    assert.equal(h.getModelStatus().pending, false);
+    assert.equal(h.getModelStatus().lastApply.ok, false);
+    assert.equal(h.getModelStatus().lastApply.code, 'MODEL_APPLY_FAILED');
+    assert.ok(h.getModelStatus().lastApply.hint);
+    assert.ok(h.calls.sent.length > 0, 'QQ user receives actionable failure');
+  });
+}
+await test('ordinary incoming message sees selection failure without prompt', async (h) => {
+  h.setMode('chat'); h.setReady(true);
+  h.api.sessions.selectModel = async () => { throw new Error('fixture selection failed'); };
+  await h.handleIncoming('private', '123', { user_id: 123, self_id: 1, message_id: 1234, sender: { nickname: 'fixture' }, message: [{ type: 'text', data: { text: 'fixture message' } }] }, h.cfg);
+  assert.equal(h.calls.prompts.length, 0);
+  assert.ok(h.calls.sent.length > 0, 'QQ user receives actionable failure');
+  const sent = JSON.stringify(h.calls.sent);
+  assert.match(sent, /模型选择失败/); assert.match(sent, /检查 DSH 模型连接/);
+});
+await test('console notify reports model failure with code and hint', async (h) => {
+  h.setReady(true);
+  h.api.sessions.selectModel = async () => { throw new Error('fixture selection failed'); };
+  const server = h.startConsoleServer();
+  if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+  try {
+    const reply = await new Promise((resolve, reject) => {
+      const request = http.request({ host: '127.0.0.1', port: server.address().port, path: '/api/console/notify-ai?token=fixture-console-token', method: 'POST', headers: { 'content-type': 'application/json' } }, (response) => {
+        let body = ''; response.on('data', (chunk) => { body += chunk; }); response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(body) }));
+      });
+      request.on('error', reject); request.end(JSON.stringify({ key: 'private:123', message: 'fixture' }));
+    });
+    assert.equal(reply.status, 500); assert.equal(reply.body.code, 'MODEL_APPLY_FAILED');
+    assert.ok(reply.body.error && reply.body.hint); assert.equal(h.calls.prompts.length, 0);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+await test('unsupported reasoning effort still retries without effort and delivers', async (h) => {
+  h.setReady(true);
+  const selections = [];
+  h.api.sessions.selectModel = async (params) => {
+    selections.push(params);
+    if (selections.length === 1) throw new Error('does not support reasoning effort');
+    return { result: { ok: true, value: { selected: { provider: 'fixture', model: 'fixture' } } } };
+  };
+  const result = await h.deliverPrompt('private:123', 'fixture');
+  assert.equal(result.ok, true);
+  assert.equal(selections.length, 2);
+  assert.ok('reasoningEffort' in selections[0]);
+  assert.equal('reasoningEffort' in selections[1], false);
+  assert.equal(h.calls.prompts.length, 1);
+});
+await test('disabled model fallback never selects another provider or prompts', async (h) => {
+  h.setReady(true);
+  h.cfg.dsh.followDefaultModel = false;
+  h.cfg.dsh.allowModelFallback = false;
+  h.cfg.dsh.provider = 'requested-provider'; h.cfg.dsh.model = 'requested-model';
+  const selections = [];
+  h.api.sessions.selectModel = async (params) => { selections.push(params); throw new Error('model-unavailable'); };
+  const result = await h.deliverPrompt('private:123', 'fixture');
+  assert.equal(result.ok, false); assert.equal(result.code, 'MODEL_APPLY_FAILED'); assert.ok(result.error && result.hint);
+  assert.equal(h.calls.prompts.length, 0);
+  assert.ok(selections.length > 0);
+  assert.ok(selections.every((s) => s.provider === 'requested-provider' && s.model === 'requested-model'));
+  assert.equal(h.calls.cancelled.filter((call) => call.method === 'session.models' || call.method === 'session.modelCatalog').length, 0);
+});
+await test('legacy default still allows catalogue model fallback', async (h) => {
+  h.setReady(true); h.cfg.dsh.followDefaultModel = false;
+  h.cfg.dsh.provider = 'requested-provider'; h.cfg.dsh.model = 'requested-model';
+  const selections = [];
+  h.api.callUnary = async () => ({ result: { ok: true, value: { groups: [{ id: 'alternate', models: [{ id: 'alternate-model' }] }] } } });
+  h.api.sessions.selectModel = async (params) => {
+    selections.push(params);
+    if (selections.length === 1) throw new Error('model-unavailable');
+    return { result: { ok: true, value: { selected: { provider: params.provider, model: params.model } } } };
+  };
+  const result = await h.deliverPrompt('private:123', 'fixture');
+  assert.equal(result.ok, true); assert.equal(selections[1].provider, 'alternate');
+  assert.equal(selections[1].model, 'alternate-model'); assert.equal(h.calls.prompts.length, 1);
+  h.cfg.dsh.allowModelFallback = false;
+  h.api.sessions.selectModel = async (params) => { selections.push(params); throw new Error('model-unavailable'); };
+  const afterPolicyChange = await h.deliverPrompt('private:123', 'after-policy-change');
+  assert.equal(h.calls.prompts.length, 1, 'must not prompt with cached alternate after fallback disabled');
+  assert.equal(afterPolicyChange.ok, false); assert.equal(afterPolicyChange.code, 'MODEL_APPLY_FAILED');
+});
 await test('reset during model selection cannot return a detached session', async (h) => {
   h.api.sessions.selectModel = async () => {
     h.resetEpoch();

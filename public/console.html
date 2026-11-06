@@ -3332,7 +3332,7 @@ document.getElementById('aiNotifySend').addEventListener('click', async () => {
   if (!id || !message) { alert('请填写群号/QQ 号和提醒内容'); return; }
   const r = await api('/api/console/notify-ai', 'POST', { key: kind + ':' + id, message });
   const msg = document.getElementById('aiNotifyMsg');
-  msg.textContent = r.ok ? ('✅ 已投递到 DSH：' + r.sessionId) : ('❌ ' + (r.error || '失败'));
+  msg.textContent = r.ok ? ('✅ 已投递到 DSH：' + r.sessionId) : ('❌ ' + (r.error || '失败') + (r.hint ? '；' + r.hint : ''));
   msg.className = r.ok ? 'meta ok' : 'meta err';
 });
 

@@ -3126,7 +3126,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           };
         }
         if (lastApply && !lastApply.ok) {
-          return { kind: "bad", text: `应用失败：${lastApply.error || "DSH 拒绝模型选择"}（${fmtProofTime(lastApply.at)}）` };
+          return { kind: "bad", text: `应用失败：${lastApply.error || "DSH 拒绝模型选择"}（${fmtProofTime(lastApply.at)}）；${lastApply.hint || "检查 DSH 模型连接与 QQ 模型设置，修复后重新发送。"}` };
         }
         return { kind: "hint", text: "还没有应用回执。保存后需要下一条消息触发 DSH selectModel，才能证明真的加载。" };
       })();
