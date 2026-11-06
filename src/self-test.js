@@ -5,14 +5,10 @@
 //   4. session.prompt 注入一条消息
 //   5. 等 agent 回复（turn/end）并打印
 // 用法：node src/self-test.js [baseUrl]
-import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
+import { loadSelfTestClient, resolveSelfTestTarget } from './self-test-target.js';
 
 // 自测会话的清理句柄（见 cleanupSelfTestSession）。
 let selfTestApi = null;
@@ -36,16 +32,10 @@ async function cleanupSelfTestSession() {
 }
 
 async function main() {
-  const baseUrl = process.argv[2] ?? 'http://127.0.0.1:3080';
-  let auth;
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
-    auth = {
-      token: cfg.dsh?.authToken || discoverDshLaunchToken(),
-      header: cfg.dsh?.authHeader,
-      prefix: cfg.dsh?.authPrefix
-    };
-  } catch {}
+  const { baseUrl, auth } = await resolveSelfTestTarget({ cliUrl: process.argv[2] });
+  const client = await loadSelfTestClient();
+  const { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } = client;
+  if (!auth.token) auth.token = discoverDshLaunchToken();
   const api = new NodeApiClient(baseUrl, undefined, auth);
   selfTestApi = api;
   const promptText = process.argv[3] ?? '只回复两个字：收到';
@@ -112,7 +102,7 @@ async function main() {
 }
 
 main().catch(async (error) => {
-  console.error('❌ 自测失败:', error?.message ?? error);
+  console.error('❌ 自测失败:', error?.code || 'SELF_TEST_FAILED', error?.message ?? error, error?.hint ? `下一步：${error.hint}` : '下一步：检查 DSH 连接与自测日志后重试。');
   await cleanupSelfTestSession();
   process.exit(1);
 });

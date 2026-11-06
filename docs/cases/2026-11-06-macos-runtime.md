@@ -32,3 +32,19 @@ case：docs/cases/2026-11-06-macos-runtime.md；完整逻辑及影响面见上�
 ```
 
 组合审查补充：Windows 的 PROGRAMFILES 环境变量是目录，系统 Node 候选须补 `nodejs/node.exe`；保留显式完整可执行文件参数。新增模拟 Windows 目录布局行为断言，通过能力探测后选中该文件；Windows 实机仍未验证。
+
+## 自测目标与正式配置同源（补充）
+
+原 `src/self-test.js` 固定 3080 且只读取脚本所在仓库配置；Finder/多实例环境中可能连接错误端口或错用凭据。现在自测经 `src/self-test-target.js` 读取插件共享的 `QQ_CONFIG`，目标按 CLI → `DSH_WEB_URL` → `discoverDshBaseUrl()` → 用户配置 `dsh.baseUrl` 选择。无效显式地址拒绝回退；配置不可读、缺依赖和目标无效分别返回可行动的 `code`、错误与提示。`DSH_HOME` 凭据发现仍由现有 DSH 客户端负责；prompt、mux 和归档链路保持原样。
+
+备选是在自测中复制路径与端口查找，成本低但配置规则会漂移；采用共享路径与可注入发现的小解析器，便于测试且可直接回退这三个自测文件。影响仅为自测调用目标和鉴权来源，可能涉及选中配置的凭据，但测试不打印凭据或读取真实 profile。
+
+验证：`node scripts/test-self-test-target.mjs` 通过，覆盖中文空格、`SURFCORE_ROOT` / `SURFCORE_QQBOT_ROOT`、参数和环境优先、发现失败回退、鉴权字段、无目标和缺依赖错误；`node --check src/self-test.js`、`node --check src/self-test-target.js`、`git diff --check` 均通过。未运行真实自测、未连 DSH 或调用模型。源码修改需要下次启动自测时生效，无需重启服务；如需回滚，先核对集成改动，再参考 `_backups/20261106-selftest/` 恢复原自测文件。
+
+## macOS DSH 端口发现（补充）
+
+旧 `discoverDshBaseUrl()` 在 macOS 直接返回 null，动态端口只能靠外部显式配置。macOS 路线使用 `lsof` 枚举回环监听，并用 `ps` 的可执行路径限定官方 DeepSeek Harness 应用或 DSH 可执行程序，再对候选探活；缓存地址只影响排序，必须同时通过进程归属与探活。限定候选数量和执行超时，避免把不相关服务的 401 当成 DSH；Windows 旧路径不变。已有代码与同步脚本未实现 `state/dsh-port.json` 读写，历史文档对它的格式未给出证据，因此本实现只把可解析的本地缓存视作非权威候选，不宣称其为宿主状态来源。
+
+备选是扫描所有回环端口：实现直观，但会把其他返回 401 的服务误认成 DSH；选择进程归属约束，代价是权限不足或宿主进程布局变化时不能发现，返回 null 后继续使用现有配置。`node scripts/test-dsh-port.mjs` 通过，含模拟监听、缓存优先、无关进程及远端拒绝、lsof 失败；`node --check src/dsh-port.js` 与 `git diff --check` 通过。未访问真实 DSH、凭据或执行模型自测；实际应用进程路径和 Finder 场景仍需验收。代码下次启动读取，回退前先保存集成变更，原文件备份于 `_backups/20261106-dsh-port/`。
+
+组合边界补充：配置中明确的远端DSH不被本机发现覆盖；多个存活App/profile候选时不任取首个，返回无唯一发现，由显式参数/环境或既有配置决定。缓存只排序，不能替代归属验证。相关夹具已覆盖；本机实际App布局仍待验收。

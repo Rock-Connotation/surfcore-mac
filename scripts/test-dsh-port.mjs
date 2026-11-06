@@ -4,7 +4,7 @@
 // 只会让每条 QQ 消息都 401/超时——表现为「QQ 有消息、DSH 毫无反应」，是最难自查的一类。
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { isLoopbackBaseUrl, looksLikeDsh, probeDshBaseUrl } from '../src/dsh-port.js';
+import { discoverDshBaseUrl, isLoopbackBaseUrl, looksLikeDsh, probeDshBaseUrl } from '../src/dsh-port.js';
 
 /** 起一个可控的小服务器，返回 { port, close }。 */
 async function serve(handler) {
@@ -64,4 +64,34 @@ assert.equal(isLoopbackBaseUrl('https://dsh.example.com'), false);
 assert.equal(isLoopbackBaseUrl('http://192.168.1.20:3080'), false);
 assert.equal(isLoopbackBaseUrl(''), false);
 
+// macOS: only ports associated with an actual DSH executable are eligible, even when 401.
+{
+  const seen = [];
+  const reads = [];
+  const command = (file, args) => {
+    if (file === '/usr/sbin/lsof') return 'p11\nn127.0.0.1:1111\np22\nn127.0.0.1:2222\nn127.0.0.1:3333\np33\nn127.0.0.1:4444\np44\nn*:5555\n';
+    const names = {
+      '11': '/Applications/Other.app/Contents/MacOS/Other',
+      '22': '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness',
+      '33': '/Applications/DeepSeek Harness.app.evil/Contents/MacOS/Other',
+    };
+    return names[args[1]] || '';
+  };
+  const readFile = (file) => { reads.push(file); return JSON.stringify({ baseUrl: 'http://127.0.0.1:3333' }); };
+  const result = await discoverDshBaseUrl({ platform: 'darwin', env: { SURFCORE_ROOT: '/临时 空间/项目', DSH_HOME: '/临时 空间/dsh' }, command, readFile,
+    probe: async (url) => { seen.push(url); return url.endsWith(":3333"); } });
+  assert.equal(result, 'http://127.0.0.1:3333');
+  assert.deepEqual(seen, ['http://127.0.0.1:3333', 'http://127.0.0.1:2222'], 'cache only orders ownership-verified candidates');
+  assert.ok(reads.includes('/临时 空间/项目/state/dsh-port.json'));
+  assert.ok(reads.includes('/临时 空间/dsh/surfcore/state/dsh-port.json'));
+  seen.length = 0;
+  const second = await discoverDshBaseUrl({ platform: 'darwin', env: {}, command,
+    readFile: () => JSON.stringify({ baseUrl: 'https://remote.example:4444' }),
+    probe: async (url) => { seen.push(url); return url.endsWith(':3333'); } });
+  assert.equal(second, 'http://127.0.0.1:3333');
+  assert.deepEqual(seen, ['http://127.0.0.1:2222', 'http://127.0.0.1:3333']);
+  assert.ok(!seen.some((url) => /1111|4444|5555/.test(url)), 'unrelated or non-loopback listeners must never be probed');
+  assert.equal(await discoverDshBaseUrl({ platform: 'darwin', env: {}, command, readFile, probe: async () => true }), null, 'ambiguous App/profile endpoints require an explicit target even when a cache points to one');
+  assert.equal(await discoverDshBaseUrl({ platform: 'darwin', env: {}, readFile: () => JSON.stringify({ port: 1111 }), command: () => { throw new Error('missing lsof'); }, probe: async () => assert.fail('no process ownership') }), null);
+}
 console.log('dsh-port tests OK');
