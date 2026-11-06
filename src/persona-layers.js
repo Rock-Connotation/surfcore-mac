@@ -55,7 +55,7 @@ function section(id, label, text) {
  * @param {string} [opts.sceneId] 场景 ID（用于标题）
  */
 export function composePersonaLayers({
-  core = '', scene = '', daily = '', tone = '', identity = '', personaMode = 'full', mode = 'v2', maxChars = 6000, sceneId = '',
+  core = '', scene = '', daily = '', tone = '', identity = '', personaMode = 'full', mode = 'v2', maxChars = 6000, sceneId = '', layerReserves = null,
 } = {}) {
   const budget = Math.max(0, Math.round(Number(maxChars) || 0));
   const coreText = selectRoleText(core, mode);
@@ -80,30 +80,68 @@ export function composePersonaLayers({
     section('scene', `场景人格${PERSONA_SCENE_LABELS[sceneId] ? `｜${PERSONA_SCENE_LABELS[sceneId]}` : ''}`, sceneText),
     section('daily', '人格日常', dailyText),
   ].filter((x) => x.text);
+  const reserves = Object.fromEntries(['identity', 'core', 'tone', 'scene', 'daily'].map((key) => [
+    key,
+    Math.max(0, Math.round(Number(layerReserves?.[key]) || 0)),
+  ]));
+  const hasReserves = Object.values(reserves).some((value) => value > 0);
 
   const counts = { identity: 0, core: 0, tone: 0, scene: 0, daily: 0 };
+  const reserved = { identity: 0, core: 0, tone: 0, scene: 0, daily: 0 };
   const omitted = [];
   if (!selected.length && personaMode === 'tone' && coreText) {
     const fallback = coreText;
     counts.core = fallback.length;
-    return { text: fallback, chars: fallback.length, layers: counts, omitted, truncated: false, sceneId: sceneId || '' };
+    return { text: fallback, chars: fallback.length, layers: counts, reserved, omitted, truncated: false, sceneId: sceneId || '' };
   }
-  if (!selected.length) return { text: '', chars: 0, layers: counts, omitted, truncated: false, sceneId: sceneId || '' };
+  if (!selected.length) return { text: '', chars: 0, layers: counts, reserved, omitted, truncated: false, sceneId: sceneId || '' };
 
   // 只有核心时保持旧行为：不额外加标题，避免旧角色卡注入内容发生变化。
   if (selected.length === 1 && selected[0].id === 'core' && budget <= 0) {
     counts.core = selected[0].text.length;
-    return { text: selected[0].text, chars: counts.core, layers: counts, omitted, truncated: false, sceneId: sceneId || '' };
+    return { text: selected[0].text, chars: counts.core, layers: counts, reserved, omitted, truncated: false, sceneId: sceneId || '' };
   }
 
   let remaining = budget > 0 ? budget : Number.POSITIVE_INFINITY;
   let truncated = false;
   const parts = [];
+  const allowances = new Map();
+  if (hasReserves) {
+    // Allocate layer reserves before spending spare budget. This keeps a long core from
+    // consuming the scene and tone sections while preserving the same total maxChars.
+    for (const item of selected) {
+      const header = selected.length > 1 ? `【${item.label}】\n` : '';
+      const available = Number.isFinite(remaining) ? Math.max(0, remaining - header.length) : item.text.length;
+      const amount = Math.min(item.text.length, reserves[item.id] || 0, available);
+      allowances.set(item.id, amount);
+      reserved[item.id] = amount;
+      if (amount > 0) remaining -= header.length + amount;
+    }
+    for (const item of selected) {
+      const current = allowances.get(item.id) || 0;
+      const header = selected.length > 1 ? `【${item.label}】\n` : '';
+      const available = Number.isFinite(remaining) ? Math.max(0, remaining - (current > 0 ? 0 : header.length)) : item.text.length;
+      const extra = Math.min(Math.max(0, item.text.length - current), available);
+      allowances.set(item.id, current + extra);
+      if (extra > 0) remaining -= extra + (current > 0 ? 0 : header.length);
+    }
+  }
   for (const item of selected) {
     // 只有核心时不加标题（旧行为）；有多层时明确告诉模型这是哪一层。
     const header = selected.length > 1 ? `【${item.label}】\n` : '';
     let text = item.text;
-    if (Number.isFinite(remaining)) {
+    if (hasReserves) {
+      const allowed = allowances.get(item.id) || 0;
+      if (allowed <= 0) {
+        omitted.push(item.id);
+        counts[item.id] = 0;
+        continue;
+      }
+      if (text.length > allowed) {
+        text = text.slice(0, allowed).trimEnd();
+        truncated = true;
+      }
+    } else if (Number.isFinite(remaining)) {
       const allowed = remaining - header.length;
       if (allowed <= 0) {
         omitted.push(item.id);
@@ -119,9 +157,9 @@ export function composePersonaLayers({
     const block = `${header}${text}`;
     parts.push(block);
     counts[item.id] = block.length;
-    if (Number.isFinite(remaining)) remaining -= block.length;
+    if (!hasReserves && Number.isFinite(remaining)) remaining -= block.length;
   }
 
   const text = parts.join('\n\n').trim();
-  return { text, chars: text.length, layers: counts, omitted, truncated, sceneId: sceneId || '' };
+  return { text, chars: text.length, layers: counts, reserved, omitted, truncated, sceneId: sceneId || '' };
 }

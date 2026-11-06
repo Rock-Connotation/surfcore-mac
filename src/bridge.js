@@ -85,6 +85,7 @@ import {
   readPersonaLayerText,
 } from './character-persona.js';
 import { composePersonaLayers, personaSceneFromKey } from './persona-layers.js';
+import { buildCharacterContext } from './core/context.js';
 import { isHardDirectWakeReason, hasStrictDirectUnread } from './wake-policy.js';
 import { DEFAULT_GROUP_POLICY, normalizeGroupPolicy, groupTier, shouldSkipTriggerForTier } from './group-policy.js';
 import { buildContextSnapshot, DEFAULT_SNAPSHOT_CAPS } from './context-snapshot.js';
@@ -4801,8 +4802,7 @@ async function main() {
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/bili/memory/refresh') {
-          const stats = await biliMemory.refresh({ force: true });
-          sendJson({ ok: stats?.ok !== false, stats });
+          sendJson({ ok: false, code: 'BILI_MEMORY_HOST_OWNED', error: 'B站记忆由宿主维护。', hint: '在设置页运行记忆卡整理。' }, 409);
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/bili/share-now') {
@@ -13394,6 +13394,14 @@ async function main() {
   let memoryCardGroupsCache = { key: '', blocks: null };
   function memoryCardPromptBlock(key = '') {
     const target = String(key ?? '').trim();
+    if (CHARACTER_ID) {
+      const unified = readJsonSafe(path.join(SURFCORE_DIR, 'config.json'), {});
+      if (unified?.memoryCard?.enabled === false) return '';
+      const context = buildCharacterContext({ characterId: CHARACTER_ID, characterEpoch: CHARACTER_EPOCH,
+        audience: { channel: 'qq', conversationKey: target }, memoryConfig: unified?.memoryCard,
+        includePersona: false, includeLife: false, budget: { maxChars: 6000 } });
+      return context.ok ? context.memoryText : '';
+    }
     if (target) {
       let mapFound = false;
       try {
@@ -13442,7 +13450,8 @@ async function main() {
     const composed = composePersonaLayers({
       core, scene, daily, tone, identity, personaMode, mode, maxChars: roleInjectMaxChars, sceneId,
     });
-    const base = composed.text || '';
+    const unified = CHARACTER_ID ? buildCharacterContext({ characterId: CHARACTER_ID, characterEpoch: CHARACTER_EPOCH, scene: sceneId, audience: { channel: 'qq', conversationKey: key }, identity, personaMode, mode, budget: { maxChars: roleInjectMaxChars }, includeMemory: false }) : null;
+    const base = unified?.ok ? unified.text : (CHARACTER_ID ? '' : composed.text || '');
     // personaOnly：只要人格卡正文（唤醒提示词用）。管理员规则 / B站简报 / 记忆卡
     // 唤醒侧自己已经各拼过一遍，这里再拼会让同一段内容在一张纸条上出现两次。
     if (opts.personaOnly) return base;
@@ -17222,11 +17231,6 @@ async function main() {
   if (cfg.biliBridge?.enabled) {
     const shareGroups = biliGroupList(cfg.biliBridge.share.groups.length ? cfg.biliBridge.share.groups : cfg.allow.groups);
     const dynamicsGroups = biliGroupList(cfg.biliBridge.dynamics.groups.length ? cfg.biliBridge.dynamics.groups : cfg.allow.groups);
-    if (cfg.biliBridge.memory.enabled) {
-      void biliMemory.refresh({ force: true });
-      const t = setInterval(() => { void biliMemory.refresh(); }, cfg.biliBridge.memory.refreshIntervalMs);
-      t.unref?.();
-    }
     if (cfg.biliBridge.dynamics.enabled && dynamicsGroups.length) {
       biliDynamics = createBiliDynamicsSync({
         stateDir: PLATFORM_STATE_DIR,

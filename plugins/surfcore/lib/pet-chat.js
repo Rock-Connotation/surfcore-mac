@@ -26,6 +26,7 @@ import { memoryCardPromptBlock } from './memory-card.js';
 import { activeMemoryPaths, readCurrentCharacter, readPersonaLayerText } from '../../../src/character-persona.js';
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js';
 import { composePersonaLayers } from '../../../src/persona-layers.js';
+import { buildCharacterContext } from '../../../src/core/context.js';
 import { adminFromSources } from '../../../src/admin-identity.js';
 import { appendMemoryInboxEvent } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
 import { synthesizeToFile, wavDurationMs } from '../../../src/voice-tts.js';
@@ -275,18 +276,20 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       maxChars: 4200,
       sceneId: 'pet',
     }).text || personaCore;
+    const context = cur ? buildCharacterContext({ characterId: cur.id, characterEpoch: cur.epoch, scene: 'pet', audience: { channel: 'pet', ownerName: ownerInfo().name }, budget: { maxChars: 4200 }, includeMemory: false }) : null;
+    const contextPersona = context?.ok ? context.text : (cur ? '' : persona);
     let name = String(cur?.name || '').trim();
     if (!name) {
       const heading = persona.match(/^#\s*([^\n#]{1,40})/m);
       name = heading ? heading[1].trim() : '小肥鱼';
     }
-    return { id: cur?.id || '', name, persona, personaFile, hasPersona: Boolean(persona) };
+    return { id: cur?.id || '', name, persona: contextPersona, personaFile, hasPersona: Boolean(contextPersona) };
   }
 
   function memoryBlock() {
     const unified = unifiedConfig();
     if (unified?.memoryCard?.enabled === false) return '';
-    try { return String(memoryCardPromptBlock('qq') || '').trim(); } catch { return ''; }
+    try { const context = buildCharacterContext({ scene: 'pet', audience: { channel: 'pet' }, includePersona: false, includeLife: false }); return context.ok ? context.memoryText : (context.code === 'CHARACTER_CONTEXT_REQUIRED' ? String(memoryCardPromptBlock('qq') || '').trim() : ''); } catch { return ''; }
   }
 
   function purposeStateFile() {

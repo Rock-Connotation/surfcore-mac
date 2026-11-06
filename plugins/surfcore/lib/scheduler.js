@@ -38,6 +38,7 @@ import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-id
 import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.js'
 import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText } from '../../../src/character-persona.js'
 import { composePersonaLayers } from '../../../src/persona-layers.js'
+import { buildCharacterContext } from '../../../src/core/context.js'
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js'
 import { interactEnabled } from '../tools/lib/interact.mjs'
 import { biliSessionCreateParams } from './bili-workspace.js'
@@ -104,7 +105,8 @@ function personaCardBlock() {
     maxChars: max,
     sceneId: 'bili',
   })
-  const safeCard = sanitizePersonaForBili(composed.text || card)
+  const context = buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' }, budget: { maxChars: max }, includeMemory: false })
+  const safeCard = sanitizePersonaForBili(context.ok ? context.text : (context.code === 'CHARACTER_CONTEXT_REQUIRED' ? composed.text || card : ''))
   const compact = composed.truncated ? `${safeCard}\n（人设卡按预算省略；完整卡在 ${file}）` : safeCard
   return [
     '［统一人设卡 · QQ 和 B站是同一个人］',
@@ -174,7 +176,8 @@ function qqMemoryBlockForBili() {
 function memoryCardBlockForBili() {
   const unified = readUnified().config
   if (unified.memoryCard?.enabled === false) return ''
-  return memoryCardPromptBlock('bili')
+  const context = buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' }, includePersona: false, includeLife: false })
+  return context.ok ? context.memoryText : (context.code === 'CHARACTER_CONTEXT_REQUIRED' ? memoryCardPromptBlock('bili') : '')
 }
 
 /** 每次唤醒都放在最前面的合体上下文（顺序：人设 → 自我锚点 → 管理员 → 对齐 → QQ 记忆 → 记忆卡）。 */

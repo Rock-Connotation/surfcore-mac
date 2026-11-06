@@ -48,7 +48,7 @@ const BILI_BEHAVIOR_FILES = new Set([
 ]);
 const MEMORY_FILES = [
   'memory-card.json', 'memory-card.md', 'memory-card-prompt-qq.md', 'memory-card-prompt-bili.md',
-  'memory-inbox.jsonl', 'memory-card-full-stats.json', 'memory-card-full.md',
+  'memory-inbox.jsonl', 'experience-inbox.jsonl', 'memory-card-full-stats.json', 'memory-card-full.md',
   'qq-for-bili.md', 'bili-for-qq.md', 'sync-state.json',
 ];
 const MEMORY_APPEND_FILES = ['memory-card-full.jsonl'];
@@ -130,6 +130,7 @@ export function characterDir(id) {
 export function characterPaths(id) {
   const dir = characterDir(id);
   const memoryDir = path.join(dir, 'memory');
+  const lifeDir = path.join(dir, 'life');
   return {
     id,
     dir,
@@ -153,6 +154,10 @@ export function characterPaths(id) {
     memoryFullJsonl: path.join(memoryDir, 'memory-card-full.jsonl'),
     memoryFullStats: path.join(memoryDir, 'memory-card-full-stats.json'),
     memoryFullMd: path.join(memoryDir, 'memory-card-full.md'),
+    experienceInbox: path.join(memoryDir, 'experience-inbox.jsonl'),
+    lifeDir,
+    lifeState: path.join(lifeDir, 'state.json'),
+    purposeState: path.join(dir, 'purpose-outreach.json'),
     biliDir: path.join(dir, 'bili'),
     snapshotsDir: path.join(dir, 'snapshots'),
   };
@@ -182,7 +187,9 @@ export function activeMemoryPaths() {
   if (!cur) return legacyMemoryPaths();
   const p = characterPaths(cur.id);
   return {
+    id: p.id,
     dir: p.memoryDir,
+    experienceInbox: p.experienceInbox,
     json: p.memoryJson,
     markdown: p.memoryMd,
     promptQq: p.memoryPromptQq,
@@ -238,9 +245,15 @@ export function readPersonaLayerText(kind = 'core', scene = '') {
 export function activePersonaLayers() {
   const cur = readCurrentCharacter();
   if (!cur) return null;
-  const p = characterPaths(cur.id);
+  return personaLayersForCharacter(cur.id);
+}
+
+/** 指定角色的人格路径；异步任务应在开始时捕获角色 ID 后继续使用这份路径。 */
+export function personaLayersForCharacter(id) {
+  if (!isValidCharacterId(id)) return null;
+  const p = characterPaths(id);
   return {
-    id: cur.id,
+    id,
     core: p.persona,
     daily: p.personaDaily,
     tone: p.personaTone,
@@ -528,6 +541,8 @@ export function snapshotCharacter(id, { slot, reason = 'manual', now = Date.now(
   copyFile(paths.manifest, path.join(tmp, 'character.json'));
   ensureDir(path.join(tmp, 'memory'));
   for (const file of MEMORY_FILES) copyFile(path.join(paths.memoryDir, file), path.join(tmp, 'memory', file));
+  ensureDir(path.join(tmp, 'life'));
+  copyFile(paths.lifeState, path.join(tmp, 'life', 'state.json'));
   let fullMode = 'missing';
   if (fs.existsSync(paths.memoryFullJsonl)) {
     fullMode = linkOrCopy(paths.memoryFullJsonl, path.join(tmp, 'memory', 'memory-card-full.jsonl')) ? 'link-or-copy' : 'failed';
@@ -630,6 +645,9 @@ export function restoreSnapshot(id, slot, { now = Date.now() } = {}) {
   for (const file of ['memory-card.json', 'memory-card.md', 'memory-card-prompt-qq.md', 'memory-card-prompt-bili.md', 'memory-inbox.jsonl']) {
     copyFile(path.join(source, 'memory', file), path.join(paths.memoryDir, file));
   }
+  // Preserve post-snapshot experiences; the restored cursor replays the retained suffix.
+  if (!fs.existsSync(paths.experienceInbox)) copyFile(path.join(source, 'memory', 'experience-inbox.jsonl'), paths.experienceInbox);
+  copyFile(path.join(source, 'life', 'state.json'), paths.lifeState);
   try {
     for (const entry of fs.readdirSync(path.join(source, 'bili'), { withFileTypes: true })) {
       if (entry.isFile()) copyFile(path.join(source, 'bili', entry.name), path.join(paths.biliDir, entry.name));

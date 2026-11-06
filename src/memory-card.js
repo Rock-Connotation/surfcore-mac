@@ -30,6 +30,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { sliceHead } from './safe-text.js';
+import { validateExperienceEvent } from './core/experience.js';
 
 export const MEMORY_CARD_VERSION = 1;
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -307,6 +308,8 @@ export function createEmptyCard(now = Date.now()) {
     meta: {
       inboxSeen: [],
       sourceSeen: [],
+      experienceSeen: [],
+      experienceOffset: 0,
       firstOwnerRecordId: '',
       // 「最初」窗口从第一次和主人互动开始；firstMet* 是用户可指定的“初次相遇”事件。
       firstOwnerAt: '',
@@ -361,6 +364,8 @@ export function normalizeCard(raw) {
   };
   card.meta.inboxSeen = asArray(card.meta.inboxSeen).map(String).slice(-5000);
   card.meta.sourceSeen = asArray(card.meta.sourceSeen).map(String).slice(-5000);
+  card.meta.experienceSeen = asArray(card.meta.experienceSeen).map(String);
+  card.meta.experienceOffset = Math.max(0, Math.floor(Number(card.meta.experienceOffset) || 0));
   card.meta.firstMetRecordIds = asArray(card.meta.firstMetRecordIds).map(String).filter(Boolean).slice(0, 20);
   card.alerts.lastNotified = asObject(card.alerts.lastNotified);
   for (const item of asArray(input.records)) {
@@ -378,6 +383,19 @@ export function normalizeCard(raw) {
   return card;
 }
 
+function normalizeMemoryEvidenceRefs(raw) {
+  return asArray(raw).slice(0, 16).map((value) => {
+    const source = asObject(value);
+    const item = {};
+    if (source.assetId) item.assetId = String(source.assetId).slice(0, 128);
+    if (source.sourceUrl) {
+      try { const url = new URL(String(source.sourceUrl)); if (['http:', 'https:'].includes(url.protocol)) item.sourceUrl = `${url.origin}${url.pathname}`.slice(0, 500); } catch {}
+    }
+    for (const key of ['startMs', 'endMs']) if (source[key] != null && Number.isFinite(Number(source[key])) && Number(source[key]) >= 0) item[key] = Math.round(Number(source[key]));
+    return item;
+  }).filter((item) => Object.keys(item).length);
+}
+
 function normalizeRecord(item) {
   const raw = asObject(item);
   const text = String(raw.text ?? '').trim();
@@ -388,8 +406,8 @@ function normalizeRecord(item) {
     id: String(raw.id ?? `mem_${hash(`${createdAt}|${title}|${text}`)}`),
     source: String(raw.source ?? 'system'),
     sourceId: String(raw.sourceId ?? ''),
-    platform: ['qq', 'bili', 'shared', 'pet'].includes(raw.platform) ? raw.platform : (SOURCE_PLATFORM[raw.source] ?? 'shared'),
-    scope: ['qq', 'bili', 'shared', 'pet'].includes(raw.scope) ? raw.scope : 'qq',
+    platform: ['qq', 'bili', 'shared', 'pet', 'local', 'douyin', 'experience'].includes(raw.platform) ? raw.platform : (SOURCE_PLATFORM[raw.source] ?? 'shared'),
+    scope: ['qq', 'bili', 'shared', 'pet', 'restricted'].includes(raw.scope) ? raw.scope : 'qq',
     kind: String(raw.kind ?? 'event'),
     title: short(title, 80),
     text: String(text).slice(0, 1200),
@@ -416,6 +434,15 @@ function normalizeRecord(item) {
     botReply: String(raw.botReply ?? '').slice(0, 600),
     isSelf: raw.isSelf === true,
     conversationKey: String(raw.conversationKey ?? ''),
+    eventId: String(raw.eventId ?? ''),
+    attributionSubject: ['self', 'user', 'external'].includes(raw.attributionSubject) ? raw.attributionSubject : '',
+    attributionCertainty: ['observed', 'reported', 'inferred'].includes(raw.attributionCertainty) ? raw.attributionCertainty : '',
+    evidenceRefs: normalizeMemoryEvidenceRefs(raw.evidenceRefs),
+    sourceChannel: String(raw.sourceChannel ?? ''),
+    visibilityClassification: ['public', 'private', 'restricted'].includes(raw.visibilityClassification) ? raw.visibilityClassification : '',
+    allowedContexts: asArray(raw.allowedContexts).map(String).filter(Boolean).slice(0, 32),
+    activityId: String(raw.activityId ?? ''),
+    characterEpoch: Number.isInteger(Number(raw.characterEpoch)) ? Math.max(0, Number(raw.characterEpoch)) : 0,
     // 「最初」是独立于「重要」的判定：仅和主人的互动，按首次接触的 30 天窗口分档。
     initialTier: ['first10', 'mid10', 'late10', 'after', 'first-meet'].includes(raw.initialTier) ? raw.initialTier : '',
     initialProbability: Number.isFinite(Number(raw.initialProbability)) ? Math.max(0, Math.min(1, Number(raw.initialProbability))) : 0,
@@ -1209,11 +1236,21 @@ function makeRecord(input, config, now) {
   if (!cleanText && !cleanTitle) return null;
   const scored = scoreMemory({ ...input, text: cleanText }, cfg);
   const createdAt = timeOf(input.createdAt, now);
-  const id = `mem_${hash(`${input.source}|${input.sourceId ?? ''}|${createdAt}|${cleanTitle}|${cleanText}`, 14)}`;
+  const eventSuffix = input.eventId ? `|${input.eventId}` : '';
+  const id = `mem_${hash(`${input.source}|${input.sourceId ?? ''}|${createdAt}|${cleanTitle}|${cleanText}${eventSuffix}`, 14)}`;
   return {
     id,
     source: String(input.source ?? 'system'),
     sourceId: String(input.sourceId ?? ''),
+    eventId: String(input.eventId ?? ''),
+    attributionSubject: ['self', 'user', 'external'].includes(input.attributionSubject) ? input.attributionSubject : '',
+    attributionCertainty: ['observed', 'reported', 'inferred'].includes(input.attributionCertainty) ? input.attributionCertainty : '',
+    evidenceRefs: normalizeMemoryEvidenceRefs(input.evidenceRefs),
+    sourceChannel: String(input.sourceChannel ?? ''),
+    visibilityClassification: String(input.visibilityClassification ?? ''),
+    allowedContexts: asArray(input.allowedContexts).map(String).filter(Boolean).slice(0, 32),
+    activityId: String(input.activityId ?? ''),
+    characterEpoch: Number.isInteger(Number(input.characterEpoch)) ? Math.max(0, Number(input.characterEpoch)) : 0,
     platform: scored.platform,
     scope: scored.scope,
     kind: scored.kind,
@@ -1251,6 +1288,7 @@ function makeRecord(input, config, now) {
 }
 
 function findDuplicate(card, record) {
+  if (record.eventId) return card.records.find((item) => item.eventId === record.eventId) ?? null;
   if (record.sourceId) {
     const same = card.records.find((item) => item.sourceId && item.sourceId === record.sourceId);
     if (same) return same;
@@ -1258,7 +1296,8 @@ function findDuplicate(card, record) {
   const windowMs = 2 * DAY_MS;
   const created = timeOf(record.createdAt, Date.now());
   const conversationKey = String(record.conversationKey ?? '');
-  return card.records.find((item) => item.source === record.source
+  return card.records.find((item) => (!record.eventId || !item.eventId || item.eventId === record.eventId)
+    && item.source === record.source
     && item.speaker === record.speaker
     && item.text === record.text
     && String(item.conversationKey ?? '') === conversationKey
@@ -1565,6 +1604,77 @@ export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) 
   return { added };
 }
 
+/** Project validated and deduplicated ExperienceEvents into the existing decay memory card. */
+export function ingestExperienceEvents(card, events, config = {}, now = Date.now()) {
+  const cfg = normalizeMemoryCardConfig(config);
+  const seenEvents = new Set(card.meta.experienceSeen);
+  const seenSources = new Set(card.meta.sourceSeen);
+  let added = 0;
+  let duplicates = 0;
+  let rejected = 0;
+  for (const raw of asArray(events)) {
+    const checked = validateExperienceEvent(raw);
+    if (!checked.ok) { rejected += 1; continue; }
+    const event = checked.event;
+    if (seenEvents.has(event.eventId)) { duplicates += 1; continue; }
+    const channel = event.source.channel;
+    const sourceId = event.source.objectId || event.eventId;
+    const legacyBili = channel === 'bili' && event.kind === 'observation' && !event.activityId;
+    if (legacyBili && event.source.objectId && seenSources.has(event.source.objectId)) {
+      seenEvents.add(event.eventId);
+      duplicates += 1;
+      continue;
+    }
+    const content = event.content;
+    const visibility = event.visibility;
+    const defaultScope = ['qq', 'bili', 'pet'].includes(channel) ? channel : 'restricted';
+    const scope = visibility.legacyScope || defaultScope;
+    const platform = ['qq', 'bili', 'pet', 'local', 'douyin'].includes(channel) ? channel : 'experience';
+    const sourcePrefix = channel === 'bili' || channel === 'qq' || channel === 'pet' ? channel : 'experience';
+    const result = addMemoryRecord(card, {
+      source: `${sourcePrefix}-experience`,
+      sourceId,
+      eventId: event.eventId,
+      attributionSubject: event.attribution.subject,
+      attributionCertainty: event.attribution.certainty,
+      evidenceRefs: event.evidenceRefs,
+      sourceChannel: channel,
+      visibilityClassification: visibility.classification,
+      allowedContexts: visibility.allowedContexts,
+      activityId: event.activityId,
+      characterEpoch: event.characterEpoch,
+      platform,
+      scope,
+      kind: event.kind,
+      text: content.summary,
+      title: content.title || short(content.summary, 80),
+      detail: content.details || content.detailsRef,
+      tags: ['experience', channel, event.kind, ...content.tags].slice(0, 12),
+      private: visibility.classification === 'private',
+      conversationKey: event.source.conversationId,
+      createdAt: event.occurredAt,
+      lastSeenAt: event.occurredAt,
+      speaker: event.attribution.subject === 'self' ? '角色' : '',
+      score: content.score,
+      favorite: content.favorite,
+      anecdote: Boolean(content.details),
+      manualImportance: content.favorite ? 70 : (content.score >= 15 ? 55 : 35),
+    }, cfg, now);
+    seenEvents.add(event.eventId);
+    if (legacyBili && event.source.objectId) seenSources.add(event.source.objectId);
+    if (result.added) {
+      added += 1;
+      if (channel === 'bili') card.stats.fromBili = (Number(card.stats.fromBili) || 0) + 1;
+      else if (channel === 'pet') card.stats.fromPet = (Number(card.stats.fromPet) || 0) + 1;
+      else card.stats.fromQq = (Number(card.stats.fromQq) || 0) + 1;
+      card.stats.lastIngestAt = iso(now);
+    } else duplicates += 1;
+  }
+  card.meta.experienceSeen = [...seenEvents];
+  card.meta.sourceSeen = [...seenSources].slice(-5000);
+  return { added, duplicates, rejected };
+}
+
 function ownerImportant(record, cfg) {
   return record.tags.includes('owner') && record.importance >= cfg.minOwnerImportance;
 }
@@ -1721,6 +1831,7 @@ function recordGroupId(record) {
 
 function recordIsPrivate(record) {
   return record?.private === true
+    || record?.visibilityClassification === 'private'
     || record?.source === 'qq-private'
     || String(record?.conversationKey ?? '').startsWith('private:');
 }
@@ -1729,6 +1840,9 @@ function memorySourceLabel(record) {
   if (recordIsPrivate(record)) return '私聊';
   if (record?.platform === 'pet' || record?.scope === 'pet') return '桌宠';
   if (record?.platform === 'bili' || record?.scope === 'bili') return 'B站';
+  if (record?.platform === 'local') return '本地';
+  if (record?.platform === 'douyin') return '抖音';
+  if (record?.scope === 'restricted') return '受限经历';
   if (record?.source === 'manual') return '手动记录';
   const gid = recordGroupId(record);
   const name = String(record?.groupName ?? '').trim();
@@ -1748,6 +1862,7 @@ function recordLine(record, { platform = 'qq', full = false } = {}) {
     body = short(rawText, record.clarity === 'vivid' ? 200 : 130);
   }
   const source = memorySourceLabel(record);
+  if (record.attributionSubject === 'external') body = `外部材料（作者观点，非角色信念）：${body}`;
   if (record.isSelf && record.speaker) body = `${record.speaker}（${source}）：${body}`;
   // 非主人的记忆也要带说话人：否则别人的「叫我X」会和主人的话混在一起，
   // 模型会把别人的称呼套到眼前的人身上（2026-10-31 用户反馈）。
@@ -1784,11 +1899,26 @@ function visibleFor(card, platform, cfg, conversationKey = '') {
   return card.records.filter((record) => {
     // 完整卡（platform='all'）保留敏感条目供管理员查看；注入提示词的 QQ / B站 两版都排除。
     if (record.sensitive) return platform === 'all';
+    if (platform === 'all') return true;
+    if (!record.visibilityClassification && record.scope === 'restricted') return false;
+    if (record.visibilityClassification && Array.isArray(record.allowedContexts)) {
+      const contexts = new Set([platform, current, current ? `${platform}:${current}` : ''].filter(Boolean));
+      if (!record.allowedContexts.some((allowed) => contexts.has(allowed))) return false;
+      if (record.visibilityClassification === 'private' && !recordIsPrivate(record)) return false;
+      return true;
+    }
     if (platform === 'bili') {
       if (record.scope === 'bili' || record.scope === 'shared') return true;
       return cfg.includeQqInBili && record.scope === 'qq';
     }
-    if (platform !== 'qq' || !current) return true;
+    if (platform === 'pet') {
+      return record.scope === 'pet' || (record.scope === 'shared' && !recordIsPrivate(record));
+    }
+    if (platform !== 'qq') {
+      // Unknown/new channels see only explicitly shared, non-private legacy records.
+      return record.scope === 'shared' && !recordIsPrivate(record);
+    }
+    if (!current) return true;
     if (currentGroup) {
       // 私聊记忆永不出现在群里；跨群只看同圈。
       if (recordIsPrivate(record) || record.platform === 'pet' || record.scope === 'pet') return false;
@@ -1873,7 +2003,10 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {}, con
  *   · platform='qq'|'bili' + maxChars → 给提示词注入的裁剪版。
  */
 export function renderMemoryCard(card, options = {}) {
-  const platform = options.platform === 'bili' ? 'bili' : (options.platform === 'qq' ? 'qq' : 'all');
+  const requestedPlatform = String(options.platform ?? 'all');
+  const platform = ['all', 'bili', 'qq', 'pet', 'local', 'douyin'].includes(requestedPlatform)
+    ? requestedPlatform
+    : 'restricted';
   const full = options.full === true;
   const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
   const cfg = normalizeMemoryCardConfig(options.config ?? {});
@@ -2072,6 +2205,8 @@ export function maintainMemoryCard({
   config = {},
   biliEntries = [],
   inboxLines = [],
+  experienceEvents = [],
+  experienceNextOffset = null,
   now = Date.now(),
   forceDecay = false,
   fullPaths = null,
@@ -2081,6 +2216,8 @@ export function maintainMemoryCard({
   const fullCfg = normalizeMemoryCardConfig(fullConfig ?? config);
   let card = loadMemoryCard(paths) || createEmptyCard(now);
   let changed = false;
+  const experience = ingestExperienceEvents(card, experienceEvents, cfg, now);
+  if (experience.added || experience.duplicates || experience.rejected) changed = true;
   const bili = ingestBiliEntries(card, biliEntries, cfg, now);
   if (bili.added) changed = true;
   const qq = ingestInboxLines(card, inboxLines, cfg, now);
@@ -2118,11 +2255,22 @@ export function maintainMemoryCard({
   }
   card.lastMaintenanceAt = iso(now);
   card.updatedAt = iso(now);
+  if (experienceNextOffset !== null && Number.isFinite(Number(experienceNextOffset))) {
+    const nextOffset = Math.max(0, Math.floor(Number(experienceNextOffset)));
+    const previousOffset = Number(card.meta.experienceOffset) || 0;
+    if (nextOffset >= previousOffset) {
+      card.meta.experienceOffset = nextOffset;
+      if (nextOffset !== previousOffset) changed = true;
+    }
+  }
   const saved = saveMemoryCardOutputs(paths, card, cfg, now);
   const fullSaved = fullPaths ? saveFullMemoryCard(fullPaths, fullCfg, now) : null;
   return {
     card,
     changed,
+    experience: experience.added,
+    experienceDuplicates: experience.duplicates,
+    experienceRejected: experience.rejected,
     bili: bili.added,
     qq: Math.max(0, (qq.added || 0) - (qq.addedPet || 0)),
     pet: qq.addedPet || 0,

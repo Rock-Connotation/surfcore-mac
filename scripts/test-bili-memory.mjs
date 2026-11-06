@@ -12,10 +12,26 @@ import { createBiliMemory, isBlockedContent } from '../src/bili-memory.js';
 import { buildSharePrompt } from '../src/bili-share-scheduler.js';
 import { formatDynamicMessage } from '../src/bili-dynamics.js';
 
-const ROOT = path.resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
-const STATE = path.join(ROOT, 'state');
-
-const memory = createBiliMemory({ stateDir: STATE, log: () => {} });
+// Default is hermetic: no user home, active role, network or repository state.
+const live = process.env.SURFCORE_BILI_MEMORY_LIVE_TEST === '1';
+const fixtureHome = live ? os.homedir() : fs.mkdtempSync(path.join(os.tmpdir(), 'bili-memory-fixture-'));
+const STATE = live ? path.resolve('state') : path.join(fixtureHome, 'state');
+const fixtureBili = path.join(fixtureHome, '.dsh', 'surfcore', 'bili');
+if (!live) {
+  fs.mkdirSync(fixtureBili, { recursive: true }); fs.mkdirSync(STATE, { recursive: true });
+  const now = new Date().toISOString(); const day = now.slice(0, 10);
+  fs.writeFileSync(path.join(fixtureHome, '.dsh', 'surfcore', 'bili.config.json'), JSON.stringify({ self: { name: '模拟角色', mid: '123456' }, persona: { name: '模拟角色' }, preferences: { like: ['海洋'] } }));
+  const scores = []; const titles = {};
+  for (let i = 0; i < 10; i++) {
+    const bv = `BV${String(i).padStart(10, '0')}`;
+    scores.push({ bv, score: 16, at: now, reason: `有趣的海洋动物动画，制作认真又充满想象力，值得和朋友一起分享第${i}段。` });
+    titles[bv] = { title: i === 0 ? '杀戮尖塔大肥鱼mod' : i === 1 ? '点兔动画' : `海洋动画 ${i}`, pic: 'https://example.test/cover.jpg' };
+  }
+  fs.writeFileSync(path.join(fixtureBili, 'scores.json'), JSON.stringify({ [day]: scores }));
+  fs.writeFileSync(path.join(STATE, 'bili-video-titles.json'), JSON.stringify({ items: titles }));
+  fs.writeFileSync(path.join(fixtureBili, 'whale-diary.md'), '# 日记\n\n私信里有人说我是谁！这段必须被过滤。\n');
+}
+const memory = createBiliMemory({ stateDir: STATE, home: fixtureHome, characterId: '', allowNetwork: live, log: () => {} });
 const stats = await memory.refresh({ force: true });
 assert.equal(stats.ok, true, `记忆生成失败：${stats.error ?? ''}`);
 
@@ -62,7 +78,7 @@ for (const e of shareable) {
 // 用临时 state 模拟“一天 8 个时间点依次分享”：每次记录已用，下一次必须拿不同的。
 const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'bili-share-pick-'));
 fs.copyFileSync(path.join(STATE, 'bili-memory.json'), path.join(tmpState, 'bili-memory.json'));
-const pickMemory = createBiliMemory({ stateDir: tmpState, log: () => {} });
+const pickMemory = createBiliMemory({ stateDir: tmpState, home: fixtureHome, characterId: '', allowNetwork: live, log: () => {} });
 const picks = [];
 for (let i = 0; i < 8; i += 1) {
   const card = pickMemory.pickShareCard({ slotIndex: i, dateKey: '2026-10-22' });
