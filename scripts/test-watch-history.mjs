@@ -117,7 +117,7 @@ try {
   // ── 接线契约：debrief / bili-watch / 角色迁移都要带上它 ─────────────────
   const debrief = fs.readFileSync(path.join(root, 'plugins/surfcore/tools/commands/debrief.mjs'), 'utf8');
   assert.ok(debrief.includes('appendWatch'), 'debrief 没有写观看历史');
-  assert.ok(debrief.includes('SURFCORE_WATCH_PARENT'), 'debrief 调 bili-watch 时没有传防重复标记');
+  assert.ok(debrief.includes('submitBili') && !debrief.includes('execFileSync'), 'debrief 应直接复用媒体抽帧并统一记账');
   const watch = fs.readFileSync(path.join(root, 'plugins/surfcore/tools/commands/bili-watch.mjs'), 'utf8');
   assert.ok(watch.includes('appendWatch'), 'bili-watch 没有写观看历史');
   assert.ok(watch.includes('SURFCORE_WATCH_PARENT'), 'bili-watch 没有识别 debrief 的防重复标记');

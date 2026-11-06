@@ -1,175 +1,143 @@
-// 让 agent 真"看"视频：取直链 → 下载 → ffmpeg 抽帧拼成一张九宫格 → 输出图片路径（再交给 read_image 看）
-//
-// 用法: node bili-watch.mjs <BV号> [列x行，默认 3x3] [outDir] [--keep-mp4] [--uniform]
-//   例: node bili-watch.mjs BV1iLYm6VET3            → 3x3 九宫格，原片默认清理
-//       node bili-watch.mjs BV1iLYm6VET3 4x4        → 16 格，看得更细
-//       node bili-watch.mjs BV... --keep-mp4         → 保留原片，方便换参数重抽
-//
-// 依赖：ffmpeg（查找顺序见 lib/ffmpeg.mjs：$FFMPEG → PATH → bin/ → ~/.dsh/surfcore/bili/bin → 本机剪映）
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+#!/usr/bin/env node
 import fs from 'node:fs'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
-import { requireFfmpeg } from '../lib/ffmpeg.mjs'
+import crypto from 'node:crypto'
+import { readCurrentCharacter, characterPaths } from '../../../../src/character-persona.js'
+import { SURFCORE_DIR, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import { appendWatch } from '../lib/watch-history.mjs'
 import { formatShotsStats, pruneShots, shotsPath } from '../lib/shots-cache.mjs'
+import {
+  createBiliApi, createFrameSheet, parseBiliReference, prepareBiliMedia, resolveBiliPart, structuredError,
+} from '../lib/bili-media.mjs'
 
-let FFMPEG
-try { FFMPEG = requireFfmpeg() } catch (e) { console.error(String(e.message)); process.exit(2) }
-const argv = process.argv.slice(2)
-const positional = argv.filter((arg) => !arg.startsWith('--'))
-const keepMp4 = argv.includes('--keep-mp4') || process.env.SURFCORE_KEEP_MP4 === '1'
-const bvid = positional[0]
-const grid = (positional[1] ?? '3x3').toLowerCase()
-const outDir = positional[2] ?? shotsPath('video')
-const isDefaultOutDir = path.resolve(outDir) === path.resolve(shotsPath('video'))
-if (!bvid) { console.error('用法: node bili-watch.mjs <BV号> [列x行] [outDir] [--keep-mp4] [--uniform]'); process.exit(2) }
-const [cols, rows] = grid.split('x').map(Number)
-if (!cols || !rows) { console.error('格子格式应是 3x3 这样'); process.exit(2) }
-const N = cols * rows
-
-const cred = JSON.parse(fs.readFileSync(accountBili('credentials.json'), 'utf8'))
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-const H = { 'user-agent': UA, referer: 'https://www.bilibili.com/', cookie: `SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}; buvid3=${cred.buvid3}` }
-
-const view = await (await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, { headers: H })).json()
-if (view.code !== 0) { console.error(`view 失败 code=${view.code} ${view.message}`); process.exit(3) }
-const { cid, title, duration, owner } = { ...view.data, owner: view.data.owner?.name }
-console.log(`标题: ${title}`)
-console.log(`UP: ${owner}   时长: ${duration}s   cid=${cid}`)
-
-// 画质实测（2026-10-14）：html5 + qn=32 会被压到 360p（返回 quality=16，界面小字全糊）；
-// 改 platform=pc + qn=80 可拿到 720p（返回 quality=64），依旧是普通 mp4 直链，不必碰 dash。
-const p = await (await fetch(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=80&fnval=1&platform=pc&high_quality=1`, { headers: H })).json()
-const url = p.data?.durl?.[0]?.url
-if (!url) { console.error(`没拿到直链（code=${p.code}）——有些视频要登录或只有 dash 流`); process.exit(4) }
-const QN = { 16: '360P', 32: '480P', 64: '720P', 80: '1080P' }
-const qualityText = QN[p.data.quality] ?? String(p.data.quality ?? '?')
-console.log(`实际画质: ${qualityText}`)
-
-fs.mkdirSync(outDir, { recursive: true })
-const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-const mp4 = path.join(outDir, `${bvid}-${stamp}.mp4`)
-const sheet = path.join(outDir, `${bvid}-${stamp}-${cols}x${rows}.jpg`)
-
-const r = await fetch(url, { headers: { 'user-agent': UA, referer: 'https://www.bilibili.com/', range: 'bytes=0-' } })
-if (!r.ok) { console.error(`下载失败 HTTP ${r.status}`); process.exit(5) }
-fs.writeFileSync(mp4, Buffer.from(await r.arrayBuffer()))
-console.log(`已下载: ${mp4}  (${(fs.statSync(mp4).size / 1024 / 1024).toFixed(2)} MB)`)
-
-// ── 取帧方式：优先"画面变化点"，不够再退回等间隔（2026-10-14 参考 K3 的做法）
-// 画面变化由 ffmpeg 的 scene 过滤器给出：空跑一次，把 pts_time 抓出来，再从中均匀挑 N 个。
-// 好处：等间隔会漏掉"只出现一两秒的关键画面"，画面变化点天然落在场景切换处。
-function sceneTimes(file, th) {
-  try {
-    const out = execFileSync(FFMPEG, ['-hide_banner', '-i', file, '-vf',
-      `select='gt(scene,${th})',metadata=print:file=-`, '-an', '-f', 'null', '-'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 * 1024 * 1024 })
-    const ts = [...out.matchAll(/pts_time:([0-9.]+)/g)].map((m) => Number(m[1]))
-    return [...new Set(ts)].filter((t) => t > 0.2)
-  } catch { return [] }
-}
-const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`
-const pickEvenly = (list, n) =>
-  n <= 1 ? [list[0]] : Array.from({ length: n }, (_, i) => list[Math.round((i * (list.length - 1)) / (n - 1))])
-
-const uniform = Array.from({ length: N }, (_, i) => ((i + 0.5) * duration) / N)
-let times = uniform
-let how = `等间隔（每 ${(duration / N).toFixed(1)} 秒一帧）`
-if (!process.argv.includes('--uniform')) {
-  // 阈值阶梯：录屏/讲解类画面变化平缓，0.3 常只检出几处 → 逐级放宽
-  let st = [], used = 0.3
-  for (const th of [0.3, 0.15, 0.08]) { used = th; st = sceneTimes(mp4, th); if (st.length >= N) break }
-
-  if (st.length > 0) {
-    // 关键设计（2026-10-14 踩过两次才定）：
-    //   ① 只按"变化点里均匀挑"会出事——转场全挤在开头，中段 50 秒一帧没有，叙事线直接断
-    //   ② 只按等间隔会漏掉"只闪一两秒的关键画面"
-    //   ⇒ 用**等间隔当骨架保证覆盖**，再把每帧**吸附到 ±半格内最近的变化点**（吸不到就保持等间隔）
-    const half = duration / N / 2
-    let snapped = 0
-    times = uniform.map((u) => {
-      const near = st.filter((s) => Math.abs(s - u) <= half)
-      if (!near.length) return u
-      snapped += 1
-      return near.reduce((b, s) => (Math.abs(s - u) < Math.abs(b - u) ? s : b), near[0])
-    })
-    how = `等间隔骨架（保覆盖）+ 吸附画面变化点（阈值 ${used} 检出 ${st.length} 处；${snapped}/${N} 帧吸到了变化点）`
-  } else {
-    how = `纯等间隔（阈值 0.08 也未检出变化 → 每 ${(duration / N).toFixed(1)} 秒一帧）`
+const VALUE_OPTIONS = new Set(['page', 'cid', 'grid', 'out'])
+function parseArgs(argv) {
+  const positional = []
+  const options = {}
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (!arg.startsWith('--')) { positional.push(arg); continue }
+    const key = arg.slice(2)
+    if (['uniform', 'keep-mp4', 'no-history', 'json', 'help'].includes(key)) { options[key] = true; continue }
+    if (!VALUE_OPTIONS.has(key)) throw Object.assign(new Error(`未知参数 --${key}`), { code: 'bili.argument.unknown', hint: '运行 `node bili.mjs watch-video --help` 查看支持的参数。' })
+    if (!argv[index + 1] || argv[index + 1].startsWith('--')) throw Object.assign(new Error(`--${key} 缺少参数值。`), { code: 'bili.argument.value-missing', hint: `为 --${key} 提供参数值后重试。` })
+    options[key] = argv[++index]
   }
+  return { positional, options }
 }
-console.log(`取帧方式: ${how}`)
-console.log(`时间点  : ${times.map((t, i) => `${i + 1}=${fmt(t)}`).join('  ')}`)
 
-// 抽帧：每个时间点各抽一张原始分辨率，再拼图——这样 SHEET 与 SUBS 干净地共用同一批帧
-const tmp = path.join(outDir, `.frames-${stamp}`)
-fs.mkdirSync(tmp, { recursive: true })
-let frameError = null
-try {
-  try {
-    times.forEach((t, i) => {
-      execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-ss', t.toFixed(2), '-i', mp4,
-        '-frames:v', '1', path.join(tmp, `f${String(i).padStart(2, '0')}.jpg`)], { stdio: 'inherit' })
-    })
-    execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', path.join(tmp, 'f%02d.jpg'), '-vf',
-      `scale=480:-1,tile=${cols}x${rows}`, '-frames:v', '1', sheet], { stdio: 'inherit' })
-    if (!fs.existsSync(sheet)) throw new Error('九宫格没生成')
-    console.log(`\nSHEET: ${sheet}`)
-  } catch (e) {
-    console.error('ffmpeg 抽帧失败：' + e.message)
-    frameError = e
+function render(value, json) {
+  if (json) { process.stdout.write(`${JSON.stringify(value)}\n`); return }
+  if (value.ok === false) { process.stderr.write(`${value.code}: ${value.error}\n建议：${value.hint}\n`); return }
+  process.stdout.write(`标题：${value.part.title}\n`)
+  process.stdout.write(`分 P：${value.part.page}/${value.part.pageCount}  cid=${value.part.cid}  时长=${(value.part.durationMs / 1000).toFixed(1)}s\n`)
+  process.stdout.write(`媒体：${value.media.status} (${value.media.strategy})\n`)
+  if (value.media?.path) process.stdout.write(`原片保留：${value.media.path}\n`)
+  if (value.frames?.sheet) process.stdout.write(`SHEET: ${value.frames.sheet}\n`)
+  if (value.frames?.subtitleStrip) process.stdout.write(`SUBS: ${value.frames.subtitleStrip}\n`)
+  process.stdout.write(`画面覆盖：${value.frames?.status ?? 'failed'}，${value.frames?.samples?.length ?? 0} 个采样点\n`)
+  if (value.history?.status) process.stdout.write(`观看历史：${value.history.status}\n`)
+}
+
+async function main() {
+  const { positional, options } = parseArgs(process.argv.slice(2))
+  const json = options.json === true
+  if (options.help) {
+    render({ ok: true, usage: 'watch-video <BV|URL> [3x3|4x4] [outDir] [--page N] [--cid N] [--grid CxR] [--uniform] [--keep-mp4] [--json]' }, json)
+    return
   }
+  const reference = positional[0]
+  if (!reference) throw Object.assign(new Error('缺少 BV 号或 B 站视频链接。'), { code: 'bili.reference.missing', hint: '传入 BV 号或包含 BV 号的 B 站视频链接。' })
+  const grid = String(options.grid ?? positional[1] ?? '3x3')
+  const outputDir = String(options.out ?? positional[2] ?? shotsPath('video'))
 
-  // 字幕条版：裁掉画面、只留底部字幕带再放大，竖着拼 N 条。
-  // 依据（2026-10-14 实测）：这类"讲解型"视频字幕就是全部信息量，全画幅九宫格会把字幕压糊；
-  // 同样预算下只留字幕带，9 条字幕能全部读清。用的是同一批帧。
-  const subs = path.join(outDir, `${bvid}-${stamp}-subs.jpg`)
-  if (!frameError) {
-    try {
-      execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', path.join(tmp, 'f%02d.jpg'), '-vf',
-        `crop=iw:ih*0.17:0:ih*0.83,scale=1280:-1,tile=1x${N}`, '-frames:v', '1', subs], { stdio: 'inherit' })
-      if (fs.existsSync(subs)) console.log(`SUBS:  ${subs}\n（同一批帧的底部字幕带，竖排 ${N} 条）`)
-    } catch {
-      console.log('（字幕条版生成失败，忽略——不影响 SHEET）')
-    }
-  }
-} finally {
-  // 无论 ffmpeg 成功失败都清临时帧；以前失败会留下 .frames-*。
-  fs.rmSync(tmp, { recursive: true, force: true })
-}
-if (frameError) process.exit(6)
-const subs = path.join(outDir, `${bvid}-${stamp}-subs.jpg`)
-if (keepMp4) {
-  console.log(`（原片保留: ${mp4}；加 --uniform 可强制等间隔）`)
-} else {
-  try { fs.rmSync(mp4, { force: true }) } catch {}
-  console.log('（原片已清理；需要换参数重抽时加 --keep-mp4）')
-}
-if (isDefaultOutDir) {
-  try { console.log(formatShotsStats(pruneShots())) } catch {}
-} else {
-  console.log('（自定义 outDir：跳过默认 shots 清理）')
-}
-console.log('（提示：这条视频若有官方字幕，先跑 `node bili.mjs subtitles <BV>` 更省也更准——' +
-  '抽帧是给"字幕没官方轨、或要看画面/界面"的情况用的）')
-
-// 观看历史：直接调 watch-video 时记一笔；被 debrief 调用时由 debrief 统一记账，避免重复。
-if (!process.env.SURFCORE_WATCH_PARENT && !process.argv.includes('--no-history')) {
-  const rec = appendWatch({
-    at: new Date().toISOString(),
-    bvid,
-    aid: String(view.data.aid ?? ''),
-    title,
-    up: owner,
-    upMid: view.data.owner?.mid ?? '',
-    duration,
-    tname: view.data.tname ?? '',
-    mode: 'frames',
-    frames: true,
-    source: process.env.SURFCORE_WATCH_SOURCE || 'watch',
-    sheet,
-    subs: fs.existsSync(subs) ? subs : '',
+  // Capture the selected role path before network or media work can yield.
+  const current = readCurrentCharacter()
+  const historyFile = current?.id
+    ? path.join(characterPaths(current.id).biliDir, 'watch-history.jsonl')
+    : biliState('watch-history.jsonl')
+  const parsed = parseBiliReference(reference, { page: options.page })
+  const api = createBiliApi()
+  const view = await api.fetchView(parsed.bvid)
+  const part = resolveBiliPart(view, { page: parsed.page, cid: options.cid, urlPage: parsed.urlPage })
+  const media = await prepareBiliMedia({
+    part,
+    fetchPlayurl: api.fetchPlayurl,
+    dataRoot: path.join(SURFCORE_DIR, 'perception', 'assets'),
+    needAudio: false,
+    needVideo: true,
   })
-  if (rec.ok) console.log(`[观看历史] 已记一笔：${bvid}（抽帧）`)
+  if (!media.video?.path || media.video.status === 'failed') {
+    const reason = media.video?.error ?? media.warnings?.[0]
+    throw Object.assign(new Error(reason?.error ?? '没有可用于抽帧的视频素材。'), {
+      code: reason?.code ?? 'media.video.unavailable',
+      hint: reason?.hint ?? '检查该分 P 的播放权限与 FFmpeg/FFprobe 状态后重试。',
+    })
+  }
+  let frames
+  let frameError = null
+  try {
+    frames = await createFrameSheet({
+      mediaPath: media.video.path,
+      timelineMap: media.video.timelineMap,
+      sourceDurationMs: part.durationMs,
+      bvid: part.bvid,
+      page: part.page,
+      outputDir,
+      grid,
+      uniform: options.uniform === true,
+      keepMedia: options['keep-mp4'] === true || process.env.SURFCORE_KEEP_MP4 === '1' || Boolean(process.env.SURFCORE_WATCH_PARENT),
+    })
+  } catch (error) { frameError = structuredError(error) }
+  if (!frames && !options['keep-mp4'] && !process.env.SURFCORE_WATCH_PARENT) {
+    try { fs.rmSync(media.destinationDir, { recursive: true, force: true }) } catch {}
+  }
+  if (frames && !options['keep-mp4'] && process.env.SURFCORE_KEEP_MP4 !== '1' && !process.env.SURFCORE_WATCH_PARENT) {
+    try { fs.rmSync(media.destinationDir, { recursive: true, force: true }) } catch {}
+  }
+  let history = { status: 'skipped' }
+  if (!options['no-history'] && !process.env.SURFCORE_WATCH_PARENT) {
+    const recorded = appendWatch({
+      at: new Date().toISOString(),
+      observationId: crypto.randomUUID(),
+      bvid: part.bvid,
+      aid: part.aid,
+      cid: part.cid,
+      page: part.page,
+      pageCount: part.pageCount,
+      title: part.partTitle || part.title,
+      up: part.owner.name,
+      upMid: part.owner.mid,
+      duration: part.durationMs / 1000,
+      tname: part.tname,
+      mode: 'frames',
+      frames: Boolean(frames?.sheet),
+      frameStatus: frames?.status ?? 'failed',
+      source: 'watch',
+      sheet: frames?.sheet ?? '',
+      subs: frames?.subtitleStrip ?? '',
+      error: frameError,
+    }, { file: historyFile })
+    history = { status: recorded.ok ? 'recorded' : recorded.reason === 'duplicate' ? 'duplicate' : 'failed' }
+  }
+  try { if (path.resolve(outputDir) === path.resolve(shotsPath('video'))) formatShotsStats(pruneShots()) } catch {}
+  render({
+    ok: Boolean(frames),
+    code: frameError?.code,
+    error: frameError?.error,
+    hint: frameError?.hint,
+    bvid: part.bvid,
+    part: { page: part.page, pageCount: part.pageCount, cid: part.cid, durationMs: part.durationMs, title: part.partTitle || part.title },
+    media: { status: media.video.status, strategy: media.video.strategy, ...(options['keep-mp4'] || process.env.SURFCORE_KEEP_MP4 === '1' ? { path: media.video.path } : {}), acquiredRanges: media.video.acquiredRanges, missingRanges: media.video.missingRanges },
+    frames: frames ?? { status: 'failed', source: 'video-frames', samples: [] },
+    history,
+  }, json)
+  if (!frames) process.exitCode = 1
 }
+
+main().catch((error) => {
+  const result = structuredError(error)
+  if (process.argv.includes('--json')) process.stdout.write(`${JSON.stringify({ ok: false, ...result })}\n`)
+  else process.stderr.write(`${result.code}: ${result.error}\n建议：${result.hint}\n`)
+  process.exitCode = 1
+})
