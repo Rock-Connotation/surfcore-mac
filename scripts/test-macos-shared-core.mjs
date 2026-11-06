@@ -385,3 +385,10 @@ test('archive append fsync failure must be synced again before recovery clears j
  assert.ok(JSON.parse(fs.readFileSync(durable.memoryJson)).meta.experienceOffset > before);
  assert.equal(fs.readFileSync(durable.memoryFullJsonl, 'utf8').trim().split('\n').map(JSON.parse).filter((r) => r.eventId === event.eventId).length, 1);
 });
+
+test('Windows keeps file-sync/rename compatibility without opening a directory read handle for FlushFileBuffers', async () => {
+ const memoryCore = await import('../src/memory-card.js'); const original = fs.openSync;
+ fs.openSync = () => { assert.fail('Windows directory barrier must not use a POSIX read-only directory handle'); };
+ try { assert.equal(memoryCore.syncDurableDirectory(root, { platform: 'win32' }), false); }
+ finally { fs.openSync = original; }
+});

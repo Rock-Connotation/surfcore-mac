@@ -64,3 +64,7 @@
 ## 追加日志恢复的档案同步（追加）
 
 完整读取与摘要一致只能证明字节可从缓存读取，不能证明上一次失败的 JSONL fsync 已持久化。恢复未完成批次时，现对已核验的全量档案文件再次 fsync，成功后才清 pending 并提交统计；同步失败返回 `MEMORY_ARCHIVE_RECOVERY_REQUIRED` 和保留文件、检查磁盘后重试的建议，游标不推进。隔离测试先后对首次追加和恢复同步注入 EIO，验证两次均保留日志和游标，第三次同步成功后只归档一次：`node --test scripts/test-macos-shared-core.mjs` 20/20，日志 `/tmp/surfcore-archive-recovery-sync.log`；既有记忆卡测试 27/27。未做真实断电或 Windows 测试。
+
+## Windows 兼容边界
+
+目录同步屏障仅用于支持POSIX目录fsync的平台；Windows保留文件fsync+rename，不尝试将只读目录句柄交给FlushFileBuffers，以免让原有记忆维护全部报错。依据：[libuv Windows fsync实现](https://raw.githubusercontent.com/libuv/libuv/v1.x/src/win/fs.c) 调用FlushFileBuffers，[Microsoft文档](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers) 要求句柄具有GENERIC_WRITE。夹具断言Windows分支不打开目录；这不是Windows实机或断电持久性证明。Mac的EIO/权限错误仍失败可见，不放宽其同步顺序。

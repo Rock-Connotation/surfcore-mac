@@ -758,7 +758,10 @@ export function loadFullStats(paths) {
 }
 
 /** Sync rename metadata where the platform supports directory fsync; other I/O errors propagate. */
-export function syncDurableDirectory(dir) {
+export function syncDurableDirectory(dir, { platform = process.platform } = {}) {
+  // Windows FlushFileBuffers requires a write handle; fs.open(dir, 'r') cannot
+  // provide the POSIX directory durability barrier. Preserve file fsync + rename.
+  if (platform === 'win32') return false;
   let fd;
   try {
     fd = fs.openSync(dir, 'r');
