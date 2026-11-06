@@ -27,3 +27,5 @@ case 文档路径：docs/cases/2026-11-07-package-patch-anchor.md
 还有什么没验证：完整制品构建安装、官方 App 四组件状态、Windows实机及组合门禁
 接收位置：fix/qq-package-anchor；主会话组合后复验
 ```
+
+主线复核补充：官方 App 锚定专项只加入 Darwin audit；现有 Windows 构建器使用 execFileSync(npm.cmd) 的限制不因本轮进入通用门禁。macOS 进程实测也显式限定 Darwin，其它平台输出 NOT RUN，未把未验平台写成真实通过。

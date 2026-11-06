@@ -5,6 +5,9 @@ import path from 'node:path';
 import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
+if (process.platform !== 'darwin') {
+ console.log('NOT RUN: native macOS process ownership fixtures require Darwin; other-platform real lifecycle acceptance remains unverified.');
+} else {
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'桥接 空格 $(touch INJECTED) '));
 fs.mkdirSync(path.join(root,'src')); fs.mkdirSync(path.join(root,'state'));
 const script=path.join(root,'src','bridge.js');
@@ -46,4 +49,6 @@ try {
  console.log('PASS foreign listener, unrelated PID, stale lock, authenticated owner, inspection failure, shell-safe paths');
 } finally {
  if(server.listening) await new Promise(r=>server.close(r)); await cleanup(); fs.rmSync(root,{recursive:true,force:true});
+}
+
 }
