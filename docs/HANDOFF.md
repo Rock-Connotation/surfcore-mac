@@ -6,6 +6,18 @@
 ---
 
 
+## 快照：2026-11-06（macOS 首期实施，WP0）
+
+- 用户授权执行 MACOS-DEVELOPMENT-PROMPT；目标明确为 `/Applications/DeepSeek Harness.app` 官方桌面 App 0.2.2-rc.1，使用 desktop profile，不以 Web 版代验。
+- 主树 `../surfcore-macos-implementation` / `feat/macos-implementation`，从交接 `0c51bf2` 创建；本克隆无 dev。设计 macos/ 整目录已复制，继续本地忽略；原树不切换、不清理。
+- WP0：依赖按锁安装、真实环境已记录；修复语音 fixture `/var` 别名、离线表情读取真实配置、Git 仓库路径比较、helper 跨平台可执行名、Mac ZIP 解压与实际复制链。完整验证待组合日志完成，不能发布。
+- ASR 资产：已构建锁定 whisper.cpp 源码（程序报告 1.9.5-dev），base/small 上游摘要一致；真实中文短样本两档均生成原始毫秒转写，但实体识别有错误，尚未决定默认质量门槛，也尚未接入 Host 队列/B站。
+- 证据/备份：主树 `_backups/20261106-macos-wp0/`；[WP0 case](cases/2026-11-06-macos-wp0.md) 有环境、编号状态和发布交接。
+- 下一步按依赖：WP0 完整门禁 → WP1 核心 / WP2 运行层 → WP3 共享作业 → WP4 B站闭环 → WP5 制品与真实 App 验收。真实 profile 安装、重启尚未进行，需具体改动可审阅后核对授权。
+- 没有修改 version、tag、push 或发布；尚未满足首期完成条件。
+
+---
+
 ## 快照：2026-11-06（macOS 开发工具与设计文档整理）
 
 - 当前工作树：`../surfcore-tooling-docs`，分支 `docs/tooling-macos`，基于 `feat/mac` 的 v0.8.8 / `0deb826`；本克隆没有 `dev`；开发工具与设计交接分批本地提交，未合并、未推送、未发布。

@@ -161,7 +161,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
 
     // 1) AI 只能按语音库名字取文件
     const okPath = h.resolveVoicePathForV2('hello');
-    assert.equal(okPath.path, path.join(audioDir, 'hello.mp3'), 'AI 省略扩展名也能命中语音库文件');
+    assert.equal(okPath.path, fs.realpathSync(path.join(audioDir, 'hello.mp3')), 'AI 省略扩展名也能命中语音库文件');
 
     // 2) 绝对路径默认被拒（防 prompt injection 拿任意本地文件外发）
     assert.throws(() => h.resolveVoicePathForV2(outside), /语音库|绝对路径/, 'AI 传库外绝对路径被拒');
@@ -179,7 +179,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     assert.equal(call.body.group_id, 456, '语音发给正确群');
     assert.equal(call.body.message.length, 1, '语音只发一个段');
     assert.equal(call.body.message[0].type, 'record', '段类型是 record');
-    assert.equal(call.body.message[0].data.file, path.join(audioDir, 'hello.mp3'), 'record 段指向库内绝对路径');
+    assert.equal(call.body.message[0].data.file, fs.realpathSync(path.join(audioDir, 'hello.mp3')), 'record 段指向库内绝对路径');
     assert.equal(sent.messageId, 9001, '返回网关 message_id');
     assert.equal(sent.readback, null, '显式关掉回读时不调 fetch_ptt_text');
 

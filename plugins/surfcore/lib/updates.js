@@ -19,6 +19,7 @@
  *   { dismissed: { [componentId]: remoteSha }, lastCheckAt, results: [...] }
  */
 import fs from 'node:fs';
+import { validateUpdateArchive } from './update-archive.js';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -102,6 +103,17 @@ function normalizeDir(dir) {
     return fs.existsSync(abs) && fs.statSync(abs).isDirectory() ? abs : '';
   } catch {
     return '';
+  }
+}
+
+// macOS 临时目录常以 /var 暴露、但 realpath 返回 /private/var；比较物理路径，
+// 否则一个合法的仓库会被误判为“在别的 git 仓库里”。
+function samePath(a, b) {
+  const normalize = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
+  try {
+    return normalize(fs.realpathSync(a)) === normalize(fs.realpathSync(b));
+  } catch {
+    return normalize(path.resolve(a)) === normalize(path.resolve(b));
   }
 }
 
@@ -219,7 +231,8 @@ async function fetchCommitSha(repo) {
  */
 export function helperSpawnEnv(execPath = process.execPath, baseEnv = process.env) {
   const env = { ...baseEnv };
-  const base = path.basename(String(execPath || '')).toLowerCase();
+  // 进程路径可能来自 Windows 宿主，即使测试/调用方运行在 macOS；不能只用当前平台的 path.basename。
+  const base = String(execPath || '').split(/[\\/]/).pop().toLowerCase();
   if (base !== 'node' && base !== 'node.exe') env.ELECTRON_RUN_AS_NODE = '1';
   return env;
 }
@@ -606,7 +619,7 @@ export async function inspectComponent(component, opts = {}) {
     const inside = await runGit(['-C', dir, 'rev-parse', '--is-inside-work-tree']);
     const top = inside.ok ? await runGit(['-C', dir, 'rev-parse', '--show-toplevel']) : { ok: false };
     const isOwnRepo = inside.ok && inside.stdout.trim() === 'true'
-      && top.ok && path.resolve(top.stdout.trim()).toLowerCase() === path.resolve(dir).toLowerCase();
+      && top.ok && samePath(top.stdout.trim(), dir);
     if (isOwnRepo) return inspectGitComponent(component, opts);
   }
   if (component?.versionUrl) return inspectReleaseComponent(component, opts);
@@ -655,7 +668,7 @@ export async function inspectGitComponent(component, { fetch = true } = {}) {
   // 必须要求“仓库根就是这个目录”，否则会把语音包当成本体仓库、显示同样的提交列表（2026-10-28 反馈）。
   const top = await runGit(['-C', dir, 'rev-parse', '--show-toplevel']);
   const topDir = top.ok ? path.resolve(top.stdout.trim()) : '';
-  if (!topDir || topDir.toLowerCase() !== path.resolve(dir).toLowerCase()) {
+  if (!topDir || !samePath(topDir, dir)) {
     return { ...base, available: false, reason: '目录在别的 git 仓库里（不是它自己的仓库），改用版本/提交比对' };
   }
   const remoteUrl = await runGit(['-C', dir, 'remote', 'get-url', 'origin']);
@@ -1534,10 +1547,14 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       pluginLog(`[updates] 下载完成：${(downloaded.bytes / 1024 / 1024).toFixed(2)} MB，${(downloaded.elapsedMs / 1000).toFixed(1)} 秒（${downloaded.url}）`);
       downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'extract' };
       try {
+        validateUpdateArchive(zipFile);
         await new Promise((resolve, reject) => {
-          execFile('powershell', ['-NoProfile', '-Command',
-            `Expand-Archive -LiteralPath '${zipFile}' -DestinationPath '${stagingRoot}' -Force`],
-          { windowsHide: true, timeout: 120_000 }, (error) => (error ? reject(error) : resolve()));
+          const command = process.platform === 'win32' ? 'powershell' : 'unzip';
+          const args = process.platform === 'win32'
+            ? ['-NoProfile', '-Command', `Expand-Archive -LiteralPath '${zipFile.replace(/'/g, "''")}' -DestinationPath '${stagingRoot.replace(/'/g, "''")}' -Force`]
+            : ['-q', '-o', zipFile, '-d', stagingRoot];
+          execFile(command, args,
+            { windowsHide: true, timeout: 120_000 }, (error) => (error ? reject(error) : resolve()));
         });
       } catch (error) {
         downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'failed' };

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { helperSpawnEnv } from '../lib/updates.js';
 
@@ -37,7 +38,8 @@ try {
     logFile: path.join(stateDir, 'apply.log'),
   }, null, 2));
 
-  execFileSync(process.execPath, [path.resolve('../../scripts/apply-update.mjs'), '--pending', pendingFile], { stdio: 'ignore' });
+  const applyScript = fileURLToPath(new URL('../../../scripts/apply-update.mjs', import.meta.url));
+  execFileSync(process.execPath, [applyScript, '--pending', pendingFile], { stdio: 'ignore' });
 
   ok(fs.existsSync(path.join(target, 'package.json')), '助手真的执行了（目标目录有 package.json）');
   ok(fs.readFileSync(path.join(target, 'config.json'), 'utf8').includes('keep'), '用户的 config.json 被保留');
@@ -52,7 +54,7 @@ try {
   }, null, 2));
   let exitCode = 0;
   try {
-    execFileSync(process.execPath, [path.resolve('../../scripts/apply-update.mjs'), '--pending', badPending], { stdio: 'ignore' });
+    execFileSync(process.execPath, [applyScript, '--pending', badPending], { stdio: 'ignore' });
   } catch (error) { exitCode = error.status ?? 1; }
   ok(exitCode !== 0, 'staging 缺失时助手以非 0 退出');
   ok(fs.existsSync(`${badPending}.failed`), '失败留下 .failed 证据');

@@ -6,6 +6,9 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-06 | [macOS WP0 基线与隔离](2026-11-06-macos-wp0.md) | 真实路径预期、离线配置与首期环境 | 实施中 |
+| 2026-11-06 | [macOS 平台更新基线](2026-11-06-macos-platform-baseline.md) | ZIP 安全解压、POSIX helper 与 Windows 边界 | 待验证组合 |
+| 2026-11-06 | [macOS 更新检查路径](2026-11-06-macos-updates-baseline.md) | 规范路径比较与跨系统可执行名 | 待验证组合 |
 | 2026-11-06 | [本地 Agent 开发提示词](2026-11-06-macos-development-prompt.md) | 将设计工作包接成可执行交接，保留实机验收与发布边界 | 文档，未发布 |
 | 2026-11-06 | [开发工具路由与 macOS 设计归档](2026-11-06-development-tools-and-macos-design.md) | 项目相关工具按任务调用；8 份设计原稿保留本地资料边界 | 文档，未发布 |
 | 2026-11-03 | [人格语气层重复/未进目的提示词](2026-11-03-persona-tone-dedup.md) | tone 不再回退 core；相同内容去重；purpose 接语气层 | 待发布 |

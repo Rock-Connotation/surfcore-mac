@@ -39,6 +39,9 @@ console.log('## 乱码机制（字节级）');
 
 console.log('## chcp 可用性');
 {
+  if (process.platform !== 'win32') {
+    console.log(`  ⏭  跳过：chcp 是 Windows 命令（当前平台 ${process.platform}）`);
+  } else {
   const r = spawnSync('chcp', ['65001'], { encoding: 'latin1', windowsHide: true });
   if (r.error?.code === 'EPERM' || r.error?.code === 'EACCES') {
     // 受限沙箱（DSH workspace-write / 只读）不允许 spawn 捕获输出的子进程。
@@ -49,6 +52,7 @@ console.log('## chcp 可用性');
     const before = spawnSync('chcp', [], { encoding: 'latin1', windowsHide: true });
     const cpText = String(before.stdout ?? '');
     ok(/\d{3,5}/.test(cpText), 'chcp 能读出当前代码页', (cpText.match(/\d{3,5}/) ?? ['?'])[0]);
+  }
   }
 }
 

@@ -4011,3 +4011,8 @@ npm run test:audit
 - **案例与门禁结果**：[工具路由与 macOS 设计归档](cases/2026-11-06-development-tools-and-macos-design.md)。完整审计在本机存在失败，不能把文档检查通过写成运行时验收通过。
 
 - **开发交接补充**：新工作树不会继承被忽略的设计原稿；[本地开发提示词](guides/MACOS-DEVELOPMENT-PROMPT.md)要求先核对并复制设计，再按 WP0—WP5 实施。历史 Windows-only 路线需在本次 macOS 开发目标下显式更新，设计归档与本提示词编写本身仍不是实现完成证据。
+
+
+## 2026-11-06 macOS 路径别名与更新平台边界
+
+`/var` 与 `/private/var` 指向同一文件，安全路径解析返回 realpath，fixture 和 Git 仓库根比较也必须使用真实路径；POSIX 比较不能全局转小写。离线测试不能依赖含密钥的用户 config.json。Windows chcp/CRLF 字节检查保留在相应平台，所有平台检查 Git eol 属性。更新 ZIP 在解压前校验本地头/中央目录名字与类型，拒绝穿越、符号链接；POSIX helper 在复制前检查源/目标链接，只覆盖程序文件，保留用户数据与目标独有文件。细节、恢复与未验项见同日 macOS WP0/platform/updates cases。

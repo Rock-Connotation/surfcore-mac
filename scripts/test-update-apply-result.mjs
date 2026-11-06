@@ -7,6 +7,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 
+// Exercise the actual platform extractor and update helper with isolated ZIP fixtures.
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-apply-'));
 let failures = 0;
 const ok = (cond, label, extra = '') => {
@@ -44,8 +45,13 @@ function makeZip({ withManifest = true, extraMissing = [], corrupt = [], version
     fs.writeFileSync(path.join(src, 'release', 'install-manifest.json'), JSON.stringify({ schemaVersion: 1, version, files }));
   }
   const zip = path.join(base, 'pkg.zip');
-  execFileSync('powershell', ['-NoProfile', '-Command',
-    `Compress-Archive -Path '${src}' -DestinationPath '${zip}' -Force`], { windowsHide: true });
+  if (process.platform === 'win32') {
+    execFileSync('powershell', ['-NoProfile', '-Command',
+      `Compress-Archive -Path '${src}' -DestinationPath '${zip}' -Force`], { windowsHide: true });
+  } else {
+    // Keep the same top-level directory as Compress-Archive, without requiring PowerShell.
+    execFileSync('zip', ['-qr', zip, path.basename(src)], { cwd: path.dirname(src) });
+  }
   return fs.readFileSync(zip);
 }
 
@@ -465,10 +471,21 @@ try {
     const helper = path.resolve('scripts/apply-update.mjs');
     const runHelper = (name, stagedVersion, toVersion, opts = {}) => {
       const target = makeTarget(name, '0.7.0', { withMeta: true });
+      if (name === 'verify-ok') {
+        fs.writeFileSync(path.join(target, 'config.json'), '{"owner":"keep"}');
+        fs.mkdirSync(path.join(target, 'characters', 'main'), { recursive: true });
+        fs.writeFileSync(path.join(target, 'characters', 'main', 'persona.md'), 'keep persona');
+        fs.mkdirSync(path.join(target, 'model'), { recursive: true });
+        fs.writeFileSync(path.join(target, 'model', 'local.json'), '{"keep":true}');
+        fs.mkdirSync(path.join(target, 'perception'), { recursive: true });
+        fs.writeFileSync(path.join(target, 'perception', 'state.json'), '{"keep":true}');
+        fs.writeFileSync(path.join(target, 'target-only.txt'), 'keep target-only');
+      }
       const staging = path.join(base, `${name}-staging`);
       fs.mkdirSync(path.join(staging, 'release'), { recursive: true });
       fs.writeFileSync(path.join(staging, 'package.json'), JSON.stringify({ name: 'surfcore', version: stagedVersion }));
       fs.writeFileSync(path.join(staging, 'release', 'install-manifest.json'), JSON.stringify({ version: stagedVersion, files: {} }));
+      if (opts.symlink) fs.symlinkSync(opts.symlink, path.join(staging, 'escape'));
       const stateDir = path.join(base, `${name}-state`);
       fs.mkdirSync(stateDir, { recursive: true });
       const pendingFile = path.join(stateDir, 'updates-pending.json');
@@ -500,6 +517,19 @@ try {
     ok(rec.verified === true && rec.version === '9.9.9', '助手：记录带 verified 与版本', JSON.stringify(rec));
     ok(fs.existsSync(path.join(okRun.target, '.installed-manifest.json')), '助手：写入安装清单副本');
     ok(!fs.existsSync(`${okRun.pendingFile}.failed`), '助手：成功后清掉旧 .failed（不会永远显示旧失败）');
+    ok(fs.readFileSync(path.join(okRun.target, 'config.json'), 'utf8') === '{"owner":"keep"}', 'POSIX 覆盖保留用户 config');
+    ok(fs.readFileSync(path.join(okRun.target, 'characters', 'main', 'persona.md'), 'utf8') === 'keep persona', 'POSIX 覆盖保留角色数据');
+    ok(fs.readFileSync(path.join(okRun.target, 'model', 'local.json'), 'utf8') === '{"keep":true}', 'POSIX 覆盖保留模型数据');
+    ok(fs.readFileSync(path.join(okRun.target, 'perception', 'state.json'), 'utf8') === '{"keep":true}', 'POSIX 覆盖保留感知数据');
+    ok(fs.readFileSync(path.join(okRun.target, 'target-only.txt'), 'utf8') === 'keep target-only', 'POSIX 覆盖保留目标独有文件');
+    if (process.platform !== 'win32') {
+      const linkRun = runHelper('symlink-rejected', '9.9.9', '9.9.9', { symlink: base });
+      ok(linkRun.code !== 0, 'POSIX 符号链接越界：助手失败', String(linkRun.code));
+      ok(fs.existsSync(`${linkRun.pendingFile}.failed`), 'POSIX 符号链接越界：写入 .failed');
+      const linkFailure = JSON.parse(fs.readFileSync(`${linkRun.pendingFile}.failed`, 'utf8'));
+      ok(linkFailure.code === 'apply.failed', 'POSIX 符号链接越界：结构化 code', String(linkFailure.code));
+      ok(typeof linkFailure.hint === 'string' && linkFailure.hint.length > 0, 'POSIX 符号链接越界：带 hint');
+    }
   }
 
   // 5.55) 未知 kind：结构化失败，不默认当 zip

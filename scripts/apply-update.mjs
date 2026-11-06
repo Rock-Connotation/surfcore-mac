@@ -79,6 +79,43 @@ function copyZip(staging, target) {
   // /MIR 会删掉"源里没有"的文件，连用户自建文件一起删；现在宁可留旧文件也不误删。
   const exDirs = ['state', 'backups', 'node_modules', '.git', 'logs', 'staging', 'pet', 'characters', 'voice-packs', 'tmp-update*'];
   const exFiles = ['config.json', 'bili.config.json', 'updates-pending.json'];
+  if (process.platform !== 'win32') {
+    const excludedDir = (name) => exDirs.some((pattern) => pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern);
+    const excludedFile = (name) => exFiles.includes(name);
+    const rejectSymlink = (p, label) => {
+      try {
+        if (fs.lstatSync(p).isSymbolicLink()) throw new Error(`${label}包含不允许的符号链接：${p}`);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    };
+    const root = path.resolve(staging);
+    const destination = path.resolve(target);
+    const preflight = (from, to) => {
+      rejectSymlink(from, '暂存目录');
+      rejectSymlink(to, '目标目录');
+      for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+        if (excludedDir(entry.name) || excludedFile(entry.name)) continue;
+        const source = path.join(from, entry.name);
+        const dest = path.join(to, entry.name);
+        const stat = fs.lstatSync(source);
+        if (stat.isSymbolicLink()) throw new Error(`暂存目录包含不允许的符号链接：${source}`);
+        if (stat.isDirectory()) preflight(source, dest);
+        else rejectSymlink(dest, '目标目录');
+      }
+    };
+    const copyTree = (from, to) => {
+      fs.mkdirSync(to, { recursive: true });
+      for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+        if (excludedDir(entry.name) || excludedFile(entry.name)) continue;
+        const source = path.join(from, entry.name);
+        const dest = path.join(to, entry.name);
+        const stat = fs.lstatSync(source);
+        if (stat.isDirectory()) copyTree(source, dest);
+        else if (stat.isFile()) { fs.copyFileSync(source, dest); fs.chmodSync(dest, stat.mode & 0o7777); }
+      }
+    };
+    try { rejectSymlink(root, '暂存目录'); rejectSymlink(destination, '目标目录'); preflight(root, destination); copyTree(root, destination); return { ok: true }; }
+    catch (error) { return { ok: false, error: `跨平台复制失败：${String(error?.message ?? error)}` }; }
+  }
   const argv = [
     staging, target,
     '/E',
@@ -148,7 +185,7 @@ try {
     log(`[apply-update] 失败：${result.error}`);
     try {
       fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({
-        ...pending, error: result.error, code: result.code || 'apply.failed', at: new Date().toISOString(),
+        ...pending, error: result.error, hint: '请关闭宿主后重试；若仍失败请检查安装目录权限与符号链接', code: result.code || 'apply.failed', at: new Date().toISOString(),
       }, null, 2));
       fs.rmSync(pendingFile, { force: true });
       fs.rmSync(`${pendingFile}.started`, { force: true });
