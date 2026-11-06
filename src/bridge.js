@@ -1432,91 +1432,91 @@ function saveState() {
 // 否则接管。进程退出/崩溃后锁自动失效（PID 校验）。
 const LOCK_FILE = path.join(STATE_DIR, 'bridge.lock');
 
-/**
- * 控制台端口是否已被占用 —— 用来判断「是不是真的还有一个桥接在跑」。
- *
- * 为什么需要它：锁文件只存了 PID，而 Windows 会回收 PID。`process.kill(pid, 0)` 成功
- * 只能证明「有进程占着这个号」，EPERM 更是连这一点都证明不了（受保护进程）。
- * 但桥接一定绑定控制台端口（绑不上会自己 exit 2），所以端口占用是一个可靠的判据。
- * 同步探测一次，只在启动期的可疑分支里跑，不影响正常运行。
- */
+/** A failed or unrecognizable probe is unknown and therefore treated as occupied. */
 function consolePortInUse() {
-  try {
-    const cfg = readJsonSafe(CONFIG_FILE, {});
-    const port = Number(cfg?.consolePort) || 3100;
-    if (process.platform === 'win32') {
-      const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+  const cfg = readJsonSafe(CONFIG_FILE, {});
+  const port = Number(cfg?.consolePort) || 3100;
+  const options = { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] };
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], options);
       return new RegExp(`[:.]${port}\\s+\\S+\\s+LISTENING`, 'i').test(out);
-    }
-    const out = execFileSync('sh', ['-c', 'ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
-    return new RegExp(`[:.]${port}\\s`).test(out);
-  } catch {
-    // 探测不出来时保守认为「有人在跑」，宁可让用户手动删锁，也不要冒双实例的风险。
-    return true;
+    } catch { return true; }
   }
+  const commands = process.platform === 'darwin'
+    ? [['netstat', ['-an', '-p', 'tcp']]]
+    : [['ss', ['-ltn']], ['netstat', ['-ltn']]];
+  for (const [program, args] of commands) {
+    try {
+      const out = execFileSync(program, args, options);
+      const lines = String(out).split(/\r?\n/);
+      let recognized = false, malformed = false;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const fields = line.trim().split(/\s+/);
+        if (/^(?:state|proto)$/i.test(fields[0]) || /^active internet/i.test(line.trim())) { recognized = true; continue; }
+        let state, local;
+        if (/^(?:LISTEN|ESTAB|ESTABLISHED|TIME-WAIT|CLOSE-WAIT|SYN-SENT)$/i.test(fields[0]) && fields.length >= 5) { recognized = true; state = fields[0]; local = fields[3]; }
+        else if (/^tcp\d*$/i.test(fields[0]) && fields.length >= 6) { recognized = true; state = fields[5]; local = fields[3]; }
+        else { malformed = true; continue; }
+        if (/^(?:LISTEN|LISTENING)$/i.test(state) && new RegExp(`[:.]${port}$`).test(local)) return true;
+      }
+      if (recognized && !malformed) return false;
+    } catch { /* Try the next supported command; never convert failure to free. */ }
+  }
+  return true;
 }
 
 function acquireLock() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  // 原子创建锁文件：把 PID 一次性写入（flag 'wx'），避免“先建空文件再写 PID”的窗口被第二个进程当作过期锁偷走。
   const tryCreate = () => {
-    try {
-      fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: 'wx', mode: 0o600 });
-      return true;
-    } catch (error) {
-      if (error?.code === 'EEXIST') return false;
-      throw error;
-    }
+    try { fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: 'wx', mode: 0o600 }); return true; }
+    catch (error) { if (error?.code === 'EEXIST') return false; throw error; }
   };
   if (tryCreate()) return;
-  // 锁文件已存在：检查 PID 是否仍存活；内容为空视为过期锁（仅兼容旧版本遗留），删除后重试一次。
-  let stale = false;
+  let content, original, stale = false, incomplete = false;
   try {
-    const content = fs.readFileSync(LOCK_FILE, 'utf8').trim();
-    if (!content) {
-      stale = true;
-    } else {
-      const pid = Number(content);
-      if (!Number.isInteger(pid) || pid <= 0) {
-        stale = true;
-      } else {
-        try {
-          process.kill(pid, 0);
-          // 没抛异常只说明「存在某个持有该 PID 的进程」，不能证明那就是桥接
-          // （PID 被回收给别的程序时会误判），所以再加一道端口探测。
-          if (!consolePortInUse()) stale = true;
-        } catch (error) {
-          if (error.code === 'ESRCH') {
-            stale = true;
-          } else if (error.code === 'EPERM') {
-            // EPERM = 该 PID 属于受保护/系统进程（权限不足，无法发信号）。
-            // 这**不能**证明桥接还在跑，但旧逻辑把它当成「已有实例」直接 exit(2)：
-            // 一旦锁文件里的 PID 被系统回收给一个受保护进程，桥接就永久起不来，
-            // 而且提示信息把人引向「已有实例在运行」这个错误方向。
-            // 这里改成按「疑似过期」处理，但要先确认控制台端口没有被占用。
-            if (consolePortInUse()) {
-              console.error(`[bridge] 控制台端口已被占用，判定已有实例在运行（锁文件 PID ${pid} 无权限探测）。`);
-              process.exit(2);
-            }
-            console.error(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
-            stale = true;
-          } else {
-            console.error(`[bridge] 已有实例在运行（PID ${pid}，锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
-            process.exit(2);
-          }
-        }
-      }
+    original = fs.statSync(LOCK_FILE);
+    content = fs.readFileSync(LOCK_FILE, 'utf8').trim();
+    const pid = Number(content);
+    if (!content || !Number.isInteger(pid) || pid <= 0) {
+      if (process.platform === 'win32') stale = true;
+      else incomplete = true; // A new owner may have opened the file but not yet written its PID.
     }
-  } catch (readError) {
-    console.error(`[bridge] 无法读取锁文件 ${LOCK_FILE}：${readError?.message ?? readError}`);
+    else {
+      let alive = false, permissionDenied = false;
+      try { process.kill(pid, 0); alive = true; }
+      catch (error) { if (error?.code === 'ESRCH') stale = true; else if (error?.code === 'EPERM') permissionDenied = true; else throw error; }
+      // POSIX live/permission-unknown owners may still be starting before binding.
+      // Windows retains the legacy PID-reuse probe for compatibility.
+      if ((alive || permissionDenied) && process.platform === 'win32' && !consolePortInUse()) stale = true;
+    }
+  } catch (error) {
+    console.error(`[bridge] 无法核验锁文件 ${LOCK_FILE}：${error?.message ?? error}。请检查权限后重试。`);
     process.exit(1);
+    return;
+  }
+  if (incomplete) {
+    console.error(`[bridge] 锁文件 ${LOCK_FILE} 为空或 PID 无效，可能仍在写入；未接管。请确认没有桥接启动进程后，先归档该锁再重试。`);
+    process.exit(2);
+    return;
   }
   if (stale) {
-    console.error(`[bridge] 检测到过期锁文件（PID 不存在或为空），删除后重试…`);
-    try { fs.unlinkSync(LOCK_FILE); } catch {}
-    if (tryCreate()) return;
+    const recovery = `${LOCK_FILE}.recovery`;
+    let owned = false;
+    try {
+      fs.mkdirSync(recovery, { mode: 0o700 }); owned = true;
+      const now = fs.statSync(LOCK_FILE);
+      if (now.dev !== original.dev || now.ino !== original.ino || fs.readFileSync(LOCK_FILE, 'utf8').trim() !== content) throw new Error('锁已变更');
+      const archive = `${LOCK_FILE}.stale-${Date.now()}-${crypto.randomUUID()}`;
+      fs.renameSync(LOCK_FILE, archive);
+      console.error(`[bridge] 过期锁已保留为 ${archive}；正在尝试启动。`);
+      if (tryCreate()) return;
+    } catch (error) {
+      console.error(`[bridge] 无法安全接管锁：${error?.message ?? error}。检查锁与恢复目录后重试。`);
+    } finally { if (owned) { try { fs.rmdirSync(recovery); } catch {} } }
   }
-  console.error(`[bridge] 已有实例在运行（锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
+  console.error(`[bridge] 锁仍由存活或无法确认的进程持有（${LOCK_FILE}）。请确认对应进程已停止，再检查锁文件后重试。`);
   process.exit(2);
 }
 function releaseLock() {
