@@ -32,13 +32,26 @@ export function buildInstallChecks(ctx) {
   const checks = [];
   const add = (name, level, detail, fix = '') => checks.push({ name, level, ok: level !== 'fail', detail, fix });
 
-  add('Node 版本', nodeEnough(ctx.nodeVersion) ? 'ok' : 'fail',
-    `v${ctx.nodeVersion}（需要 ≥ 22.13）`,
-    nodeEnough(ctx.nodeVersion) ? '' : 'https://nodejs.org/ 装 LTS 后重开终端');
+  const runtime = ctx.nodeRuntime;
+  const runtimeCaps = runtime?.capabilities ?? {};
+  const requiredCaps = ['esm', 'fetch', 'abortSignalTimeout', 'webSocket'];
+  const missingCaps = requiredCaps.filter((name) => runtimeCaps[name] !== true);
+  const runtimeOk = runtime
+    ? runtime.ok !== false && Boolean(runtime.executable) && nodeEnough(runtime.version) && missingCaps.length === 0
+    : nodeEnough(ctx.nodeVersion);
+  const runtimeDetail = runtime
+    ? runtimeOk
+      ? `v${runtime.version} · ${runtime.platform}/${runtime.arch} · ${runtime.source}`
+      : `${runtime.code || 'NODE_RUNTIME_UNAVAILABLE'}：${runtime.error || `候选运行时缺少 ${missingCaps.join(', ') || '可执行 Node 信息'}`}`
+    : `宿主 Node v${ctx.nodeVersion}（尚未探测子进程运行时）`;
+  add('Node 版本', runtimeOk ? 'ok' : 'fail', runtimeDetail,
+    runtimeOk ? '' : (runtime?.hint || '检查 DSH_NODE 是否指向可执行的 Node v22.13.0 或更高版本，然后重载 DSH'));
 
   add('统一配置', 'ok',
     ctx.hasUnified ? ctx.unifiedMasked : '还没生成，用的默认值（可点"一键配置"生成）');
 
+  const qqEnabled = ctx.enabledChannels?.qq !== false;
+  if (qqEnabled) {
   add('管理员 QQ', ctx.ownerQQ ? 'ok' : 'warn',
     ctx.ownerQQ ? '已设置（不回显）' : '还没填 —— 她不知道谁是主人',
     ctx.ownerQQ ? '' : '设置 → 管理员，或点"一键配置"后填 QQ 号');
@@ -86,11 +99,20 @@ export function buildInstallChecks(ctx) {
   add('QQ 桥接源码', ctx.bridgeSrc ? 'ok' : 'fail',
     ctx.bridgeSrc ? ctx.bridgeMasked : '没找到 src/bridge.js：安装目录选错了？');
 
+  }
+
+  if (ctx.enabledChannels?.bili !== false && ctx.mediaRuntime) {
+    const media = ctx.mediaRuntime;
+    add('媒体运行时（ASR）', media.ok ? 'ok' : 'fail',
+      media.ok ? `FFmpeg ${media.ffmpeg.version} / FFprobe ${media.ffprobe.version}` : `${media.code || 'MEDIA_RUNTIME_UNAVAILABLE'}：${media.error || '媒体运行时未就绪'}`,
+      media.ok ? '' : (media.hint || '安装可用的 FFmpeg 与 FFprobe 后重试。'));
+  }
+
   add('装进 DSH', ctx.profile ? 'ok' : 'fail',
     ctx.profile ? `profile：${ctx.profile}` : 'DSH profile 里没有 surfcore（预设/MCP 还没注册）',
     ctx.profile ? '' : '在仓库目录跑：node scripts/setup-dsh.mjs，然后重启 DSH');
 
-  add('控制台令牌', ctx.token ? 'ok' : 'warn',
+  if (qqEnabled) add('控制台令牌', ctx.token ? 'ok' : 'warn',
     ctx.token ? '已生成（不回显）' : '还没生成，控制台打不开',
     ctx.token ? '' : '点"一键配置"自动生成');
 

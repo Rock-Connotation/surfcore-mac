@@ -25,13 +25,34 @@ import { PRESETS, buildPatches, patchFileFor } from './build-agent-preset-patche
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
-// MCP 的 command 必须是真 node，不能是 DSH Desktop 的 Harness.exe。
-// 复制到别处单独运行时可能没有 ../src，退回当前进程（CLI 下就是 node）。
-let NODE_EXE = process.execPath;
+// MCP 的 command 必须使用经过探测的 Node runtime，不能只因 process.execPath 存在就当它是 Node。
+// 复制到别处单独运行时可能没有 ../src；此时 setup 本身已由 Node 执行，可沿用该进程，
+// 但显式 DSH_NODE 仍必须能被验证，不能静默退回。
+let NODE_RUNTIME = null;
 try {
-  const { findNodeExe } = await import('../src/node-path.js');
-  NODE_EXE = findNodeExe({ dshHome: DSH_HOME, home: process.env.USERPROFILE || os.homedir() });
-} catch {}
+  const { resolveNodeRuntime } = await import('../src/node-path.js');
+  NODE_RUNTIME = resolveNodeRuntime({ dshHome: DSH_HOME, home: process.env.USERPROFILE || process.env.HOME || os.homedir() });
+} catch (error) {
+  if (error?.code !== 'ERR_MODULE_NOT_FOUND' || process.env.DSH_NODE) {
+    fatal(`${String(error?.message ?? error)}${error?.hint ? `\n下一步：${error.hint}` : ''}`);
+  }
+  const [major, minor] = String(process.versions.node ?? '').split('.').map(Number);
+  const capabilities = {
+    esm: true,
+    fetch: typeof fetch === 'function',
+    abortSignalTimeout: typeof AbortSignal === 'function' && typeof AbortSignal.timeout === 'function',
+    webSocket: typeof WebSocket === 'function',
+  };
+  if (major < 22 || (major === 22 && minor < 13) || Object.values(capabilities).some((value) => !value)) {
+    fatal(`无法验证本机 Node runtime v${process.versions.node}；需要 v22.13.0 及 ESM/fetch/AbortSignal.timeout/WebSocket。`);
+  }
+  NODE_RUNTIME = {
+    executable: process.execPath, argvPrefix: [], envPatch: {}, kind: 'node',
+    version: process.versions.node, platform: process.platform, arch: process.arch,
+    source: 'setup-process', capabilities,
+  };
+}
+const NODE_EXE = NODE_RUNTIME.executable;
 // 没传 profile 就自动判断（环境变量 → 正在运行的 DSH 进程 → 最近使用 → 兜底 web）。
 // 用动态 import + 兜底：这个脚本偶尔会被单独复制到别处跑（审计台就在这么测），
 // 没有 detect-profile.mjs 时不能直接崩。
@@ -203,7 +224,15 @@ function mcpEntries() {
     out += `        transport: stdio\n`;
     out += `        command: ${yamlSingleQuote(node)}\n`;
     out += `        args:\n`;
-    out += `          - ${yamlSingleQuote(s.script)}\n`;
+    for (const arg of [...NODE_RUNTIME.argvPrefix, s.script]) out += `          - ${yamlSingleQuote(arg)}\n`;
+    for (const [key, value] of Object.entries(NODE_RUNTIME.envPatch || {})) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) fatal(`Node runtime 环境变量名称无效：${key}`);
+      out += `        env:\n`;
+      break;
+    }
+    for (const [key, value] of Object.entries(NODE_RUNTIME.envPatch || {})) {
+      out += `          ${key}: ${yamlSingleQuote(value)}\n`;
+    }
     // qq_wait_for_messages 最长可等 10 分钟；DSH 默认 60s 会提前掐断工具调用。
     if (s.toolCallTimeoutMs) out += `        toolCallTimeoutMs: ${s.toolCallTimeoutMs}\n`;
   }

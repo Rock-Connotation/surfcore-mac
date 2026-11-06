@@ -1,9 +1,9 @@
 /**
  * 主人 B站 账号扫码登录（只读偏好抓取用）。
  *
- * 为什么用 Edge 而不是自己画二维码：
+ * 为什么用本机 Edge/Chrome 而不是自己画二维码：
  *   仓库里没有 QR 生成库；而 B站 登录页本身会把二维码画成一张 data:image/png。
- *   用本机已有的 Edge headless 打开官方登录页 → 取出二维码图片 → 轮询 cookie，
+ *   用本机已有的 Edge/Chrome headless 打开官方登录页 → 取出二维码图片 → 轮询 cookie，
  *   不用把登录 URL 发给第三方二维码服务，也不用手工粘贴 cookie。
  *
  * 边界（写死）：
@@ -12,36 +12,95 @@
  *   · 不写日志、不回显 SESSDATA；`readOwnerAccount()` 只返回 mid/昵称/时间；
  *   · 校验扫码的 mid 是否等于配置里的 owner.mid；不一致就拒绝保存（防串号）。
  *
- * 依赖：Windows + Edge（本项目本来就是 Windows-only；Edge 缺失时返回可读错误）。
+ * 依赖：本机可执行的 Microsoft Edge 或 Google Chrome；扫码只使用私有临时 profile。
  */
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { BILI_CRED, OWNER_BILI_CRED } from './paths.js';
 import { readBiliConfig, saveBiliConfig } from './store.js';
 
 const LOGIN_URL = 'https://passport.bilibili.com/login';
 const SESSION_TTL_MS = 170_000;      // B站 二维码大约 180 秒过期，留 10 秒余量
-const START_WAIT_MS = 20_000;        // 等 Edge/CDP 起来
+const START_WAIT_MS = 20_000;        // 等浏览器/CDP 起来
 const QR_WAIT_MS = 18_000;           // 等登录页画出二维码
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const sessions = new Map();
 
-function findEdge() {
-  const candidates = [
-    process.env.SURFCORE_EDGE,
-    path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-    path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe') : '',
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    try { if (fs.existsSync(candidate)) return candidate; } catch {}
+function browserCandidates({ env, platform, home }) {
+  if (String(env.SURFCORE_EDGE ?? '').trim()) {
+    return [{ path: String(env.SURFCORE_EDGE).trim(), name: 'configured browser', source: 'SURFCORE_EDGE', explicit: true }];
   }
-  return '';
+  if (platform === 'darwin') {
+    return [
+      ['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', 'Microsoft Edge', 'system-applications'],
+      [path.join(home, 'Applications', 'Microsoft Edge.app', 'Contents', 'MacOS', 'Microsoft Edge'), 'Microsoft Edge', 'user-applications'],
+      ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', 'Google Chrome', 'system-applications'],
+      [path.join(home, 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'), 'Google Chrome', 'user-applications'],
+    ].map(([file, name, source]) => ({ path: file, name, source }));
+  }
+  if (platform === 'win32') {
+    return [
+      [path.join(env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'), 'Microsoft Edge', 'system-install'],
+      [path.join(env.PROGRAMFILES || 'C:\\Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe'), 'Microsoft Edge', 'system-install'],
+      [env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe') : '', 'Microsoft Edge', 'user-install'],
+      [path.join(env.PROGRAMFILES || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'), 'Google Chrome', 'system-install'],
+      [env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe') : '', 'Google Chrome', 'user-install'],
+    ].filter(([file]) => file).map(([file, name, source]) => ({ path: file, name, source }));
+  }
+  return [
+    ['/usr/bin/microsoft-edge', 'Microsoft Edge', 'system-install'],
+    ['/usr/bin/google-chrome', 'Google Chrome', 'system-install'],
+    ['/usr/bin/chromium', 'Chromium', 'system-install'],
+    ['/usr/bin/chromium-browser', 'Chromium', 'system-install'],
+  ].map(([file, name, source]) => ({ path: file, name, source }));
+}
+
+function checkBrowser(candidate, { platform, fsApi = fs, probe = probeBrowser }) {
+  const file = path.resolve(candidate.path);
+  try {
+    const stat = fsApi.statSync(file);
+    if (!stat.isFile()) return { ok: false, reason: '不是普通文件' };
+    if (platform !== 'win32') fsApi.accessSync(file, fs.constants.X_OK);
+  } catch (error) {
+    return { ok: false, reason: error?.code === 'EACCES' ? '没有执行权限' : '文件不存在或不可执行' };
+  }
+  const result = probe(file, { platform });
+  return result?.ok ? { ...candidate, executable: file, version: result.version } : { ok: false, reason: result?.reason || '启动版本探测失败' };
+}
+
+function probeBrowser(executable, { spawnSyncImpl = spawnSync } = {}) {
+  const result = spawnSyncImpl(executable, ['--version'], {
+    encoding: 'utf8', timeout: 3000, maxBuffer: 256 * 1024, windowsHide: true,
+  });
+  if (result?.error) return { ok: false, reason: result.error.message };
+  if (result?.status !== 0) return { ok: false, reason: `版本探测退出码 ${result?.status ?? '未知'}` };
+  return { ok: true, version: String(result.stdout || result.stderr || '').trim().slice(0, 160) };
+}
+
+export function findBrowser({
+  env = process.env,
+  platform = process.platform,
+  home = env.HOME || env.USERPROFILE || os.homedir(),
+  fsApi = fs,
+  probe = probeBrowser,
+} = {}) {
+  const candidates = browserCandidates({ env, platform, home });
+  for (const candidate of candidates) {
+    const checked = checkBrowser(candidate, { platform, fsApi, probe });
+    if (checked.executable) return checked;
+    if (candidate.explicit) {
+      const error = new Error(`SURFCORE_EDGE 指定的浏览器不可用：${candidate.path}（${checked.reason}）`);
+      error.code = 'BROWSER_OVERRIDE_INVALID';
+      error.hint = '确认 SURFCORE_EDGE 指向已安装且可执行的 Edge 或 Chrome 应用内程序，再重试扫码。';
+      throw error;
+    }
+  }
+  return null;
 }
 
 function freePort() {
@@ -64,7 +123,7 @@ async function waitJson(url, timeoutMs) {
     } catch {}
     await sleep(250);
   }
-  throw new Error(`Edge 调试端口没响应（${Math.round(timeoutMs / 1000)} 秒）`);
+  throw new Error(`浏览器调试端口没响应（${Math.round(timeoutMs / 1000)} 秒）`);
 }
 
 class Cdp {
@@ -82,23 +141,23 @@ class Cdp {
       else resolve(message.result);
     });
     ws.addEventListener('close', () => {
-      for (const { reject } of this.pending.values()) reject(new Error('Edge 调试连接已关闭'));
+      for (const { reject } of this.pending.values()) reject(new Error('浏览器调试连接已关闭'));
       this.pending.clear();
     });
   }
 
   static connect(url) {
-    if (typeof WebSocket !== 'function') return Promise.reject(new Error('当前运行时没有 WebSocket，无法驱动 Edge'));
+    if (typeof WebSocket !== 'function') return Promise.reject(new Error('当前运行时没有 WebSocket，无法驱动浏览器'));
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
-      const timer = setTimeout(() => { try { ws.close(); } catch {} reject(new Error('连接 Edge 调试端口超时')); }, 10_000);
+      const timer = setTimeout(() => { try { ws.close(); } catch {} reject(new Error('连接浏览器调试端口超时')); }, 10_000);
       ws.addEventListener('open', () => { clearTimeout(timer); resolve(new Cdp(ws)); }, { once: true });
-      ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('连接 Edge 调试端口失败')); }, { once: true });
+      ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('连接浏览器调试端口失败')); }, { once: true });
     });
   }
 
   send(method, params = {}) {
-    if (!this.ws || this.ws.readyState !== 1) return Promise.reject(new Error('Edge 调试连接不可用'));
+    if (!this.ws || this.ws.readyState !== 1) return Promise.reject(new Error('浏览器调试连接不可用'));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -121,19 +180,43 @@ class Cdp {
   }
 }
 
-function killEdge(edge) {
-  if (!edge?.pid) return;
-  try { edge.kill(); } catch {}
-  setTimeout(() => {
-    try {
-      spawn('taskkill', ['/pid', String(edge.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
-    } catch {}
-  }, 400).unref?.();
+export function terminateQrBrowser(browser, {
+  platform = process.platform,
+  processApi = process,
+  spawnImpl = spawn,
+  schedule = (callback, delay) => setTimeout(callback, delay),
+} = {}) {
+  if (!browser?.pid) return;
+  if (platform === 'win32') {
+    try { browser.kill('SIGTERM'); } catch {}
+    const timer = schedule(() => {
+      if (browser.exitCode != null || browser.signalCode != null) return;
+      try {
+        const killer = spawnImpl('taskkill', ['/pid', String(browser.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+        killer.on('error', () => {});
+      } catch {}
+    }, 400);
+    timer?.unref?.();
+    return;
+  }
+
+  // The process was started detached, so its process group contains only this QR session.
+  // Never kill by browser name: that could terminate a user's daily browser.
+  try { processApi.kill(-browser.pid, 'SIGTERM'); }
+  catch { try { browser.kill('SIGTERM'); } catch {} }
+  const timer = schedule(() => {
+    if (browser.exitCode != null || browser.signalCode != null) return;
+    try { processApi.kill(-browser.pid, 'SIGKILL'); }
+    catch { try { browser.kill('SIGKILL'); } catch {} }
+  }, 700);
+  timer?.unref?.();
 }
+
+const killBrowser = (browser) => terminateQrBrowser(browser);
 
 function removeDir(dir) {
   if (!dir) return;
-  // 先同步删一次（大部分情况 Edge 退出后就能删）；被占用再延迟重试，
+  // 先同步删一次（大部分情况浏览器退出后就能删）；被占用再延迟重试，
   // 不要只排定时器 —— 进程紧接着退出时定时器不会跑，会留临时 profile。
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   for (const delay of [800, 2000]) {
@@ -141,7 +224,7 @@ function removeDir(dir) {
   }
 }
 
-/** 清掉上次崩溃/提前退出留下的临时 Edge profile（超过 1 小时的才算）。 */
+/** 清掉上次崩溃/提前退出留下的临时浏览器 profile（超过 1 小时的才算）。 */
 function cleanupStaleProfiles() {
   try {
     const root = os.tmpdir();
@@ -162,7 +245,7 @@ function cleanupSession(id) {
   sessions.delete(id);
   if (session.timer) clearTimeout(session.timer);
   try { session.cdp?.close(); } catch {}
-  killEdge(session.edge);
+  killBrowser(session.browser);
   removeDir(session.profileDir);
 }
 
@@ -365,25 +448,55 @@ export function readOwnerAccount() {
  * @returns {{id:string, image:string, expiresAt:number, expected:{mid:string,name:string}, target:string}}
  */
 export async function startQrLogin({ target = 'owner', expectedMid = '', expectedName = '', allowSameAsOwner = false } = {}) {
-  closeAllQrLogins();          // 同时只保留一个扫码会话，避免多个 Edge 泄漏
+  closeAllQrLogins();          // 同时只保留一个扫码会话，避免多个浏览器泄漏
   cleanupStaleProfiles();
-  const edgePath = findEdge();
-  if (!edgePath) throw new Error('找不到 Edge（可设 SURFCORE_EDGE 指向 msedge.exe）');
-  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-bili-qr-'));
+  const browser = findBrowser();
+  if (!browser) {
+    const error = new Error('找不到可用的 Microsoft Edge 或 Google Chrome');
+    error.code = 'BROWSER_NOT_FOUND';
+    error.hint = '安装 Edge 或 Chrome，或设置 SURFCORE_EDGE 指向应用包内的可执行文件后重试扫码。';
+    throw error;
+  }
   const port = await freePort();
-  const edge = spawn(edgePath, [
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-bili-qr-'));
+  const browserEnv = { ...process.env };
+  delete browserEnv.ELECTRON_RUN_AS_NODE;
+  let browserProcess;
+  try { browserProcess = spawn(browser.executable, [
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profileDir}`,
     '--window-size=560,760',
     'about:blank',
-  ], { stdio: 'ignore', windowsHide: true });
+  ], { stdio: 'ignore', windowsHide: true, detached: process.platform !== 'win32', env: browserEnv });
+  } catch (error) {
+    removeDir(profileDir);
+    error.code ||= 'QR_BROWSER_START_FAILED';
+    error.hint ||= `确认 ${browser.name} 可执行后重试扫码。`;
+    throw error;
+  }
 
+  let sessionId = '';
+  const browserFailure = new Promise((resolve) => {
+    browserProcess.once('error', (error) => resolve({ ok: false, error: new Error(`启动${browser.name}失败：${error.message}`) }));
+    browserProcess.once('exit', (code, signal) => resolve({
+      ok: false,
+      error: new Error(`${browser.name}在扫码准备完成前退出（${signal || code || '未知原因'}）`),
+    }));
+  });
+  const cleanupAfterExit = () => { if (sessionId) cleanupSession(sessionId); };
+  browserProcess.on('exit', cleanupAfterExit);
+  browserProcess.on('error', cleanupAfterExit);
   let cdp = null;
   try {
-    await waitJson(`http://127.0.0.1:${port}/json/version`, START_WAIT_MS);
+    const startResult = await Promise.race([
+      waitJson(`http://127.0.0.1:${port}/json/version`, START_WAIT_MS)
+        .then(() => ({ ok: true }), (error) => ({ ok: false, error })),
+      browserFailure,
+    ]);
+    if (!startResult.ok) throw startResult.error;
     const tabRes = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' });
-    if (!tabRes.ok) throw new Error(`Edge 新建标签失败（HTTP ${tabRes.status}）`);
+    if (!tabRes.ok) throw new Error(`浏览器新建标签失败（HTTP ${tabRes.status}）`);
     const tab = await tabRes.json();
     cdp = await Cdp.connect(tab.webSocketDebuggerUrl);
     await cdp.send('Page.enable');
@@ -393,10 +506,13 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
     await cdp.send('Page.navigate', { url: LOGIN_URL });
     const image = await waitForQrImage(cdp, QR_WAIT_MS);
     if (!image) throw new Error('没等到二维码：B站 登录页可能被风控/改版，过一会儿重试或手动粘贴 cookie');
+    if (browserProcess.exitCode !== null || browserProcess.signalCode !== null) {
+      throw new Error(`${browser.name}已退出，二维码会话没有建立成功`);
+    }
 
     const id = `qr_${crypto.randomUUID()}`;
     const session = {
-      id, edge, cdp, profileDir, createdAt: Date.now(),
+      id, browser: browserProcess, browserName: browser.name, cdp, profileDir, createdAt: Date.now(),
       expiresAt: Date.now() + SESSION_TTL_MS,
       target: target === 'fish' ? 'fish' : 'owner',
       expectedMid: String(expectedMid ?? '').trim(),
@@ -407,6 +523,7 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
     session.timer = setTimeout(() => cleanupSession(id), SESSION_TTL_MS + 3_000);
     session.timer.unref?.();
     sessions.set(id, session);
+    sessionId = id;
     return {
       id,
       image,
@@ -416,8 +533,10 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
     };
   } catch (error) {
     try { cdp?.close(); } catch {}
-    killEdge(edge);
+    killBrowser(browserProcess);
     removeDir(profileDir);
+    if (!error?.code) error.code = 'QR_BROWSER_START_FAILED';
+    if (!error?.hint) error.hint = `确认 ${browser.name} 可执行且支持 headless/CDP，再重试扫码。`;
     throw error;
   }
 }

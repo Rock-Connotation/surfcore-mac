@@ -11,7 +11,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
   BRIDGE_SUPERVISOR_LOG, QQBOT_ROOT, QQ_CONFIG, QQ_LOCK_FILE, QQ_STATE_DIR,
-  findNodeExe,
+  resolveNodeRuntime,
 } from './paths.js';
 import { readJson } from './store.js';
 
@@ -169,32 +169,35 @@ function appendSupervisorLog(text) {
 
 export async function start({ dshWebUrl = '' } = {}) {
   if (await portOpen()) return { ok: true, already: true, message: '桥接已经在跑' };
-  const env = { ...process.env };
+  let runtime;
+  try { runtime = resolveNodeRuntime(); } catch (error) {
+    return { ok: false, code: error.code || 'NODE_RUNTIME_NOT_FOUND', error: String(error.message || error), hint: error.hint || '检查 DSH_NODE 与 DSH 内置 Node 后重试。' };
+  }
+  const env = { ...process.env, ...runtime.envPatch };
   if (dshWebUrl) env.DSH_WEB_URL = String(dshWebUrl);
   // 直接 spawn node.exe，不经过 cmd/start.bat：
   // Windows 11 的默认终端会把 start.bat 里的 node 控制台托管成 WindowsTerminal 窗口，
   // 即使 cmd 用了 windowsHide 也仍会弹一个标题为“node src/bridge.js”的黑框。
   // 桥接启动时会自己收紧 state/ ACL，所以这里不需要 start.bat 的那一步；
   // 手动双击 start.bat 仍然保留（可见日志 + 崩溃循环）。
-  const nodeExe = findNodeExe();
-  if (!/^node(\.exe)?$/i.test(path.basename(String(nodeExe)))) {
-    return { ok: false, error: `找不到真正的 node.exe（当前解析到 ${nodeExe}）` };
-  }
-  const child = spawn(nodeExe, [path.join(QQBOT_ROOT, 'src', 'bridge.js')], {
+  const child = spawn(runtime.executable, [...runtime.argvPrefix, path.join(QQBOT_ROOT, 'src', 'bridge.js')], {
     cwd: QQBOT_ROOT,
     env,
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
   });
+  let spawnError = null;
+  child.on('error', (error) => { spawnError = error; });
   child.unref();
   appendSupervisorLog(`已请求启动 bridge.js（无窗口，pid ${child.pid ?? '?'}，DSH=${env.DSH_WEB_URL ?? 'config'}）`);
   // 等最多 12 秒
   for (let i = 0; i < 24; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 500));
+    if (spawnError) return { ok: false, code: 'NODE_RUNTIME_EXEC_FAILED', error: `桥接启动失败：${spawnError.message}`, hint: '检查所选 Node 运行时是否仍可执行，然后重试。' };
     if (await portOpen()) return { ok: true, started: true, message: '桥接已启动' };
   }
-  return { ok: false, error: '启动后 12 秒仍未监听控制台端口，请查看桥接日志', log: BRIDGE_SUPERVISOR_LOG };
+  return { ok: false, code: 'BRIDGE_START_TIMEOUT', error: '启动后 12 秒仍未监听控制台端口', hint: '查看桥接日志，修复启动错误后重试。', log: BRIDGE_SUPERVISOR_LOG };
 }
 
 export async function stop() {

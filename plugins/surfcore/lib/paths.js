@@ -9,9 +9,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findNodeExe } from '../../../src/node-path.js';
+import { findNodeExe, nodeRuntimeCommand, resolveNodeRuntime, NodeRuntimeError } from '../../../src/node-path.js';
 
-export { findNodeExe };
+export { findNodeExe, nodeRuntimeCommand, resolveNodeRuntime, NodeRuntimeError };
 
 export const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const HOME = process.env.USERPROFILE || os.homedir();
