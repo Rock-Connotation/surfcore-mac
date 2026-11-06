@@ -3863,9 +3863,9 @@ async function main() {
           log('桥接模式已确定为 reserved2，恢复有限睡眠定时器');
           // 2026-10-31：重启前积压的 unread 不会触发事件，必须显式补唤醒；白名单也要先纠正。
           reconcileAllowlist('dsh-ready');
-          void auditDshHealth('dsh-ready');
-          wakeBacklogConversations('boot');
         }
+        void auditDshHealth('dsh-ready', { profileOnly: currentMode !== 'reserved2' });
+        if (currentMode === 'reserved2') wakeBacklogConversations('boot');
         try { await flushQueue(); } catch (error) { log('补投队列异常:', error?.message ?? error); }
         // DSH 恢复后，把离线期间攒下的黑话学习窗口补触发
         for (const key of [...slangWindows.keys()]) maybeQueueSlangExtraction(key);
@@ -4005,11 +4005,30 @@ async function main() {
    *   ② 旧会话的 preset 与当前配置不一致 → 工具表在创建时定死，必须重建。
    * 只审计“有记录 preset 且与期望不同”的会话，避免误删老会话。
    */
-  async function auditDshHealth(reason = 'dsh-ready') {
+  async function auditDshHealth(reason = 'dsh-ready', { profileOnly = false } = {}) {
     try {
       const home = process.env.USERPROFILE || os.homedir();
-      const check = checkProfileMcp(home);
-      if (check.checked > 0 && !check.ok) {
+      const check = checkProfileMcp(home, {
+        dshHome: process.env.DSH_HOME || path.join(home, '.dsh'),
+        profile: String(process.env.DSH_PROFILE || '').trim() || undefined,
+        resolveProfile: true,
+      });
+      if (check.status === 'healthy') {
+        gateEvents.ackByDedupe('dsh-profile-mcp-missing');
+        gateEvents.ackByDedupe('dsh-profile-mcp-unknown');
+      } else if (check.status === 'unknown') {
+        gateEvents.record({
+          gate: 'dsh', kind: 'fault', event: 'dsh-profile-mcp-unknown', action: 'blocked',
+          level: 'L1',
+          reason: { code: check.code, message: check.error },
+          impact: '无法确认当前 DSH profile 的 MCP 注册状态。',
+          recommendation: check.hint,
+          confidence: 'unknown',
+          dedupeKey: 'dsh-profile-mcp-unknown',
+          evidence: { manualOnly: true },
+        });
+      } else if (check.status === 'broken') {
+        gateEvents.ackByDedupe('dsh-profile-mcp-unknown');
         const broken = check.broken[0];
         gateEvents.record({
           gate: 'dsh', kind: 'fault', event: 'dsh-profile-mcp-missing', action: 'blocked',
@@ -4026,6 +4045,7 @@ async function main() {
     } catch (error) {
       log(`[dsh-health] profile 检查失败（继续）：${error?.message ?? error}`);
     }
+    if (profileOnly) return;
     try {
       const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
       const byId = new Map((list.items ?? []).map((item) => [item.sessionId, item]));

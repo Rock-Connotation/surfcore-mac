@@ -3542,13 +3542,47 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   async function handleDshRepair(req, res) {
     if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'DSH_REPAIR_METHOD', error: '只支持 POST', hint: '从设置页点「修复 DSH 注册」' }); return; }
     let body = {};
-    try { body = JSON.parse((await readBody(req)) || '{}'); } catch { json(res, 400, { ok: false, code: 'DSH_REPAIR_BODY', error: '请求体不是合法 JSON' }); return; }
-    const profile = String(body.profile ?? '').trim();
-    if (profile && (profile === '.' || profile === '..' || /[\\/\x00-\x1f<>:"|?*]/.test(profile) || /[. ]$/.test(profile))) {
+    try { body = JSON.parse((await readBody(req)) || '{}'); } catch { json(res, 400, { ok: false, code: 'DSH_REPAIR_BODY', error: '请求体不是合法 JSON', hint: '重新打开设置页后重试。' }); return; }
+    const requested = String(body.profile ?? '').trim();
+    const active = String(process.env.DSH_PROFILE ?? '').trim();
+    let profile = requested || active;
+    const invalidProfile = (name) => name === '.' || name === '..' || name === 'node_modules' || /[\\/\x00-\x1f<>:"|?*]/.test(name) || /[. ]$/.test(name);
+    if ((requested && invalidProfile(requested)) || (active && invalidProfile(active))) {
       json(res, 400, { ok: false, code: 'DSH_REPAIR_PROFILE', error: 'profile 名非法', hint: '只填 profile 目录名（如 desktop），不要填路径' });
       return;
     }
-    const repoRoot = path.dirname(rootPkg);
+    if (requested && active && requested !== active) {
+      json(res, 409, { ok: false, code: 'DSH_REPAIR_PROFILE_MISMATCH', error: '指定 profile 与当前 DSH profile 不一致。', hint: '确认当前 App 的 profile 后重试。' });
+      return;
+    }
+    const profilesRoot = path.join(DSH_HOME, 'profiles');
+    if (!profile) {
+      let names = [];
+      try {
+        names = fs.readdirSync(profilesRoot).filter((name) => {
+          if (invalidProfile(name)) return false;
+          try {
+            if (path.dirname(fs.realpathSync(path.join(profilesRoot, name))) !== fs.realpathSync(profilesRoot)) return false;
+            const pkg = JSON.parse(fs.readFileSync(path.join(profilesRoot, name, 'package.json'), 'utf8'));
+            return Array.isArray(pkg?.dsh?.profile?.bundles) && pkg.dsh.profile.bundles.includes('surfcore');
+          } catch { return false; }
+        });
+      } catch {}
+      if (names.length !== 1) {
+        json(res, 409, { ok: false, code: 'DSH_REPAIR_PROFILE_AMBIGUOUS', error: '无法唯一确定已安装 SurfCore 的 profile。', hint: '确认当前 DSH profile 并显式指定后重试。' });
+        return;
+      }
+      [profile] = names;
+    }
+    try {
+      const root = fs.realpathSync(profilesRoot);
+      const dir = fs.realpathSync(path.join(profilesRoot, profile));
+      if (path.dirname(dir) !== root || !fs.statSync(dir).isDirectory()) throw new Error('invalid profile');
+    } catch {
+      json(res, 400, { ok: false, code: 'DSH_REPAIR_PROFILE', error: '目标 profile 不存在或不属于当前 DSH_HOME。', hint: '确认当前 profile 后重试。' });
+      return;
+    }
+    const repoRoot = QQBOT_ROOT;
     const script = path.join(repoRoot, 'scripts', 'setup-dsh.mjs');
     if (!fs.existsSync(script)) {
       json(res, 400, {
@@ -3560,25 +3594,27 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     let runtime;
     try { runtime = resolveNodeRuntime(); }
     catch (error) { json(res, 503, { ok: false, code: error.code || 'NODE_RUNTIME_NOT_FOUND', error: error.message, hint: error.hint || '修复 DSH Node 运行时后重试' }); return; }
-    const args = [...runtime.argvPrefix, script, ...(profile ? [profile] : [])];
-    const env = { ...process.env, ...runtime.envPatch, PYTHONIOENCODING: 'utf-8' };
+    const args = [...runtime.argvPrefix, script, profile];
+    const env = { ...process.env, ...runtime.envPatch, DSH_HOME, DSH_PROFILE: profile, PYTHONIOENCODING: 'utf-8' };
     const run = (cmd) => new Promise((resolve) => {
       execFile(cmd, args, { cwd: repoRoot, timeout: 180_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env }, (error, stdout, stderr) => resolve({ error, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') }));
     });
     const result = await run(runtime.executable);
     const output = `${result.stdout}\n${result.stderr}`.trim();
     if (result.error) {
+      const repairCode = /\bDSH_REPAIR_[A-Z_]+\b/.exec(result.stderr)?.[0];
+      const repairHint = /下一步：([^\r\n]+)/.exec(result.stderr)?.[1]?.trim();
       json(res, 500, {
-        ok: false, code: 'DSH_REPAIR_FAILED',
+        ok: false, code: repairCode || 'DSH_REPAIR_FAILED',
         error: String(result.stderr || result.error.message || result.error).slice(0, 1200),
-        hint: '在宿主机终端手动运行 node scripts\\setup-dsh.mjs <profile> 查看完整输出；按提示完全重启 DSH',
+        hint: repairHint || '在宿主机终端运行 node scripts/setup-dsh.mjs <profile> 查看完整输出；按提示完全重启 DSH',
         output: output.slice(-4000),
       });
       return;
     }
     json(res, 200, {
       ok: true,
-      profile: profile || '(auto)',
+      profile,
       requiresRestart: true,
       hint: '已写回 profile。请**完全退出并重开 DSH**（不是刷新页面），然后到控制台重置旧的 QQ 会话。',
       output: output.slice(-4000),

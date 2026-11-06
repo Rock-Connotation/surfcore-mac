@@ -4090,3 +4090,11 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 - 真实审批须在真实agent turn内经官方approval.request，不用slash命令伪造turn。无害诊断临时设ask后恢复的是原有效策略值，会追加真实会话事件；不是回滚会话日志，也不代表恢复继承语义。诊断问答用multiSelect并通过真实buildQuestionAnswers核验，不能假设单选返回selected。
 
 - 自包含包的 dsh.bundle.patch 已相对包根定位到 plugins/surfcore/cordis.patch.yml；patch 内的 ./qq-mode/index.js 仍须相对 patch 目录。构建器再次添加 plugins/surfcore 会让官方Loader双重拼接，表现为4组件仅3运行。只移除文本改写，保留metadata前缀；用官方App实际锚定函数与旧前缀变异复现，并重建包实测4/4。
+
+
+## 2026-11-07 原生 L2 修复按钮 rootPkg 未定义
+
+- rootPkg 是版本读取函数内的局部变量，不能由注册按钮处理器引用。修复入口从统一 QQBOT_ROOT 取当前安装程序并固定当前 DSH_HOME/profile；歧义/不匹配返回 code/error/hint，不猜另一套 App。
+- 包安装的 MCP 修复只能更新当前 profile 的三个托管注册；不能沿源码安装流程重写 surfcore 依赖、重链目录、重生成包内 preset 或创建包内 state。身份缺失/安装不匹配/托管项歧义/备份失败/读取后变化均先停止。其它配置原文与全部旧备份保留。
+- 健康检测不能硬读 HOME/.dsh 或拿兄弟 profile 的健康遮住当前缺失。显式 DSH_HOME+DSH_PROFILE；未知不当正常。chat 只检 profile，不因此读或退役会话；当前目标健康并在 DSH-ready 边沿复核后才确认旧 L2。
+- 修复失败后显示 code/hint，按钮允许人工修正后重试；只在成功写回后禁用，避免重复。用实际弹窗组件先红后绿，不能把所有非空消息都当作成功禁用。

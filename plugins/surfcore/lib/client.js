@@ -1795,15 +1795,17 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       const canRepairDsh = event.gate === "dsh" && event.event === "dsh-profile-mcp-missing";
       const [repairing, setRepairing] = useState(false);
       const [repairMsg, setRepairMsg] = useState("");
+      const [repairSucceeded, setRepairSucceeded] = useState(false);
       const repairDsh = async () => {
         setRepairing(true);
         setRepairMsg("");
         try {
           const r = await api("/dsh/repair", { method: "POST", body: {} });
-          if (!r.ok) throw new Error(r.error || "修复失败");
+          if (!r.ok) throw Object.assign(new Error(r.error || "修复失败"), { code: r.code, hint: r.hint });
+          setRepairSucceeded(true);
           setRepairMsg(r.hint || "已写回；请完全退出并重开 DSH。");
         } catch (e) {
-          setRepairMsg(`✗ ${e.message}${e.hint ? `；${e.hint}` : ""}`);
+          setRepairMsg(`✗ ${e.code ? `（${e.code}）` : ""}${e.message}${e.hint ? `；${e.hint}` : ""}`);
         } finally { setRepairing(false); }
       };
       return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) onClose?.(); } },
@@ -1820,7 +1822,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("div", { className: "qbw-hint", style: { marginTop: "4px" } }, "这条记录会保留；确认后不再自动弹同一事件。"),
           repairMsg ? h("div", { className: "qbw-hint", style: { marginTop: "6px", color: "var(--qbw-warn-text)" } }, repairMsg) : null,
           h("div", { className: "qbw-actions", style: { marginTop: "12px" } },
-            canRepairDsh ? h(Btn, { onClick: repairDsh, disabled: repairing || !!repairMsg }, repairing ? "修复中…" : "修复 DSH 注册（MCP / bundle）") : null,
+            canRepairDsh ? h(Btn, { onClick: repairDsh, disabled: repairing || repairSucceeded }, repairing ? "修复中…" : "修复 DSH 注册（MCP / bundle）") : null,
             h(Btn, { onClick: () => onAck?.(event.id) }, urgent ? "确认并关闭" : "确认"),
             h(Btn, { kind: "qbw-btn2", onClick: onClose }, "稍后"))));
     }
