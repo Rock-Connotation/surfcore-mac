@@ -4,6 +4,9 @@
 // 只会让每条 QQ 消息都 401/超时——表现为「QQ 有消息、DSH 毫无反应」，是最难自查的一类。
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, looksLikeDsh, probeDshBaseUrl } from '../src/dsh-port.js';
 
 /** 起一个可控的小服务器，返回 { port, close }。 */
@@ -68,6 +71,12 @@ assert.equal(isLoopbackBaseUrl(''), false);
 {
   const seen = [];
   const reads = [];
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh 端口 '));
+  const legacyRoot = path.join(fixture, '临时 空间', '项目');
+  const dshHome = path.join(fixture, '临时 空间', 'dsh');
+  fs.mkdirSync(path.join(legacyRoot, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(legacyRoot, 'src', 'bridge.js'), '');
+  fs.writeFileSync(path.join(legacyRoot, 'config.json'), '{}');
   const command = (file, args) => {
     if (file === '/usr/sbin/lsof') return 'p11\nn127.0.0.1:1111\np22\nn127.0.0.1:2222\nn127.0.0.1:3333\np33\nn127.0.0.1:4444\np44\nn*:5555\n';
     const names = {
@@ -78,12 +87,12 @@ assert.equal(isLoopbackBaseUrl(''), false);
     return names[args[1]] || '';
   };
   const readFile = (file) => { reads.push(file); return JSON.stringify({ baseUrl: 'http://127.0.0.1:3333' }); };
-  const result = await discoverDshBaseUrl({ platform: 'darwin', env: { SURFCORE_ROOT: '/临时 空间/项目', DSH_HOME: '/临时 空间/dsh' }, command, readFile,
+  const result = await discoverDshBaseUrl({ platform: 'darwin', env: { SURFCORE_ROOT: legacyRoot, DSH_HOME: dshHome }, command, readFile,
     probe: async (url) => { seen.push(url); return url.endsWith(":3333"); } });
   assert.equal(result, 'http://127.0.0.1:3333');
   assert.deepEqual(seen, ['http://127.0.0.1:3333', 'http://127.0.0.1:2222'], 'cache only orders ownership-verified candidates');
-  assert.ok(reads.includes('/临时 空间/项目/state/dsh-port.json'));
-  assert.ok(reads.includes('/临时 空间/dsh/surfcore/state/dsh-port.json'));
+  assert.ok(reads.includes(path.join(legacyRoot, 'state', 'dsh-port.json')));
+  assert.ok(reads.includes(path.join(dshHome, 'surfcore', 'state', 'dsh-port.json')));
   seen.length = 0;
   const second = await discoverDshBaseUrl({ platform: 'darwin', env: {}, command,
     readFile: () => JSON.stringify({ baseUrl: 'https://remote.example:4444' }),

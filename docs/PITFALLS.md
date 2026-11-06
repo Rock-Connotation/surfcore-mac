@@ -4027,3 +4027,10 @@ npm run test:audit
 - 本地自包含评审包内置已安装npm运行依赖（包含现有@snowluma SDK/MCP包，不含SnowLuma本体或原生组件）。这些SDK声明许可文件但上游包缺失，现有LICENSE已有记录；任何对外分发前须解决该边界，不能沿用源码归档“不含依赖字节”的判断。本次未发布或推送。
 
 - 旧Host冒烟脚本不是只读：ESM静态import先加载真实路径，apply/对齐夹具会建默认状态。现强制临时home+源码根后动态import，最终全套另设隔离环境；默认home既有诊断产物保留，详见组合case。
+
+## 2026-11-06 官方App真实包安装：生命周期和用户数据
+
+- 官方App自带 CLI 的 desktop-host carrier 与普通 dsh CLI 不同：前者明确允许 desktop 插件管理。实际隔离运行已进入 pnpm11，不能仅凭另一入口的 managed exclusively 报错推断全部官方入口禁止。
+- 自包含 tgz 即使内嵌依赖，根 postinstall 仍会被 pnpm11 的构建审批拒绝。不要放宽宿主策略；构建阶段 npm ci --ignore-scripts 后显式执行 SDK 兼容补丁，消费制品移除生命周期及旧 hasInstallScript 字段。最终制品还须用官方pnpm、全新store、--offline实际安装。
+- QQ关闭时普通设置保存仍会写QQ配置。验证为package的程序不能把配置/state写回pnpm包目录；共享resolver映射到DSH_HOME/surfcore/qq，程序、模板和更新身份固定新包。显式旧数据根只改变数据来源，不可启动旧程序。旧包含数据时结构化失败并给保全提示，未经授权不迁移。
+- 账单、语音包、搜索、MCP与端口缓存也是读取者；只改插件paths会造成设置保存A、运行读取B。详见同日package-lifecycle、package-data-paths、package-data-consumers cases。

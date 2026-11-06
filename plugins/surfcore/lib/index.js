@@ -957,7 +957,7 @@ export function apply(ctx) {
     // 角色名校验：tts.character 必须是 [voice.characters] 里的名字，不能填音色 id。
     const incomingCharacter = body?.unified?.socialV2?.voice?.tts?.character;
     if (typeof incomingCharacter === 'string' && incomingCharacter.trim()) {
-      const packsDir = path.resolve(String(currentQq?.voicePacks?.dir || path.join(QQBOT_ROOT, 'state', 'voice-packs')));
+      const packsDir = path.resolve(String(currentQq?.voicePacks?.dir || path.join(QQ_STATE_DIR(), 'voice-packs')));
       const { characters } = readPackCharacters(packsDir);
       const verdict = validateCharacter(incomingCharacter, characters);
       if (!verdict.ok) {
@@ -1784,7 +1784,7 @@ ${body}`;
       const add = (name, ok, detail = '') => checks.push({ name, ok: Boolean(ok), detail });
       add('插件目录', fs.existsSync(PLUGIN_ROOT), PLUGIN_ROOT);
       add('surfcore 根目录', fs.existsSync(QQ_CONFIG), maskPath(QQ_CONFIG));
-      add('QQ 桥接源码', fs.existsSync(path.join(path.dirname(QQ_CONFIG), 'src', 'bridge.js')), 'src/bridge.js');
+      add('QQ 桥接源码', fs.existsSync(path.join(QQBOT_ROOT, 'src', 'bridge.js')), 'src/bridge.js');
       add('B站工具链', fs.existsSync(BILI_MJS), maskPath(BILI_MJS));
       add('B站配置', fs.existsSync(BILI_CONFIG), maskPath(BILI_CONFIG));
       add('B站 cookie', fs.existsSync(BILI_CRED), fs.existsSync(BILI_CRED) ? '已写入（不回显内容）' : '未写入');
@@ -3399,7 +3399,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       // 只支持「打开所在文件夹」；路径固定，不接受任何用户输入。
       if (body.action !== 'open') { json(res, 400, { ok: false, error: '未知 action' }); return; }
       if (process.platform !== 'win32') { json(res, 200, { ok: false, error: '只有 Windows 支持打开文件夹' }); return; }
-      const dir = path.join(QQBOT_ROOT, 'state');
+      const dir = QQ_STATE_DIR();
       try {
         spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
         json(res, 200, { ok: true, path: dir });

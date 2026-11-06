@@ -7,6 +7,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
   'test-update-archive.mjs',
   'test-self-test-target.mjs',
+  'test-package-data-paths.mjs', 'test-package-data-consumers.mjs',
   'test-install-identity.mjs', 'test-runtime-media.mjs', 'test-macos-shared-core.mjs',
   '../plugins/surfcore/scripts/test-perception-api.mjs',
   '../plugins/surfcore/scripts/test-channel-contract.mjs',

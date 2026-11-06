@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findNodeExe, nodeRuntimeCommand, resolveNodeRuntime, NodeRuntimeError } from '../../../src/node-path.js';
+import { resolveQqDataPaths } from '../../../src/qq-data-paths.js';
 
 export { findNodeExe, nodeRuntimeCommand, resolveNodeRuntime, NodeRuntimeError };
 
@@ -47,11 +48,17 @@ function looksLikeQqbotRoot(dir) {
   }
 }
 
-export const QQBOT_ROOT = ROOT_CANDIDATES.find(looksLikeQqbotRoot) || path.resolve(PLUGIN_ROOT, '..', '..');
-export const QQ_CONFIG = path.join(QQBOT_ROOT, 'config.json');
+const PACKAGE_OR_SOURCE_ROOT = path.resolve(PLUGIN_ROOT, '..', '..');
+const INITIAL_QQ_DATA_PATHS = resolveQqDataPaths({ programRoot: PACKAGE_OR_SOURCE_ROOT, dshHome: DSH_HOME });
+// An unrelated working directory must never win over an identified package.
+export const QQBOT_ROOT = INITIAL_QQ_DATA_PATHS.installationKind === 'package'
+  ? PACKAGE_OR_SOURCE_ROOT
+  : ROOT_CANDIDATES.find(looksLikeQqbotRoot) || PACKAGE_OR_SOURCE_ROOT;
+export const QQ_DATA_PATHS = resolveQqDataPaths({ programRoot: QQBOT_ROOT, dshHome: DSH_HOME });
+export const QQ_CONFIG = QQ_DATA_PATHS.config;
 export const QQ_CONFIG_EXAMPLE = path.join(QQBOT_ROOT, 'config.example.json');
-export const QQ_STATE_DIR = path.join(QQBOT_ROOT, 'state');
-export const QQ_PERSONA_DIR = path.join(QQBOT_ROOT, 'roles');
+export const QQ_STATE_DIR = QQ_DATA_PATHS.stateDir;
+export const QQ_PERSONA_DIR = QQ_DATA_PATHS.personaDir;
 // 新用户没配置 persona.file 时的兜底路径；已有 roles/*.md 时由 resolvePersonaFile() 自动发现。
 export const DEFAULT_PERSONA_FILE = path.join(QQ_PERSONA_DIR, '角色卡.md');
 export const QQ_ALIGNMENT_BRIEF = path.join(QQ_STATE_DIR, 'alignment-brief.md');

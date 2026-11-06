@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveQqDataPaths } from './qq-data-paths.js';
 
 /** 列出「某个进程在 127.0.0.1 上监听的端口」。 */
 export function listeningLoopbackPorts() {
@@ -82,6 +83,7 @@ export async function discoverDshBaseUrl({
   readFile = fs.readFileSync,
   command = (file, args) => execFileSync(file, args, { encoding: 'utf8', timeout: 2000, maxBuffer: 1024 * 1024 }),
   probe = probeDshBaseUrl,
+  programRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
 } = {}) {
   if (platform === 'win32') {
     const names = processNames();
@@ -95,9 +97,9 @@ export async function discoverDshBaseUrl({
     return null;
   }
   if (platform !== 'darwin') return null;
-  const root = env.SURFCORE_ROOT || env.SURFCORE_QQBOT_ROOT || env.QQBILI_QQBOT_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const dshHome = env.DSH_HOME || path.join(os.homedir(), '.dsh');
-  const cached = [path.join(root, 'state', 'dsh-port.json'), path.join(dshHome, 'surfcore', 'state', 'dsh-port.json')]
+  const qqPaths = resolveQqDataPaths({ programRoot, env, dshHome });
+  const cached = [path.join(qqPaths.stateDir, 'dsh-port.json'), path.join(dshHome, 'surfcore', 'state', 'dsh-port.json')]
     .map((file) => cachedLoopback(file, readFile)).filter(Boolean);
   let output;
   try { output = command('/usr/sbin/lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn']); } catch { return null; }

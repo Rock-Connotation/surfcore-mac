@@ -6,17 +6,19 @@
 ---
 
 
-## 快照：2026-11-06（macOS 首期组合，官方 App 待授权验收）
+## 快照：2026-11-06（macOS 首期组合，官方 App 隔离验收进行中）
 
 - 目标是 `/Applications/DeepSeek Harness.app` 官方桌面 App **0.2.2-rc.1**，不是网页版或 DSH Desktop.app。实际 Electron44.7.0 / 随附 Node24.21.0；macOS26.6.2、Apple M4、原生arm64。
 - 主树 `../surfcore-macos-implementation` / `feat/macos-implementation`，交接基线 `0c51bf2`，本克隆无 dev；原树不切换、不清理。设计 macos/ 继续本地忽略，模型与日志不入库。
 - WP0 已提交 `2f932e8` / 清单 `52ced0f`。WP1共享核心 `84d9777`；WP2运行层 `29eac74`；WP3共享ASR `90c98e6`；WP4 B站 `26d388d`；WP5更新身份 `060e6a4`；计时夹具 `cb0da38`；资源准入 `bd7d174`；记忆持久提交 `08f2e30`；自测目标 `a91bb0c`；Windows目录兼容 `9871424`。最终Host/API/UI/制品候选见下方本地证据。
 - 已实现：Host单写记忆、受限经历与下一上下文；统一运行时；共享本地ASR与完整范围/分块/缓存/取消/恢复；B站完整媒体父作业和分P历史；渠道运行契约、安装身份与DSH包更新所有者；Host设置页失败报告、作业详情与经历重试。
 - 本机真实识别：官方Node + 便携FFmpeg/FFprobe/whisper + small，纯系统PATH、无DYLD、中文空格新根，CPU/Metal两轮均覆盖0–6463ms，无缺口但有错字。两个AISHELL短样本small优于base，仅作本机候选选择，不是完整质量门槛。
-- 已有组合 audit157/157、插件全套和regressions通过；收尾资源准入及最终制品仍须重跑适用检查。所有 numbered 验收、原始日志与失败记录统一在 [组合 case](cases/2026-11-06-macos-host-integration.md)，子树早期结果不能替代最终候选。
+- 最新组合使用官方Node24.21.0和新隔离根，audit161/161、regressions及完整插件测试全部通过。结果在 `_backups/20261106-macos-wp0/native-fixes/checks-20261106T140408Z/results.json`，记录了逐文件程序摘要，提交后核对同源；真实制品/宿主验收另记。所有编号验收与失败边界见[组合 case](cases/2026-11-06-macos-host-integration.md)。
 - 最终候选SHA、各检查实际exit、制品与原生资产摘要统一写入本地 `_backups/20261106-macos-wp0/final-results.json`；跨机交接需单独携带该证据和忽略的资产，不能用先前组合结果替代。
-- 官方App只做CUA只读确认，**未安装、未重启**。独立DSH_HOME和user-data-dir仍共享macOS崩溃日志，App启动会清理旧报告；无官方关闭开关。需在最终包与恢复方案可审阅后取得“保全共享日志并启动隔离App”的具体授权。真实B站扫码需人工，尚无凭据；未外发或调用付费模型。
-- 下一步：完成候选/清单/自包含包 → 解包后官方Node独立装载 → 用户授权后官方App隔离desktop验收/扫码/只读无字幕视频闭环。真实常用profile安装与重启是另一个授权对象。
+- 用户已明确授权共享日志备份、官方App独立实例启动及向新测试profile安装本地包；10份共享日志已保全。原常用App未重启，其profile未修改。实际官方CLI首次离线安装被pnpm11的postinstall审批拒绝，依赖已加入而bundle未激活；失败证据保留在验收候选目录。
+- 已修包生命周期和持久数据路径：SDK补丁在构建时物化，制品不执行安装脚本；验证package时QQ配置/状态使用DSH_HOME/surfcore/qq，程序根仍指新包；旧包数据冲突失败关闭，未自动迁移。对应三个新增case见案例索引。源码路径、显式旧数据根和角色人格主链保留。
+- 当前CUA只能选到原同名窗口，未向其写入；精确控制独立Electron窗口的技术许可已另行询问，等待答复。真实B站扫码尚未执行，无凭据；未外发或调用付费模型。
+- 下一步：组合回归与新候选提交/清单/包 → 官方CLI重试新测试profile → 原生窗口成功/失败/恢复验收 → 经授权扫码及只读视频。真实常用profile安装与重启仍是另一个授权对象。
 - 未改version、tag、push或发布。Intel/Windows/其他macOS、Finder、App生命周期、真实B站和全面中文质量未验；**尚不满足首期全部完成或发布条件**。
 
 ---

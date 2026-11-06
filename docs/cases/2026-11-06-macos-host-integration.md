@@ -113,3 +113,19 @@
 ## 可审阅的本机候选目录
 
 已预备 `_backups/20261106-macos-wp0/官方App 验收候选/acceptance-plan.json`：新DSH_HOME、独立Electron userData、便携whisper七组件、便携媒体两程序、small模型及中文样本均已复制并核对摘要；没有启动App。模型、原生资产和真实路径继续忽略，不进源码提交。默认关闭QQ/B站启动、更新、扩展和B站外发/通知；扫码与真实只读视频安排在明确的后续授权内。最终npm包及哈希在final-results.json记录。
+
+## 真实官方App安装阶段补充
+
+用户在候选3a480c3/包SHA c930ca23…准备完成后明确回复“我授权，请继续”，授权保全共享日志并在独立App/profile安装验收。原10份日志已复制保留，当前工作App PID29069没有重启或修改profile。先前“未启动”的结论仅属于该授权前快照。
+
+新App隔离DSH_HOME/user-data-dir已实际初始化desktop profile。App自带CLI载体的desktop管理权限经源码核对并实际运行；首次 --offline add 下载0、加入surfcore后以ERR_PNPM_IGNORED_BUILDS拒绝根postinstall，bundle尚未启用。原始失败日志、启动PID与备份记录在本地“官方App 验收候选”目录，不把部分安装描述为成功。
+
+修复路线与七步逻辑见新增的package-lifecycle、package-data-paths及package-data-consumers三个case。主线同时把设置页语音名校验、源码诊断与账本目录打开指向对应数据/程序路径。普通源码安装不搬迁；已验证包安装将可写QQ数据保存在DSH_HOME/surfcore/qq；活跃角色人格仍以characters为真相，旧包有数据时先保留并报可行动错误，不自动迁移。
+
+CUA目前只能返回原同名App的窗口，未对其点击或配置写入；独立Electron调试控制方式已单独向用户询问。该工具限制不影响代码修补、组合测试和官方CLI本地安装。尚不能把启动了新App进程记为原生界面验收通过。
+
+重启与回滚：新包只需重启本次记录PID的隔离App；不重启常用实例。旧候选包、旧profile安装过程、共享日志备份和新增数据全部保留。若候选失败，停本次实例并使用保留的隔离副本恢复；不覆盖当前用户日志，不迁移真实用户数据。
+
+组合检查首轮141/161：18个桥接夹具因VM剥离import后未注入新解析器失败，已在共享harness注入生产解析器和相同隔离env；端口夹具建立真实有效旧根，保留所有归属/多活断言。另一个生命周期helper用env node且只等1秒，就绪断言失败；受限PATH可复现同断言及env node缺失，但原审计未记录子进程stderr，不能断言原失败仅由PATH造成。修正版用当前Node绝对路径、注册信号handler后发ready、有界等就绪且提前退出可见，始终校验取消/超时真的退出。原始失败日志保留，新组合结果另记。
+
+修正版组合：官方Node24.21.0、新隔离DSH_HOME、便携媒体PATH下，audit161/161、regressions和完整插件测试全部exit0；原始结果 `_backups/20261106-macos-wp0/native-fixes/checks-20261106T140408Z/results.json` 含程序文件摘要，提交后校验同源。Astra独立审查关闭显式旧数据根/程序根错位P2，没有新实质发现；未将离线结果升级为原生界面通过。

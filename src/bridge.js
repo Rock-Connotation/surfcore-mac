@@ -1,3 +1,4 @@
+import { resolveQqDataPaths } from './qq-data-paths.js';
 // QQ ↔ DeepSeek Harness 桥接主程序。
 //
 // 链路：
@@ -131,7 +132,9 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const STATE_DIR = path.join(ROOT, 'state');
+const QQ_DATA_PATHS = resolveQqDataPaths({ programRoot: ROOT });
+const CONFIG_FILE = QQ_DATA_PATHS.config;
+const STATE_DIR = QQ_DATA_PATHS.stateDir;
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const GROUP_POLICY_FILE = path.join(STATE_DIR, 'group-policy.json');
@@ -376,7 +379,7 @@ function readActivityTail(n) {
 
 function listRoles() {
   try {
-    return fs.readdirSync(path.join(ROOT, 'roles'))
+    return fs.readdirSync(QQ_DATA_PATHS.personaDir)
       .filter((f) => f.endsWith('.md') && f !== 'README.md')
       .map((f) => f.slice(0, -3))
       .sort((a, b) => a.localeCompare(b, 'zh-CN'));
@@ -387,7 +390,7 @@ function listRoles() {
 
 // ── 人格文件读写 ────────────────────────────────────────────────────────────
 // 人格提示词 = roles/<名称>.md，由桥接在每条消息前注入（热生效，无需重启 DSH）。
-const ROLES_DIR = path.join(ROOT, 'roles');
+const ROLES_DIR = QQ_DATA_PATHS.personaDir;
 const ROLE_NAME_MAX = 40;
 const ROLE_CONTENT_MAX_BYTES = 64 * 1024;
 // 注入上限：**按模式筛完小节之后**再截断，避免另一模式的专属内容白白占掉预算。
@@ -863,7 +866,7 @@ function normalizeIdList(value) {
 
 // ── 配置 ────────────────────────────────────────────────────────────────────
 function loadConfig() {
-  const p = path.join(ROOT, 'config.json');
+  const p = CONFIG_FILE;
   const file = readJsonSafe(p, null, true);
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error(`配置格式错误：${p}`);
   const cfg = {
@@ -1438,7 +1441,7 @@ const LOCK_FILE = path.join(STATE_DIR, 'bridge.lock');
  */
 function consolePortInUse() {
   try {
-    const cfg = readJsonSafe(path.join(ROOT, 'config.json'), {});
+    const cfg = readJsonSafe(CONFIG_FILE, {});
     const port = Number(cfg?.consolePort) || 3100;
     if (process.platform === 'win32') {
       const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
@@ -1854,7 +1857,7 @@ async function main() {
   // SurfCore 插件的 pet-purpose —— 两边共用同一套 purpose 逻辑与状态文件，
   // 但任何时刻只有一个执行者，避免桌宠和 QQ 同时收到一条。
   // 这里每次 tick 重读 config.json（30 秒缓存），切换载体不需要重启桥接。
-  const PURPOSE_CONFIG_FILE = path.join(ROOT, 'config.json');
+  const PURPOSE_CONFIG_FILE = CONFIG_FILE;
   let purposeCarrierCache = { at: 0, carrier: 'qq' };
   function purposeCarrierNow() {
     if (Date.now() - purposeCarrierCache.at < 30_000) return purposeCarrierCache.carrier;
@@ -3203,9 +3206,9 @@ async function main() {
         log(`DSH 端口探测：${cfg.dsh.baseUrl || '（未配置）'} 连不上，实际在运行的是 ${found}，本次改用它（并写回 config.json）`);
         cfg.dsh.baseUrl = found;
         try {
-          const raw = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+          const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
           raw.dsh = { ...(raw.dsh ?? {}), baseUrl: found };
-          fs.writeFileSync(path.join(ROOT, 'config.json'), `${JSON.stringify(raw, null, 2)}\n`);
+          fs.writeFileSync(CONFIG_FILE, `${JSON.stringify(raw, null, 2)}\n`);
         } catch (error) {
           log(`写回 dsh.baseUrl 失败（不影响本次运行）：${error?.message ?? error}`);
         }
@@ -4062,7 +4065,7 @@ async function main() {
       });
       if (!changed) return false;
       cfg.allow = { ...(cfg.allow ?? {}), private: allow.private, groups: allow.groups };
-      const configFile = path.join(ROOT, 'config.json');
+      const configFile = CONFIG_FILE;
       const file = readConfigObject(configFile);
       file.allow = { ...(file.allow ?? {}), private: allow.private, groups: allow.groups };
       // 改配置前先留一份原始文件（AGENTS 铁律 6）；只保留最近 5 份。
@@ -4425,12 +4428,12 @@ async function main() {
     function getVoicePacksCached() {
       let key = 'default';
       try {
-        const st = fs.statSync(path.join(ROOT, 'config.json'));
+        const st = fs.statSync(CONFIG_FILE);
         key = `${st.mtimeMs}:${st.size}`;
       } catch {}
       if (!vpCache.vp || vpCache.key !== key) {
         let freshCfg = cfg;
-        try { freshCfg = readConfigObject(path.join(ROOT, 'config.json')); } catch {}
+        try { freshCfg = readConfigObject(CONFIG_FILE); } catch {}
         vpCache = { key, vp: createVoicePacks(freshCfg) };
       }
       return vpCache.vp;
@@ -4888,7 +4891,7 @@ async function main() {
           const rs = readRoleState();
           if (body.role && typeof body.role === 'string') {
             const name = sanitizeRoleName(body.role);
-            if (!fs.existsSync(path.join(ROOT, 'roles', name + '.md'))) {
+            if (!fs.existsSync(path.join(QQ_DATA_PATHS.personaDir, name + '.md'))) {
               sendJson({ ok: false, error: `角色「${name}」不存在（roles/${name}.md）` }, 400);
               return;
             }
@@ -4947,7 +4950,7 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/roles/limit') {
           const body = await readBody();
           const next = applyRoleInjectLimit(body.maxInjectChars);
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           file.role = { ...(file.role ?? {}), maxInjectChars: next };
           atomicWriteJson(configFile, file);
@@ -5352,7 +5355,7 @@ async function main() {
           const body = await readBody();
           const oldPreset = cfg.slang?.learnerPreset;
           const oldWorkspaceTitle = cfg.slang?.workspaceTitle;
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           const merged = { ...(file.slang ?? {}), ...body };
           if (typeof merged.enabled === 'boolean') merged.enabled = merged.enabled;
@@ -5416,7 +5419,7 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/whitelist') {
           const body = await readBody();
           const toNum = (arr) => Array.isArray(arr) ? [...new Set(arr.map((x) => Number(String(x).trim())).filter((n) => Number.isFinite(n)))] : undefined;
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           // fail-fast：配置文件损坏时直接 500，绝不回写，避免把整个配置清成只剩 allow/deny/ownerQQ
           const file = readConfigObject(configFile);
           const allow = {
@@ -5605,7 +5608,7 @@ async function main() {
             }, 400);
             return;
           }
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           file.dsh = { ...(file.dsh ?? {}), provider, model, reasoningEffort: effort };
           atomicWriteJson(configFile, file);
@@ -5641,7 +5644,7 @@ async function main() {
           let effort;
           try { effort = normalizeReasoningEffort(body.reasoningEffort); }
           catch (error) { sendJson({ ok: false, error: error?.message ?? '思考强度无效' }, 400); return; }
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           // fail-fast：配置损坏时直接 500，绝不回写（与白名单接口同语义）
           const file = readConfigObject(configFile);
           file.dsh = { ...(file.dsh ?? {}), reasoningEffort: effort };
@@ -5663,7 +5666,7 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/dsh/follow-default') {
           const body = await readBody();
           const follow = body?.follow !== false;
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           try {
             // fail-fast：配置损坏时直接报错，绝不覆盖写（与白名单/强度接口同语义）。
             const file = readConfigObject(configFile);
@@ -5714,7 +5717,7 @@ async function main() {
             sendJson({ ok: stateDirHardened === true, hardened: stateDirHardened, path: STATE_DIR });
             return;
           }
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           const next = { ...(file.security ?? {}), ...body };
           if (typeof next.interceptNotify === 'boolean') next.interceptNotify = next.interceptNotify;
@@ -5746,7 +5749,7 @@ async function main() {
             sendJson({ ok: false, error: '控制台访问令牌只能包含字母、数字、下划线或短横线' }, 400);
             return;
           }
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           // 手动令牌写入 config.json（用户可见、可再改）；随机令牌写入 state/console-token 并清空 config 中的手动值。
           file.consoleToken = generated ? '' : newToken;
@@ -5765,7 +5768,7 @@ async function main() {
           try {
             // readBody() 已经返回解析好的对象（空体是 {}），不要再 JSON.parse。
             const body = await readBody();
-            const file = readConfigObject(path.join(ROOT, 'config.json'));
+            const file = readConfigObject(CONFIG_FILE);
             const m = file.greetings?.morning;
             const uin = m ? normalizeIdList([m.uin])[0] : null;
             cfg.greetings = {
@@ -5892,7 +5895,7 @@ async function main() {
         }
         if (req.method === 'POST' && url.pathname === '/api/social') {
           const body = await readBody();
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           // fail-fast：配置文件损坏时直接 500，绝不回写，避免把整个配置清成只剩 social
           const file = readConfigObject(configFile);
           const merged = { ...(file.social ?? {}), ...body };
@@ -6019,7 +6022,7 @@ async function main() {
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/config') {
           const body = await readBody();
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           // current 必须是「当前**生效**的 socialV2」，而不是文件里恰好写着的那一份。
           //
@@ -7420,7 +7423,7 @@ async function main() {
         }
 
         if (url.pathname === '/api/voice/rules') {
-          const cfgFile = path.join(ROOT, 'config.json');
+          const cfgFile = CONFIG_FILE;
           try {
             if (req.method === 'GET') {
               const c = readConfigObject(cfgFile);
@@ -15783,9 +15786,9 @@ async function main() {
           });
           await sendToQQ(key, '已清除角色，恢复正常人格。');
         } else {
-          const roleFile = path.join(ROOT, 'roles', name + '.md');
+          const roleFile = path.join(QQ_DATA_PATHS.personaDir, name + '.md');
           if (!fs.existsSync(roleFile)) {
-            await sendToQQ(key, `角色「${name}」不存在。角色文件放 qq-bridge/roles/ 目录。`);
+            await sendToQQ(key, `角色「${name}」不存在。角色文件放当前 QQ 人格目录。`);
           } else {
             writeRoleState(name, roleState.mode);
             auditOwner('role.switch', {
@@ -17114,7 +17117,7 @@ async function main() {
     const previousWsUrl = cfg.snowluma.wsUrl;
     cfg.snowluma.wsUrl = wsUrl;
     try {
-      const w = persistSnowLumaEndpoint(path.join(ROOT, 'config.json'), {
+      const w = persistSnowLumaEndpoint(CONFIG_FILE, {
         accessToken: httpToken,
         ...(followEndpoint ? { wsUrl, httpUrl: r.baseUrl } : {})
       });
@@ -17135,7 +17138,7 @@ async function main() {
   /** 只写文件、不动物件（连接已成功时用）。 */
   async function syncTokenToFile() {
     try {
-      const r = persistToken(path.join(ROOT, 'config.json'), cfg.snowluma.accessToken ?? '');
+      const r = persistToken(CONFIG_FILE, cfg.snowluma.accessToken ?? '');
       // 只记「已写回」，不打印 token 片段：日志会被贴进 issue / 截图，
       // 前 4 个字符同样是凭据的一部分（CWE-532，见 PR #13）。
       if (r.updated) log('🔄 已把当前 token 写回 config.json');
