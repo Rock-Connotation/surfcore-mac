@@ -23,7 +23,7 @@ class FakeContext extends EventEmitter {
   page = new FakePage(); extraPage = new FakePage(); blockClose = false;
   pages() { return [this.page, this.extraPage]; }
   async route(pattern, fn) { this.routePattern = pattern; this.routeHandler = fn; }
-  async close() { if (this.blockClose) return new Promise(() => {}); this.emit('close'); }
+  async close() { this.closeCalls = (this.closeCalls || 0) + 1; if (this.blockClose) return new Promise((resolve, reject) => { this.finishClose = resolve; this.rejectClose = reject; }); this.emit('close'); }
 }
 const contexts = [], launches = [], bodies = [], metadata = [];
 const launch = async (dir, options) => { launches.push({dir, options}); const ctx = new FakeContext(); contexts.push(ctx); return ctx; };
@@ -59,8 +59,22 @@ const late = emit(endpoint,{delayed:true}); await new Promise(r=>setImmediate(r)
 fs.writeFileSync(path.join(profile,'login-data'),'keep'); ctx.blockClose = true;
 const timed = await browser.close(); assert.equal(timed.code,'BROWSER_CLOSE_TIMEOUT'); assert(timed.hint); assert(fs.existsSync(path.join(profile,'.surfcore-douyin.lock'))); assert.equal((await duplicate.start()).code,'PROFILE_LOCKED');
 late(); await new Promise(r=>setImmediate(r)); assert.equal(bodies.length,1);
-ctx.emit('close'); assert(!fs.existsSync(path.join(profile,'.surfcore-douyin.lock'))); assert.equal(fs.readFileSync(path.join(profile,'login-data'),'utf8'),'keep');
+ctx.emit('close'); assert(fs.existsSync(path.join(profile,'.surfcore-douyin.lock'))); assert.equal((await duplicate.start()).code,'PROFILE_LOCKED');
+ctx.finishClose(); await new Promise(r=>setImmediate(r)); assert(!fs.existsSync(path.join(profile,'.surfcore-douyin.lock'))); assert.equal(fs.readFileSync(path.join(profile,'login-data'),'utf8'),'keep');
 assert((await browser.start()).ok); ctx=contexts.at(-1); emit(endpoint); await new Promise(r=>setImmediate(r)); assert.equal(bodies.length,2); assert.notEqual(bodies[0].meta.sessionId,bodies[1].meta.sessionId); assert((await browser.close()).ok);
+const disconnectedProfile = path.join(root, 'disconnected');
+const disconnectedBrowser = createDouyinBrowser({profileDir:disconnectedProfile,browserPath:'/fake/chrome',launchPersistentContext:launch,timeouts:{close:30}});
+assert((await disconnectedBrowser.start()).ok); const disconnectedContext = contexts.at(-1);
+disconnectedContext.emit('close');
+assert.equal(disconnectedBrowser.status().code,'BROWSER_DISCONNECTED');
+const unknown = await disconnectedBrowser.close(); assert.equal(unknown.code,'BROWSER_UNKNOWN_EXIT'); assert(unknown.error && unknown.hint); assert.equal(disconnectedContext.closeCalls,undefined);
+assert(fs.existsSync(path.join(disconnectedProfile,'.surfcore-douyin.lock'))); assert.equal((await disconnectedBrowser.start()).code,'BROWSER_DISCONNECTED');
+const failedProfile = path.join(root,'failed-close');
+const failedBrowser = createDouyinBrowser({profileDir:failedProfile,browserPath:'/fake/chrome',launchPersistentContext:launch,timeouts:{close:30}});
+assert((await failedBrowser.start()).ok); const failedContext = contexts.at(-1); failedContext.blockClose = true;
+const attempt = failedBrowser.close(); await new Promise(r=>setImmediate(r)); failedContext.emit('close'); failedContext.rejectClose(new Error('transport disconnected'));
+const closeFailed = await attempt; assert.equal(closeFailed.code,'BROWSER_CLOSE_FAILED'); assert(closeFailed.hint); assert(fs.existsSync(path.join(failedProfile,'.surfcore-douyin.lock')));
+assert.equal((await failedBrowser.close()).code,'BROWSER_CLOSE_FAILED'); assert.equal(failedContext.closeCalls,1);
 const foreign = path.join(root,'foreign'); fs.mkdirSync(foreign,{mode:0o700}); fs.writeFileSync(path.join(foreign,'data'),'keep');
 const result = await createDouyinBrowser({profileDir:foreign,browserPath:'/fake/chrome',launchPersistentContext:launch}).start(); assert.equal(result.code,'PROFILE_FOREIGN'); assert(result.hint);
 const link = path.join(root,'link'); fs.symlinkSync(profile,link); assert.equal((await createDouyinBrowser({profileDir:link,browserPath:'/fake/chrome',launchPersistentContext:launch}).start()).code,'PROFILE_UNSAFE');

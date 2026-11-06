@@ -45,10 +45,10 @@ function acquireProfile(dir) {
 
 export function createDouyinBrowser({ profileDir, browserPath, headless = false, onResponse, onRequest, timeouts = {}, launchPersistentContext } = {}) {
   let context, page, release, starting = false, closing = false, running = false, browserName = '', sessionId, requestSeq = 0;
-  let records = new WeakMap();
+  let records = new WeakMap(), disconnected = false, closeAttempt;
   const recent = [];
   const closeTimeout = timeouts.close ?? 5000;
-  const alive = owned => context === owned && running && !closing;
+  const alive = owned => context === owned && running && !closing && !disconnected;
   const bounded = async (promise, ms) => {
     let timer;
     try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(fail('BROWSER_TIMEOUT', '浏览器操作超时', '检查浏览器状态后重试。')), ms); })]); }
@@ -56,7 +56,7 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
   };
   function closed(owned) {
     if (context !== owned) return;
-    running = false; context = undefined; page = undefined; closing = false;
+    running = false; context = undefined; page = undefined; closing = false; disconnected = false; closeAttempt = undefined;
     records = new WeakMap(); release?.(); release = undefined;
   }
   async function response(owned, res) {
@@ -77,6 +77,7 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
     } catch { /* Missing, malformed or unavailable bodies are ignored. */ }
   }
   async function start() {
+    if (disconnected) return problem('BROWSER_DISCONNECTED', '浏览器连接已中断且退出状态未知', '检查独立浏览器和占用锁，确认退出后由管理员处理。');
     if (context || starting) return problem('BROWSER_RUNNING', '浏览器已经启动或正在关闭', '先关闭当前浏览器再重试。');
     starting = true;
     try {
@@ -90,8 +91,12 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       const allowed = new Set([...names, ...Object.keys(process.env).filter(k => /^LC_[A-Z_]+$/.test(k))]);
       const env = Object.fromEntries([...allowed].filter(k => process.env[k] !== undefined).map(k => [k, process.env[k]]));
       const owned = await launch(path.resolve(profileDir), { executablePath: found.executable, headless, viewport: { width: 1280, height: 800 }, serviceWorkers: 'block', env, args: ['--restore-last-session'], ...(process.platform === 'darwin' ? { ignoreDefaultArgs: ['--password-store=basic', '--use-mock-keychain'] } : {}) });
-      context = owned; sessionId = randomUUID(); requestSeq = 0; recent.length = 0; records = new WeakMap();
-      owned.on('close', () => closed(owned));
+      context = owned; disconnected = false; closeAttempt = undefined; sessionId = randomUUID(); requestSeq = 0; recent.length = 0; records = new WeakMap();
+      owned.on('close', () => {
+        if (context !== owned) return;
+        running = false;
+        if (!closing) disconnected = true;
+      });
       owned.on('request', req => {
         if (context !== owned || closing) return;
         const u = safeUrl(req.url()); if (!u) return;
@@ -103,6 +108,7 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       const pages = owned.pages();
       page = pages[0] || await owned.newPage();
       for (const extra of pages.slice(1)) await extra.close();
+      if (disconnected) throw fail('BROWSER_DISCONNECTED', '浏览器连接已中断且退出状态未知', '检查独立浏览器和占用锁，确认退出后由管理员处理。');
       running = true;
       await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: timeouts.command ?? 30000 });
       if (!alive(owned)) throw fail('BROWSER_CLOSED', '浏览器连接已关闭', '重新启动浏览器后重试。');
@@ -118,12 +124,17 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
   }
   async function close() {
     if (!context) return { ok: true };
+    if (disconnected) return problem('BROWSER_UNKNOWN_EXIT', '浏览器连接中断，无法确认进程退出', '检查独立浏览器和占用锁，确认退出后由管理员处理。');
     const owned = context; closing = true; running = false;
+    if (!closeAttempt) {
+      closeAttempt = Promise.resolve().then(() => owned.close()).then(() => { closed(owned); });
+      // A late successful close may release the lock; an event alone never can.
+      closeAttempt.catch(() => {});
+    }
     try {
-      await bounded(owned.close(), closeTimeout);
-      closed(owned);
+      await bounded(closeAttempt, closeTimeout);
       return { ok: true };
-    } catch (e) { return problem(e?.code === 'BROWSER_TIMEOUT' ? 'BROWSER_CLOSE_TIMEOUT' : 'BROWSER_CLOSE_FAILED', '浏览器未确认退出', '关闭此独立浏览器后重试；资料和占用锁会保留。'); }
+    } catch (e) { return problem(e?.code === 'BROWSER_TIMEOUT' ? 'BROWSER_CLOSE_TIMEOUT' : 'BROWSER_CLOSE_FAILED', '浏览器未确认退出', '检查独立浏览器和占用锁；资料与锁会保留。'); }
   }
   async function snapshot() {
     const v = await page.evaluate(() => ({ title: document.title, url: location.origin + location.pathname, text: (document.body?.innerText || '').slice(0, 12000) }));
@@ -148,6 +159,6 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       if (!editable) for (let i = 0; i < 4; i++) { await page.keyboard.press('ArrowDown'); keyStepsSent++; }
       return { ok: true, keyStepsSent };
     }),
-    status: () => context && (!running || closing || page?.isClosed()) ? { ...problem('BROWSER_DISCONNECTED', '浏览器未处于可用状态', '关闭独立浏览器后重新启动。'), running: false, browserName, requestSeq, recent: recent.slice() } : { ok: true, running: !!context && running, browserName: context ? browserName : '', requestSeq, recent: recent.slice() },
+    status: () => context && (!running || closing || page?.isClosed()) ? { ...problem('BROWSER_DISCONNECTED', '浏览器未处于可用状态', '检查独立浏览器和占用锁，确认退出后由管理员处理。'), running: false, browserName, requestSeq, recent: recent.slice() } : { ok: true, running: !!context && running, browserName: context ? browserName : '', requestSeq, recent: recent.slice() },
   };
 }
