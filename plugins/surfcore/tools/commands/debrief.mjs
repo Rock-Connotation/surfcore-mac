@@ -9,7 +9,7 @@ import { SURFCORE_DIR, biliState, assertExpectedCharacter } from '../lib/state-p
 import { config } from '../lib/config.mjs'
 import { shotsPath, pruneShots, formatShotsStats } from '../lib/shots-cache.mjs'
 import { appendWatch } from '../lib/watch-history.mjs'
-import { createBiliApi, createFrameSheet, parseBiliReference, prepareBiliMedia, resolveBiliPart, structuredError } from '../lib/bili-media.mjs'
+import { createBiliApi, createFrameSheet, normalizeBiliPartTimeline, parseBiliReference, prepareBiliMedia, resolveBiliPart, structuredError } from '../lib/bili-media.mjs'
 import { buildBiliTranscriptionRequest, createPerceptionClient, normalizeTranscriptionResult } from '../lib/perception-client.mjs'
 
 const values = new Set(['page', 'cid', 'asr', 'grid', 'bucket', 'top', 'comments'])
@@ -84,7 +84,10 @@ async function main() {
   const api = createBiliApi()
   const view = await api.fetchView(parsed.bvid)
   assertExpectedCharacter()
-  const part = resolveBiliPart(view, { page: parsed.page, cid: options.cid, urlPage: parsed.urlPage })
+  const declaredPart = resolveBiliPart(view, { page: parsed.page, cid: options.cid, urlPage: parsed.urlPage })
+  const playurl = await api.fetchPlayurl?.(declaredPart)
+  assertExpectedCharacter()
+  const part = normalizeBiliPartTimeline(declaredPart, playurl)
   const clean = redactor(), warnings = []
   const materials = { subtitle: { status: 'missing' }, speech: { status: options.shallow ? 'skipped' : 'pending' }, frames: { status: 'skipped' } }
   const light = await lightMaterials(part, view, clean, options)

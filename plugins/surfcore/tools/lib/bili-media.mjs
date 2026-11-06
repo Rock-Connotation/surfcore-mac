@@ -80,7 +80,8 @@ export function resolveBiliPart(viewData, { page = null, cid = null, urlPage = n
     if (!Number.isSafeInteger(p) || p < 1 || !partCid) {
       throw fail('bili.parts.invalid', 'B 站分 P 列表缺少有效页码或 cid。', '重新读取视频信息；当前分 P 无法安全处理。')
     }
-    return { page: p, cid: partCid, title: String(item.part ?? ''), durationMs: Number(item.duration) * 1000, index }
+    const declaredDurationMs = Number(item.duration) * 1000
+    return { page: p, cid: partCid, title: String(item.part ?? ''), durationMs: declaredDurationMs, declaredDurationMs, durationSource: 'view.pages', index }
   })
   const selectedPage = positiveInt(page ?? urlPage, '分 P', { optional: true })
   const selectedCid = cid == null || String(cid).trim() === '' ? '' : String(cid).trim()
@@ -112,6 +113,8 @@ export function resolveBiliPart(viewData, { page = null, cid = null, urlPage = n
     partTitle: selected.title,
     title: String(viewData.title ?? ''),
     durationMs,
+    declaredDurationMs: durationMs,
+    durationSource: 'view.pages',
     owner: {
       name: String(viewData.owner?.name ?? ''),
       mid: String(viewData.owner?.mid ?? ''),
@@ -122,6 +125,17 @@ export function resolveBiliPart(viewData, { page = null, cid = null, urlPage = n
     desc: String(viewData.desc ?? ''),
     pubdate: Number(viewData.pubdate) || 0,
   }
+}
+
+export function normalizeBiliPartTimeline(part, playurl) {
+  const declaredDurationMs = Number(part?.declaredDurationMs ?? part?.durationMs)
+  if (!Number.isSafeInteger(declaredDurationMs) || declaredDurationMs < 1) throw fail('bili.duration.missing', '所选分 P 没有可验证的声明时长。', '刷新视频信息后重试。')
+  const raw = playurl?.timelength
+  if (raw == null || raw === '') return { ...part, durationMs: declaredDurationMs, declaredDurationMs, durationSource: 'view.pages' }
+  if (!/^\d+$/.test(String(raw)) || !Number.isSafeInteger(Number(raw)) || Number(raw) < 1) throw fail('bili.duration.precise.invalid', '播放信息的精确时长无效。', '刷新播放地址后重试。')
+  const preciseDurationMs = Number(raw)
+  if (preciseDurationMs !== declaredDurationMs && Math.ceil(preciseDurationMs / 1000) * 1000 !== declaredDurationMs) throw fail('bili.duration.precise.inconsistent', '播放信息与分 P 声明时长不一致。', '刷新视频信息和播放地址后重试。', { declaredDurationMs, preciseDurationMs })
+  return { ...part, durationMs: preciseDurationMs, declaredDurationMs, durationSource: 'playurl.timelength' }
 }
 
 function credentialCookie(credential) {
@@ -643,6 +657,7 @@ export async function prepareBiliMedia({
   if (!dataRoot) throw fail('media.root.missing', '没有配置感知资产目录。', '确认 SurfCore Host 的数据目录已就绪。')
   const playurlData = playurl ?? await fetchPlayurl?.(part, { signal })
   if (!playurlData || typeof playurlData !== 'object') throw fail('media.playurl.missing', '没有取得 B 站媒体播放信息。', '刷新视频播放信息后重试。')
+  part = normalizeBiliPartTimeline(part, playurlData)
   const destinationDir = path.join(dataRoot, 'bili', `${part.bvid}-${part.cid}-${crypto.randomUUID()}`)
   fs.mkdirSync(destinationDir, { recursive: true, mode: 0o700 })
   const options = { fetchImpl, probeImpl, decodeImpl, concatImpl, ffmpegPath, timeoutMs, signal }

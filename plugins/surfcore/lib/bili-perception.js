@@ -2,7 +2,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { createBiliApi, createFrameSheet, parseBiliReference, prepareBiliMedia, resolveBiliPart, structuredError } from '../tools/lib/bili-media.mjs'
+import { createBiliApi, createFrameSheet, normalizeBiliPartTimeline, parseBiliReference, prepareBiliMedia, resolveBiliPart, structuredError } from '../tools/lib/bili-media.mjs'
 import { buildBiliTranscriptionRequest } from '../tools/lib/perception-client.mjs'
 import { shotsPath } from '../tools/lib/shots-cache.mjs'
 import { appendWatch } from '../tools/lib/watch-history.mjs'
@@ -71,13 +71,15 @@ export function createBiliPerceptionService({ asrService, stateDir, getCharacter
       const api = createApi(), view = await api.fetchView(job.request.bvid, { signal: controller.signal })
       const part = resolveBiliPart(view, { page: job.request.page, cid: job.request.cid })
       if (!current(job)) throw problem('STALE_CHARACTER', '作业所属角色已切换。', '切回原角色并确认 epoch 后再恢复。')
-      update(job, { part: { bvid: part.bvid, cid: part.cid, page: part.page, pageCount: part.pageCount, durationMs: part.durationMs, title: redact(part.title) }, progress: { stage: 'acquire' } })
-      const media = await prepareMedia({ part, fetchPlayurl: api.fetchPlayurl, dataRoot: assetsRoot, needAudio: job.request.asr, needVideo: job.request.frames, signal: controller.signal })
+      const playurl = await api.fetchPlayurl(part, { signal: controller.signal })
+      const precisePart = normalizeBiliPartTimeline(part, playurl)
+      update(job, { part: { bvid: precisePart.bvid, cid: precisePart.cid, page: precisePart.page, pageCount: precisePart.pageCount, durationMs: precisePart.durationMs, declaredDurationMs: precisePart.declaredDurationMs, durationSource: precisePart.durationSource, title: redact(precisePart.title) }, progress: { stage: 'acquire' } })
+      const media = await prepareMedia({ part: precisePart, playurl, dataRoot: assetsRoot, needAudio: job.request.asr, needVideo: job.request.frames, signal: controller.signal })
       if (controller.signal.aborted) throw problem('bili.job.cancelled', '作业已取消。', '如需处理，请恢复或重新提交。')
       if (!current(job)) throw problem('STALE_CHARACTER', '作业所属角色已切换。', '切回原角色并确认 epoch 后再恢复。')
       let frames = { status: 'skipped' }, frameError = null
       if (job.request.frames) {
-        try { if (!media.video?.path || media.video.status === 'failed') throw problem('media.video.unavailable', '没有可用于抽帧的视频。', '检查播放权限和媒体依赖。'); frames = await makeFrames({ mediaPath: media.video.path, timelineMap: media.video.timelineMap, sourceDurationMs: part.durationMs, bvid: part.bvid, page: part.page, outputDir: shotsPath('video'), grid: job.request.grid, uniform: job.request.uniform, subtitleEvery: job.request.subtitleEvery, signal: controller.signal }) }
+        try { if (!media.video?.path || media.video.status === 'failed') throw problem('media.video.unavailable', '没有可用于抽帧的视频。', '检查播放权限和媒体依赖。'); frames = await makeFrames({ mediaPath: media.video.path, timelineMap: media.video.timelineMap, sourceDurationMs: precisePart.durationMs, bvid: precisePart.bvid, page: precisePart.page, outputDir: shotsPath('video'), grid: job.request.grid, uniform: job.request.uniform, subtitleEvery: job.request.subtitleEvery, signal: controller.signal }) }
         catch (error) { frameError = structuredError(error); frames = { status: 'failed', ...frameError } }
       }
       if (controller.signal.aborted) throw problem('bili.job.cancelled', '作业已取消。', '如需处理，请恢复或重新提交。')
@@ -86,7 +88,7 @@ export function createBiliPerceptionService({ asrService, stateDir, getCharacter
       releaseMedia()
       if (!job.request.asr) { update(job, { state: frameError ? 'failed' : frames.status === 'partial' ? 'partial' : 'completed', error: frameError, memoryState: 'pending', progress: { stage: 'finished' } }); await finish(job); return }
       if (!media.audio?.path || media.audio.status === 'failed') throw problem('media.audio.unavailable', '没有可用音轨。', '检查播放权限与媒体依赖后恢复。')
-      const request = buildBiliTranscriptionRequest({ part, media: media.audio, character: { id: job.characterId, epoch: job.characterEpoch }, activityId: job.activityId, languageHint: job.request.languageHint, assetsRoot })
+      const request = buildBiliTranscriptionRequest({ part: precisePart, media: media.audio, character: { id: job.characterId, epoch: job.characterEpoch }, activityId: job.activityId, languageHint: job.request.languageHint, assetsRoot })
       if (!current(job)) throw problem('STALE_CHARACTER', '作业所属角色已切换。', '切回原角色并确认 epoch 后再恢复。')
       const child = await asrService.submit(request)
       update(job, { childJobId: child.jobId, progress: { stage: 'asr' } })
