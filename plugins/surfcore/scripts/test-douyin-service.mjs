@@ -14,11 +14,11 @@ function browserFactory(opts) {
   let seq = 0, reloads = 0, running = false;
   fs.mkdirSync(opts.profileDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(opts.profileDir, 'profile-sentinel'), 'preserve');
-  const emit = (payload, pathname, n = ++seq, sessionId = 'session') => opts.onResponse(payload, { pathname, status: 200, requestSeq: n, sessionId, requestId: `r${n}`, requestStartedAt: n });
+  const emit = (payload, pathname, n = ++seq, sessionId = 'session') => { seq = Math.max(seq, n); opts.onResponse(payload, { pathname, status: 200, requestSeq: n, sessionId, requestId: `r${n}`, requestStartedAt: n }); };
   const b = { opts, emit, get seq() { return seq; }, status: () => config.broken ? { ok: false, code: 'BROKEN', error: '连接失败', hint: '关闭浏览器' } : ({ ok: true, running, requestSeq: seq }),
     async start() { running = true; emit(self('123456'), SELF); return { ok: true }; },
-    async reload() { reloads++; if (config.late && reloads === 1) { const old = seq; seq++; emit(feed, FEED, old); } else if (reloads === 1) { emit(config.feed ?? feed, FEED); emit(self(config.midUid ?? '123456'), SELF); } else emit(self(config.postUid ?? '123456'), SELF); return { ok: true }; },
-    async snapshot() { return { ok: true, title: '请验证', text: '验证码', url: 'https://www.douyin.com/?private=1' }; },
+    async reload() { reloads++; if (config.oldMismatch && reloads === 1) { emit(self('999999'), SELF, seq); emit(feed, FEED); emit(self('123456'), SELF); } else if (config.sequence && reloads === 1) { emit(feed, FEED); emit(self('123456'), SELF); emit(config.sequence === 'logout' ? { status_code: 0, is_login: false } : self('999999'), SELF); } else if (config.late && reloads === 1) { const old = seq; seq++; emit(feed, FEED, old); } else if (reloads === 1) { emit(config.feed ?? feed, FEED); emit(self(config.midUid ?? '123456'), SELF); } else emit(self(config.postUid ?? '123456'), SELF); return { ok: true }; },
+    async snapshot() { if (config.invalidateOnSnapshot) { config.invalidateOnSnapshot = false; emit({ status_code: 0, is_login: false }, SELF); } return { ok: true, title: '请验证', text: '验证码', url: config.url ?? 'https://www.douyin.com/' }; },
     async close() { running = false; return config.closeFail ? { ok: false, code: 'CLOSE', error: '关闭失败', hint: '手动关闭' } : { ok: true }; } };
   browsers.push(b); return b;
 }
@@ -35,6 +35,9 @@ assert.equal((await svc.confirmAccount({ ...ctx(), candidateId: login.candidate.
 const accountPath = path.join(stateDir, 'characters/role1/douyin/account.json');
 assert.equal(fs.statSync(accountPath).mode & 0o777, 0o600);
 assert.equal((await svc.readFeed(ctx())).items.length, 5);
+config = { oldMismatch: true }; assert.equal((await svc.readFeed(ctx())).ok, true);
+config = { sequence: 'other' }; fail(await svc.readFeed(ctx()), 'DOUYIN_ACCOUNT_CHANGED');
+config = { sequence: 'logout' }; fail(await svc.readFeed(ctx()), 'DOUYIN_NEEDS_AUTH');
 config = { broken: true }; fail(await svc.readFeed(ctx()), 'BROKEN');
 config = { late: true }; fail(await svc.readFeed(ctx()), 'DOUYIN_FEED_UNAVAILABLE');
 config = { midUid: '999999' }; fail(await svc.readFeed(ctx()), 'DOUYIN_ACCOUNT_CHANGED');
@@ -42,8 +45,27 @@ config = { postUid: '999999' }; fail(await svc.readFeed(ctx()), 'DOUYIN_ACCOUNT_
 config = { feed: { status_code: 0, aweme_list: [] } }; fail(await svc.readFeed(ctx()), 'DOUYIN_FEED_EMPTY');
 config = { feed: { something: true } }; fail(await svc.readFeed(ctx()), 'DOUYIN_FEED_INVALID');
 config = {}; login = await svc.beginLogin(ctx());
+let loginBrowser = browsers.at(-1), oldCandidate = login.candidate.candidateId;
+loginBrowser.emit({ status_code: 0, is_login: false }, SELF);
+assert.equal((await svc.status()).candidate, null);
+fail(await svc.confirmAccount({ ...ctx(), candidateId: oldCandidate }), 'DOUYIN_CANDIDATE_MISMATCH');
+loginBrowser.emit(self('999999'), SELF, 5);
+loginBrowser.emit(self('123456'), SELF, 4);
+assert.equal((await svc.status()).candidate.uidSuffix, '9999');
+loginBrowser.emit(self('123456'), SELF, 6);
+login = await svc.status();
+assert.equal(login.candidate.uidSuffix, '3456');
+config.invalidateOnSnapshot = true;
+fail(await svc.confirmAccount({ ...ctx(), candidateId: login.candidate.candidateId }), 'DOUYIN_CANDIDATE_MISMATCH');
+loginBrowser.emit(self('123456'), SELF, 8);
+login = await svc.status();
 assert.equal((await svc.confirmAccount({ ...ctx(), candidateId: login.candidate.candidateId })).ok, true);
 assert.ok(fs.readdirSync(path.dirname(accountPath)).some(n => n.startsWith('account.json.backup-')));
+config = { url: 'https://example.com/?secret=1' };
+const outsideResult = await svc.beginLogin(ctx()); fail(outsideResult, 'DOUYIN_PAGE_UNEXPECTED');
+assert.doesNotMatch(JSON.stringify(outsideResult), /example|secret|验证码/);
+fail(await svc.status(), 'DOUYIN_PAGE_UNEXPECTED');
+await svc.closeLogin(ctx()); config = {};
 const old = ctx(); login = await svc.beginLogin(old); role = { id: 'role2', epoch: 2 };
 fail(await svc.confirmAccount({ ...old, candidateId: login.candidate.candidateId }), 'DOUYIN_STALE');
 assert.equal((await svc.status()).account, null);

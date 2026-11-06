@@ -57,16 +57,25 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
     return result;
   }
   async function cancel() { generation++; candidate = null; pageState = 'idle'; const op = active; const result = await stop(op); return result; }
-  function makeOp(context, kind) {
-    const op = { context: { ...context }, kind, gen: ++generation, events: [], session: null, browser: null, starting: null };
+  function makeOp(context, kind, expectedIdentity = null) {
+    const op = { context: { ...context }, kind, gen: ++generation, events: [], session: null, browser: null, starting: null, selfSeq: 0, identityCutoff: 0, expectedIdentity, identityFailure: null };
     op.browser = browserFactory({ profileDir: path.join(dir(context), 'browser'), headless: false, onResponse(payload, meta) {
-      if (!current(op) || active !== op || !meta || !Number.isSafeInteger(meta.requestSeq) || !meta.sessionId || meta.status !== 200) return;
+      if (!current(op) || active !== op || !meta || !Number.isSafeInteger(meta.requestSeq) || !meta.sessionId) return;
       if (op.session && op.session !== meta.sessionId) return;
       op.session ||= meta.sessionId;
       if (meta.pathname !== SELF && meta.pathname !== FEED) return;
-      const parsed = meta.pathname === SELF ? parseDouyinSelf(payload, { sourcePath: meta.pathname }) : parseDouyinFeed(payload, { sourcePath: meta.pathname, limit: 5 });
+      if (meta.pathname === FEED && meta.status !== 200) return;
+      const parsed = meta.pathname === SELF ? (meta.status === 200 ? parseDouyinSelf(payload, { sourcePath: meta.pathname }) : auth()) : parseDouyinFeed(payload, { sourcePath: meta.pathname, limit: 5 });
       op.events.push({ meta, parsed }); if (op.events.length > 100) op.events.shift();
-      if (op.kind === 'login' && meta.pathname === SELF && parsed.ok) { candidate = { id: randomUUID(), identity: parsed.identity, context: op.context, gen: op.gen }; pageState = 'candidate'; }
+      if (meta.pathname === SELF && op.kind === 'login' && meta.requestSeq > op.selfSeq) {
+        op.selfSeq = meta.requestSeq;
+        candidate = parsed.ok ? { id: randomUUID(), identity: parsed.identity, context: op.context, gen: op.gen } : null;
+        pageState = parsed.ok ? 'candidate' : 'login_required';
+      }
+      if (meta.pathname === SELF && op.kind === 'feed' && meta.requestSeq > op.identityCutoff && !op.identityFailure) {
+        if (!parsed.ok) op.identityFailure = auth();
+        else if (!same(parsed.identity, op.expectedIdentity)) op.identityFailure = error('DOUYIN_ACCOUNT_CHANGED', '读取时登录账号发生变化', '重新登录并确认账号。');
+      }
     } });
     active = op; return op;
   }
@@ -79,6 +88,7 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
     const deadline = now() + waitMs, wallDeadline = Date.now() + waitMs;
     do {
       if (!current(op)) return stale();
+      if (op.identityFailure) return op.identityFailure;
       const state = browserStatus(op); if (!state.ok || !state.running) return state.ok ? error('DOUYIN_BROWSER_FAILED', '独立浏览器已停止', '关闭独立浏览器后重试；资料会保留。') : state;
       const event = op.events.find(e => e.meta.pathname === pathname && e.meta.requestSeq > cutoff && e.meta.sessionId === op.session);
       if (event) return event.parsed;
@@ -89,7 +99,9 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
   }
   async function navigate(op) { try { const result = await op.browser.reload(); if (!current(op)) return stale(); return result?.ok ? result : result || auth(); } catch { return current(op) ? error('DOUYIN_BROWSER_FAILED', '独立浏览器刷新失败', '检查浏览器后重试。') : stale(); } }
   const same = (a, b) => a && b && a.uid === b.uid && a.secUid === b.secUid && a.accountKey === b.accountKey;
-  async function finish(op, result) { const closed = await stop(op); if (!closed.ok) return closed; return current(op) ? result : stale(); }
+  async function finish(op, result) { const closed = await stop(op); if (!closed.ok) return closed; return current(op) ? (op.identityFailure || result) : stale(); }
+  function expectedPage(snap) { try { const u = new URL(snap.url); return u.protocol === 'https:' && u.hostname === 'www.douyin.com' && u.port === '' && u.pathname === '/'; } catch { return false; } }
+  function unexpectedPage() { candidate = null; pageState = 'login_required'; return error('DOUYIN_PAGE_UNEXPECTED', '独立浏览器已离开抖音首页', '返回抖音官方首页并重新登录后重试。'); }
   return {
     async status() {
       const c = role(); if (!matches(c) || disposed) return stale();
@@ -98,6 +110,7 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
         const state = browserStatus(op); if (!state.ok || !state.running) return state.ok ? auth() : state;
         let snap; try { snap = await op.browser.snapshot(); } catch { return error('DOUYIN_BROWSER_FAILED', '读取浏览器状态失败', '检查浏览器后重试。'); } if (!current(op)) return stale();
         if (!snap?.ok) return snap || auth();
+        if (!expectedPage(snap)) return unexpectedPage();
         if (!candidate) pageState = /验证|验证码|安全检查|captcha|verify/i.test(`${snap.title} ${snap.text}`) ? 'verification_required' : 'login_required';
       }
       return view(c);
@@ -117,6 +130,7 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
       if (!result.ok) { if (current(op)) return finish(op, result); return result; }
       let snap; try { snap = await op.browser.snapshot(); } catch { return error('DOUYIN_BROWSER_FAILED', '读取浏览器状态失败', '检查浏览器后重试。'); } if (!current(op)) return stale();
       if (!snap?.ok) { lastError = snap || auth(); return lastError; }
+      if (!expectedPage(snap)) return unexpectedPage();
       if (!candidate && /验证|验证码|安全检查|captcha|verify/i.test(`${snap.title} ${snap.text}`)) pageState = 'verification_required';
       return view(context);
     },
@@ -125,6 +139,11 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
       if (!op || op.kind !== 'login' || op.confirming || !current(op)) return busy();
       if (!candidate || candidate.id !== candidateId || candidate.gen !== op.gen) return error('DOUYIN_CANDIDATE_MISMATCH', '登录账号候选已失效', '重新检查浏览器中的账号后确认。');
       op.confirming = true;
+      let snap; try { snap = await op.browser.snapshot(); } catch { op.confirming = false; return error('DOUYIN_BROWSER_FAILED', '读取浏览器状态失败', '检查浏览器后重试。'); }
+      if (!current(op) || active !== op) return stale();
+      if (!snap?.ok) { op.confirming = false; return snap || auth(); }
+      if (!expectedPage(snap)) { op.confirming = false; return unexpectedPage(); }
+      if (!candidate || candidate.id !== candidateId || candidate.gen !== op.gen) { op.confirming = false; return error('DOUYIN_CANDIDATE_MISMATCH', '登录账号候选已失效', '重新检查浏览器中的账号后确认。'); }
       try { write(context, 'account.json', { identity: candidate.identity }); } catch { op.confirming = false; return ioError(); }
       candidate = null; const result = await stop(op); if (!result.ok) return result; if (!current(op)) return stale(); candidate = null; pageState = 'idle'; return view(context);
     },
@@ -132,17 +151,17 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
       if (!matches(context) || disposed) return stale(); if (active) return busy();
       let account; try { if (!enabled(context)) return error('DOUYIN_DISABLED', '抖音渠道未开启', '先开启抖音渠道。'); account = binding(context)?.identity; } catch { return ioError(); }
       if (!account) return auth();
-      let op; try { op = makeOp(context, 'feed'); } catch { return error('DOUYIN_BROWSER_FAILED', '创建独立浏览器失败', '检查浏览器和资料目录后重试。'); } pageState = 'reading'; let result = await start(op);
+      let op; try { op = makeOp(context, 'feed', account); } catch { return error('DOUYIN_BROWSER_FAILED', '创建独立浏览器失败', '检查浏览器和资料目录后重试。'); } pageState = 'reading'; let result = await start(op);
       if (!result.ok) return current(op) ? finish(op, result) : result;
       const first = await findEvent(op, SELF, 0); if (!first.ok) return finish(op, first);
       if (!same(first.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '当前登录账号与绑定账号不一致', '重新登录并确认账号。'));
       let state = browserStatus(op); if (!state.ok || !state.running) return finish(op, state.ok ? auth() : state);
-      let cutoff = state.requestSeq; result = await navigate(op); if (!result.ok) return finish(op, result);
+      let cutoff = state.requestSeq; op.identityCutoff = cutoff; result = await navigate(op); if (!result.ok) return finish(op, result);
       const feed = await findEvent(op, FEED, cutoff); if (!feed.ok) return finish(op, feed);
       const afterFeed = await findEvent(op, SELF, cutoff); if (!afterFeed.ok) return finish(op, afterFeed);
       if (!same(afterFeed.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '读取时登录账号发生变化', '重新登录并确认账号。'));
       state = browserStatus(op); if (!state.ok || !state.running) return finish(op, state.ok ? auth() : state);
-      cutoff = state.requestSeq; result = await navigate(op); if (!result.ok) return finish(op, result);
+      cutoff = state.requestSeq; op.identityCutoff = cutoff; result = await navigate(op); if (!result.ok) return finish(op, result);
       const after = await findEvent(op, SELF, cutoff); if (!after.ok) return finish(op, after);
       if (!same(after.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '读取后登录账号发生变化', '重新登录并确认账号。'));
       if (!Array.isArray(feed.items) || !feed.items.length) return finish(op, error('DOUYIN_FEED_EMPTY', '首页推荐为空', '检查首页内容和账号状态后重试。'));
