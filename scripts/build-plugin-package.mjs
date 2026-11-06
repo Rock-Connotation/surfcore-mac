@@ -27,10 +27,7 @@ function put(relative, bytes, mode = 0o644) {
 for (const relative of files) {
   if (!(/^(src|scripts|dsh)\//.test(relative) || relative.startsWith(pluginPrefix) || ['config.example.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'].includes(relative))) continue;
   if (relative.startsWith('scripts/test-') || relative.startsWith('scripts/probe-') || relative.startsWith(`${pluginPrefix}scripts/`)) continue;
-  let bytes = git('show', `${commit}:${relative}`);
-  if (relative === `${pluginPrefix}cordis.patch.yml`) {
-    bytes = Buffer.from(bytes.toString().replace(/(\bname:\s*)\.\//g, `$1./${pluginPrefix}`));
-  }
+  const bytes = git('show', `${commit}:${relative}`);
   const tree = git('ls-tree', commit, '--', relative).toString();
   if (tree.startsWith('120000')) throw new Error(`制品不接受源码符号链接：${relative}`);
   put(relative, bytes, tree.startsWith('100755') ? 0o755 : 0o644);

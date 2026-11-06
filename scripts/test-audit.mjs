@@ -230,6 +230,7 @@ const tests = [
   'test-question-answers.mjs',
   'test-qq-interactions.mjs',
   'test-bridge-lock.mjs',
+  'test-package-patch-anchor.mjs',
   // 主人特权操作审计（2026-10-29）：1MB×5 轮转、跨文件读尾、写入失败可见、90 天清理。
   'test-owner-audit.mjs',
   // 检查更新三态（2026-10-29 事故）：无 git / 无安装记录时按版本号判断；

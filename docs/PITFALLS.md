@@ -4088,3 +4088,5 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 - 先发送通知再登记pending会漏快速回复；同event重放不能取消原请求。先登记、进程内event去重和responding单飞；官方cancel匹配event/client。严格编号是interaction.requireRequestId=true显式开关，旧默认兼容；本独立profile启用。未知回执先核对，不自动重交；进程重启后的去重残余不得隐藏。
 - 真实进程夹具在额外seatbelt中无法exec本机setuid /bin/ps，连allow default也EPERM；这是无法核验时的安全拒绝。保留红灯并在隔离HOME、官方Node24下无额外seatbelt跑自有进程夹具；不放松产品判据。媒体audit显式FFMPEG_PATH/FFPROBE_PATH，别让精简PATH伪造工具缺失。
 - 真实审批须在真实agent turn内经官方approval.request，不用slash命令伪造turn。无害诊断临时设ask后恢复的是原有效策略值，会追加真实会话事件；不是回滚会话日志，也不代表恢复继承语义。诊断问答用multiSelect并通过真实buildQuestionAnswers核验，不能假设单选返回selected。
+
+- 自包含包的 dsh.bundle.patch 已相对包根定位到 plugins/surfcore/cordis.patch.yml；patch 内的 ./qq-mode/index.js 仍须相对 patch 目录。构建器再次添加 plugins/surfcore 会让官方Loader双重拼接，表现为4组件仅3运行。只移除文本改写，保留metadata前缀；用官方App实际锚定函数与旧前缀变异复现，并重建包实测4/4。
