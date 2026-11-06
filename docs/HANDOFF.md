@@ -6,6 +6,30 @@
 ---
 
 
+## 快照：2026-11-07 02:47（QQ基础私聊受控验收收口）
+
+- 真实链路通过：常用号→NapCat小号→官方原生App/包内bridge→WorkBuddy Hy4→小号回复；get_msg账号/正文读回匹配，用户确认手机收到，原生QQ会话输入/回复可见。仅唯一私聊、测试角色，不是群/真实提问审批/常驻使用全部通过。
+- 程序e013302（功能a611b6a/e013302）：Mac WebUI异步异常、模型失败准入/固定模型策略和两处界面hint。官方Node24最终audit164/164、回归/完整插件exit0；Astra R2无新增P1/P2。版本0.8.8不变，未发布/推送。
+- 实际2/3次Hy4、每次上限8192，均HTTP200/stop。真实会话日志证实一笔为官方自动标题；发送1/6条文本，无其它QQ动作。不要把一条QQ消息算成一笔模型请求，也不要重置旧预算账本重复用量。
+- 官方CLI离线安装：319持久文件未变、324包文件一致。包源e013302ea39c53e59703b8b15d499a824fadbf1a，SHA daebaf6b95a9901605448476d385e7d5fbf84caa22fb0071212283f2b3b11996；后续文档/清单不改程序。
+- 收工QQ/B站启动关闭并显式停止独立桥接，拥有App/Host/renderer、模型代理/文本网关/扫码页与容器全停；相关10端口关闭，常用App及Host保留。仅恢复独立profile默认模型到DeepSeek原选择，账号/角色/新会话/用量/回执保留，B站凭据摘要未变。QQ.app未改；其它原3容器保留。
+- 全部原始证据在本地_backups/20261107-qq/final-results.json和FINAL-REVIEW.md；同源、权限、费用、两次启动/保存处理的证据界限及唯一发布块见[QQ组合case](cases/2026-11-07-qq-macos-integration.md)。worker树保留，不清理他人改动。
+- 后续门槛：群目标、真实问答/审批与媒体动作、常用profile安装/常驻预算须明确后再验。当前profile是有界测试配置；代理/容器已停，不能当作大飞鱼常驻上线。未使用的1次预算不代表可无确认扩大本轮对象或次数。
+
+---
+
+## 快照：2026-11-07 02:11（QQ受控验收进行中，需现场账号动作）
+
+- 程序e013302：a611b6a修复macOS打开WebUI的异步错误；e013302阻断QQ模型选用失败后投递、显式禁目录替代、界面显示下一步。最终checks-2-ui-final：官方Node24，audit164/164、regressions、完整插件exit0；Astra R2无新增实质P1/P2。源码未发布、版本0.8.8不变。
+- 官方CLI离线装入既有独立测试profile，319持久文件未变、324包文件一致；包SHA daebaf6b95a9901605448476d385e7d5fbf84caa22fb0071212283f2b3b11996。常用App仍在，不改QQ.app。
+- 用户已授权固定NapCat独立Docker和小号扫码；当前镜像v4.18.42/arm64摘要149fae81…已核查entrypoint与上游相同，只挂私有数据、仅回环37600/37601/37699、logging none、无privileged/自动重启。本机使用既有aicao-feedback Colima Docker，只创建本轮独立容器/网络，其他原3容器不动。
+- 用户已授权QQ本轮Hy4最多3请求/每次8192输出tokens、不自动重试；私有预算代理已启动但used0。专用provider qq-acceptance-hy4目录存在，模型workbuddy/hy4free；catalog不是请求通过。QQ/B站启动、purpose/greetings/黑话研究/跨端联动均关；QQ端点暂置回环9以阻断，目标尚未填入。发送及推理均0。
+- 现场待办：用户用“大飞鱼的小号”扫码NapCat；独立App QQ页管理员与私聊白名单填“本人的常用号”，两号必须不同，点仅保存不重启，并确认唯一目标。主线核对后才把QQ HTTP/WS接私有六次文本边界代理、批准ledger并启桥接。绝不把小号填成接收目标，群不开放。
+- 独立App第一次外层sandbox-exec与Electron自身沙箱冲突退出，已保全日志、回收仅本轮孤儿进程并用App默认安全设置重启成功；未禁用Electron沙箱。当前独立实例和模型代理、QQ容器仍运行，收工须按owned PID/容器准确停止，保留所有数据。
+- 原始方案、脚本、运行元数据、包、门禁在主线_backups/20261107-qq/；三worker树qq-model/qq-host/qq-runtime与qq-gateway保留。私有网关尚在Astra反馈修复后的最终核验，主线未启动其旧版本。最新进度及发布块见[QQ组合case](cases/2026-11-07-qq-macos-integration.md)。不是QQ链路通过，也不是设计06全绿。
+
+---
+
 ## 快照：2026-11-07 01:30（本轮授权验收收口）
 
 - 程序744d64a：官方DeepSeek Harness.app0.2.2-rc.1、Node24.21.0，独立profile离线安装313持久文件未变、323包文件一致；最终audit164/164、regressions/完整插件均0，独立关键审核无新增实质P1/P2。自包含包SHA241b8e52…；文档后续提交不改程序。

@@ -10,9 +10,9 @@ macOS 的 QQ 登录入口尝试启动 Windows `cmd.exe`；原函数立即返回 
 2. **机制**：新 `local-webui.js` 严格接受 `http://127.0.0.1:<1–65535>`，拒绝凭据、路径、查询、换行或其他主机；macOS 使用 `/usr/bin/open`，Windows 使用原 `cmd /d /c start` 参数，Linux 使用 `xdg-open`。`execFile` 等待回调，异步 ENOENT、非零退出、超时和同步异常都变成带 `code/error/hint` 的失败，并提供无凭据的手动地址。成功只表明系统打开命令成功，不证明用户已登录或浏览器实际呈现。
 3. **爆炸半径**：单一 Host 的用户主动点击 × 一次本机 WebUI 打开；原未监听错误可能影响整个 Host。没有启动 SnowLuma、登录 QQ、访问网络或读取凭据。
 4. **取舍**：在原函数加平台分支成本低，但异步事件与地址安全缺少独立测试接点；拆出受限打开器可独立注入假进程并精确测试，增加一小文件，回滚只需恢复原调用和文件。选后者。
-5. **生效与重启**：插件代码需宿主重新加载才生效；本次未重启实际 App 或更改 profile。
+5. **生效与重启**：插件代码需宿主重新加载才生效；组合阶段已随e013302安装并重启独立App；扫码页由Chrome工具打开，不算本helper真机打开验证。
 6. **验证**：原实现的假子进程异步 ENOENT 实际红测如上；新专项在官方 App Node `v24.21.0` 下从项目根及插件目录运行通过，覆盖坏 URL 不调用进程、三平台命令、异步 ENOENT/非零退出、同步错误、结构化错误和手动地址、两处 await 与现有 UI 错误展示契约。`node --check` 和 `git diff --check` 通过。测试不启动任何浏览器或外部程序；尚未实测各平台 UI。
-7. **回滚与残余**：原 `index.js`、插件 package.json 备份在 `_backups/20261107-qq-host/`；保护后续更改后按文件恢复即可。Windows 和 Linux 实机浏览器调用及 macOS 真正打开窗口未测；上游 SnowLuma 启动器本身的异步错误不在本次范围。主线最终 checks-2-ui-final：audit164/164、regressions、完整插件测试均exit0；Astra R2无新增实质P1/P2。
+7. **回滚与残余**：原 `index.js`、插件 package.json 备份在 `_backups/20261107-qq-host/`；保护后续更改后按文件恢复即可。本helper的Windows/Linux/macOS实机浏览器调用仍未测；上游 SnowLuma 启动器本身的异步错误不在本次范围。主线最终 checks-2-ui-final：audit164/164、regressions、完整插件测试均exit0；Astra R2无新增实质P1/P2。
 
 ## 发布交接块
 

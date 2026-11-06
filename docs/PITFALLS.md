@@ -4064,3 +4064,18 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 ### 同日部分材料的显式续评
 
 真实自主选中94秒视频后，音轨只到93.391秒，完整点评应停止；不能为了验收把缺609毫秒改成complete。用户可显式选择复核同一作业的已处理内容并生成临时点评，仍为partial、不评分、不发布、不维护主观记忆。临时草稿复制区也附Host生成的范围说明，不能只靠模型自称知道缺口。
+
+
+## 2026-11-07 QQ macOS：入口异步错误与模型失败准入
+
+- 本机有QQ.app不等于有OneBot。SnowLuma安装检测仍是Windows布局，不得给macOS用户承诺官方SnowLuma原生包；本轮先准备独立NapCat Docker方案，部署和真实扫码另有明确对象授权。
+- 旧openLocalUrl直接spawn cmd.exe，先返回opened:true再异步ENOENT；同步try/catch接不住。假进程复现后改受限loopback打开器、按平台execFile并等待回调；失败code/error/hint含手动地址，不能把“请求打开”称为登录成功。见[WebUI case](cases/2026-11-07-qq-macos-webui.md)。
+- ensureChatModel失败返回failed，但ensureSession新建/复用仍继续prompt。真实bridge VM证明四场景各误投一次，现失败停止且QQ/控制台可见；dsh.allowModelFallback=false用于固定供应商验收，缺省保留旧目录兼容。见[模型case](cases/2026-11-07-qq-model-selection.md)。离线通过不能代替QQ对端可见或供应商路由证据。
+
+- 本轮额外sandbox-exec外壳会与官方Electron内置沙箱冲突，GPU/network/renderer报Operation not permitted并退出。不能为此加Electron --no-sandbox；保全日志、只回收独立profile的拥有进程，再以App默认安全设置启动。模型计数改在专用代理上执行，不能把未成功的外层网络沙箱说成隔离通过。
+- 工具返回QR图片不等于用户能看到。用户报告不可见后，用只绑定回环的专用扫码页展示放大QR/刷新/登录状态，凭据只留服务端；实际Chrome截图和人工ask完成才算显示/扫码完成。不要反复给不可见的工具图片。
+
+- QQ单条初始消息可能触发两笔费用：官方session-title-first-prompt-llm会继承主路由并发生成标题。本轮真实会话的session/title-llm-request证实这一点；2笔Hy4均算入3笔预算，QQ只回1条。费用上限应放在实际LLM入口，不按QQ消息条数估算。收工恢复独立profile原默认模型，保留两笔用量，不因恢复而重置账本。
+- 设置保存现场只确认了草稿未落盘、白名单为空以及fetch failed提示；复查原生配置GET为200，保全草稿后经重新读取/加入管理员/保存恢复。原失败请求响应未捕获，不能把启动时序当已证实根因；未新增自动重试逻辑。
+
+- 本轮功能提交后最终文档audit出现163/164：唯一失败是test-release-manifest，清单仍对应旧HEAD，并非QQ功能失败。先提交本批文档，再从最新Git对象生成清单并verify-ref，清单单独提交后对最终HEAD重新跑audit；保留原失败日志，不把旧工作区通过当作新HEAD已通过。
