@@ -4054,3 +4054,8 @@ npm run test:audit
 新增CLI夹具必须从仓库根和npm --prefix插件目录分别验证，路径由import.meta.url解析；fetch桩要通过NODE_OPTIONS覆盖dispatcher的子进程。首轮动态夹具曾可能用虚构凭据尝试nav GET，未POST，实际出网未知，修正及原始限制保留在case。
 
 详见cases/2026-11-07-bili-round-integration.md、cases/2026-11-07-bili-controlled-round.md、cases/2026-11-07-bili-dynamic-receipts.md。
+
+
+### 同日真实Hy4输出上限反馈
+
+WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP200不代表模型完成。不得把截断JSON当选择；用户批准提高到8192后才执行剩余请求，默认2000保留。更高token预算需相应有界生成时限，不能仍用60秒硬截断；当前上限180秒且取消/无重试不变。原始字段收入折叠诊断，主界面应显示步骤/点评/草稿，避免让用户读传输对象。
