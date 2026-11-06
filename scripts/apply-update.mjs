@@ -83,6 +83,8 @@ function copyZip(staging, target) {
   // /MIR 会删掉"源里没有"的文件，连用户自建文件一起删；现在宁可留旧文件也不误删。
   const exDirs = ['state', 'backups', 'node_modules', '.git', 'logs', 'staging', 'pet', 'characters', 'voice-packs', 'tmp-update*'];
   const exFiles = ['config.json', 'bili.config.json', 'updates-pending.json'];
+  // These are user-owned only at the install root; e.g. src/perception is product code.
+  const rootUserDirs = ['roles', 'model', 'models', 'perception'];
   if (process.platform !== 'win32') {
     const excludedDir = (name) => exDirs.some((pattern) => pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern);
     const excludedFile = (name) => exFiles.includes(name);
@@ -97,7 +99,7 @@ function copyZip(staging, target) {
       rejectSymlink(from, '暂存目录');
       rejectSymlink(to, '目标目录');
       for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
-        if (excludedDir(entry.name) || excludedFile(entry.name)) continue;
+        if (excludedDir(entry.name) || excludedFile(entry.name) || (from === root && rootUserDirs.includes(entry.name))) continue;
         const source = path.join(from, entry.name);
         const dest = path.join(to, entry.name);
         const stat = fs.lstatSync(source);
@@ -109,7 +111,7 @@ function copyZip(staging, target) {
     const copyTree = (from, to) => {
       fs.mkdirSync(to, { recursive: true });
       for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
-        if (excludedDir(entry.name) || excludedFile(entry.name)) continue;
+        if (excludedDir(entry.name) || excludedFile(entry.name) || (from === root && rootUserDirs.includes(entry.name))) continue;
         const source = path.join(from, entry.name);
         const dest = path.join(to, entry.name);
         const stat = fs.lstatSync(source);
@@ -124,7 +126,7 @@ function copyZip(staging, target) {
     staging, target,
     '/E',
     '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:2', '/W:1',
-    '/XD', ...exDirs,
+    '/XD', ...exDirs, ...rootUserDirs.flatMap((name) => [path.resolve(staging, name), path.resolve(target, name)]),
     '/XF', ...exFiles,
   ];
   try {

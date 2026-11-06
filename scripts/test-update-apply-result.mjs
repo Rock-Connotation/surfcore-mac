@@ -481,6 +481,12 @@ try {
         fs.writeFileSync(path.join(target, 'characters', 'main', 'persona.md'), 'keep persona');
         fs.mkdirSync(path.join(target, 'model'), { recursive: true });
         fs.writeFileSync(path.join(target, 'model', 'local.json'), '{"keep":true}');
+        for (const dir of ['roles', 'models']) {
+          fs.mkdirSync(path.join(target, dir), { recursive: true });
+          fs.writeFileSync(path.join(target, dir, 'user.dat'), Buffer.from([0, 1, 255, 10]));
+        }
+        fs.mkdirSync(path.join(target, 'src', 'perception'), { recursive: true });
+        fs.writeFileSync(path.join(target, 'src', 'perception', 'service.js'), 'old product code');
         fs.mkdirSync(path.join(target, 'perception'), { recursive: true });
         fs.writeFileSync(path.join(target, 'perception', 'state.json'), '{"keep":true}');
         fs.writeFileSync(path.join(target, 'target-only.txt'), 'keep target-only');
@@ -494,6 +500,12 @@ try {
         fs.mkdirSync(path.join(staging, 'characters', 'main'), { recursive: true });
         fs.writeFileSync(path.join(staging, 'characters', 'main', 'persona.md'), 'must not replace role');
         fs.writeFileSync(path.join(staging, 'new-program.txt'), 'new program content');
+        for (const [dir, file] of [['roles', 'user.dat'], ['models', 'user.dat'], ['model', 'local.json'], ['perception', 'state.json']]) {
+          fs.mkdirSync(path.join(staging, dir), { recursive: true });
+          fs.writeFileSync(path.join(staging, dir, file), 'incoming must not overwrite user data');
+        }
+        fs.mkdirSync(path.join(staging, 'src', 'perception'), { recursive: true });
+        fs.writeFileSync(path.join(staging, 'src', 'perception', 'service.js'), 'new product code');
       }
       fs.writeFileSync(path.join(staging, 'release', 'install-manifest.json'), JSON.stringify({ version: stagedVersion, files: {} }));
       if (opts.symlink) fs.symlinkSync(opts.symlink, path.join(staging, 'escape'));
@@ -513,6 +525,11 @@ try {
       return { target, stateDir, pendingFile, code };
     };
 
+    const helperSource = fs.readFileSync(path.resolve('scripts/apply-update.mjs'), 'utf8');
+    ok(helperSource.includes("const rootUserDirs = ['roles', 'model', 'models', 'perception']")
+      && helperSource.includes('...rootUserDirs.flatMap((name) => [path.resolve(staging, name), path.resolve(target, name)])'),
+      'Windows robocopy 排除使用源/目标根的完整路径');
+
     const bad = runHelper('verify-mismatch', '9.9.8', '9.9.9');
     ok(bad.code !== 0, '助手：版本不符时非 0 退出', String(bad.code));
     ok(fs.existsSync(`${bad.pendingFile}.failed`), '助手：写 .failed 证据');
@@ -530,6 +547,10 @@ try {
     ok(!fs.existsSync(`${okRun.pendingFile}.failed`), '助手：成功后清掉旧 .failed（不会永远显示旧失败）');
     ok(fs.readFileSync(path.join(okRun.target, 'config.json'), 'utf8') === '{"owner":"keep"}', 'POSIX 覆盖保留用户 config');
     ok(fs.readFileSync(path.join(okRun.target, 'characters', 'main', 'persona.md'), 'utf8') === 'keep persona', 'POSIX 覆盖保留角色数据');
+    for (const dir of ['roles', 'models']) {
+      ok(fs.readFileSync(path.join(okRun.target, dir, 'user.dat')).equals(Buffer.from([0, 1, 255, 10])), `同名 ${dir} 用户数据字节保留`);
+    }
+    ok(fs.readFileSync(path.join(okRun.target, 'src', 'perception', 'service.js'), 'utf8') === 'new product code', '产品代码 src/perception 正常更新');
     ok(fs.readFileSync(path.join(okRun.target, 'model', 'local.json'), 'utf8') === '{"keep":true}', 'POSIX 覆盖保留模型数据');
     ok(fs.readFileSync(path.join(okRun.target, 'perception', 'state.json'), 'utf8') === '{"keep":true}', 'POSIX 覆盖保留感知数据');
     ok(fs.readFileSync(path.join(okRun.target, 'target-only.txt'), 'utf8') === 'keep target-only', 'POSIX 覆盖保留目标独有文件');
