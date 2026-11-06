@@ -8,7 +8,7 @@ import { biliRoundPage } from '../lib/bili-round-page.js';
 
 let cfg = { night: { controlledOnly: false } }, legacy = true, enabled = true;
 let duringCatalog = null;
-let role = { id: 'app', epoch: 4 }, starts = 0, cancels = 0, stops = 0;
+let role = { id: 'app', epoch: 4 }, starts = 0, cancels = 0, stops = 0, partials = 0;
 const jobs = [
   { jobId: 'own', characterId: 'app', characterEpoch: 4, state: 'completed' },
   { jobId: 'other', characterId: 'other', characterEpoch: 2, state: 'running' },
@@ -24,6 +24,7 @@ const make = () => createBiliRoundController({
     status: async () => ({ jobs, activeJobId: 'other' }),
     getJob: async id => jobs.find(j => j.jobId === id),
     start: async () => { starts++; return { ok: true, jobId: 'new' }; },
+    reviewPartial: async () => { partials++; return { ok: true, jobId: 'own', state: 'running' }; },
     cancel: async () => { cancels++; return { ok: true }; }, dispose: async () => {},
   }),
 });
@@ -48,6 +49,9 @@ r = await call(fresh, 'POST', { action: 'start', provider: 'magpie', model: 'wor
 r = await call(fresh, 'GET'); assert.deepEqual(r.body.value.jobs.map(j => j.jobId), ['own']); assert.equal(r.body.value.activeJobId, null);
 r = await call(fresh, 'GET', null, '?jobId=other'); assert.equal(r.body.code, 'ROUND_FORBIDDEN'); assert.ok(r.body.hint);
 r = await call(fresh, 'POST', { action: 'cancel', jobId: 'other' }); assert.equal(r.body.code, 'ROUND_FORBIDDEN'); assert.equal(cancels, 0);
+r = await call(fresh, 'POST', { action: 'review-partial', jobId: 'other', allowPartial: true }); assert.equal(r.body.code, 'ROUND_FORBIDDEN'); assert.equal(partials, 0);
+r = await call(fresh, 'POST', { action: 'review-partial', jobId: 'own' }); assert.equal(r.body.code, 'ROUND_PARTIAL_APPROVAL_REQUIRED'); assert.equal(partials, 0); assert.ok(r.body.hint);
+r = await call(fresh, 'POST', { action: 'review-partial', jobId: 'own', allowPartial: true }); assert.equal(r.code, 200); assert.equal(partials, 1);
 role = { id: 'app', epoch: 5 };
 r = await call(fresh, 'GET', null, '?jobId=own'); assert.equal(r.body.code, 'ROUND_FORBIDDEN');
 role = { id: 'app', epoch: 4 };

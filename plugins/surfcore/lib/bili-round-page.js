@@ -24,14 +24,16 @@ section{border-top:1px solid color-mix(in srgb,CanvasText 20%,Canvas);margin-top
 <div class="actions"><button id="start" disabled>自主选题并点评</button><button id="cancel" disabled>取消本轮</button></div>
 <p id="notice" role="status" aria-live="polite">正在读取状态…</p>
 <p id="progress" class="muted"></p>
+<p id="coverage" class="muted"></p>
+<div id="partial-action" hidden><p>素材尚未完整。可只评价已处理部分，生成临时点评与草稿；仍保留缺口，不作正式评分、不发布。将先复核处理范围。</p><button id="partial">仅评价已处理部分</button></div>
 <section id="selection" hidden><h4>选中的视频</h4><p id="video"></p></section>
-<section id="review" hidden><h4>观后点评</h4><p id="score"></p><p id="commentary"></p><h4>动态草稿</h4><pre id="draft"></pre><p class="muted">尚未发布。</p></section>
+<section id="review" hidden><h4 id="review-title">观后点评</h4><p id="scope" class="muted"></p><p id="score"></p><p id="commentary"></p><h4 id="draft-title">动态草稿</h4><pre id="draft"></pre><p class="muted">尚未发布。</p></section>
 <details><summary>诊断详情</summary><pre id="result" aria-label="单轮诊断结果"></pre></details>
 <script>
 const endpoint = '/dsh-surfcore/api/bili/round';
 const $ = id => document.getElementById(id);
 let jobId = '', working = false, timer;
-const stages = {queued:'已排队',feed:'正在获取候选',select:'模型正在选题',media:'正在获取完整素材并转写',review:'模型正在形成点评',score:'正在保存评分',memory:'正在整理记忆',cancelling:'正在取消并确认素材状态',finished:'已结束'};
+const stages = {queued:'已排队',feed:'正在获取候选',select:'模型正在选题',media:'正在获取完整素材并转写',review:'模型正在形成点评','partial-review':'模型正在生成有范围标注的临时点评','partial-validate':'正在核对已处理范围与缺口',score:'正在保存评分',memory:'正在整理记忆',cancelling:'正在取消并确认素材状态',finished:'已结束'};
 async function request(body) {
   const url = endpoint + (body ? '' : jobId ? '?jobId=' + encodeURIComponent(jobId) : '');
   const options = body ? {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)} : {};
@@ -46,8 +48,8 @@ function notify(text, error = false) {
 }
 function clearResult() {
   jobId = ''; working = false;
-  for (const id of ['result','progress','video','score','commentary','draft']) $(id).textContent = '';
-  $('selection').hidden = true; $('review').hidden = true; $('cancel').disabled = true;
+  for (const id of ['result','progress','coverage','video','scope','score','commentary','draft']) $(id).textContent = '';
+  $('selection').hidden = true; $('review').hidden = true; $('partial-action').hidden = true; $('cancel').disabled = true;
 }
 function render(value) {
   const job = value && value.jobs ? value.jobs[0] : value && value.job || value;
@@ -56,12 +58,21 @@ function render(value) {
   if (job && job.jobId) jobId = job.jobId;
   $('cancel').disabled = !working;
   $('progress').textContent = job ? (stages[job.progress] || '正在处理') + ' · 模型请求 ' + (job.calls || 0) + '/2' : '暂无单轮记录';
+  const coverage = job?.material?.coverage;
+  const ranges = items => (items || []).map(r => (r.startMs / 1000).toFixed(3) + '–' + (r.endMs / 1000).toFixed(3) + '秒').join('、');
+  $('coverage').textContent = coverage ? '已处理：' + ranges(coverage.processedRanges) + (coverage.complete ? ' · 覆盖完整' : ' · 未知缺口：' + ranges(coverage.missingRanges)) : '';
+  $('partial-action').hidden = !(job?.state === 'failed' && job.code === 'ROUND_MEDIA_INCOMPLETE' && job.calls === 1);
+  $('partial').disabled = working;
   $('selection').hidden = !job?.selection;
   $('video').textContent = job?.selection?.title || '';
   $('review').hidden = !job?.review;
-  $('score').textContent = job?.review ? '评分 ' + job.review.score + '/20 · ' + job.review.reason : '';
+  $('review-title').textContent = job?.review?.provisional ? '临时点评（素材不完整）' : '观后点评';
+  $('scope').textContent = job?.review?.notice || '';
+  $('score').hidden = !!job?.review?.provisional;
+  $('score').textContent = job?.review && !job.review.provisional ? '评分 ' + job.review.score + '/20 · ' + job.review.reason : '';
   $('commentary').textContent = job?.review?.commentary || '';
-  $('draft').textContent = job?.review?.dynamicText || '';
+  $('draft-title').textContent = job?.review?.provisional ? '临时草稿（未发布）' : '动态草稿';
+  $('draft').textContent = job?.review?.dynamicText ? (job.review.provisional ? job.review.notice + '\n\n' : '') + job.review.dynamicText : '';
   return job;
 }
 async function refresh() {
@@ -85,7 +96,7 @@ async function refresh() {
     $('start').disabled = !data.readiness.ok || working || !$('model').value;
     if (failed) notify([job.code,job.error,job.hint].filter(Boolean).join(' · '), true);
     else if (!data.readiness.ok) notify([data.readiness.code,data.readiness.error,data.readiness.hint].filter(Boolean).join(' · '), true);
-    else notify(working ? stages[job.progress] || '正在处理本轮' : job?.state === 'completed' ? '本轮已完成，点评与草稿已保存。' : '自动巡航已暂停；可开始一次单轮。');
+    else notify(working ? stages[job.progress] || '正在处理本轮' : job?.state === 'partial' ? '临时点评已保存；素材仍为部分覆盖，未评分、未发布。' : job?.state === 'completed' ? '本轮已完成，点评与草稿已保存。' : '自动巡航已暂停；可开始一次单轮。');
   } catch (error) {
     clearResult(); notify(error.message, true); $('start').disabled = true;
   }
@@ -105,6 +116,13 @@ $('start').onclick = async () => {
   try {
     const model = JSON.parse($('model').value);
     const data = await request({action:'start',...model,maxTokens:Number($('tokens').value)});
+    jobId = data.jobId; working = true; await refresh();
+  } catch (error) { notify(error.message, true); }
+};
+$('partial').onclick = async () => {
+  $('partial').disabled = true;
+  try {
+    const data = await request({action:'review-partial',jobId,allowPartial:true});
     jobId = data.jobId; working = true; await refresh();
   } catch (error) { notify(error.message, true); }
 };

@@ -78,6 +78,14 @@ export function createBiliRoundController({ ctx, stateDir, tokenBudget, runBili,
       const body = JSON.parse(await readBody(req) || '{}');
       if (body.action === 'pause') { json(res, 200, await pause()); return true; }
       if (body.action === 'cancel') { const stamp = ownerStamp(); assertOwner(await round.getJob(body.jobId)); const result = await round.cancel(body.jobId); assertStamp(stamp); json(res, 200, result); return true; }
+      if (body.action === 'review-partial') {
+        const stamp = ownerStamp();
+        const ready = readiness(); if (!ready.ok) { json(res, 409, ready); return true; }
+        assertOwner(await round.getJob(body.jobId)); assertStamp(stamp);
+        if (body.allowPartial !== true) { json(res, 400, issue('ROUND_PARTIAL_APPROVAL_REQUIRED', '需要明确选择仅评价已处理部分。', '核对缺口说明后点击“仅评价已处理部分”；这不会正式评分或发布。')); return true; }
+        const result = await round.reviewPartial({ jobId: body.jobId, allowPartial: true });
+        assertStamp(stamp); json(res, result.ok === false ? 409 : 200, result); return true;
+      }
       if (body.action !== 'start') { json(res, 400, issue('BILI_ROUND_ACTION', '单轮操作无效。', '刷新设置页后重试。')); return true; }
       const ready = readiness();
       if (!ready.ok) { json(res, 409, ready); return true; }
