@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { execFile, spawn } from 'node:child_process';
+import { openLocalUrl } from './local-webui.js';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
@@ -2068,20 +2069,6 @@ ${body}`;
     return { port, url: `http://127.0.0.1:${port}` };
   }
 
-  // 只用系统默认浏览器打开本地回环地址；URL 由端口拼出，不接受外部输入。
-  function openLocalUrl(url) {
-    if (process.env.SURFCORE_SKIP_AUTOSTART === '1') return false;
-    if (!/^http:\/\/127\.0\.0\.1:\d{2,5}$/.test(String(url))) return false;
-    try {
-      spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${url}"`], {
-        detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true,
-      }).unref();
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   // SnowLuma 连不上时到底卡在哪一步：进程没起 / 停在登录页 / token 或端口不对。
   // 桥接的 goodError 只有一句 fetch failed，光看它没法给用户任何可执行的信息。
   async function diagnoseSnowLuma(bridgeSnow = {}, { bridge = null } = {}) {
@@ -2140,13 +2127,13 @@ ${body}`;
 
     // 进程在、但 OneBot 没起 → 多半停在登录页：直接把 WebUI 打开让人扫码。
     if (await portOpen(webui.port)) {
-      const opened = openLocalUrl(webui.url);
+      const openResult = await openLocalUrl(webui.url);
       return {
-        ok: true,
+        ...openResult,
         needsLogin: true,
-        opened,
+        opened: openResult.opened,
         webui: webui.url,
-        message: opened ? `SnowLuma 在登录页，已打开控制台 ${webui.url}` : `SnowLuma 在登录页：请打开 ${webui.url} 扫码`,
+        message: openResult.opened ? `SnowLuma 在登录页，已请求打开控制台 ${webui.url}` : openResult.error,
       };
     }
 
@@ -2172,14 +2159,14 @@ ${body}`;
       while (Date.now() < until) {
         await new Promise((resolve) => setTimeout(resolve, 400));
         if (await portOpen(webui.port)) {
-          const opened = openLocalUrl(webui.url);
+          const openResult = await openLocalUrl(webui.url);
           return {
-            ok: true,
+            ...openResult,
             started: true,
-            opened,
+            opened: openResult.opened,
             webui: webui.url,
             launcher,
-            message: opened ? `已启动 SnowLuma 并打开控制台 ${webui.url}` : `已启动 SnowLuma：${webui.url}`,
+            message: openResult.opened ? `已启动 SnowLuma 并请求打开控制台 ${webui.url}` : openResult.error,
           };
         }
       }
