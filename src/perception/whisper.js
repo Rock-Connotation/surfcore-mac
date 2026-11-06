@@ -24,8 +24,11 @@ export function parseWhisperJson(jsonFile, chunkDurationMs) {
     }
     const startMs = Math.round(from);
     const endMs = Math.min(Math.round(to), chunkDurationMs);
-    if (!Number.isSafeInteger(startMs) || !Number.isSafeInteger(endMs) || to > chunkDurationMs + 25 || startMs >= endMs) {
-      throw fail('OUTPUT_INVALID', 'Whisper returned a segment outside the requested audio chunk.', 'Retry with a valid runtime build; the result was not attached to the source timeline.', { stage: 'transcribe' });
+    if (!Number.isSafeInteger(startMs) || !Number.isSafeInteger(endMs) || !Number.isSafeInteger(Math.round(to))) {
+      throw fail('OUTPUT_INVALID', 'Whisper returned an invalid segment offset.', 'Verify the runtime JSON format before retrying.', { stage: 'transcribe' });
+    }
+    if (to > chunkDurationMs + 25 || startMs >= endMs) {
+      throw fail('OUTPUT_INVALID', 'Whisper returned a segment outside the requested audio chunk.', 'Retry with a valid runtime build; the result was not attached to the source timeline.', { stage: 'transcribe', reason: 'segment-out-of-bounds' });
     }
     segments.push({ startMs, endMs, text });
   }
@@ -57,18 +60,21 @@ export function deduplicateBoundarySegments(segments, overlapMs = 1500) {
   const out = [];
   for (const segment of sorted) {
     const normalized = normalizeText(segment.text);
-    const previous = out.at(-1);
-    if (previous && previous.chunkIndex !== segment.chunkIndex && previous.boundaryKey && previous.boundaryKey === segment.boundaryKey) {
+    const duplicate = out.findLastIndex((previous) => {
+      const boundary = (previous.boundaryKeys || []).find((key) => (segment.boundaryKeys || []).includes(key) && previous.startMs <= Number(key) + overlapMs && previous.endMs >= Number(key) - overlapMs && segment.startMs <= Number(key) + overlapMs && segment.endMs >= Number(key) - overlapMs);
+      if (previous.chunkIndex === segment.chunkIndex || Math.abs(previous.chunkIndex - segment.chunkIndex) !== 1 || !boundary) return false;
       const previousText = normalizeText(previous.text);
       const overlap = Math.max(0, Math.min(previous.endMs, segment.endMs) - Math.max(previous.startMs, segment.startMs));
       const shortest = Math.max(1, Math.min(previous.endMs - previous.startMs, segment.endMs - segment.startMs));
       const close = Math.abs(previous.startMs - segment.startMs) <= Math.min(overlapMs, 750);
-      if (normalized && normalized === previousText && overlap / shortest >= 0.6 && close) {
-        if ((segment.endMs - segment.startMs) > (previous.endMs - previous.startMs)) out[out.length - 1] = segment;
-        continue;
-      }
+      return Boolean(normalized && normalized === previousText && overlap / shortest >= 0.6 && close);
+    });
+    if (duplicate >= 0) {
+      const previous = out[duplicate];
+      if ((segment.endMs - segment.startMs) > (previous.endMs - previous.startMs)) out[duplicate] = segment;
+      continue;
     }
     out.push(segment);
   }
-  return out.map(({ chunkIndex, boundaryKey, ...segment }) => segment);
+  return out.map(({ chunkIndex, boundaryKeys, ...segment }) => segment).sort((a,b)=>a.startMs-b.startMs || a.endMs-b.endMs);
 }

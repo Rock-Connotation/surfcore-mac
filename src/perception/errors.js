@@ -1,5 +1,5 @@
 export class PerceptionError extends Error {
-  constructor(code, error, hint, { retryable = false, stage = null, cause } = {}) {
+  constructor(code, error, hint, { retryable = false, stage = null, cause, reason } = {}) {
     super(error || 'ASR operation failed', cause ? { cause } : undefined);
     this.name = 'PerceptionError';
     this.code = code || 'ASR_FAILED';
@@ -7,6 +7,7 @@ export class PerceptionError extends Error {
     this.hint = hint || 'Check the ASR job details and retry after correcting the reported issue.';
     this.retryable = Boolean(retryable);
     this.stage = stage;
+    if (reason) this.reason = reason;
   }
 }
 
@@ -22,6 +23,7 @@ export function errorRecord(error, fallback = {}) {
       hint: String(error.hint),
       retryable: Boolean(error.retryable),
       stage: error.stage || null,
+      ...(error.reason ? { reason: String(error.reason) } : {}),
     };
   }
   return {

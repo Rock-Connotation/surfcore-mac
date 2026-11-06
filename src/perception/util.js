@@ -310,6 +310,7 @@ export function makeCacheKey(request, execution) {
     acquiredRanges: request.asset.acquiredRanges,
     timelineMap: request.asset.timelineMap,
     normalizer: 'pcm-s16le-16000-mono-v1',
+    processingAlgorithmVersion: 'strict-core-retry-boundary-v2',
     chunking: { coreMs: 240000, overlapMs: 1500 },
     provider: execution.engine?.provider || 'whisper.cpp',
     runtimeVersion: execution.engine?.runtimeVersion || null,
@@ -345,6 +346,7 @@ export function publicJob(job) {
       hint: safe.error.hint,
       retryable: Boolean(safe.error.retryable),
       stage: safe.error.stage || null,
+      ...(safe.error.reason ? { reason: safe.error.reason } : {}),
     };
   }
   if (safe.diagnostics) {

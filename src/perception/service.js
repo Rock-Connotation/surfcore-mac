@@ -171,9 +171,7 @@ function planChunks(intervals) {
         processedRange: { startMs: sourceAt(coreStart), endMs: sourceAt(coreEnd) },
         boundaryBefore: coreStart > interval.localStartMs,
         boundaryAfter: coreEnd < interval.localEndMs,
-        boundaryKey: coreStart > interval.localStartMs
-          ? `${sourceAt(coreStart)}`
-          : (coreEnd < interval.localEndMs ? `${sourceAt(coreEnd)}` : null),
+        boundaryKeys: [coreStart > interval.localStartMs ? `${sourceAt(coreStart)}` : null, coreEnd < interval.localEndMs ? `${sourceAt(coreEnd)}` : null].filter(Boolean),
       };
       chunks.push(chunk);
       coreStart = coreEnd;
@@ -188,14 +186,13 @@ function mapChunkSegments(segments, chunk) {
     const startMs = chunk.sourceStartMs + segment.startMs;
     const endMs = chunk.sourceStartMs + segment.endMs;
     if (startMs >= endMs || endMs > chunk.sourceEndMs + 1000) continue;
-    const center = Math.floor((startMs + endMs) / 2);
-    if (center < chunk.coreSourceStartMs || center > chunk.coreSourceEndMs) continue;
+    if (endMs <= chunk.coreSourceStartMs || startMs >= chunk.coreSourceEndMs) continue;
     out.push({
       startMs: Math.round(startMs),
       endMs: Math.round(endMs),
       text: segment.text,
       chunkIndex: chunk.index,
-      boundaryKey: chunk.boundaryKey,
+      boundaryKeys: chunk.boundaryKeys,
     });
   }
   return out;
@@ -647,8 +644,8 @@ export function createPerceptionService({
   async function loadCheckpoint(job, chunk, cacheKey) {
     if (!job.checkpointFrom) return null;
     const checkpoint = readJson(checkpointFile(job.checkpointFrom, chunk.index));
-    if (!checkpoint || checkpoint.schemaVersion !== SCHEMA_VERSION || checkpoint.cacheKey !== cacheKey || stableStringify(checkpoint.chunk) !== stableStringify(chunk) || !Array.isArray(checkpoint.segments)) return null;
-    const digest = crypto.createHash('sha256').update(stableStringify({ cacheKey, chunk, segments: checkpoint.segments })).digest('hex');
+    if (!checkpoint || checkpoint.schemaVersion !== SCHEMA_VERSION || checkpoint.cacheKey !== cacheKey || stableStringify(checkpoint.chunk) !== stableStringify(chunk) || !Array.isArray(checkpoint.segments) || !Array.isArray(checkpoint.warnings) || !checkpoint.warnings.every(w => w && typeof w.code === 'string' && typeof w.message === 'string')) return null;
+    const digest = crypto.createHash('sha256').update(stableStringify({ cacheKey, chunk, segments: checkpoint.segments, warnings: checkpoint.warnings })).digest('hex');
     if (checkpoint.digest !== digest || !checkpoint.segments.every((segment) => Number.isSafeInteger(segment.startMs) && Number.isSafeInteger(segment.endMs) && segment.startMs >= chunk.sourceStartMs && segment.endMs <= chunk.sourceEndMs && segment.endMs > segment.startMs && typeof segment.text === 'string')) return null;
     return checkpoint;
   }
@@ -755,7 +752,7 @@ export function createPerceptionService({
       const jobDir = path.dirname(jobFile(lead.jobId));
       const normalizedFile = path.join(jobDir, 'normalized.wav');
       const planned = planChunks(buildWorkIntervals(request, Math.min(media.durationMs, request.asset.durationMs)).intervals);
-      await checkDiskSpace(jobDir, media.durationMs, planned, resourcePolicy, dependencies.statfs);
+      await checkDiskSpace(jobDir, media.durationMs, [...planned, ...planned], resourcePolicy, dependencies.statfs);
       updateRunnerProgress(runner, 'normalize');
       await normalizeAudio(sourcePath, normalizedFile, tools.ffmpegPath, { signal: runner.controller.signal, spawnImpl, cwd: jobDir });
       const normalizedStats = measurePcm16(normalizedFile);
@@ -802,6 +799,7 @@ export function createPerceptionService({
         const checkpoint = checkpointFromJob ? await loadCheckpoint(checkpointFromJob, chunk, cacheKey) : null;
         if (checkpoint) {
           runner.segments.push(...checkpoint.segments);
+          runner.warnings.push(...checkpoint.warnings);
           runner.processedRanges = normalizeRanges([...runner.processedRanges, checkpoint.chunk.processedRange], 'processedRanges', { allowEmpty: true });
           chunkDone += 1;
           updateRunnerProgress(runner, 'transcribe', { chunksDone: chunkDone, chunksTotal: chunks.length });
@@ -811,23 +809,39 @@ export function createPerceptionService({
           updateRunnerProgress(runner, 'extract', { chunksDone: chunkDone, chunksTotal: chunks.length });
           await extractChunk(normalizedFile, chunkFile, tools.ffmpegPath, chunk.localStartMs, chunk.durationMs, { signal: runner.controller.signal, spawnImpl, cwd: jobDir });
           updateRunnerProgress(runner, 'transcribe', { chunksDone: chunkDone, chunksTotal: chunks.length });
-          const chunkSegments = await transcribeChunk({
+          const transcribe = (audioPath, outputPath, durationMs) => transcribeChunk({
             executable: config.engine.executable,
             modelPath: model.descriptor.model.path,
             runtimeVersion,
             language: request.languageHint,
             backend: config.engine.backend,
-            audioPath: chunkFile,
-            outputBase,
-            durationMs: chunk.durationMs,
+            audioPath,
+            outputBase: outputPath,
+            durationMs,
             signal: runner.controller.signal,
             spawnImpl,
             cwd: jobDir,
           });
-          const mappedSegments = mapChunkSegments(chunkSegments, chunk);
-          const checkpointPayload = { schemaVersion: SCHEMA_VERSION, cacheKey, chunk, segments: mappedSegments, digest: crypto.createHash('sha256').update(stableStringify({ cacheKey, chunk, segments: mappedSegments })).digest('hex') };
+          let mappedChunk = chunk, chunkSegments, chunkWarnings = [];
+          try { chunkSegments = await transcribe(chunkFile, outputBase, chunk.durationMs); }
+          catch (error) {
+            const coreDuration = chunk.coreSourceEndMs - chunk.coreSourceStartMs;
+            if (runner.controller.signal.aborted || error?.code !== 'OUTPUT_INVALID' || error?.reason !== 'segment-out-of-bounds' || coreDuration === chunk.durationMs) throw error;
+            const coreFile = path.join(jobDir, `chunk-${String(chunk.index).padStart(5, '0')}-core.wav`);
+            const coreOutput = path.join(jobDir, `chunk-${String(chunk.index).padStart(5, '0')}-core-transcript`);
+            const coreLocalStart = chunk.localStartMs + chunk.coreSourceStartMs - chunk.sourceStartMs;
+            updateRunnerProgress(runner, 'extract', { chunksDone: chunkDone, chunksTotal: chunks.length });
+            await extractChunk(normalizedFile, coreFile, tools.ffmpegPath, coreLocalStart, coreDuration, { signal: runner.controller.signal, spawnImpl, cwd: jobDir });
+            updateRunnerProgress(runner, 'transcribe', { chunksDone: chunkDone, chunksTotal: chunks.length });
+            chunkSegments = await transcribe(coreFile, coreOutput, coreDuration);
+            mappedChunk = { ...chunk, sourceStartMs: chunk.coreSourceStartMs, sourceEndMs: chunk.coreSourceEndMs };
+            chunkWarnings = [warning('ASR_CORE_RETRY', `Range ${chunk.coreSourceStartMs}-${chunk.coreSourceEndMs} ms was reprocessed without overlap after an invalid boundary timestamp; boundary wording may be incomplete.`)];
+          }
+          const mappedSegments = mapChunkSegments(chunkSegments, mappedChunk);
+          const checkpointPayload = { schemaVersion: SCHEMA_VERSION, cacheKey, chunk, segments: mappedSegments, warnings: chunkWarnings, digest: crypto.createHash('sha256').update(stableStringify({ cacheKey, chunk, segments: mappedSegments, warnings: chunkWarnings })).digest('hex') };
           for (const consumer of activeConsumers(runner)) atomicWriteJson(checkpointFile(consumer.jobId, chunk.index), checkpointPayload);
           runner.segments.push(...mappedSegments);
+          runner.warnings.push(...chunkWarnings);
           runner.processedRanges = normalizeRanges([...runner.processedRanges, chunk.processedRange], 'processedRanges', { allowEmpty: true });
           chunkDone += 1;
           updateRunnerProgress(runner, 'transcribe', { chunksDone: chunkDone, chunksTotal: chunks.length });
@@ -915,6 +929,7 @@ export function createPerceptionService({
           job.progress = { ...job.progress, phase: 'interrupted' };
           persist(job);
         }
+        if (job.state === 'queued') job.cacheKey = makeCacheKey(job.request, job.execution);
         jobs.set(job.jobId, job);
         if (job.state === 'queued') queued.push(job);
       } catch {}
