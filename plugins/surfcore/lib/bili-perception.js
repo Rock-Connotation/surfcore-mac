@@ -72,6 +72,8 @@ export function createBiliPerceptionService({ asrService, stateDir, getCharacter
       const part = resolveBiliPart(view, { page: job.request.page, cid: job.request.cid })
       if (!current(job)) throw problem('STALE_CHARACTER', '作业所属角色已切换。', '切回原角色并确认 epoch 后再恢复。')
       const playurl = await api.fetchPlayurl(part, { signal: controller.signal })
+      if (controller.signal.aborted) throw problem('bili.job.cancelled', '作业已取消。', '如需处理，请恢复或重新提交。')
+      if (!current(job)) throw problem('STALE_CHARACTER', '作业所属角色已切换。', '切回原角色并确认 epoch 后再恢复。')
       const precisePart = normalizeBiliPartTimeline(part, playurl)
       update(job, { part: { bvid: precisePart.bvid, cid: precisePart.cid, page: precisePart.page, pageCount: precisePart.pageCount, durationMs: precisePart.durationMs, declaredDurationMs: precisePart.declaredDurationMs, durationSource: precisePart.durationSource, title: redact(precisePart.title) }, progress: { stage: 'acquire' } })
       const media = await prepareMedia({ part: precisePart, playurl, dataRoot: assetsRoot, needAudio: job.request.asr, needVideo: job.request.frames, signal: controller.signal })

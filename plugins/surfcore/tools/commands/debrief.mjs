@@ -85,9 +85,8 @@ async function main() {
   const view = await api.fetchView(parsed.bvid)
   assertExpectedCharacter()
   const declaredPart = resolveBiliPart(view, { page: parsed.page, cid: options.cid, urlPage: parsed.urlPage })
-  const playurl = await api.fetchPlayurl?.(declaredPart)
+  const part = options.shallow ? declaredPart : normalizeBiliPartTimeline(declaredPart, await api.fetchPlayurl?.(declaredPart))
   assertExpectedCharacter()
-  const part = normalizeBiliPartTimeline(declaredPart, playurl)
   const clean = redactor(), warnings = []
   const materials = { subtitle: { status: 'missing' }, speech: { status: options.shallow ? 'skipped' : 'pending' }, frames: { status: 'skipped' } }
   const light = await lightMaterials(part, view, clean, options)
@@ -129,6 +128,6 @@ async function main() {
   const history = options['no-history'] ? { status: 'skipped' } : appendWatch({ at: new Date().toISOString(), observationId: activityId, bvid: part.bvid, aid: part.aid, cid: part.cid, page: part.page, pageCount: part.pageCount, title: clean(part.title), up: clean(part.owner.name), upMid: part.owner.mid, duration: part.durationMs / 1000, tname: part.tname, mode: options.shallow ? 'meta' : 'full', source: 'debrief', frames: Boolean(materials.frames.sheet), frameStatus: materials.frames.status, sheet: materials.frames.sheet ?? '', speechStatus: materials.speech.status, speechSource: materials.speech.source ?? '', jobId: materials.speech.jobId ?? '', transcriptId: materials.speech.result?.transcriptId ?? '', coverage: materials.speech.result?.coverage ?? null }, { file: historyFile })
   let cache = ''
   try { cache = formatShotsStats(pruneShots()) } catch { warnings.push({ code: 'bili.cache.prune-failed', error: '缓存清理失败。', hint: '检查 shots 目录权限。' }) }
-  render({ ok: true, cache, mode: options.shallow ? 'shallow' : options.asr ?? 'auto', part: { bvid: part.bvid, cid: part.cid, page: part.page, pageCount: part.pageCount, durationMs: part.durationMs, title: clean(part.title), owner: clean(part.owner.name), description: clean(view.desc).slice(0, 300) }, materials, warnings, history: { status: history.status ?? (history.ok ? 'recorded' : history.reason === 'duplicate' ? 'duplicate' : 'failed') } }, !!options.json)
+  render({ ok: true, cache, mode: options.shallow ? 'shallow' : options.asr ?? 'auto', part: { bvid: part.bvid, cid: part.cid, page: part.page, pageCount: part.pageCount, durationMs: part.durationMs, declaredDurationMs: part.declaredDurationMs, durationSource: part.durationSource, title: clean(part.title), owner: clean(part.owner.name), description: clean(view.desc).slice(0, 300) }, materials, warnings, history: { status: history.status ?? (history.ok ? 'recorded' : history.reason === 'duplicate' ? 'duplicate' : 'failed') } }, !!options.json)
 }
 main().catch(error => { const result = { ok: false, ...structuredError(error), ...(error?.materials ? { materials: error.materials } : {}) }; render(result, process.argv.includes('--json')); process.exitCode = 1 })
