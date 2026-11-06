@@ -5,6 +5,20 @@
 
 ---
 
+
+## 快照：2026-11-06（macOS 开发工具与设计文档整理）
+
+- 当前工作树：`../surfcore-tooling-docs`，分支 `docs/tooling-macos`，基于 `feat/mac` 的 v0.8.8 / `0deb826`；本克隆没有 `dev`；开发工具与设计交接分批本地提交，未合并、未推送、未发布。
+- 已整理：AGENTS 的条件入口 → [开发工具调用指南](guides/DEVELOPMENT-TOOLS.md)；按代码检索、依赖查证、UI/宿主操作、故障诊断及验证路由 tools/skills。
+- 已归档：本地 [macOS 技术设计](design/macos/README.md)，8 份原稿字节不变、下载原件保留，新增首页；设计仍待实现/实机验证。
+- 本机工具/技能核验与其他项目的调用抽样见本地 [盘点记录](research/2026-11-06-development-tools.md)。安装、会话暴露和成功调用分别记录。
+- 本地资料沿用 `docs/design/`、`docs/research/` 的 Git 忽略策略；跨工作树/设备交接要另行复制，普通 Git 合并不会带过去。
+- 验证：原稿 8/8 一致，设计相对链接 53 处有效；完整 audit 结果见 [case](cases/2026-11-06-development-tools-and-macos-design.md)。插件测试在更新器用例失败，未修改基线同样复现，不能发布。
+- 下一步：本次文档范围已整理；按明确的后续任务选择设计工作包。门禁中的 macOS 路径/Windows 换行等失败单列，不把归档视作已完成平台适配。
+- 备份与可转发发布交接块：见上述 case；无需重启 DSH。
+
+---
+
 ## 快照：2026-11-03 04:05（v0.8.7 正式发布）
 
 ### 当前事实

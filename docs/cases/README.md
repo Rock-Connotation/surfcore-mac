@@ -6,7 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
-| 2026-11-06 | [开发工具路由](2026-11-06-development-tools-and-macos-design.md) | 按项目任务选择 tools/skills，区分安装与当前可调用状态 | 文档，未发布 |
+| 2026-11-06 | [开发工具路由与 macOS 设计归档](2026-11-06-development-tools-and-macos-design.md) | 项目相关工具按任务调用；8 份设计原稿保留本地资料边界 | 文档，未发布 |
 | 2026-11-03 | [人格语气层重复/未进目的提示词](2026-11-03-persona-tone-dedup.md) | tone 不再回退 core；相同内容去重；purpose 接语气层 | 待发布 |
 | 2026-11-03 | [群里的 #sl 刷屏指令不唤醒 SurfCore](2026-11-03-ignore-hash-commands.md) | 非主人纯 # 短指令过滤；主人/@/引用放行 | 待发布 |
 | 2026-11-03 | [B站 @ 鱼不在“我那一层”回复](2026-11-03-bili-at-floor-reply.md) | @ 一级评论补 root=source；digest 给 @ 打坐标；修 resolveLatestReply | 待发布 |

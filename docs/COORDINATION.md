@@ -18,6 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
+| **macOS 工具与文档整理** | `../surfcore-tooling-docs` | `docs/tooling-macos` @ `0deb826` | 开发工具路由、macOS 设计原稿归档与索引；仅文档 | 文档整理完成并分批本地提交；audit 首轮 136/143，安装修正后 1 项复测通过、余 6 项；插件更新器基线失败；本地设计另行交接 |
 | **协调/发布**（本对话） | `D:\deepseekwork\surfcore` | `dev` | 规则、登记表、合并、发版 | 进行中 |
 | **bug 修复** | `D:\deepseekwork\surfcore-bugfix` | `fix/release-0.8.7` @ `e20a464` | 3c99c54..e20a464 的修复 | ✅ 已在 dev 历史内；等新交接 |
 | **Minecraft 拓展** | `D:\deepseekwork\surfcore-mc` | `feat/minecraft` @ `f3bd46f` | MC 平台适配器/工具集/卡片/记忆 scope | ⏸ 已从 dev 撤回，分支保留；等完成 |
