@@ -4122,3 +4122,9 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 
 - 真机两次照抄“编号 答案”只能证明自由文本回路；不要将占位词放进可复制回复引号。提示应写实际编号并说明空格后输入完整选项文字或自己的回答，不替用户把“答案”解析成某选项。
 - 回归必须穿过真实mux通知与handleIncoming，并断言官方answers.selected命中选项、来源保留、无普通模型唤醒。见[case](cases/2026-11-07-qq-answer-hint.md)。
+
+
+## 2026-11-07 B站整数声明与精确播放时间线
+
+- view.pages.duration=175秒与playurl.timelength=174613ms不是同一精度。完整音轨FFprobe174613ms若按175000请求，会制造387ms假缺口。仅在同一选定BV/CID的精确播放时长与原整秒声明一致时使用精确值，并保留declaredDurationMs/durationSource；原始下载、字节、解码和真实缺口检查不放宽。
+- 在fetchPlayurl新增await后必须再次检查角色/取消，之后才允许媒体获取。--shallow不应新增播放接口前提。视频流比音轨短时仍分别记录缺口，不把完整音轨等同于完整画面。见[case](cases/2026-11-07-bili-precise-timeline.md)。

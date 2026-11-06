@@ -37,6 +37,26 @@ let cancelDone = false; const cancel = lateService.cancel(late.jobId).then(resul
 await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(cancelDone, false)
 releaseResult({ state: 'completed', result: { segments: [], coverage: { complete: true } } })
 assert.equal((await cancel).state, 'cancelled'); assert.equal((await lateService.getJob(late.jobId)).state, 'cancelled'); assert.ok(childCancelled >= 1)
+// A slow playurl lookup must not start acquisition after role/cancel changes.
+for (const boundary of ['role', 'cancel']) {
+  let activeRole = { ...role }, releasePlayurl, markPlayurl, prepares = 0;
+  const playurlStarted = new Promise(resolve => { markPlayurl = resolve });
+  const guardedService = createBiliPerceptionService({ asrService: asr, stateDir: path.join(root, `playurl-${boundary}`), getCharacter: () => activeRole,
+    createApi: () => ({ async fetchView() { return view }, async fetchPlayurl() { markPlayurl(); return await new Promise(resolve => { releasePlayurl = resolve }) } }),
+    prepareMedia: async () => { prepares++; throw new Error('acquisition must not start after boundary') } });
+  const job = await guardedService.submitBili(request); await playurlStarted;
+  let cancellation;
+  if (boundary === 'role') activeRole = { ...role, epoch: 2 };
+  else cancellation = guardedService.cancel(job.jobId);
+  releasePlayurl({});
+  if (cancellation) await cancellation;
+  let result;
+  for (let i = 0; i < 100; i++) { result = await guardedService.getJob(job.jobId); if (!['queued', 'running'].includes(result.state)) break; await new Promise(resolve => setTimeout(resolve, 5)) }
+  assert.equal(prepares, 0, `late playurl must not acquire after ${boundary}`);
+  assert.equal(result.state, boundary === 'role' ? 'interrupted' : 'cancelled');
+  if (boundary === 'role') assert.equal(result.error.code, 'STALE_CHARACTER');
+  await guardedService.dispose();
+}
 if (process.platform !== 'win32') {
 // A GUI Host can have an empty PATH. The executable fixture must use the
 // same Node as the test runner, including when its absolute path has spaces.

@@ -50,6 +50,13 @@ const precise = await prepareBiliMedia({ ...opts, part: precisePart, playurl: { 
 assert.equal(precise.durationMs, 174613); assert.equal(precise.audio.complete, true); assert.deepEqual(precise.audio.missingRanges, [])
 const short = await prepareBiliMedia({ ...opts, part: precisePart, playurl: { timelength: 174613, durl: preciseSegments }, probeImpl: async () => ({ durationMs: 174000, hasAudio: true }) })
 assert.equal(short.audio.status, 'partial'); assert.deepEqual(short.audio.missingRanges, [{ startMs: 174000, endMs: 174613 }])
+// Real DASH shape: exact audio timeline does not hide a shorter video stream.
+const preciseDash = await prepareBiliMedia({ ...opts, part: precisePart, needVideo: true,
+  playurl: { timelength: 174613, dash: { duration: 175, audio: [{ baseUrl: 'https://example.invalid/audio', codecs: 'mp4a' }], video: [{ baseUrl: 'https://example.invalid/video', id: 80, codecs: 'avc1' }] } },
+  probeImpl: async file => file.includes('audio-') ? { durationMs: 174613, hasAudio: true } : { durationMs: 174600, hasVideo: true } });
+assert.equal(preciseDash.audio.complete, true);
+assert.equal(preciseDash.video.complete, false);
+assert.deepEqual(preciseDash.video.missingRanges, [{ startMs: 174600, endMs: 174613 }]);
 const truncated = await prepareBiliMedia({ ...opts, playurl: { dash: { audio: [{ baseUrl: 'https://example.invalid/audio' }] } }, fetchImpl: async () => new Response('abc', { status: 206, headers: { 'content-range': 'bytes 0-2/10', 'content-length': '3' } }) })
 assert.equal(truncated.audio.status, 'failed')
 assert.equal(truncated.audio.segments[0].error.code, 'media.range.invalid')
