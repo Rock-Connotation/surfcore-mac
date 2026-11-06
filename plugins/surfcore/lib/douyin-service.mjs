@@ -9,15 +9,16 @@ const FEED = '/aweme/v1/web/tab/feed/';
 const error = (code, message, hint) => ({ ok: false, code, error: message, hint });
 const stale = () => error('DOUYIN_STALE', '角色或操作已变化', '切回当前角色后重新操作。');
 const busy = () => error('DOUYIN_BUSY', '抖音操作正在进行', '先完成或关闭当前操作。');
+const transitioning = () => error('DOUYIN_TRANSITION', '角色正在切换或恢复', '等待角色操作完成后重试。');
 const auth = () => error('DOUYIN_NEEDS_AUTH', '未取得当前账号的有效登录信息', '在独立浏览器中完成登录或验证后重试。');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export function createDouyinService({ stateDir, getCharacter, browserFactory = createDouyinBrowser, now = Date.now, waitMs = 20000 } = {}) {
   if (!path.isAbsolute(stateDir) || typeof getCharacter !== 'function') throw new Error('stateDir and getCharacter required');
-  let generation = 0, active = null, candidate = null, disposed = false, lastError = null, pageState = 'idle';
+  let generation = 0, active = null, candidate = null, disposed = false, transitionDepth = 0, lastError = null, pageState = 'idle';
   const role = () => { const r = getCharacter(); return r && { characterId: r.characterId ?? r.id, characterEpoch: r.characterEpoch ?? r.epoch }; };
   const matches = c => { const r = role(); return !!r && typeof r.characterId === 'string' && /^[A-Za-z0-9_-]+$/.test(r.characterId) && c?.characterId === r.characterId && c?.characterEpoch === r.characterEpoch; };
-  const current = (op) => !disposed && generation === op.gen && matches(op.context);
+  const current = (op) => !disposed && transitionDepth === 0 && generation === op.gen && matches(op.context);
   const dir = c => path.join(stateDir, 'characters', c.characterId, 'douyin');
   function safeDirectory(c, create) {
     let base = stateDir;
@@ -116,13 +117,15 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
       return view(c);
     },
     async setEnabled(value, context) {
+      if (transitionDepth) return transitioning();
       if (typeof value !== 'boolean') return error('DOUYIN_INVALID', '开关值无效', '请选择开启或关闭。');
       if (!matches(context) || disposed) return stale();
       if (value && active) return busy();
-      if (!value) { const result = await cancel(); if (!result.ok) return result; if (!matches(context) || disposed) return stale(); }
+      if (!value) { const result = await cancel(); if (!result.ok) return result; if (transitionDepth) return transitioning(); if (!matches(context) || disposed) return stale(); }
       try { write(context, 'settings.json', { enabled: value }); return view(context); } catch { return ioError(); }
     },
     async beginLogin(context) {
+      if (transitionDepth) return transitioning();
       if (!matches(context) || disposed) return stale(); if (active) return busy();
       try { if (!enabled(context)) return error('DOUYIN_DISABLED', '抖音渠道未开启', '先开启抖音渠道。'); } catch { return ioError(); }
       candidate = null; lastError = null; pageState = 'login_required';
@@ -135,6 +138,7 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
       return view(context);
     },
     async confirmAccount({ candidateId, ...context } = {}) {
+      if (transitionDepth) return transitioning();
       if (!matches(context) || disposed) return stale(); const op = active;
       if (!op || op.kind !== 'login' || op.confirming || !current(op)) return busy();
       if (!candidate || candidate.id !== candidateId || candidate.gen !== op.gen) return error('DOUYIN_CANDIDATE_MISMATCH', '登录账号候选已失效', '重新检查浏览器中的账号后确认。');
@@ -148,6 +152,7 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
       candidate = null; const result = await stop(op); if (!result.ok) return result; if (!current(op)) return stale(); candidate = null; pageState = 'idle'; return view(context);
     },
     async readFeed(context) {
+      if (transitionDepth) return transitioning();
       if (!matches(context) || disposed) return stale(); if (active) return busy();
       let account; try { if (!enabled(context)) return error('DOUYIN_DISABLED', '抖音渠道未开启', '先开启抖音渠道。'); account = binding(context)?.identity; } catch { return ioError(); }
       if (!account) return auth();
@@ -167,7 +172,18 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
       if (!Array.isArray(feed.items) || !feed.items.length) return finish(op, error('DOUYIN_FEED_EMPTY', '首页推荐为空', '检查首页内容和账号状态后重试。'));
       return finish(op, { ok: true, source: 'homepage-recommendation', items: feed.items.slice(0, 5) });
     },
-    async closeLogin(context) { if (!matches(context) || disposed) return stale(); if (!active || active.kind !== 'login') return busy(); return cancel(); },
+    async closeLogin(context) { if (transitionDepth) return transitioning(); if (!matches(context) || disposed) return stale(); if (!active || active.kind !== 'login') return busy(); return cancel(); },
+    async withTransition(action) {
+      if (disposed) { const failure = stale(); throw Object.assign(new Error(failure.error), failure); }
+      if (typeof action !== 'function') { const failure = error('DOUYIN_INVALID', '角色操作无效', '重试角色切换或恢复。'); throw Object.assign(new Error(failure.error), failure); }
+      transitionDepth++;
+      try {
+        const result = await cancel();
+        if (!result.ok) throw Object.assign(new Error(result.error), result);
+        if (disposed) { const failure = stale(); throw Object.assign(new Error(failure.error), failure); }
+        return await action();
+      } finally { transitionDepth--; }
+    },
     async invalidate() { return cancel(); },
     async dispose() { disposed = true; return cancel(); },
   };
