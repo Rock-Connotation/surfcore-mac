@@ -6,6 +6,7 @@ import { fail, errorRecord } from './errors.js';
 import { probeAudio, normalizeAudio, extractChunk, measurePcm16 } from './media.js';
 import { runProcess } from './process.js';
 import { transcribeChunk, deduplicateBoundarySegments } from './whisper.js';
+import { resourceLimits, checkDuration, checkAssetSize, checkDiskSpace } from './resources.js';
 import {
   atomicWriteJson,
   isPathWithin,
@@ -246,6 +247,7 @@ export function createPerceptionService({
   ffmpeg,
   ffprobe,
   getCharacter,
+  limits,
   dependencies = {},
 } = {}) {
   if (typeof dataRoot !== 'string' || !path.isAbsolute(dataRoot)) {
@@ -270,6 +272,7 @@ export function createPerceptionService({
   const now = dependencies.now || Date.now;
   const makeId = dependencies.id || crypto.randomUUID;
   const hashFile = dependencies.hashFile || sha256File;
+  const resourcePolicy = resourceLimits(limits);
   const TERM_WAIT_MS = Number.isSafeInteger(dependencies.termWaitMs) ? dependencies.termWaitMs : 1200;
   const KILL_WAIT_MS = Number.isSafeInteger(dependencies.killWaitMs) ? dependencies.killWaitMs : 1200;
   const LOCK_WAIT_MS = Number.isSafeInteger(dependencies.lockWaitMs) ? Math.max(0, dependencies.lockWaitMs) : 5000;
@@ -441,6 +444,24 @@ export function createPerceptionService({
     return runner;
   }
 
+  function checkQueueCapacity(request, executionSnapshot) {
+    const runner = runners.get(makeCacheKey(request, executionSnapshot));
+    // A new consumer of already-running work does not take a waiting slot.
+    if (runner?.state === 'running') {
+      if (runner.controller?.signal.aborted || !activeConsumers(runner).length) throw fail('ASR_QUEUE_BUSY', 'The previous ASR execution is stopping.', 'Wait briefly for the existing process to exit, then submit again.', { retryable: true, stage: 'resources' });
+      return;
+    }
+    const waiting = queue.reduce((sum, item) => sum + activeConsumers(item).length, 0);
+    if (waiting >= resourcePolicy.maxQueuedConsumers) throw fail('ASR_QUEUE_FULL', 'The local ASR waiting queue is full.', 'Wait for a queued job to start or cancel one before submitting another.', { retryable: true, stage: 'resources' });
+  }
+
+  function failDeclaredDuration(job) {
+    try { checkDuration(job.request.asset.durationMs, resourcePolicy); return false; } catch (error) {
+      job.state = 'failed'; job.error = errorRecord(error); job.finishedAt = nowIso();
+      job.progress = { ...job.progress, phase: 'failed' }; persist(job); return true;
+    }
+  }
+
   function saveJobProgress(job, runner) {
     if (job.state !== 'running') return;
     job.progress = clone(runner.progress);
@@ -461,6 +482,7 @@ export function createPerceptionService({
     }
     const statBefore = await fs.promises.stat(realPath);
     if (!statBefore.isFile()) throw fail('ASSET_UNAVAILABLE', 'The registered media path is not a file.', 'Register a readable audio or video file under the Host perception asset directory.', { stage: 'asset' });
+    checkAssetSize(statBefore.size, resourcePolicy);
     let digest;
     try { digest = await hashFile(realPath, { signal }); } catch (error) {
       if (signal?.aborted) throw fail('ASR_CANCELLED', 'The job was cancelled.', 'Submit a new ASR job if this audio is still needed.', { stage: 'asset' });
@@ -698,6 +720,7 @@ export function createPerceptionService({
       if (!verifiedJobs.length) return;
       const lead = verifiedJobs[0].job;
       const request = lead.request;
+      checkDuration(request.asset.durationMs, resourcePolicy);
       const config = lead.execution;
       const cacheKey = makeCacheKey(request, config);
       runner.key = cacheKey;
@@ -706,6 +729,9 @@ export function createPerceptionService({
       const model = await verifyModel(config, runner.controller.signal);
       if (config.engine.provider !== 'whisper.cpp') throw fail('PROVIDER_UNSUPPORTED', 'The selected ASR provider is not supported.', 'Select the verified whisper.cpp provider.', { stage: 'runtime' });
       const runtimeVersion = await getRuntimeVersion(config, runner.controller.signal);
+      const tools = await mediaTools(config);
+      const media = await probeAudio(verifiedJobs[0].verified.path, tools.ffprobePath, { signal: runner.controller.signal, spawnImpl, cwd: path.dirname(jobFile(lead.jobId)) });
+      checkDuration(media.durationMs, resourcePolicy);
       const cachedRaw = readJson(cacheFile(cacheKey));
       const modelDigest = config.engine?.model?.sha256 || null;
       const cached = safeCachedResult(cachedRaw, cacheKey, modelDigest);
@@ -724,12 +750,12 @@ export function createPerceptionService({
         return;
       }
 
-      const tools = await mediaTools(config);
-      const media = await probeAudio(verifiedJobs[0].verified.path, tools.ffprobePath, { signal: runner.controller.signal, spawnImpl, cwd: path.dirname(jobFile(lead.jobId)) });
       const sourcePath = verifiedJobs[0].verified.path;
       const inputFingerprint = verifiedJobs[0].verified.statFingerprint;
       const jobDir = path.dirname(jobFile(lead.jobId));
       const normalizedFile = path.join(jobDir, 'normalized.wav');
+      const planned = planChunks(buildWorkIntervals(request, Math.min(media.durationMs, request.asset.durationMs)).intervals);
+      await checkDiskSpace(jobDir, media.durationMs, planned, resourcePolicy, dependencies.statfs);
       updateRunnerProgress(runner, 'normalize');
       await normalizeAudio(sourcePath, normalizedFile, tools.ffmpegPath, { signal: runner.controller.signal, spawnImpl, cwd: jobDir });
       const normalizedStats = measurePcm16(normalizedFile);
@@ -937,8 +963,9 @@ export function createPerceptionService({
     await ensureReady();
     requireOwner();
     const executionSnapshot = clone(execution);
+    if (request.asset.durationMs <= resourcePolicy.maxDurationMs) checkQueueCapacity(request, executionSnapshot);
     const job = createJob(request, executionSnapshot);
-    addJobToRunner(job);
+    if (!failDeclaredDuration(job)) addJobToRunner(job);
     return { jobId: job.jobId };
   }
 
@@ -1008,8 +1035,10 @@ export function createPerceptionService({
     const previousRequest = { ...clone(original.request) };
     delete previousRequest.jobId;
     const request = normalizeRequest(previousRequest, { getCharacter: () => current, now, id: makeId });
-    const next = createJob(request, clone(original.execution), { retryOf: original.jobId, checkpointFrom: original.jobId });
-    addJobToRunner(next);
+    const executionSnapshot = clone(original.execution);
+    if (request.asset.durationMs <= resourcePolicy.maxDurationMs) checkQueueCapacity(request, executionSnapshot);
+    const next = createJob(request, executionSnapshot, { retryOf: original.jobId, checkpointFrom: original.jobId });
+    if (!failDeclaredDuration(next)) addJobToRunner(next);
     return { jobId: next.jobId, retryOf: original.jobId };
   }
 
