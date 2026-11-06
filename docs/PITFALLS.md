@@ -4079,3 +4079,12 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 - 设置保存现场只确认了草稿未落盘、白名单为空以及fetch failed提示；复查原生配置GET为200，保全草稿后经重新读取/加入管理员/保存恢复。原失败请求响应未捕获，不能把启动时序当已证实根因；未新增自动重试逻辑。
 
 - 本轮功能提交后最终文档audit出现163/164：唯一失败是test-release-manifest，清单仍对应旧HEAD，并非QQ功能失败。--verify-ref HEAD读取的是已提交清单，不能在清单提交前拿旧HEAD验证新工作区清单。顺序应为：提交本批文档→从最新Git对象生成清单→提交清单→verify-ref HEAD→最终HEAD audit。保留原失败日志，不把旧工作区通过当作新HEAD已通过。
+
+
+## 2026-11-07 QQ 常驻：进程归属、空锁窗口与交互编号
+
+- 控制台端口打开不代表QQ桥接；锁PID存活也不是结束该进程的凭证。POSIX启停必须同时核对认证状态/根目录、锁PID、精确可执行与参数、该PID监听归属；未知给code/error/hint，不能误报成功或强杀。参数只能传execFile数组，不能交shell解释。
+- writeFileSync(wx)仍有open后write前的空锁窗口。POSIX空/畸形锁可能属于正在启动者，保留并拒绝；有效PID存活/EPERM也拒绝。只自动归档明确ESRCH的有效锁，恢复目录串行并重验inode/content，防双实例。不要再用“端口没开”偷走活锁。
+- 先发送通知再登记pending会漏快速回复；同event重放不能取消原请求。先登记、进程内event去重和responding单飞；官方cancel匹配event/client。严格编号是interaction.requireRequestId=true显式开关，旧默认兼容；本独立profile启用。未知回执先核对，不自动重交；进程重启后的去重残余不得隐藏。
+- 真实进程夹具在额外seatbelt中无法exec本机setuid /bin/ps，连allow default也EPERM；这是无法核验时的安全拒绝。保留红灯并在隔离HOME、官方Node24下无额外seatbelt跑自有进程夹具；不放松产品判据。媒体audit显式FFMPEG_PATH/FFPROBE_PATH，别让精简PATH伪造工具缺失。
+- 真实审批须在真实agent turn内经官方approval.request，不用slash命令伪造turn。无害诊断临时设ask后恢复的是原有效策略值，会追加真实会话事件；不是回滚会话日志，也不代表恢复继承语义。诊断问答用multiSelect并通过真实buildQuestionAnswers核验，不能假设单选返回selected。

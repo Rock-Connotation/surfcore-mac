@@ -228,6 +228,8 @@ const tests = [
   // 主人提问回答编码（2026-10-29）：DSH 单选不允许 selected+custom 并存 →
   // 单选走 custom-only、多选保留 selected；[仅主人] 只收窄谁能答，不是授权凭证。
   'test-question-answers.mjs',
+  'test-qq-interactions.mjs',
+  'test-bridge-lock.mjs',
   // 主人特权操作审计（2026-10-29）：1MB×5 轮转、跨文件读尾、写入失败可见、90 天清理。
   'test-owner-audit.mjs',
   // 检查更新三态（2026-10-29 事故）：无 git / 无安装记录时按版本号判断；

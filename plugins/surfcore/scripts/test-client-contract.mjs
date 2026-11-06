@@ -85,6 +85,8 @@ for (const wanted of [
 }
 
 const source = fs.readFileSync(path.join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8');
+assert.ok(client.QQ_FIELDS.some(group => group.fields.some(field => field.path.join('.') === 'interaction.requireRequestId')),
+  'QQ 页必须提供提问/审批编号开关，不能只能手工改配置');
 assert.ok(source.includes('"/bili/automation"'), '设置页没有调用 /bili/automation');
 assert.ok(source.includes('AutomationCard'), '设置页没有今天用量卡片');
 assert.ok(source.includes('QqShareSection'), '设置页没有 QQ 分享段');

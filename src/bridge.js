@@ -916,6 +916,7 @@ function loadConfig() {
     ackMessage: file.ackMessage ?? '🤔 收到，正在思考…',
     sendDelayMs: file.sendDelayMs ?? 300,
     questionTimeoutMs: file.questionTimeoutMs ?? 5 * 60 * 1000,
+    interaction: { requireRequestId: file.interaction?.requireRequestId === true },
     consolePort: file.consolePort ?? 3100,
     consoleToken: file.consoleToken ?? '',
     // 价目表覆盖项（可选）。留空即用 src/model-prices.js 的官方默认价。
@@ -9485,6 +9486,8 @@ async function main() {
 
   // 待应答的提问/审批：convKey -> pending
   const pending = new Map(); // key -> { kind, rpcId, sessionId, ... }
+  const interactionEvents = new Set(); // already received or resolved in this bridge process
+  const interactionRequestIds = new Set();
 
   // QQ 发送队列（顺序发送 + 间隔，避免触发频率限制）
   let sendChain = Promise.resolve();
@@ -16159,6 +16162,7 @@ async function main() {
   // 取消/拒绝一个挂起的提问或审批，并给 DSH 回执（超时、被新请求覆盖时使用）
   async function cancelPendingEntry(entry) {
     if (!entry) return;
+    if (entry.responding) return; // an in-flight result may already have reached DSH
     try {
       if (entry.kind === 'approval') {
         await withTimeout(api.respond({
@@ -16180,18 +16184,38 @@ async function main() {
     }
   }
 
+  function assertInteractionReceipt(receipt) {
+    if (receipt?.result?.ok === false || receipt?.ok === false) {
+      const error = new Error('DSH 明确拒绝回执'); error.outcomeKnown = true; throw error;
+    }
+    if (receipt?.result?.ok !== true && receipt?.ok !== true) throw new Error('DSH 未确认回执');
+  }
+
   // 回答挂起的提问/审批
   async function handlePendingAnswer(p, answerText, key, isOwner = false, senderId = '', senderName = '') {
+    if (p.responding) return;
+    let answer = String(answerText ?? '').trim();
+    if (cfg.interaction.requireRequestId) {
+      const match = p.kind === 'approval' ? /^(\S+)\s+([a-f0-9]{8})$/i.exec(answer) : /^([a-f0-9]{8})\s+([\s\S]+)$/i.exec(answer);
+      const code = p.kind === 'approval' ? match?.[2] : match?.[1];
+      if (!match || code.toLowerCase() !== p.requestId) {
+        await sendToQQ(key, p.kind === 'approval' ? `请回复「通过 ${p.requestId}」或「拒绝 ${p.requestId}」。` : `请回复「${p.requestId} 答案」。`);
+        return;
+      }
+      answer = p.kind === 'approval' ? match[1] : match[2];
+    }
     if (p.kind === 'question') {
       // 防御：owner-only 的提问即使被调用也拒绝（正常路径在消费点已经拦住）。
       if (p.ownerOnly === true && !isOwner) return;
-      const answers = buildQuestionAnswers(p, answerText, { isOwner, sender: senderName });
+      const answers = buildQuestionAnswers(p, answer, { isOwner, sender: senderName });
+      p.responding = true; clearTimeout(p.timer);
       try {
-        const receipt = await api.respond({
+        const receipt = await withTimeout(api.respond({
           clientId: p.clientId,
           eventId: p.eventId,
           outcome: { kind: 'result', value: { answers } }
-        });
+        }), 5000, '回答回执');
+        assertInteractionReceipt(receipt);
         log(`已回答提问 (${key}):`, receipt);
         auditOwner('question.answer', {
           actor: auditActor(senderId, isOwner),
@@ -16202,8 +16226,14 @@ async function main() {
         // 只有回执成功才移除挂起，且必须仍是同一个挂起（防止期间被新请求覆盖）
         if (pending.get(key) === p) pending.delete(key);
       } catch (error) {
-        log('回答问题失败（保留挂起以便重试）:', error.message);
-        await sendToQQ(key, '⚠️ 回答提交失败，请再回复一次。');
+        if (error?.outcomeKnown && pending.get(key) === p) {
+          p.responding = false; armInteractionTimeout(key, p);
+          await sendToQQ(key, '⚠️ DSH 明确拒绝回答回执，请检查 DSH 后重试。');
+        } else {
+          if (pending.get(key) === p) pending.delete(key);
+          log('回答回执结果未知:', error.message);
+          await sendToQQ(key, '⚠️ 回答回执结果未知，请在 DSH 核对，不要重复提交。');
+        }
       }
       return;
     }
@@ -16212,7 +16242,7 @@ async function main() {
         await sendToQQ(key, '审批仅管理员可操作');
         return;
       }
-      const t = answerText.trim().toLowerCase();
+      const t = answer.trim().toLowerCase();
       let outcome = null;
       for (const w of APPROVE_WORDS) if (t === w) outcome = 'allowed-once';
       for (const w of REJECT_WORDS) if (t === w) outcome = 'rejected';
@@ -16220,12 +16250,14 @@ async function main() {
         await sendToQQ(key, '请回复「通过」或「拒绝」来决定这个审批');
         return;
       }
+      p.responding = true; clearTimeout(p.timer);
       try {
-        const receipt = await api.respond({
+        const receipt = await withTimeout(api.respond({
           clientId: p.clientId,
           eventId: p.eventId,
           outcome: { kind: 'result', value: outcome }
-        });
+        }), 5000, '审批回执');
+        assertInteractionReceipt(receipt);
         log(`已处理审批 (${key}): ${outcome}`, receipt);
         await sendToQQ(key, outcome === 'allowed-once' ? '✅ 已通过审批' : '❌ 已拒绝审批');
         auditOwner('approval.answer', {
@@ -16237,8 +16269,14 @@ async function main() {
         // 只有回执成功才移除挂起，且必须仍是同一个挂起（防止期间被新请求覆盖）
         if (pending.get(key) === p) pending.delete(key);
       } catch (error) {
-        log('处理审批失败（保留挂起以便重试）:', error.message);
-        await sendToQQ(key, '⚠️ 审批回执提交失败，请再回复一次「通过」或「拒绝」。');
+        if (error?.outcomeKnown && pending.get(key) === p) {
+          p.responding = false; armInteractionTimeout(key, p);
+          await sendToQQ(key, '⚠️ DSH 明确拒绝审批回执，请检查 DSH 后重试。');
+        } else {
+          if (pending.get(key) === p) pending.delete(key);
+          log('审批回执结果未知:', error.message);
+          await sendToQQ(key, '⚠️ 审批回执结果未知，请在 DSH 核对，不要重复提交。');
+        }
       }
       return;
     }
@@ -16312,7 +16350,31 @@ async function main() {
     }
   }
 
+  function armInteractionTimeout(key, entry) {
+    entry.timer = setTimeout(() => {
+      if (pending.get(key) === entry) {
+        pending.delete(key);
+        log(`挂起请求超时 (${key})`);
+        cancelPendingEntry(entry).catch(() => {});
+        sendToQQ(key, '⏰ 等待回答超时，已取消该请求');
+      }
+    }, Math.max(0, entry.deadline - Date.now()));
+  }
+
   async function registerPending(key, entry) {
+    const identity = String(entry.eventId || entry.rpcId || '');
+    if (identity && interactionEvents.has(identity)) {
+      const current = pending.get(key);
+      if (current && String(current.eventId || current.rpcId || '') === identity && entry.clientId) current.clientId = entry.clientId;
+      return false;
+    }
+    if (identity && interactionEvents.size >= 10000) {
+      log('交互去重表已满，拒绝新请求；请检查 DSH 并重启桥接。');
+      void cancelPendingEntry(entry);
+      void sendToQQ(key, '⚠️ 交互记录已满，请检查 DSH 并重启 QQ 桥接。');
+      return false;
+    }
+    if (identity) interactionEvents.add(identity);
     const existing = pending.get(key);
     if (existing) {
       clearTimeout(existing.timer);
@@ -16320,18 +16382,14 @@ async function main() {
       log(`新挂起请求覆盖旧请求 (${key})`);
       cancelPendingEntry(existing).catch(() => {});
     }
-    const timer = setTimeout(() => {
-      if (pending.get(key) === entry) {
-        pending.delete(key);
-        log(`挂起请求超时 (${key})`);
-        cancelPendingEntry(entry).catch(() => {});
-        sendToQQ(key, '⏰ 等待回答超时，已取消该请求');
-      }
-    }, cfg.questionTimeoutMs);
-    entry.timer = timer;
+    do { entry.requestId = crypto.randomBytes(4).toString('hex'); } while (interactionRequestIds.has(entry.requestId));
+    interactionRequestIds.add(entry.requestId);
+    entry.deadline = Date.now() + Math.max(0, Number(cfg.questionTimeoutMs) || 0);
+    armInteractionTimeout(key, entry);
     // [仅主人] 是模型写的分类标记，只用于**收窄**谁能回答，绝不作为任何授权凭证。
     if (entry.kind === 'question') entry.ownerOnly = isOwnerOnlyFrame(entry.questions);
     pending.set(key, entry);
+    return true;
   }
 
   // DSH 事件流 → QQ
@@ -16913,7 +16971,13 @@ async function main() {
           } else if (frame.type === 'question/requested') {
             const key = reverse.get(frame.sessionId);
             if (!key) continue;
-            if (!isCurrentSession(key, frame.sessionId)) { await cancelPendingEntry({ ...frame, kind: 'question' }); continue; }
+            if (!isCurrentSession(key, frame.sessionId)) {
+              const id = String(frame.eventId || envelope.rpcId || '');
+              if (!id || !interactionEvents.has(id)) { if (id) interactionEvents.add(id); await cancelPendingEntry({ ...frame, kind: 'question' }); }
+              continue;
+            }
+            const entry = { kind: 'question', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, questions: frame.questions };
+            if (!await registerPending(key, entry)) continue;
             const lines = frame.questions.map((q, i) => {
               const qText = String(q.question ?? '');
               const sensitive = shouldAuditKey(key) && SENSITIVE_RE.test(qText);
@@ -16931,12 +16995,18 @@ async function main() {
               }
               return s;
             });
-            await sendToQQ(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n（直接回复选项文字或输入你的回答）');
-            await registerPending(key, { kind: 'question', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, questions: frame.questions });
+            const questionHint = cfg.interaction.requireRequestId ? `（回复「${entry.requestId} 答案」）` : '（直接回复选项文字或输入你的回答）';
+            void sendToQQ(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n' + questionHint).catch((error) => log(`提问通知失败 (${key}): ${error?.message ?? error}`));
           } else if (frame.type === 'approval/requested') {
             const key = reverse.get(frame.sessionId);
             if (!key) continue;
-            if (!isCurrentSession(key, frame.sessionId)) { await cancelPendingEntry({ ...frame, kind: 'approval' }); continue; }
+            if (!isCurrentSession(key, frame.sessionId)) {
+              const id = String(frame.eventId || envelope.rpcId || '');
+              if (!id || !interactionEvents.has(id)) { if (id) interactionEvents.add(id); await cancelPendingEntry({ ...frame, kind: 'approval' }); }
+              continue;
+            }
+            const entry = { kind: 'approval', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, toolName: frame.toolName };
+            if (!await registerPending(key, entry)) continue;
             const rawReason = frame.reason ?? '';
             const sensitiveReason = shouldAuditKey(key) && SENSITIVE_RE.test(rawReason);
             if (sensitiveReason) log(`⚠️ 审批理由含敏感信息，已隐藏 (${key})`);
@@ -16946,8 +17016,16 @@ async function main() {
             const sensitiveTool = shouldAuditKey(key) && SENSITIVE_RE.test(rawToolName);
             if (sensitiveTool) log(`⚠️ 审批工具名含敏感信息，已隐藏 (${key})`);
             const safeToolName = sensitiveTool ? '（含敏感信息，已隐藏）' : rawToolName;
-            await sendToQQ(key, `🔐 agent 请求审批：${safeToolName}${reason}\n回复「通过」或「拒绝」`);
-            await registerPending(key, { kind: 'approval', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, toolName: frame.toolName });
+            const approvalHint = cfg.interaction.requireRequestId ? `回复「通过 ${entry.requestId}」或「拒绝 ${entry.requestId}」` : '回复「通过」或「拒绝」';
+            void sendToQQ(key, `🔐 agent 请求审批：${safeToolName}${reason}\n${approvalHint}`).catch((error) => log(`审批通知失败 (${key}): ${error?.message ?? error}`));
+          } else if (frame.type === 'interaction/cancelled') {
+            for (const [key, entry] of pending) {
+              if (entry.eventId !== frame.eventId || entry.clientId !== frame.clientId) continue;
+              clearTimeout(entry.timer);
+              pending.delete(key);
+              log(`DSH 已取消挂起请求 (${key})`);
+              break;
+            }
           } else if (frame.type === 'stream/error') {
             log('事件流错误:', frame.error);
           }

@@ -14,6 +14,7 @@ import {
   resolveNodeRuntime,
 } from './paths.js';
 import { readJson } from './store.js';
+import { inspectBridgeProcess } from './bridge-process.js';
 
 function consolePort() {
   const cfg = readJson(QQ_CONFIG, {}) ?? {};
@@ -167,8 +168,25 @@ function appendSupervisorLog(text) {
   } catch {}
 }
 
+function ownershipFailure() {
+  return { ok: false, code: 'BRIDGE_OWNER_UNVERIFIED', error: '无法确认控制台监听和锁文件属于当前 QQ 桥接，未操作该进程。', hint: '检查当前安装、桥接控制台令牌与锁文件；确认进程身份后再处理，勿直接结束未知进程。' };
+}
+
+async function ownedBridge(expectedPid = null) {
+  try {
+    const pid = lockPid();
+    if (expectedPid !== null && pid !== expectedPid) return false;
+    if (!pid || !pidAlive(pid) || !consoleToken()) return false;
+    const result = await callBridge('/api/status');
+    if (!result.ok || !result.data?.root || fs.realpathSync(result.data.root) !== fs.realpathSync(QQBOT_ROOT)) return false;
+    if (process.platform === 'win32') return true;
+    return inspectBridgeProcess({ pid, port: consolePort(), runtime: resolveNodeRuntime(), script: path.join(QQBOT_ROOT, 'src', 'bridge.js') }) && lockPid() === pid;
+  } catch { return false; }
+}
+
 export async function start({ dshWebUrl = '' } = {}) {
-  if (await portOpen()) return { ok: true, already: true, message: '桥接已经在跑' };
+  if (await portOpen()) return await ownedBridge()
+    ? { ok: true, already: true, message: '桥接已经在跑' } : ownershipFailure();
   let runtime;
   try { runtime = resolveNodeRuntime(); } catch (error) {
     return { ok: false, code: error.code || 'NODE_RUNTIME_NOT_FOUND', error: String(error.message || error), hint: error.hint || '检查 DSH_NODE 与 DSH 内置 Node 后重试。' };
@@ -195,7 +213,8 @@ export async function start({ dshWebUrl = '' } = {}) {
   for (let i = 0; i < 24; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     if (spawnError) return { ok: false, code: 'NODE_RUNTIME_EXEC_FAILED', error: `桥接启动失败：${spawnError.message}`, hint: '检查所选 Node 运行时是否仍可执行，然后重试。' };
-    if (await portOpen()) return { ok: true, started: true, message: '桥接已启动' };
+    if (await portOpen()) return await ownedBridge()
+      ? { ok: true, started: true, message: '桥接已启动' } : ownershipFailure();
   }
   return { ok: false, code: 'BRIDGE_START_TIMEOUT', error: '启动后 12 秒仍未监听控制台端口', hint: '查看桥接日志，修复启动错误后重试。', log: BRIDGE_SUPERVISOR_LOG };
 }
@@ -240,14 +259,17 @@ export async function stop() {
     return { ok: stopped, ...result, stopped, message: stopped ? '桥接已停止' : '停止脚本跑完了，但端口仍在监听' };
   }
   const pid = lockPid();
-  if (pid && pidAlive(pid)) {
-    try { process.kill(pid); } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }
+  if (!pid || !pidAlive(pid)) {
+    if (!(await portOpen())) return { ok: true, already: true, message: '桥接没有运行；若有过期锁，下一次启动会核验处理。' };
+    return ownershipFailure();
   }
+  if (!(await ownedBridge(pid)) || lockPid() !== pid) return ownershipFailure();
+  try { process.kill(pid); } catch (error) { return { ok: false, code: 'BRIDGE_STOP_FAILED', error: String(error?.message ?? error), hint: '检查已验证桥接的进程权限后重试。' }; }
   for (let i = 0; i < 10; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 400));
-    if (!(await portOpen())) return { ok: true, stopped: true, message: '桥接已停止' };
+    if (!pidAlive(pid) && !(await portOpen())) return { ok: true, stopped: true, message: '桥接已停止' };
   }
-  return { ok: false, error: '进程没有在预期时间内退出' };
+  return { ok: false, code: 'BRIDGE_STOP_TIMEOUT', error: '进程没有在预期时间内退出', hint: '确认桥接进程状态，稍后重试；不要结束未知进程。' };
 }
 
 export async function restart(options = {}) {

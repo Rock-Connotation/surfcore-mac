@@ -1058,13 +1058,13 @@ export function apply(ctx) {
         result.bridgeStop = stopped;
         result.warnings.push(stopped.ok
           ? 'QQ 启动开关已关闭：QQ 桥接已停止。'
-          : `QQ 启动开关已关闭，但桥接没停下来：${stopped.error ?? stopped.message ?? '未知'}`);
+          : `QQ 启动开关已关闭，但桥接没停下来：${[stopped.error ?? stopped.message ?? '未知', stopped.hint].filter(Boolean).join('；')}`);
       } else if (afterPlatformStart.qq && !beforePlatformStart.qq && body.restartBridge !== true) {
         const started = await startBridge({ dshWebUrl: currentDshUrl() });
         result.bridgeStart = started;
         result.warnings.push(started.ok
           ? 'QQ 启动开关已打开：QQ 桥接已启动。'
-          : `QQ 启动开关已打开，但桥接启动失败：${started.error ?? started.message ?? '未知'}`);
+          : `QQ 启动开关已打开，但桥接启动失败：${[started.error ?? started.message ?? '未知', started.hint].filter(Boolean).join('；')}`);
       }
     }
     // 关闭管理员温柔模式并选择“丢弃上下文”：保存配置后先退役 QQ 会话/社交上下文，再重启桥接。
@@ -2883,6 +2883,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       const snowluma = await launchSnowLuma();
       json(res, 200, {
         ok: bridge?.ok !== false,
+        ...(bridge?.ok === false ? {
+          code: bridge.code || 'BRIDGE_START_FAILED',
+          error: bridge.error || bridge.message || 'QQ 桥接未能启动',
+          hint: bridge.hint || '检查 QQ 桥接状态和日志，处理错误后重试。',
+        } : {}),
         message: [bridge?.message, snowluma?.message || snowluma?.error].filter(Boolean).join('；'),
         bridge,
         snowluma,

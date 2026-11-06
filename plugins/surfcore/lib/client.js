@@ -1106,6 +1106,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("ackMessage", "收到消息的自动回复", "空字符串关闭"),
         F("sendDelayMs", "发送间隔（ms）", "防频率限制", "number", { min: 0 }),
         F("questionTimeoutMs", "提问/审批超时（ms）", "默认 5 分钟", "number", { min: 10000 }),
+        F("interaction.requireRequestId", "回复提问和审批时核对编号", "开启后按通知中的编号回复，避免旧回复处理后续请求；默认关闭以兼容旧用法", "switch"),
       ]},
       { group: "安全通知", note: "黑名单（deny.users / deny.groups / deny.private）在页面顶部的「QQ 黑名单」卡片里，这里不再重复输入框", fields: [
         F("security.interceptNotify", "安全拦截通知", "拦截到敏感操作时通知管理员", "switch"),
