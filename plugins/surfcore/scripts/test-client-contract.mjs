@@ -11,13 +11,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const idle = () => {};
+let hookScope = null;
 const React = {
   createElement: (type, props, ...children) => ({ type, props: { ...(props || {}), children } }),
   useCallback: (fn) => fn,
-  useEffect: idle,
+  useEffect: (fn) => { if (hookScope && !hookScope.mounted) hookScope.effects.push(fn); },
   useMemo: (fn) => fn(),
-  useRef: (value) => ({ current: value }),
-  useState: (value) => [typeof value === 'function' ? value() : value, idle],
+  useRef: (value) => {
+    if (!hookScope) return { current: value };
+    const scope = hookScope, index = scope.index++;
+    if (!(index in scope.values)) scope.values[index] = { current: value };
+    return scope.values[index];
+  },
+  useState: (value) => {
+    if (!hookScope) return [typeof value === 'function' ? value() : value, idle];
+    const scope = hookScope, index = scope.index++;
+    if (!(index in scope.values)) scope.values[index] = typeof value === 'function' ? value() : value;
+    return [scope.values[index], next => { scope.values[index] = typeof next === 'function' ? next(scope.values[index]) : next; }];
+  },
 };
 
 let client = null;
@@ -503,4 +514,74 @@ assert.ok(!buttons(cancelledMemory).some(button => button.props.children.flat(In
 const memory = cardTree({ jobId: 'memory', state: 'completed', memoryState: 'failed', memoryError: { code: 'MEMORY_FAILED', error: '写入失败', hint: '点击重试' } });
 const memoryButton = buttons(memory).find(button => button.props.children.flat(Infinity).includes('重试经历入库'));
 assert.ok(memoryButton); memoryButton.props.onClick(); assert.deepEqual(actions.pop(), { action: 'resume', jobId: 'memory' });
+// Render the real PersonaEditor with a minimal stateful hook harness.
+const persona = client.__test.PersonaEditor;
+const personaKey = client.__test.personaEditorKey;
+assert.notEqual(personaKey({ id: 'old', epoch: 1 }, true), personaKey({ id: 'new', epoch: 2 }, true));
+assert.notEqual(personaKey({ id: 'new', epoch: 1 }, true), personaKey({ id: 'new', epoch: 2 }, true));
+function walkElements(value) {
+  if (Array.isArray(value)) return value.flatMap(walkElements);
+  if (!value || typeof value !== 'object') return [];
+  return [value, ...walkElements(value.props?.children || [])];
+}
+const nodeText = node => (node.props?.children || []).flat(Infinity).filter(x => typeof x === 'string').join('');
+function personaHarness(character) {
+  const scope = { values: [], index: 0, mounted: false, effects: [] }, messages = [];
+  const props = { currentCharacter: character, identityReady: true, busy: '', setBusy: () => {}, toast: text => messages.push(text), unified: {}, setUnified: () => {} };
+  return { messages, render() { hookScope = scope; scope.index = 0; const tree = persona(props); hookScope = null; if (!scope.mounted) { scope.mounted = true; for (const effect of scope.effects) effect(); } return walkElements(tree); } };
+}
+function characterEditorElement(character) {
+  const scope = { values: [{ current: character, characters: [], snapshots: [] }], index: 0, mounted: true, effects: [] };
+  hookScope = scope; const tree = client.__test.CharactersTab({ overview: {}, busy: '', setBusy: () => {}, toast: () => {}, reload: () => {}, unified: {}, setUnified: () => {} }); hookScope = null;
+  return walkElements(tree).find(node => node.type === persona);
+}
+const oldEditor = characterEditorElement({ id: 'old', epoch: 1 }), newEditor = characterEditorElement({ id: 'new', epoch: 2 });
+assert.equal(oldEditor.props.key, 'old:1'); assert.equal(newEditor.props.key, 'new:2'); assert.deepEqual(newEditor.props.currentCharacter, { id: 'new', epoch: 2 });
+assert.equal(characterEditorElement({ id: 'new', epoch: 2 }).props.key, newEditor.props.key, 'create-only action retaining current identity must preserve editor');
+const originalFetch = globalThis.fetch, personaCalls = [];
+let selectedIdentity = { id: 'old', epoch: 1 }, forceConflict = false, pendingPersona = null, refreshedIdentity = null, characterReads = 0;
+const personaResponse = character => ({ character, layers: { core: { text: character?.id || 'legacy' }, tone: { text: 'tone' }, daily: { text: 'daily' }, scenes: { 'qq-group': { text: 'scene' } } }, backups: [{ name: 'backup', bytes: 1, mtime: 1 }] });
+globalThis.fetch = async (_url, options = {}) => {
+  if (_url.endsWith('/characters')) { characterReads++; return Response.json({ current: refreshedIdentity, characters: [], snapshots: [] }); }
+  if (options.method === 'POST') {
+    const body = JSON.parse(options.body); personaCalls.push(body);
+    if (forceConflict) return Response.json({ code: 'PERSONA_CHARACTER_STALE', error: '角色已切换', hint: '刷新并核对' }, { status: 409 });
+    return Response.json({ ok: true });
+  }
+  if (pendingPersona) return await pendingPersona;
+  return Response.json(personaResponse(selectedIdentity));
+};
+const waitTurn = () => new Promise(resolve => setTimeout(resolve, 0));
+const findAction = (tree, label) => tree.find(node => typeof node.type === 'function' && nodeText(node) === label);
+try {
+  const roleScope = { values: [{ current: { id: 'old', epoch: 1 }, characters: [], snapshots: [] }], index: 0, mounted: true, effects: [] }, roleBusy = [];
+  const roleProps = { overview: {}, busy: '', setBusy: value => roleBusy.push(value), toast: () => {}, reload: () => {}, unified: {}, setUnified: () => {} };
+  const renderRole = () => { hookScope = roleScope; roleScope.index = 0; const tree = client.__test.CharactersTab(roleProps); hookScope = null; return walkElements(tree); };
+  let roleTree = renderRole(), roleEditor = roleTree.find(node => node.type === persona);
+  assert.equal(roleEditor.props.key, 'old:1'); refreshedIdentity = { id: 'new', epoch: 2 };
+  await findAction(roleTree, '重新读取角色').props.onClick(); roleTree = renderRole(); roleEditor = roleTree.find(node => node.type === persona);
+  assert.equal(roleEditor.props.key, 'new:2'); assert.deepEqual(roleEditor.props.currentCharacter, refreshedIdentity); assert.deepEqual(roleBusy, ['character-refresh', '']);
+  await findAction(roleTree, '重新读取角色').props.onClick(); roleTree = renderRole(); assert.equal(roleTree.find(node => node.type === persona).props.key, 'new:2', 'same role refresh must preserve editor instance and draft');
+  roleProps.busy = 'persona-save'; roleTree = renderRole(); const lockedRefresh = findAction(roleTree, '重新读取角色'); assert.equal(lockedRefresh.props.disabled, true); const priorReads = characterReads; await lockedRefresh.props.onClick(); assert.equal(characterReads, priorReads);
+  const old = personaHarness(selectedIdentity); let oldTree = old.render();
+  assert.equal(findAction(oldTree, '保存全部').props.disabled, true); await waitTurn(); oldTree = old.render();
+  assert.equal(findAction(oldTree, '保存全部').props.disabled, false); assert.equal(oldTree.find(n => n.type === 'textarea').props.value, 'old');
+  let resolvePersona; pendingPersona = new Promise(resolve => { resolvePersona = resolve });
+  selectedIdentity = { id: 'new', epoch: 2 }; const fresh = personaHarness(selectedIdentity); let freshTree = fresh.render();
+  assert.equal(findAction(freshTree, '保存全部').props.disabled, true); assert.equal(freshTree.find(n => n.type === 'textarea').props.value, '');
+  resolvePersona(Response.json(personaResponse({ id: 'old', epoch: 1 }))); await waitTurn(); pendingPersona = null; freshTree = fresh.render();
+  assert.equal(findAction(freshTree, '保存全部').props.disabled, true); assert.ok(freshTree.some(n => n.props?.role === 'alert' && nodeText(n).includes('PERSONA_CHARACTER_STALE') && nodeText(n).includes('重新读取角色') && nodeText(n).includes('重新读取」')));
+  await findAction(freshTree, '保存全部').props.onClick(); assert.equal(personaCalls.length, 0);
+  await findAction(freshTree, '重新读取').props.onClick(); freshTree = fresh.render();
+  assert.equal(findAction(freshTree, '保存全部').props.disabled, false); assert.equal(freshTree.find(n => n.type === 'textarea').props.value, 'new');
+  await findAction(freshTree, '保存全部').props.onClick(); assert.equal(personaCalls.length, 4); for (const body of personaCalls) assert.deepEqual(body.expectedCharacter, selectedIdentity);
+  freshTree = fresh.render(); await findAction(freshTree, '恢复').props.onClick(); assert.deepEqual(personaCalls.at(-1).expectedCharacter, selectedIdentity); assert.equal(personaCalls.at(-1).action, 'restore');
+  freshTree = fresh.render(); forceConflict = true; const countBeforeConflict = personaCalls.length; await findAction(freshTree, '保存全部').props.onClick(); freshTree = fresh.render();
+  assert.equal(personaCalls.length, countBeforeConflict + 1, '409 must stop later layer writes'); assert.equal(findAction(freshTree, '保存全部').props.disabled, true); assert.ok(freshTree.some(n => n.props?.role === 'alert' && nodeText(n).includes('PERSONA_CHARACTER_STALE') && nodeText(n).includes('刷新并核对')));
+  forceConflict = false; const restoreConflict = personaHarness(selectedIdentity); restoreConflict.render(); await waitTurn(); let restoreTree = restoreConflict.render();
+  forceConflict = true; const beforeRestoreConflict = personaCalls.length; await findAction(restoreTree, '恢复').props.onClick(); restoreTree = restoreConflict.render();
+  assert.equal(personaCalls.length, beforeRestoreConflict + 1); assert.deepEqual(personaCalls.at(-1).expectedCharacter, selectedIdentity); assert.equal(findAction(restoreTree, '保存全部').props.disabled, true); assert.ok(restoreTree.some(n => n.props?.role === 'alert' && nodeText(n).includes('PERSONA_CHARACTER_STALE')));
+  forceConflict = false; selectedIdentity = null; const legacy = personaHarness(null); legacy.render(); await waitTurn(); const legacyTree = legacy.render();
+  await findAction(legacyTree, '保存全部').props.onClick(); assert.equal(Object.hasOwn(personaCalls.at(-1), 'expectedCharacter'), false);
+} finally { globalThis.fetch = originalFetch; hookScope = null; }
 console.log('client contract tests OK');

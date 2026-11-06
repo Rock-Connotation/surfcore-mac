@@ -4161,8 +4161,15 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     // ── 人格卡编辑器（嵌在「角色」页里，不再单开「人设」标签）──────────────
     // 用户反馈「人设 / 角色」两个栏目重复：角色包和人格卡本来就是同一件事的两面。
     // 现在只有一个「角色」页：上面切角色，下面直接编辑当前角色的人格卡。
-    function PersonaEditor({ busy, setBusy, toast, unified, setUnified }) {
+    function personaEditorKey(current, ready) { return !ready ? "loading" : current?.id ? `${current.id}:${current.epoch}` : "legacy"; }
+    function personaIdentityMatches(expected, actual) {
+      if (!expected && !actual) return true;
+      return !!expected?.id && !!actual?.id && String(expected.id) === String(actual.id) && Number.isInteger(Number(expected.epoch)) && Number(expected.epoch) > 0 && Number(expected.epoch) === Number(actual.epoch);
+    }
+    function PersonaEditor({ busy, setBusy, toast, unified, setUnified, currentCharacter, identityReady }) {
       const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const loadingRef = useRef(false);
       const [draft, setDraft] = useState({ core: "", tone: "", daily: "", scenes: {} });
       const [split, setSplit] = useState(null);
       const [scene, setScene] = useState("qq-group");
@@ -4172,8 +4179,17 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         ? data?.layers?.scenes?.[scene]?.path
         : data?.layers?.[key]?.path;
       const load = useCallback(async () => {
+        if (!identityReady) return;
+        loadingRef.current = true;
+        setLoading(true);
+        setData(null);
         try {
           const r = await api("/persona");
+          if (!personaIdentityMatches(currentCharacter, r.character)) {
+            setDraft({ core: "", tone: "", daily: "", scenes: {} });
+            setSplit(null);
+            throw Object.assign(new Error("当前角色与人格卡不一致。"), { code: "PERSONA_CHARACTER_STALE", hint: "点击「重新读取角色」；如人格卡未自动加载，再点「重新读取」并检查后保存。" });
+          }
           const layers = r.layers ?? {};
           setData(r);
           setDraft({
@@ -4184,14 +4200,23 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           });
           setSplit(null);
           setErr("");
-        } catch (e) { setErr(e.message); }
-      }, []);
-      useEffect(() => { load(); }, [load]);
+        } catch (e) { setErr(`${e.code || "PERSONA_LOAD_FAILED"}：${e.message}${e.hint ? `；${e.hint}` : ""}`); }
+        finally { loadingRef.current = false; setLoading(false); }
+      }, [identityReady, currentCharacter?.id, currentCharacter?.epoch]);
+      useEffect(() => { void load(); }, [load]);
+      const ready = identityReady && !loading && !!data && personaIdentityMatches(currentCharacter, data.character);
+      const expectedCharacter = data?.character ? { id: String(data.character.id), epoch: Number(data.character.epoch) } : null;
+      const requireReady = () => {
+        if (ready && !loadingRef.current && !busy) return true;
+        const message = "PERSONA_CHARACTER_STALE：人格卡尚未与当前角色核对；请点击「重新读取角色」；如人格卡未自动加载，再点「重新读取」并检查后保存。";
+        setErr(message); toast(message); return false;
+      };
       const sceneText = draft.scenes?.[scene]?.text ?? "";
       const setLayer = (key, value) => setDraft((prev) => key === "scene"
         ? { ...prev, scenes: { ...prev.scenes, [scene]: { ...(prev.scenes?.[scene] ?? {}), text: value } } }
         : { ...prev, [key]: value });
       const saveAll = async () => {
+        if (!requireReady()) return;
         setBusy("persona-save");
         setErr("");
         const failures = [];
@@ -4207,18 +4232,19 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (String(sceneText || "").trim() || String(origScene).trim()) jobs.push(["scene", "scene", sceneText]);
         for (const [layer, label, text] of jobs) {
           try {
-            await api("/persona", { method: "POST", body: { layer, scene: layer === "scene" ? scene : "", text } });
+            await api("/persona", { method: "POST", body: { layer, scene: layer === "scene" ? scene : "", text, ...(expectedCharacter ? { expectedCharacter } : {}) } });
           } catch (e) {
-            failures.push(`${label}：${e.message}${e.hint ? "（" + e.hint + "）" : ""}`);
+            failures.push(`${label}：${e.code ? e.code + "：" : ""}${e.message}${e.hint ? "（" + e.hint + "）" : ""}${e.code === "PERSONA_CHARACTER_STALE" || e.status === 409 ? "；请点击「重新读取角色」；如人格卡未自动加载，再点「重新读取」并检查后保存。" : ""}`);
+            if (e.code === "PERSONA_CHARACTER_STALE" || e.status === 409) { loadingRef.current = true; setData(null); break; }
           }
         }
         try {
-          if (failures.length) toast("✗ 保存失败：" + failures.join("；"));
-          else toast("✓ 四层已保存");
-          await load();
+          if (failures.length) { const message = "✗ 保存失败：" + failures.join("；"); setErr(message); toast(message); }
+          else { toast("✓ 四层已保存"); await load(); }
         } finally { setBusy(""); }
       };
       const classify = async () => {
+        if (!requireReady()) return;
         setBusy("persona-classify");
         setErr("");
         const source = [
@@ -4245,7 +4271,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         } finally { setBusy(""); }
       };
       const applySplit = () => {
-        if (!split) return;
+        if (!split || !requireReady()) return;
         setDraft((prev) => {
           const nextScenes = { ...(prev.scenes ?? {}) };
           for (const [k, v] of Object.entries(split.scenes ?? {})) {
@@ -4263,9 +4289,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         toast("✓ 草稿已填入编辑区；还没有保存，点「保存全部」");
       };
       const restore = async (name) => {
+        if (!requireReady()) return;
         setBusy("persona-restore");
-        try { await api("/persona", { method: "POST", body: { action: "restore", name } }); toast("✓ 已从备份恢复"); await load(); }
-        catch (e) { toast("✗ " + e.message + (e.hint ? "；" + e.hint : "")); } finally { setBusy(""); }
+        try { await api("/persona", { method: "POST", body: { action: "restore", name, ...(expectedCharacter ? { expectedCharacter } : {}) } }); toast("✓ 已从备份恢复"); await load(); }
+        catch (e) { if (e.code === "PERSONA_CHARACTER_STALE" || e.status === 409) { loadingRef.current = true; setData(null); } const message = `✗ ${e.code ? e.code + "：" : ""}${e.message}${e.hint ? "；" + e.hint : ""}${e.code === "PERSONA_CHARACTER_STALE" || e.status === 409 ? "；请点击「重新读取角色」；如人格卡未自动加载，再点「重新读取」并检查后保存。" : ""}`; setErr(message); toast(message); } finally { setBusy(""); }
       };
       const box = (key, label, hint) => h("div", { className: "qbw-card", style: { marginBottom: "8px" } },
         h("div", { className: "qbw-label" }, label, h("span", { className: "qbw-hint", style: { marginLeft: "8px" } }, ` · ${layerPath(key) || "未创建"} · ${(key === "scene" ? sceneText : draft[key] || "").length} 字`)),
@@ -4275,6 +4302,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           value: key === "scene" ? sceneText : (draft[key] ?? ""),
           onChange: (e) => setLayer(key, e.target.value),
           spellCheck: false,
+          disabled: !ready || !!busy,
           placeholder: hint,
         }));
       return h("div", null,
@@ -4286,18 +4314,18 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         h("div", { className: "qbw-hint", style: { margin: "6px 0" } },
           "写法：", h("b", null, "核心"), " 写“我是谁/价值观/底线”；", h("b", null, "语气"), " 只写口癖、句子长短、称呼、标点；", h("b", null, "日常"), " 写近期心情/习惯；", h("b", null, "场景"), " 写平台差异。"),
         h("div", { className: "qbw-actions", style: { marginBottom: "6px" } },
-          h(Btn, { onClick: saveAll, disabled: !!busy }, busy === "persona-save" ? "保存中…" : "保存全部"),
-          h(Btn, { kind: "qbw-btn2", onClick: classify, disabled: !!busy }, busy === "persona-classify" ? "拆分中…" : "智能拆分当前人格"),
-          h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "重新读取"),
+          h(Btn, { onClick: saveAll, disabled: !!busy || !ready }, busy === "persona-save" ? "保存中…" : "保存全部"),
+          h(Btn, { kind: "qbw-btn2", onClick: classify, disabled: !!busy || !ready }, busy === "persona-classify" ? "拆分中…" : "智能拆分当前人格"),
+          h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy || !identityReady || loading }, "重新读取"),
           h("span", { className: "qbw-hint" }, "拆分不会写盘；先检查草稿。")),
-        err ? h("div", { className: "qbw-err", style: { marginBottom: "6px" } }, err) : null,
+        err ? h("div", { className: "qbw-err", role: "alert", style: { marginBottom: "6px" } }, err) : null,
         box("core", "人格核心", "身份、价值观、底线。不是每次群聊都加载；但身份底座会单独带。"),
         box("tone", "人格语气", "口癖、句子长短、称呼、标点、语气词。日常群聊默认只加载语气层。"),
         box("daily", "人格日常", "近期状态、习惯、心情。保存时自动写入「你是谁、主人是谁」；拆分也会多留一份在日层层。"),
         h("div", { className: "qbw-group", style: { marginTop: "6px" } }, "场景人格", h("small", null, "平台差异；没有就留空")),
         h("div", { className: "qbw-actions", style: { marginTop: "2px", paddingTop: "2px" } },
           ...Object.entries(sceneLabels).map(([id, label]) => h(Btn, {
-            key: id, kind: scene === id ? undefined : "qbw-btn3", onClick: () => setScene(id), disabled: !!busy,
+            key: id, kind: scene === id ? undefined : "qbw-btn3", onClick: () => setScene(id), disabled: !!busy || !ready,
           }, label))),
         h("div", { className: "qbw-warnbox", style: { margin: "6px 0" } },
           "场景说明包含 QQ 群聊、QQ 私聊、B站、桌宠等其他平台。不同平台之间不保证隐私完全隔离，请谨慎填写；出了事不负责。"),
@@ -4313,7 +4341,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("div", { className: "qbw-label" }, `场景：${sceneLabels[k] || k}`),
             h("pre", { className: "qbw-code", style: { whiteSpace: "pre-wrap", maxHeight: "120px", overflow: "auto" } }, v))),
           h("div", { className: "qbw-actions", style: { marginTop: "8px" } },
-            h(Btn, { onClick: applySplit, disabled: !!busy }, "应用到编辑区（不保存）"),
+            h(Btn, { onClick: applySplit, disabled: !!busy || !ready }, "应用到编辑区（不保存）"),
             h(Btn, { kind: "qbw-btn2", onClick: () => setSplit(null), disabled: !!busy }, "丢弃草稿"))) : null,
         data?.path ? h(Row, {
           label: "旧人格卡文件（仅兼容）",
@@ -4327,7 +4355,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         data?.backups?.length ? h(Section, { title: "人格卡历史备份", note: `${data.backups.length} 份` },
           data.backups.slice(0, 8).map((b) => h("div", { key: b.name, className: "qbw-item" },
             h("div", null, h("div", { className: "qbw-label" }, b.name), h("div", { className: "qbw-hint" }, `${fmtBytes(b.bytes)} · ${fmtTime(new Date(b.mtime).toISOString())}`)),
-            h(Btn, { kind: "qbw-btn2", onClick: () => restore(b.name), disabled: !!busy }, "恢复")))) : null);
+            h(Btn, { kind: "qbw-btn2", onClick: () => restore(b.name), disabled: !!busy || !ready }, "恢复")))) : null);
     }
 
     // ── 记忆卡（角色的长期记忆）────────────────────────────────────────────
@@ -6064,6 +6092,11 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           return r;
         } catch (e) { toast(`✗ ${e.message}`); return null; } finally { setBusy(""); }
       };
+      const refreshCurrent = async () => {
+        if (busy) return;
+        setBusy("character-refresh");
+        try { await load(); } finally { setBusy(""); }
+      };
       const current = data?.current ?? null;
       const characters = data?.characters ?? [];
       const snapshots = data?.snapshots ?? [];
@@ -6088,9 +6121,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             current ? h(Btn, { kind: "qbw-btn2", onClick: () => act("snapshot", { id: current.id, label: "手动" }, "✓ 已存一份"), disabled: !!busy }, "立即存档") : null,
             current ? h(Btn, { kind: "qbw-btn2", onClick: () => act("auto-snapshot", { id: current.id }, "✓ 自动存档已更新"), disabled: !!busy }, "更新自动存档") : null,
             current ? h(Btn, { kind: "qbw-btn2", onClick: () => goTab?.("memory") }, "管理记忆卡") : null,
+            h(Btn, { kind: "qbw-btn2", onClick: refreshCurrent, disabled: !!busy }, busy === "character-refresh" ? "读取中…" : "重新读取角色"),
             h(Btn, { onClick: () => setShowCreate((v) => !v) }, showCreate ? "收起新建" : "新建角色"))),
         err ? h("div", { className: "qbw-err" }, err) : null,
-        h(PersonaEditor, { busy, setBusy, toast, unified, setUnified }),
+        h(PersonaEditor, { key: personaEditorKey(current, !!data), currentCharacter: current, identityReady: !!data, busy, setBusy, toast, unified, setUnified }),
         showCreate ? h("div", { className: "qbw-card", style: { marginTop: "10px" } },
           h("h4", null, "新建角色"),
           h("div", { className: "qbw-hint" }, "可以只填名字（空人格卡/空记忆卡），也可以把你自己预设的人格卡、记忆卡 JSON 一起导入。"),
@@ -6945,7 +6979,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     exports.BILI_FIELDS = BILI_FIELDS;
     exports.QQ_BILI_SHARE_FIELDS = QQ_BILI_SHARE_FIELDS;
     // 仅供 Node 契约测试验证路径归一化；浏览器运行时不使用。
-    exports.__test = { pathKeys, setPath, PerceptionJobCard };
+    exports.__test = { pathKeys, setPath, PerceptionJobCard, PersonaEditor, CharactersTab, personaEditorKey, personaIdentityMatches };
     return module.exports;
   },
 });

@@ -4034,3 +4034,10 @@ npm run test:audit
 - 自包含 tgz 即使内嵌依赖，根 postinstall 仍会被 pnpm11 的构建审批拒绝。不要放宽宿主策略；构建阶段 npm ci --ignore-scripts 后显式执行 SDK 兼容补丁，消费制品移除生命周期及旧 hasInstallScript 字段。最终制品还须用官方pnpm、全新store、--offline实际安装。
 - QQ关闭时普通设置保存仍会写QQ配置。验证为package的程序不能把配置/state写回pnpm包目录；共享resolver映射到DSH_HOME/surfcore/qq，程序、模板和更新身份固定新包。显式旧数据根只改变数据来源，不可启动旧程序。旧包含数据时结构化失败并给保全提示，未经授权不迁移。
 - 账单、语音包、搜索、MCP与端口缓存也是读取者；只改插件paths会造成设置保存A、运行读取B。详见同日package-lifecycle、package-data-paths、package-data-consumers cases。
+
+## 2026-11-06 原生验收发现：ASR边界与人格草稿
+
+- 固定whisper实际输出可能将最后一段预测到PCM结尾之外。JSON校验通过、处理覆盖、文本正确是三种不同证据。只在结构化segment-out-of-bounds时对同PCM exact core顺序重解码一次，仍用严格parser；再次失败保留partial。核心重试有代价且可能漏边界文字，warning必须显示；原始越界JSON保留。按片段中心过滤还会丢跨界句，改正交集保留与双边界时空/文本联合去重，算法版本隔离旧缓存/检查点，旧job schema不丢历史。
+- queued缓存键升级时，逐文件catch内persist会吞ENOSPC而丢列表项。键只在内存重算，后续正式入队持久化让错误传播成Host未就绪；注错断言保留原queued文件。
+- 原生角色页“当前角色”更新不代表子编辑器已换草稿。没有id/epoch key的编辑器只在mount读一次；随后保存会把旧草稿发往当前角色。真实验收发现后未保存。新编辑器需按身份重建、读取匹配后启用，每层和restore固定expectedCharacter；Host在读完整请求后、任何备份写入前比对，过期409+下一步；旧客户端省略字段保持兼容。
+- partial卡不能只显示100%和缺1段。显示确切范围、warning、嵌套错误码和恢复入口；cancelled仍终态。细节与发布交接见对应同日四个cases。

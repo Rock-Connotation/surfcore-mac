@@ -10,6 +10,7 @@ const tests = [
   'test-package-data-paths.mjs', 'test-package-data-consumers.mjs',
   'test-install-identity.mjs', 'test-runtime-media.mjs', 'test-macos-shared-core.mjs',
   '../plugins/surfcore/scripts/test-perception-api.mjs',
+  '../plugins/surfcore/scripts/test-persona-api-epoch.mjs',
   '../plugins/surfcore/scripts/test-channel-contract.mjs',
   '../plugins/surfcore/scripts/test-bili-media.mjs',
   '../plugins/surfcore/scripts/test-bili-media-host.mjs',

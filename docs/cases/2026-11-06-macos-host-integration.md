@@ -38,22 +38,22 @@
 | CORE-T03 | QQ/B站均关闭，核心仍维护 | 夹具通过，Host 本地维护与目的读取 | shared-core |
 | CORE-T04 | QQ关闭，B站账本→经历→卡→下次上下文 | 夹具通过四环；真实 B站未执行 | composed-perception-host-channel.log / shared-core |
 | CORE-T05 | 重复导入/完成不重复消费 | 夹具通过，事件/游标重放一次 | shared-core / Host integration |
-| CORE-T06 | 长作业中切角色 | 夹具通过，拒绝旧 epoch、固定原角色；真实 UI 待验 | ASR service / bili-media-host |
+| CORE-T06 | 长作业中切角色 | 夹具通过；真实App切换后旧作业隐藏/读API拒绝；运行中切角晚到仍待验 | ASR service / bili-media-host |
 | CORE-T07 | 私密/未知材料进入公开上下文 | 夹具通过，restricted/未知 fail closed | shared-core / API |
 | CORE-T08 | 清理可再生缓存不删人格记忆 | 缓存范围/lease 夹具通过；全程清理后证据状态实机未执行 | shots-cache / bili frames |
 | CORE-T09 | 模拟新 local adapter | 夹具通过，提交受限事件与允许视图，不复制核心 | channel-contract 8/8 |
 | CORE-T10 | 登出/绑定变化保留核心 | 真实账号未执行 | 待 App 登录验收 |
-| CORE-T11 | 退出重启恢复，过期活动不补发 | 持久队列和 life 夹具通过；真实 App 重启未执行 | ASR service / shared-core |
-| ASR-T01 | 无字幕中文到末尾 | E2 两轮实际处理6463ms；真实 B站片未执行 | native result.json |
+| CORE-T11 | 退出重启恢复，过期活动不补发 | 实际App退出时Host/原生推理全部回收，重启旧作业interrupted；新linked尝试partial，修复后复验中 | ASR service / shared-core |
+| ASR-T01 | 无字幕中文到末尾 | 实际App处理新4204ms中文完整/13字匹配；E2 6463ms，真实B站仍未执行 | native result.json |
 | ASR-T02 | 有字幕视频 force 仍调 ASR | 夹具通过，未用字幕替代识别 | bili-media |
 | ASR-T03 | P2 音轨/字幕/画面/历史一致 | 夹具通过，真实多P待验 | bili-media / Host integration |
 | ASR-T04 | 全 durl，跨段不归零 | 夹具通过所有分段/映射；真实平台待验 | bili-media |
 | ASR-T05 | DASH仅音轨 | 夹具通过，不要求视频轨 | bili-media |
 | ASR-T06 | 中间失败/截断 | 夹具通过 partial/failed 与缺口 | bili-media / ASR service |
-| ASR-T07 | 超过工具等待的长作业 | 241秒合成音频分块/异步状态夹具通过 | ASR service |
+| ASR-T07 | 超过工具等待的长作业 | 真实App241秒两块、进程与中断恢复已执行，边界越界partial明确；新算法待复验 | ASR service |
 | ASR-T08 | 静音/音乐/低声/BGM | 精确静音与空文本 unknown 夹具通过；BGM短中文实测；完整质量集未执行 | ASR service / shared-asr |
-| ASR-T09 | 分块边界/真实重复句 | 偏移与重叠去重夹具通过；长中文边界未实测 | ASR service |
-| ASR-T10 | 取消/退出/恢复 | 实际 fixture 子进程退出与重启队列通过；App生命周期待验 | ASR service / bili lifecycle |
+| ASR-T09 | 分块边界/真实重复句 | 真实241秒发现越界及中心过滤丢句，已补严格一次core重试/交集/双边界；待新包复验 | ASR service |
+| ASR-T10 | 取消/退出/恢复 | 实际App原生推理取消确认退出；退出重启旧job interrupted/linked retry可执行，最终完整性复验中 | ASR service / bili lifecycle |
 | ASR-T11 | 同音频并发 | 夹具通过，共享推理与独立消费者 | ASR service |
 | ASR-T12 | 改模型/语言/访问范围 | 夹具通过，摘要与缓存隔离 | ASR service |
 | ASR-T13 | 缺模型/损坏/错误架构 | 失败分支夹具通过；E2 缺资产实际 failed+hint | ASR service / native result.json |
@@ -67,8 +67,8 @@
 | MAC-T07 | 显式媒体路径、缺失与不可执行 | E1/E2实际工具与失败夹具通过 | runtime-media / native-assets |
 | MAC-T08 | 中文空格/自定义数据根 | E2真实服务通过；设置页/CLI/App同根待验 | native result.json |
 | MAC-T09 | QQ未启用不阻断核心/B站 | doctor+Host夹具通过，未启动QQ | doctor / Host integration |
-| MAC-T10 | 关窗/真正退出/热重载 | 服务dispose/锁重试夹具通过；App未执行 | ASR service |
-| MAC-T11 | desktop安装重启、Host和client可见 | 未执行；共享日志副作用和profile需授权 | 本页安装方案 |
+| MAC-T10 | 关窗/真正退出/热重载 | 真实App SIGTERM退出/Host及whisper回收并重启已执行；关窗/热重载尚待验 | ASR service |
+| MAC-T11 | desktop安装重启、Host和client可见 | 已授权备份日志、独立desktop本地安装并启用，Host与原生client可见；新修复包复验中 | 本页安装方案 |
 | MAC-T12 | helper失败/旧pending | 真实隔离复制和身份拒绝通过；未动真实安装 | install-identity / update tests |
 | ACTION-T01 | dry不写平台/成功额度 | 既有离线回归通过，未外发 | 插件+regressions |
 | ACTION-T02 | 静默/额度/目标门禁 | 既有回归通过；通用execute未接外发 | 插件+channel-contract |
@@ -129,3 +129,15 @@ CUA目前只能返回原同名App的窗口，未对其点击或配置写入；�
 组合检查首轮141/161：18个桥接夹具因VM剥离import后未注入新解析器失败，已在共享harness注入生产解析器和相同隔离env；端口夹具建立真实有效旧根，保留所有归属/多活断言。另一个生命周期helper用env node且只等1秒，就绪断言失败；受限PATH可复现同断言及env node缺失，但原审计未记录子进程stderr，不能断言原失败仅由PATH造成。修正版用当前Node绝对路径、注册信号handler后发ready、有界等就绪且提前退出可见，始终校验取消/超时真的退出。原始失败日志保留，新组合结果另记。
 
 修正版组合：官方Node24.21.0、新隔离DSH_HOME、便携媒体PATH下，audit161/161、regressions和完整插件测试全部exit0；原始结果 `_backups/20261106-macos-wp0/native-fixes/checks-20261106T140408Z/results.json` 含程序文件摘要，提交后校验同源。Astra独立审查关闭显式旧数据根/程序根错位P2，没有新实质发现；未将离线结果升级为原生界面通过。
+
+## 原生界面与边界修复进展
+
+b722222制品在官方App内确实加载Host与settings.section客户端。用户另行明确许可Electron接口，主线仅控制PID/loopback已核对的测试窗口；已有用户窗口没有点击或配置写入。共享日志备份、首次部分安装、最终CLI成功、手动启用测试bundle的profile备份、所有新旧候选均保留。实际App的Node诊断是24.21.0/app-resources，ASR独立于未配置TTS/关闭QQ。
+
+本地中文4204ms实际结果逐字匹配13字参考；241s重复公开片段在原生推理中取消，响应前whisper退出。新作业在运行中退出测试App，Host/whisper均退出且原App存活；重启原作业interrupted，恢复产生新job但首块时间戳超界返回partial。取消为终态；第一次验收脚本把cancelled当resumable的拒绝记录保留，不修改产品规则迎合脚本。原始chunk0 241000ms最后offset到242000，chunk1跨界句被中心过滤，新增case记录一次strict core重解码及合并修复，不将coverage当准确率。
+
+原生UI还暴露partial无原因/恢复按钮以及PersonaEditor在角色切换后保留旧草稿。已通过界面创建并加载app/epoch2，观察10秒后编辑器仍指artifact-check；没有点保存。新角色ASR列表为空、旧job查询返回JOB_FORBIDDEN，说明作业隔离正常但编辑器生命周期有缺陷。对应客户端key/匹配读取/冻结身份与Host409护栏已经组合；旧API省略字段兼容，实际新页面待重新安装后复验。
+
+本轮独立Astra检查关闭queued迁移持久化静默吞错P2，复核人格请求完整body之后、写入之前的身份检查及同步路径快照；未发现新的实质缺陷。四个新增case含完整七步逻辑和发布交接，最终组合与原生证据仍统一在final-results.json。
+
+本轮组合门禁已完成：官方Node24.21.0、独立DSH_HOME、便携媒体路径，audit162/162、regressions、完整插件测试均exit0。程序输入SHA-256保存在 `native-fixes/checks-20261106T144303Z/results.json`，本地功能提交后逐blob核验同源；新的npm包仍须实际官方CLI安装和原生界面复验，尚未以此门禁声称完成。
