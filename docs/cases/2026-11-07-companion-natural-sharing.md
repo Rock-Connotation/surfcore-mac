@@ -36,3 +36,5 @@
 
 
 平台边界补充：对话追加先fsync文件；Windows沿用既有memory archive契约，跳过不支持的POSIX只读目录fsync句柄，其它平台仍严格同步目录。OS边界fixture让目录open返回EPERM，旧V2红、新实现绿；这仅是模拟接口契约，不是Windows实机验收。记录格式与额度行为没有变化，回滚仍保留新聊天原件。
+
+组合补充：UI三类POST最初缺action，独立审查发现后已修；新增真实浏览器→生产controller→生产sharing service测试，旧UI在ACK处红，修后ACK/reply/cancel及持久额度均通过。此前一次文档冲突处理命令失败后仍继续提交，留下PITFALLS标记；后续补提交清除并保留双方字节段，不改历史，清单与包均在纠正后生成。实机尚未开始。
