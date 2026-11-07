@@ -47,6 +47,7 @@
 - 收工独立App、桥接、两条模型代理、文本网关、扫码服务、固定NapCat容器及本轮调试/服务端口均关闭。常用App仍存活，5个其它容器状态不变；共享Colima VM和Magpie保留。Chrome扩展未连接且CUA浏览器host不可用，未关闭本轮扫码标签；对应本地页面服务已停。所有账号、作业、评分、问答和账本保留。
 - 原抖音15个脏文件最终哈希全不变，原surfcore-mac仍0deb826及原.serena未跟踪目录。主线本轮仅在surfcore-readiness写入；没有修改常用profile、版本号、tag或远端。
 - 证据索引：`_backups/20261107-readiness/FINAL-RESULTS.json`；`qq-exact-option-result.json`、`qq-restored-native-readiness.json`、`question-only-restored-result.json`、`bili-next-context-result.json`、`bili-recall-result.json`及对应私有原始日志。它们不是发布物，不把账号/密钥材料加入仓库。
+- 附加严格隐私扫描exit1：默认规则命中46处、扫描不完整0；逐项命中所在整行在继承基线fa64517与程序0811aee均完全存在，本轮没有新增命中。未进一步裁定全部历史命中的真假，也未添加放行规则或重写历史。私有`privacy-baseline-comparison.json`保留对比；隐私扫描不能记绿。首个文档提交前命令序列在扫描失败后继续提交，已保留本地3544798并用后续文档提交公开记录，未推送。
 
 ## 可直接转发的发布交接块（非发布授权）
 
@@ -59,7 +60,7 @@
 失败路径：抖音code/error/hint持续可见；B站真实缺口与模型/记忆失败保留终态；QQ真实编号提示、官方答案形状及取消均有断言和实证。完整逻辑/爆炸半径：docs/cases/2026-11-07-macos-readiness.md。
 制品：package-watch的tgz SHA256 bc856d0e7beed39924235fa67a9e337ef85e44dcef57e72409c5fda5f17d82b8，来自Git0811aee，不含私有诊断和凭据。
 生效/回滚：安装同源包后重启Host/桥接；重装上一包时保留新增账号、作业、评分、问答、用量；不得用旧快照覆盖新账本。独立副本元数据修复有完整备份，未改产品保护代码。
-风险/未验：抖音真实推荐成功、B站原生下一会话自动注入与模型回忆、自动profile迁移、QQ恢复后的普通消息、物理睡眠/24h与其它设备矩阵；不称全面通过。
+风险/未验：抖音真实推荐成功、B站原生下一会话自动注入与模型回忆、自动profile迁移、QQ恢复后的普通消息、物理睡眠/24h与其它设备矩阵；附加privacy-scan --strict仍exit1，46命中均为fa64517已有整行，本轮无新增、不完整0，历史命中未全面裁定；不称全面通过。
 版本建议：QQ/B站补修可评估patch；抖音新增渠道属于minor范围，但成功推荐未验，当前组合候选暂不建议发布。由发布会话决定拆分和版本，重新执行发布门禁；本轮未发布/未tag/未push。
 运行终态：全部本轮独立测试服务/App/容器/端口已停、数据保留；常用App与其它容器不动；共享Magpie/Colima VM保留；扫码标签因浏览器控制未连接而保留，本地扫码服务已停。预算B站4/4、QQ6/6、QQ文本6/8，旧账不重置。
 ```

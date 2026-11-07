@@ -14,6 +14,7 @@
 - QQ新有界轮两次普通入站工具指令触发聊天防护；改原生真实会话question-only诊断。第4次请求180秒TRANSPORT结束；用户批准仅一次300秒手动补验，第5次正式提问，用户实际编号+选项A，官方selectedCount=1/selectedA=true/customHasAnswerText=false，20秒自动cancel通过，第6次续接completed。临时entry/guard移除、原180秒提问超时恢复；重启bridge/dshReady/snowluma.connected均true，未再验普通消息。
 - 累计本轮B站4/4、QQ6/6、原唯一私聊6/8（含失败）；旧11/12、19/30账本保留。独立App/桥接/两代理/文本网关/扫码服务/固定NapCat及本轮端口均关闭，账号、新作业/评分/问答/用量保留。常用App仍在，5个其它容器状态不变，共享Colima VM和Magpie保留；浏览器控制未连接，扫码标签未关闭但本地服务已停。
 - 下一步：先只读查抖音真实首页来源、Hy4有界可用性；勿在额度耗尽后重试、勿开日常巡航。自动迁移、B站原生下一会话自动注入/实际回忆、QQ恢复普通消息、睡眠/24h和其它设备仍未验。完整逻辑、失败与可转发发布交接在[组合case](cases/2026-11-07-macos-readiness.md)，证据索引 `_backups/20261107-readiness/FINAL-RESULTS.json`；不发布。
+- 收工附加privacy-scan --strict为exit1：46命中、不完整0，逐项命中整行在fa64517与0811aee均已有，本轮无新增；未全面裁定历史命中，未改放行规则。对比`privacy-baseline-comparison.json`。首个文档提交3544798在检查失败后仍由命令序列提交，已用后续文档记录，不隐瞒失败、不推送或重写历史。
 
 ---
 
