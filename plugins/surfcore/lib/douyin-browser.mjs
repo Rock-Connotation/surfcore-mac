@@ -64,12 +64,14 @@ function stableHomepagePlayer(state) {
   if (!last || last.source !== source || rect.some((v, i) => Math.abs(v - last.rect[i]) > 0.5)) {
     state.last = { source, rect, at: performance.now() }; return false;
   }
-  return performance.now() - last.at >= 200 ? { source } : false;
+  // Homepage prefetch/navigation debounce outlives the visible slide animation.
+  // A stable second prevents the next key from cancelling that initialization.
+  return performance.now() - last.at >= 1000 ? { source } : false;
 }
 
 export function createDouyinBrowser({ profileDir, browserPath, headless = false, onResponse, onRequest, timeouts = {}, launchPersistentContext } = {}) {
   let context, page, release, starting = false, closing = false, running = false, browserName = '', sessionId, requestSeq = 0;
-  let records = new WeakMap(), disconnected = false, closeAttempt;
+  let records = new WeakMap(), disconnected = false, closeAttempt, lastFeedSeq = 0;
   const recent = [];
   const closeTimeout = timeouts.close ?? 5000;
   const alive = owned => context === owned && running && !closing && !disconnected;
@@ -97,6 +99,8 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       const body = await res.body();
       if (!alive(owned) || body.length > MAX_BODY) return;
       const json = JSON.parse(body.toString('utf8'));
+      if (alive(owned) && meta.status === 200 && u.pathname === '/aweme/v1/web/tab/feed/'
+          && json?.status_code === 0 && Array.isArray(json.aweme_list) && json.aweme_list.length) lastFeedSeq = Math.max(lastFeedSeq, record.requestSeq);
       if (alive(owned)) Promise.resolve(onResponse?.(json, meta)).catch(() => {});
     } catch { /* Missing, malformed or unavailable bodies are ignored. */ }
   }
@@ -115,7 +119,7 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       const allowed = new Set([...names, ...Object.keys(process.env).filter(k => /^LC_[A-Z_]+$/.test(k))]);
       const env = Object.fromEntries([...allowed].filter(k => process.env[k] !== undefined).map(k => [k, process.env[k]]));
       const owned = await launch(path.resolve(profileDir), { executablePath: found.executable, headless, viewport: { width: 1280, height: 800 }, serviceWorkers: 'block', env, args: ['--restore-last-session'], ...(process.platform === 'darwin' ? { ignoreDefaultArgs: ['--password-store=basic', '--use-mock-keychain'] } : {}) });
-      context = owned; disconnected = false; closeAttempt = undefined; sessionId = randomUUID(); requestSeq = 0; recent.length = 0; records = new WeakMap();
+      context = owned; disconnected = false; closeAttempt = undefined; sessionId = randomUUID(); requestSeq = 0; lastFeedSeq = 0; recent.length = 0; records = new WeakMap();
       owned.on('close', () => {
         if (context !== owned) return;
         running = false;
@@ -142,11 +146,11 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       return safeError(e);
     } finally { starting = false; }
   }
-  async function guarded(action) {
+  async function guarded(action, defaultTimeout = 30000) {
     if (!running || !context || closing || page?.isClosed()) return problem('BROWSER_NOT_RUNNING', '浏览器未启动或已关闭', '先启动浏览器。');
     const owned = context; let active = true;
     const assertActive = () => { if (!active || !alive(owned)) throw fail('BROWSER_CLOSED', '浏览器操作已结束或已关闭', '重新启动独立浏览器后重试。'); };
-    try { return await bounded(action(assertActive), timeouts.command ?? 30000); } catch (e) { return safeError(e); }
+    try { return await bounded(action(assertActive), timeouts.command ?? defaultTimeout); } catch (e) { return safeError(e); }
     finally { active = false; }
   }
   async function close() {
@@ -174,6 +178,7 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
     snapshot: () => guarded(snapshot),
     screenshot: () => guarded(async () => ({ ok: true, image: (await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false })).toString('base64'), mimeType: 'image/jpeg' })),
     loadRecommendations: () => guarded(async assertActive => {
+      const feedCutoff = requestSeq;
       await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: timeouts.command ?? 30000 });
       const waitPlayer = async (previousSource, code, error, hint, timeout) => {
         assertActive(); let handle;
@@ -210,24 +215,38 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
       await readyPlayer(10000);
       await clearGuide();
       const editable = await page.evaluate(() => { const e = document.activeElement; return !!e && (e.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)); });
-      assertActive(); let keyStepsSent = 0, lateGuideHandled = false;
-      if (!editable) for (let i = 0; i < 4; i++) {
+      assertActive(); let keyStepsSent = 0, recoveryHandled = false;
+      if (!editable) for (let i = 0; i < 8 && lastFeedSeq <= feedCutoff; i++) {
         await clearGuide();
         const before = await readyPlayer(4000);
         const advance = async () => {
-          assertActive(); await page.keyboard.press('ArrowDown'); keyStepsSent++; assertActive();
-          return waitPlayer(before.source, 'DOUYIN_VIDEO_NOT_ADVANCED', '首页推荐视频未能切换', '确认独立浏览器的引导已关闭且视频可正常切换，再重试。', 4000);
+          assertActive(); if (lastFeedSeq > feedCutoff) return before;
+          await page.keyboard.press('ArrowDown'); keyStepsSent++; assertActive();
+          try { return await waitPlayer(before.source, 'DOUYIN_VIDEO_NOT_ADVANCED', '首页推荐视频未能切换', '确认独立浏览器的引导已关闭且视频可正常切换，再重试。', 4000); }
+          catch (error) { assertActive(); if (lastFeedSeq > feedCutoff && error.code === 'DOUYIN_VIDEO_NOT_ADVANCED') return before; throw error; }
         };
-        let after = await advance();
-        if (after.blocked === 'guide' && !lateGuideHandled) {
-          lateGuideHandled = true; await clearGuide();
+        let after;
+        try { after = await advance(); }
+        catch (error) {
+          // The first video can be ready before the application registers its
+          // navigation handler. Re-read it before one bounded initial recovery;
+          // a late transition never receives another key.
+          assertActive();
+          if (i !== 0 || recoveryHandled || error.code !== 'DOUYIN_VIDEO_NOT_ADVANCED') throw error;
+          recoveryHandled = true; await clearGuide();
+          const current = await readyPlayer(4000);
+          after = current.source === before.source ? await advance() : current;
+        }
+        if (after.blocked === 'guide' && !recoveryHandled) {
+          recoveryHandled = true; await clearGuide();
           const current = await readyPlayer(4000);
           after = current.source === before.source ? await advance() : current;
         }
         rejectBlock(after);
       }
-      return { ok: true, keyStepsSent };
-    }),
+      assertActive(); const mediaUserAgent = await page.evaluate(() => navigator.userAgent); assertActive();
+      return { ok: true, keyStepsSent, mediaUserAgent };
+    }, 60000),
     status: () => context && (!running || closing || page?.isClosed()) ? { ...problem('BROWSER_DISCONNECTED', '浏览器未处于可用状态', '检查独立浏览器和占用锁，确认退出后由管理员处理。'), running: false, browserName, requestSeq, recent: recent.slice() } : { ok: true, running: !!context && running, browserName: context ? browserName : '', requestSeq, recent: recent.slice() },
   };
 }

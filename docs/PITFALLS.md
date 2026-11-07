@@ -4153,3 +4153,8 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 ## 2026-11-07：抖音SSR预览可播放不代表推荐应用已初始化
 
 真实独立副本中，#quickPlayer可见且readyState=4，ArrowDown仍无效，也无严格tab/feed请求；约5秒后预览节点消失、应用播放器出现。就绪谓词必须排除quickPlayer，继续等可交互推荐播放器，不能拿SSR媒体替代固定首页feed。新增浏览器夹具钉住预览阶段零按键与可行动失败。参见[陪伴升级case](cases/2026-11-07-douyin-companion-integration.md)。
+
+
+## 2026-11-07：推荐首键丢失与回执交错
+
+实机首键可能早于导航处理器，第5次切换才触发fixed tab/feed也已发生；固定4键不是平台契约。采用最多8次确认切换及共享一次初始/引导恢复，画面稳定1秒，收到新feed停止。for头检查不够：回执在readiness await中到达后，下一次输入前仍须检查；等待切换失败时先确认操作未失活，再检查有效回执，不能丢弃已获取的feed。保持角色/self/来源/序号与取消护栏。完整逻辑见[导航case](cases/2026-11-07-douyin-navigation-receipt.md)。

@@ -12,11 +12,12 @@ const endpoint = 'https://www.douyin.com/aweme/v1/web/tab/feed/?private=hidden';
 const home = 'https://www.douyin.com/?recommend=1&from_nav=1';
 class FakePage {
   urls = []; keys = []; text = ''; editable = false; tutorialClicked = false;
-  source = 'fixture:video-0'; playerReady = true; hydrated = true; keyBeforeHydration = false;
-  keyboard = { press: async key => { this.keys.push(key); if(this.lateGuide && !this.didLateGuide){this.didLateGuide=true;this.text='滚动“鼠标”或点按“键盘上下键”查看更多推荐视频';return;} if (!this.hydrated) this.keyBeforeHydration = true; if (this.hydrated && !this.blockAdvance) this.source = `fixture:video-${this.keys.length}`; } };
+  source = 'fixture:video-0'; sourceSequence = 0; playerReady = true; hydrated = true; keyBeforeHydration = false;
+  keyboard = { press: async key => { this.keys.push(key); await this.onKey?.(); if(this.dropInitialKey && this.keys.length===1)return; if(this.lateGuide && !this.didLateGuide){this.didLateGuide=true;this.text='滚动“鼠标”或点按“键盘上下键”查看更多推荐视频';return;} if (!this.hydrated) this.keyBeforeHydration = true; if (this.hydrated && !this.blockAdvance) this.source = `fixture:video-${++this.sourceSequence}`; } };
   async goto(url) { this.urls.push(url); if (this.hydrationText) { this.text = ''; this.playerReady = false; this.hydrated = false; setImmediate(() => { this.text = this.hydrationText; this.playerReady = true; this.hydrated = true; }); } }
   async waitForFunction(fn, arg) {
     if (this.waitGate) await this.waitGate;
+    await this.onWait?.(arg);
     let clock = 0;
     const box = () => ({ x: 0, y: 0, width: 1000, height: 700, right: 1000, bottom: 700 });
     const v = { getBoundingClientRect: box, closest: selector => selector === '#quickPlayer' && page.quickPlayer ? {} : null, get currentSrc() { return page.source; }, get readyState() { return page.playerReady ? 4 : 0; } };
@@ -29,7 +30,7 @@ class FakePage {
   }
   async close() { this.closed = true; }
   isClosed() { return false; }
-  async evaluate(fn) { return fn.toString().includes('activeElement') ? this.editable : { title: '抖音', url: 'https://www.douyin.com/', text: this.text }; }
+  async evaluate(fn) { return fn.toString().includes('navigator.userAgent') ? 'Mozilla/5.0 Test Chrome/156.0.0.0' : fn.toString().includes('activeElement') ? this.editable : { title: '抖音', url: 'https://www.douyin.com/', text: this.text }; }
   getByRole(role, options) { assert.equal(role,'button'); assert.equal(options.name,'我知道了'); assert.equal(options.exact,true); return { isVisible: async () => !this.missingGuideButton, click: async () => { this.tutorialClicked = true; if (!this.keepGuide) this.text = ''; }, waitFor:async({state})=>{ if(state==='visible'&&this.missingGuideButton)throw new Error('guide absent'); if(state==='hidden'&&this.keepGuide)throw new Error('guide remains'); } }; }
   async screenshot() { if (this.failScreenshot) throw Object.assign(new Error('private secret'), {code:'EIO'}); return Buffer.from('jpeg'); }
 }
@@ -66,7 +67,7 @@ assert.equal((await browser.snapshot()).url,'https://www.douyin.com/');
 assert.equal((await browser.screenshot()).mimeType,'image/jpeg');
 ctx.page.failScreenshot = true; const failedScreenshot = await browser.screenshot(); assert.equal(failedScreenshot.code, 'BROWSER_ERROR'); assert(failedScreenshot.hint && !failedScreenshot.error.includes('secret')); ctx.page.failScreenshot = false;
 ctx.page.text = '滚动“鼠标”或点按“键盘上下键”查看更多推荐视频';
-assert.equal((await browser.loadRecommendations()).keyStepsSent,4); assert(ctx.page.tutorialClicked); assert.equal(ctx.page.keys.length,4); assert.equal(ctx.page.urls.at(-1),home);
+const firstNavigation = await browser.loadRecommendations(); assert.equal(firstNavigation.keyStepsSent,8); assert.match(firstNavigation.mediaUserAgent,/^Mozilla\//); assert(ctx.page.tutorialClicked); assert.equal(ctx.page.keys.length,8); assert.equal(ctx.page.urls.at(-1),home);
 ctx.page.hydrationText = '滚动“鼠标”或点按“键盘上下键”查看更多推荐视频'; ctx.page.tutorialClicked = false;
 const hydrated = await browser.loadRecommendations();
 assert.equal(hydrated.ok,true); assert(ctx.page.tutorialClicked,'late guide must be dismissed after hydration'); assert.equal(ctx.page.keyBeforeHydration,false,'never send keys before the player is ready');
@@ -79,14 +80,30 @@ assert.equal(guideFailure.code,'DOUYIN_TUTORIAL_NOT_DISMISSED'); assert(guideFai
 ctx.page.text = ''; ctx.page.playerReady = false; const beforeReadyKeys = ctx.page.keys.length, notReady = await browser.loadRecommendations();
 assert.equal(notReady.code,'DOUYIN_PAGE_NOT_READY'); assert(notReady.error && notReady.hint); assert.equal(ctx.page.keys.length,beforeReadyKeys); ctx.page.playerReady = true;
 ctx.page.blockAdvance = true; const beforeAdvanceKeys = ctx.page.keys.length, notAdvanced = await browser.loadRecommendations();
-assert.equal(notAdvanced.code,'DOUYIN_VIDEO_NOT_ADVANCED'); assert(notAdvanced.error && notAdvanced.hint); assert.equal(ctx.page.keys.length,beforeAdvanceKeys+1,'stop after the first unconfirmed transition'); ctx.page.blockAdvance = false;
+assert.equal(notAdvanced.code,'DOUYIN_VIDEO_NOT_ADVANCED'); assert(notAdvanced.error && notAdvanced.hint); assert.equal(ctx.page.keys.length,beforeAdvanceKeys+2,'only one initial recovery is allowed, then stop on an unconfirmed transition'); ctx.page.blockAdvance = false;
 const beforeEditableKeys = ctx.page.keys.length;
 ctx.page.text = '请完成安全验证'; const verification = await browser.loadRecommendations(); assert.equal(verification.code,'DOUYIN_VERIFICATION_REQUIRED'); assert(verification.hint);
 ctx.page.text = ''; ctx.page.editable = true; assert.equal((await browser.loadRecommendations()).keyStepsSent,0); assert.equal(ctx.page.keys.length,beforeEditableKeys);
 // A guide mounted after the key can block one input; recovery is bounded to one extra key.
 const lateGuideBrowser = createDouyinBrowser({profileDir:path.join(root,'late-guide'),browserPath:'/fake/chrome',launchPersistentContext:launch,timeouts:{command:1000,close:30}});
 assert((await lateGuideBrowser.start()).ok); const lateGuideContext=contexts.at(-1); lateGuideContext.page.lateGuide=true;
-const lateGuideResult=await lateGuideBrowser.loadRecommendations(); assert.equal(lateGuideResult.ok,true); assert.equal(lateGuideResult.keyStepsSent,5); assert.equal(lateGuideContext.page.keys.length,5); assert(lateGuideContext.page.tutorialClicked); assert((await lateGuideBrowser.close()).ok);
+const lateGuideResult=await lateGuideBrowser.loadRecommendations(); assert.equal(lateGuideResult.ok,true); assert.equal(lateGuideResult.keyStepsSent,9); assert.equal(lateGuideContext.page.keys.length,9); assert(lateGuideContext.page.tutorialClicked); assert((await lateGuideBrowser.close()).ok);
+// A single initial lost key recovers; a fresh fixed feed stops traversal at once.
+ctx.page.editable=false; ctx.page.keys=[]; ctx.page.dropInitialKey=true;
+ctx.page.onKey=async()=>{if(ctx.page.keys.length===6){emit(endpoint,{data:'{"status_code":0,"aweme_list":[{"aweme_id":"1"}]}'});await new Promise(r=>setImmediate(r));}};
+const recovered=await browser.loadRecommendations(); assert.equal(recovered.ok,true); assert.equal(recovered.keyStepsSent,6,'five confirmed transitions and one recovered initial key');
+ctx.page.onKey=undefined; ctx.page.dropInitialKey=false;
+// Old receipt cannot stop a new operation, and later failures never get recovery keys.
+ctx.page.keys=[]; const cap=await browser.loadRecommendations(); assert.equal(cap.keyStepsSent,8);
+ctx.page.keys=[]; ctx.page.onKey=async()=>{if(ctx.page.keys.length===2)ctx.page.blockAdvance=true;};
+const laterFailure=await browser.loadRecommendations(); assert.equal(laterFailure.code,'DOUYIN_VIDEO_NOT_ADVANCED'); assert.equal(ctx.page.keys.length,2); ctx.page.onKey=undefined;ctx.page.blockAdvance=false;
+// A receipt arriving during readiness must prevent another input; one arriving
+// after a non-advancing key still completes, without bypassing cancellation.
+const fresh=async()=>{emit(endpoint,{data:'{"status_code":0,"aweme_list":[{"aweme_id":"2"}]}'});await new Promise(r=>setImmediate(r));};
+ctx.page.keys=[];let waits=0;ctx.page.onWait=async()=>{if(++waits===4){await fresh();ctx.page.blockAdvance=true;}};
+const between=await browser.loadRecommendations();assert.equal(between.ok,true,JSON.stringify(between));assert.equal(between.keyStepsSent,1);ctx.page.onWait=undefined;ctx.page.blockAdvance=false;
+ctx.page.keys=[];ctx.page.onKey=async()=>{if(ctx.page.keys.length===2){await fresh();ctx.page.blockAdvance=true;}};
+const atFailedAdvance=await browser.loadRecommendations();assert.equal(atFailedAdvance.ok,true);assert.equal(atFailedAdvance.keyStepsSent,2);ctx.page.onKey=undefined;ctx.page.blockAdvance=false;
 // A timed-out command must not resume input when its pending readiness wait resolves.
 const expiredBrowser = createDouyinBrowser({profileDir:path.join(root,'expired-command'),browserPath:'/fake/chrome',launchPersistentContext:launch,timeouts:{command:15,close:30}});
 assert((await expiredBrowser.start()).ok); const expiredContext = contexts.at(-1); let releaseWait;
@@ -101,13 +118,13 @@ closingContext.page.waitGate = new Promise(resolve=>{releaseClosingWait=resolve;
 const closingCommand = closingBrowser.loadRecommendations(); await new Promise(resolve=>setImmediate(resolve)); closingContext.blockClose=true;
 assert.equal((await closingBrowser.close()).code,'BROWSER_CLOSE_TIMEOUT'); releaseClosingWait(); await closingCommand;
 assert.equal(closingContext.page.keys.length,0,'closing command must not send late keys'); closingContext.finishClose(); await new Promise(resolve=>setImmediate(resolve));
-const late = emit(endpoint,{delayed:true}); await new Promise(r=>setImmediate(r));
+const beforeLateBodies = bodies.length, late = emit(endpoint,{delayed:true}); await new Promise(r=>setImmediate(r));
 fs.writeFileSync(path.join(profile,'login-data'),'keep'); ctx.blockClose = true;
 const timed = await browser.close(); assert.equal(timed.code,'BROWSER_CLOSE_TIMEOUT'); assert(timed.hint); assert(fs.existsSync(path.join(profile,'.surfcore-douyin.lock'))); assert.equal((await duplicate.start()).code,'PROFILE_LOCKED');
-late(); await new Promise(r=>setImmediate(r)); assert.equal(bodies.length,1);
+late(); await new Promise(r=>setImmediate(r)); assert.equal(bodies.length,beforeLateBodies);
 ctx.emit('close'); assert(fs.existsSync(path.join(profile,'.surfcore-douyin.lock'))); assert.equal((await duplicate.start()).code,'PROFILE_LOCKED');
 ctx.finishClose(); await new Promise(r=>setImmediate(r)); assert(!fs.existsSync(path.join(profile,'.surfcore-douyin.lock'))); assert.equal(fs.readFileSync(path.join(profile,'login-data'),'utf8'),'keep');
-assert((await browser.start()).ok); ctx=contexts.at(-1); emit(endpoint); await new Promise(r=>setImmediate(r)); assert.equal(bodies.length,2); assert.notEqual(bodies[0].meta.sessionId,bodies[1].meta.sessionId); assert((await browser.close()).ok);
+assert((await browser.start()).ok); ctx=contexts.at(-1); emit(endpoint); await new Promise(r=>setImmediate(r)); assert.equal(bodies.length,beforeLateBodies+1); assert.notEqual(bodies[0].meta.sessionId,bodies.at(-1).meta.sessionId); assert((await browser.close()).ok);
 const disconnectedProfile = path.join(root, 'disconnected');
 const disconnectedBrowser = createDouyinBrowser({profileDir:disconnectedProfile,browserPath:'/fake/chrome',launchPersistentContext:launch,timeouts:{close:30}});
 assert((await disconnectedBrowser.start()).ok); const disconnectedContext = contexts.at(-1);
