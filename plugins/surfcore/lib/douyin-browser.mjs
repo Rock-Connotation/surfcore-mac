@@ -43,6 +43,28 @@ function acquireProfile(dir) {
   return unlock;
 }
 
+// Runs synchronously in the page. The per-wait argument holds polling state,
+// avoiding page globals and the truthy-Promise trap of async waitForFunction predicates.
+function stableHomepagePlayer(state) {
+  const text = document.body?.innerText || '';
+  if (/验证码|安全验证|人机验证|滑块验证/.test(text)) return { blocked: 'verification' };
+  if (text.includes('滚动“鼠标”或点按“键盘上下键”查看更多推荐视频')) return { blocked: 'guide' };
+  const candidates = [...document.querySelectorAll('video')].map(video => {
+    const box = video.getBoundingClientRect(), style = getComputedStyle(video);
+    const area = Math.max(0, Math.min(innerWidth, box.right) - Math.max(0, box.x))
+      * Math.max(0, Math.min(innerHeight, box.bottom) - Math.max(0, box.y));
+    return { video, box, area, visible: style.display !== 'none' && style.visibility === 'visible' };
+  }).filter(x => x.visible && x.box.width > 120 && x.box.height > 120 && x.area > 0)
+    .sort((a, b) => b.area - a.area);
+  const item = candidates[0], source = item?.video.currentSrc;
+  if (!item || !source || item.video.readyState < 2 || source === state.previousSource) { state.last = null; return false; }
+  const rect = [item.box.x, item.box.y, item.box.width, item.box.height], last = state.last;
+  if (!last || last.source !== source || rect.some((v, i) => Math.abs(v - last.rect[i]) > 0.5)) {
+    state.last = { source, rect, at: performance.now() }; return false;
+  }
+  return performance.now() - last.at >= 200 ? { source } : false;
+}
+
 export function createDouyinBrowser({ profileDir, browserPath, headless = false, onResponse, onRequest, timeouts = {}, launchPersistentContext } = {}) {
   let context, page, release, starting = false, closing = false, running = false, browserName = '', sessionId, requestSeq = 0;
   let records = new WeakMap(), disconnected = false, closeAttempt;
@@ -120,7 +142,10 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
   }
   async function guarded(action) {
     if (!running || !context || closing || page?.isClosed()) return problem('BROWSER_NOT_RUNNING', '浏览器未启动或已关闭', '先启动浏览器。');
-    try { return await bounded(action(), timeouts.command ?? 30000); } catch (e) { return safeError(e); }
+    const owned = context; let active = true;
+    const assertActive = () => { if (!active || !alive(owned)) throw fail('BROWSER_CLOSED', '浏览器操作已结束或已关闭', '重新启动独立浏览器后重试。'); };
+    try { return await bounded(action(assertActive), timeouts.command ?? 30000); } catch (e) { return safeError(e); }
+    finally { active = false; }
   }
   async function close() {
     if (!context) return { ok: true };
@@ -146,17 +171,59 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
     reload: () => guarded(async () => { await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: timeouts.command ?? 30000 }); return { ok: true }; }),
     snapshot: () => guarded(snapshot),
     screenshot: () => guarded(async () => ({ ok: true, image: (await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false })).toString('base64'), mimeType: 'image/jpeg' })),
-    loadRecommendations: () => guarded(async () => {
+    loadRecommendations: () => guarded(async assertActive => {
       await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: timeouts.command ?? 30000 });
-      const snap = await snapshot();
-      if (/验证码|安全验证|人机验证|滑块验证/.test(snap.text)) return problem('DOUYIN_VERIFICATION_REQUIRED', '抖音要求人工验证', '请在独立浏览器完成验证后重试。');
-      if (snap.text.includes('滚动“鼠标”或点按“键盘上下键”查看更多推荐视频')) {
+      const waitPlayer = async (previousSource, code, error, hint, timeout) => {
+        assertActive(); let handle;
+        try {
+          handle = await page.waitForFunction(stableHomepagePlayer, { previousSource }, { timeout: Math.min(timeout, timeouts.command ?? 30000) });
+          const value = await handle.jsonValue(); assertActive(); return value;
+        } catch { throw fail(code, error, hint); }
+        finally { await handle?.dispose().catch(() => {}); }
+      };
+      const clearGuide = async () => {
+        assertActive(); const snap = await snapshot(); assertActive();
+        if (/验证码|安全验证|人机验证|滑块验证/.test(snap.text)) throw fail('DOUYIN_VERIFICATION_REQUIRED', '抖音要求人工验证', '请在独立浏览器完成验证后重试。');
+        if (!snap.text.includes('滚动“鼠标”或点按“键盘上下键”查看更多推荐视频')) return;
         const button = page.getByRole('button', { name: '我知道了', exact: true });
-        if (await button.isVisible()) await button.click();
-      }
+        try {
+          await button.waitFor({ state: 'visible', timeout: 3000 }); assertActive();
+          await button.click({ timeout: 3000 });
+          assertActive(); await button.waitFor({ state: 'hidden', timeout: 3000 }); assertActive();
+          if ((await snapshot()).text.includes('滚动“鼠标”或点按“键盘上下键”查看更多推荐视频')) throw new Error('guide remains');
+        } catch { throw fail('DOUYIN_TUTORIAL_NOT_DISMISSED', '首页操作引导仍显示', '请在独立浏览器中关闭「我知道了」引导后重试。'); }
+      };
+      const rejectBlock = value => {
+        if (value.blocked === 'verification') throw fail('DOUYIN_VERIFICATION_REQUIRED', '抖音要求人工验证', '请在独立浏览器完成验证后重试。');
+        if (value.blocked === 'guide') throw fail('DOUYIN_TUTORIAL_NOT_DISMISSED', '首页操作引导仍显示', '请在独立浏览器中关闭「我知道了」引导后重试。');
+        return value;
+      };
+      const readyPlayer = async timeout => {
+        let value = await waitPlayer(undefined, 'DOUYIN_PAGE_NOT_READY', '抖音首页视频尚未就绪', '等待独立浏览器的首页视频正常显示后重试。', timeout);
+        if (value.blocked === 'guide') { await clearGuide(); value = await waitPlayer(undefined, 'DOUYIN_PAGE_NOT_READY', '抖音首页视频尚未就绪', '等待独立浏览器的首页视频正常显示后重试。', timeout); }
+        return rejectBlock(value);
+      };
+      assertActive(); const initial = await snapshot(); assertActive();
+      if (/验证码|安全验证|人机验证|滑块验证/.test(initial.text)) return problem('DOUYIN_VERIFICATION_REQUIRED', '抖音要求人工验证', '请在独立浏览器完成验证后重试。');
+      await readyPlayer(10000);
+      await clearGuide();
       const editable = await page.evaluate(() => { const e = document.activeElement; return !!e && (e.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)); });
-      let keyStepsSent = 0;
-      if (!editable) for (let i = 0; i < 4; i++) { await page.keyboard.press('ArrowDown'); keyStepsSent++; }
+      assertActive(); let keyStepsSent = 0, lateGuideHandled = false;
+      if (!editable) for (let i = 0; i < 4; i++) {
+        await clearGuide();
+        const before = await readyPlayer(4000);
+        const advance = async () => {
+          assertActive(); await page.keyboard.press('ArrowDown'); keyStepsSent++; assertActive();
+          return waitPlayer(before.source, 'DOUYIN_VIDEO_NOT_ADVANCED', '首页推荐视频未能切换', '确认独立浏览器的引导已关闭且视频可正常切换，再重试。', 4000);
+        };
+        let after = await advance();
+        if (after.blocked === 'guide' && !lateGuideHandled) {
+          lateGuideHandled = true; await clearGuide();
+          const current = await readyPlayer(4000);
+          after = current.source === before.source ? await advance() : current;
+        }
+        rejectBlock(after);
+      }
       return { ok: true, keyStepsSent };
     }),
     status: () => context && (!running || closing || page?.isClosed()) ? { ...problem('BROWSER_DISCONNECTED', '浏览器未处于可用状态', '检查独立浏览器和占用锁，确认退出后由管理员处理。'), running: false, browserName, requestSeq, recent: recent.slice() } : { ok: true, running: !!context && running, browserName: context ? browserName : '', requestSeq, recent: recent.slice() },

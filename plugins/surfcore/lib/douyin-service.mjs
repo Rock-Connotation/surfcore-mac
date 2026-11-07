@@ -98,7 +98,7 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
     } while (true);
     return pathname === SELF ? auth() : error('DOUYIN_FEED_UNAVAILABLE', '未取得新的首页推荐', '确认账号已登录且首页可以正常显示，再重试。');
   }
-  async function navigate(op) { try { const result = await (typeof op.browser.loadRecommendations === 'function' ? op.browser.loadRecommendations() : op.browser.reload()); if (!current(op)) return stale(); return result?.ok ? result : result || auth(); } catch { return current(op) ? error('DOUYIN_BROWSER_FAILED', '独立浏览器刷新失败', '检查浏览器后重试。') : stale(); } }
+  async function navigate(op, recommendations = true) { try { const result = await (recommendations && typeof op.browser.loadRecommendations === 'function' ? op.browser.loadRecommendations() : op.browser.reload()); if (!current(op)) return stale(); return result?.ok ? result : result || auth(); } catch { return current(op) ? error('DOUYIN_BROWSER_FAILED', '独立浏览器刷新失败', '检查浏览器后重试。') : stale(); } }
   const same = (a, b) => a && b && a.uid === b.uid && a.secUid === b.secUid && a.accountKey === b.accountKey;
   async function finish(op, result) { const closed = await stop(op); if (!closed.ok) return closed; return current(op) ? (op.identityFailure || result) : stale(); }
   function expectedPage(snap) { try { const u = new URL(snap.url); return u.protocol === 'https:' && u.hostname === 'www.douyin.com' && u.port === '' && u.pathname === '/'; } catch { return false; } }
@@ -166,7 +166,8 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
       const afterFeed = await findEvent(op, SELF, cutoff); if (!afterFeed.ok) return finish(op, afterFeed);
       if (!same(afterFeed.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '读取时登录账号发生变化', '重新登录并确认账号。'));
       state = browserStatus(op); if (!state.ok || !state.running) return finish(op, state.ok ? auth() : state);
-      cutoff = state.requestSeq; result = await navigate(op); if (!result.ok) return finish(op, result);
+      // Final ownership proof requires a fresh self response, not another feed traversal.
+      cutoff = state.requestSeq; result = await navigate(op, false); if (!result.ok) return finish(op, result);
       const after = await findEvent(op, SELF, cutoff); if (!after.ok) return finish(op, after);
       if (!same(after.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '读取后登录账号发生变化', '重新登录并确认账号。'));
       if (!Array.isArray(feed.items) || !feed.items.length) return finish(op, error('DOUYIN_FEED_EMPTY', '首页推荐为空', '检查首页内容和账号状态后重试。'));
