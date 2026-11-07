@@ -28,11 +28,12 @@ function gate() {
   const started = new Promise(resolve => { enter = resolve; });
   return { enter, started, wait: new Promise(resolve => { release = resolve; }), release: () => release() };
 }
-let nextReadGate = null, statusReads = 0;
+let nextReadGate = null, statusReads = 0, omitRevision = false;
 const controller = createSharingController({ service: { ...service, status: async stamp => {
   statusReads++;
   const value = await service.status(stamp);
   if (nextReadGate) { const gate = nextReadGate; nextReadGate = null; gate.enter(); await gate.wait; }
+  if (omitRevision) { const invalid = { ...value }; delete invalid.revision; return invalid; }
   return value;
 } }, getCharacter: () => role });
 const webp = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA==', 'base64');
@@ -95,6 +96,12 @@ try {
   releaseSecond({ text: '迟到回复不可见。', finishReason: 'stop' });
   await page.waitForTimeout(100);
   assert.doesNotMatch(await page.locator('#conversation').textContent(), /迟到回复不可见/);
+  await page.locator('#conversation-input').fill('接口失败时保留这句草稿。');
+  omitRevision = true; await page.locator('#refresh').click();
+  await page.waitForFunction(() => document.getElementById('sharing-error').textContent.includes('SHARING_RESPONSE_INVALID'));
+  assert.match(await page.locator('#sharing-error').textContent(), /重新加载SurfCore插件后点刷新/, 'missing revision is a visible actionable contract failure');
+  assert.equal(await page.locator('#conversation-input').inputValue(), '接口失败时保留这句草稿。');
+  omitRevision = false;
   let staleEntered, staleRelease;
   const staleStarted = new Promise(resolve => { staleEntered = resolve; });
   nextReadGate = { enter: staleEntered, wait: new Promise(resolve => { staleRelease = resolve; }) };

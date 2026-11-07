@@ -39,6 +39,8 @@
 
 组合补充：UI三类POST最初缺action，独立审查发现后已修；新增真实浏览器→生产controller→生产sharing service测试，旧UI在ACK处红，修后ACK/reply/cancel及持久额度均通过。此前一次文档冲突处理命令失败后仍继续提交，留下PITFALLS标记；后续补提交清除并保留双方字节段，不改历史，清单与包均在纠正后生成。实机尚未开始。
 
-生命周期补充：POST结算使旧GET generation退休，防已确认回复/ACK/取消被旧快照覆盖。收到真实角色失效码时先停用旧输入并收起旧内容；解析POST的成功或失败后都先核对pagehide/角色stamp，迟到错误不得清空新角色。客户端等待覆盖Host的180秒终态，185秒仅为接收回包留余量，不增加模型180秒上限、请求预算或自动重试。迁入时原记忆卡不整份覆盖：新经历由生产append/维护摄取，新token仅用生产服务合并douyin-companion增量，原消费和其它会话保留。
+生命周期补充：同epoch的revision统一排序所有GET/POST快照，防已确认回复/ACK/取消被旧快照覆盖；仅角色失效退休请求generation。收到真实角色失效码时先停用旧输入并收起旧内容；解析POST的成功或失败后都先核对pagehide/角色stamp，迟到错误不得清空新角色。客户端等待覆盖Host的180秒终态，185秒仅为接收回包留余量，不增加模型180秒上限、请求预算或自动重试。迁入时原记忆卡不整份覆盖：新经历由生产append/维护摄取，新token仅用生产服务合并douyin-companion增量，原消费和其它会话保留。
 
 状态收敛补充：独立UI V2继续实证迟到ACK POST、迟到主GET复活角色和POST后停poll三处P2。比较两路线：纯客户端动作开始序号成本低，但网络开始顺序不等于持久提交顺序，容易丢较新的真实状态；采用追加日志revision（当前epoch事件条数）给所有GET/POST快照统一排序，成本仅一项派生API字段，无存储迁移，旧程序可忽略。客户端只应用不小于已应用revision的同角色快照，缺版本显式SHARING_RESPONSE_INVALID/error/hint；POST不再清GET轮询，因此去掉两项临时状态旗标。角色失效seq++退休主GET，refresh(true)沿用已有队列等待发起真正新请求。ACK/cancel只清自己开始时仍同一对象的错误，不能吞掉稍后回复失败。真实browser→controller→store反例旧ACK可把2条盖成0，新版保留2条，并在5秒后继续只读poll；修复仍需冻结V3独立复核及最终组合/原生验收。
+
+最终离线门禁：df1b159生产修复经V3独立7夹具通过，三处剩余P2同revision合同旧红新绿；源码4hash首尾一致。1018162 Git对象清单858/858、官方Node24 audit174/174、严格隐私0、同源348文件包构建通过。原browser fixture补齐单调revision（只在模拟状态变化时推进、读取不推进），30项亦通过；真实事件条数计数另由生产service专项验证，不能把fake状态计数冒充生产日志。完整plugin与原生App尚待后续实证。

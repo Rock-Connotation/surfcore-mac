@@ -18,7 +18,13 @@ const opening = activeOpening = {
   coverage: { transcriptComplete: true, frameSamples: 3 }, unread: true,
 };
 let messages = [];
-function value() { return { openings: activeOpening ? [{ ...activeOpening, unread }] : [], messages: [...messages], active: remoteActive, unread: unread ? 1 : 0, lastError: null }; }
+let stateRevision = 0, priorState = '';
+function value() {
+  const state = { openings: activeOpening ? [{ ...activeOpening, unread }] : [], messages: [...messages], active: remoteActive, unread: unread ? 1 : 0, lastError: null };
+  const fingerprint = JSON.stringify({ role, ...state });
+  if (fingerprint !== priorState) { stateRevision++; priorState = fingerprint; }
+  return { revision: stateRevision, ...state };
+}
 function send(res, status, data, type = 'application/json') {
   res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
   res.end(type === 'application/json' ? JSON.stringify(data) : data);

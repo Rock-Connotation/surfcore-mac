@@ -9,7 +9,7 @@
 
 - 用户明确选择DSH内分享并可直接回复，确认本机API/真实UI验收。主树../surfcore-companion-sharing，基线3ab73bd；当前UI已合入069d190，后续组合提交见git。常用仍旧程序c49721f，已确认空闲后按精确PID58378正常Quit，完整备份后为实机串行准备；当前DSH进程0，真实新额度仍8/12。
 - 分享服务V3通过跨进程幂等、实际分派epoch、异实例归属和平台fsync边界独立复核；engine V3已关闭正常自然语气误拒、已收usage漏记和明确命令尾缀回归，冻结SHA及原红绿保留。协议回归17项/exit0；真实浏览器→controller→sharing service的ACK/reply/cancel与持久额度旧红新绿。
-- UI V1独立发现P1缺action（已修并合入）、P2同角色旧GET覆盖新POST、P2真实角色失效码未识别；后两项、客户端60秒短于Host180秒及late-error guard顺序均已由3f64531修复，UI专项30项与旧UI11通过；主线真实controller/browser最新组合亦通过canonical码/挂起主GET/旧GET时序。V2再实证迟到ACK、迟到主GET及成功POST停止poll三P2，主线改为日志revision统一快照顺序、seq++退休主GET并队列新刷新，移除两项临时旗标。真实controller新时序已绿；新合同fixture与V3复审待收口，随后组合门禁。
+- UI V1独立发现P1缺action（已修并合入）、P2同角色旧GET覆盖新POST、P2真实角色失效码未识别；后两项、客户端60秒短于Host180秒及late-error guard顺序均已由3f64531修复，UI专项30项与旧UI11通过；主线真实controller/browser最新组合亦通过canonical码/挂起主GET/旧GET时序。V2再实证迟到ACK、迟到主GET及成功POST停止poll三P2，主线改为日志revision统一快照顺序、seq++退休主GET并队列新刷新，移除两项临时旗标。真实controller新时序与V3独立7夹具均绿；fake browser按状态变化推进revision（只读不推进），30项通过。1018162程序/清单858、audit174/174、strict隐私0和348文件同源包已通过；最终完整plugin/回归及原生验收在收口。
 - 独立native副本已复制当前app/epoch4/小白鲸的7623文件并逐hash相同，源资料不改；只重绑目标inbox身份（24254字节，水位保留）。沿用8/12账本，stage日常关闭，常用原日常开启设置保留；尚未launch或新增模型。
 - 下一步：UI最小增量与冻结复核→组合audit/完整插件/清单/同源包→独立App最多2观看+1接话、重启只读→原包官方CLI装入常用、仅追加新经历/分享和已消费额度，用生产服务合并新token增量，不整体覆盖记忆卡→常用原生读回及正常无debug恢复。原13插件版本现读一致，QQ/B站自启关闭；不外发、语音/外部桌宠或发布。
 - 私有检查点_backups/20261107-sharing/WORKING-HANDOFF.json；组合case见cases/2026-11-07-companion-natural-sharing.md。无待用户确认项，按既定范围继续。
