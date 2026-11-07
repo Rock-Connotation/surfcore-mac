@@ -24,11 +24,11 @@ fs.writeFileSync(role.manifest, JSON.stringify({ id: 'alpha', name: 'Alpha', ver
 fs.writeFileSync(chars.CURRENT_FILE, JSON.stringify({ id: 'alpha', epoch: 1, name: 'Alpha' }));
 const owner = { characterId: 'alpha', characterEpoch: 1 };
 const frame = { atMs: 100, dataUrl: 'data:image/jpeg;base64,/9j/2Q==' };
-let sends = 0, usageRecords = 0, request;
+let sends = 0, usageRecords = 0, imageSaves = 0, request;
 const budget = { block: async () => ({ blocked: false }), recordExternalUsage: async () => { usageRecords++; return true; } };
 const llm = { listModels: async () => [{ id: COMPANION_ROUTE.model, inputModalities: ['text', 'image'] }],
   async *stream(options) { sends++; request = options; yield { type: 'text-delta', text: '{"summary":"海洋"}' }; yield { type: 'usage', usage: { uncachedInputTokens: 12, outputTokens: 6 } }; yield { type: 'finish', reason: { kind: 'stop' } }; } };
-const attachments = { saveImages: async list => { assert.equal(list[0].mediaType, 'image/jpeg'); return [{ attachmentId: 'sha256:fixture', mediaType: 'image/jpeg' }]; } };
+const attachments = { saveImages: async list => { imageSaves++; assert.equal(list[0].mediaType, 'image/jpeg'); return [{ attachmentId: 'sha256:fixture', mediaType: 'image/jpeg' }]; } };
 const ctx = { get: name => ({ llm, attachments })[name] };
 const model = createCompanionModel({ ctx, tokenBudget: budget });
 assert.equal((await model.readiness()).ok, true);
@@ -38,6 +38,7 @@ assert.equal(request.reasoningEffort, 'low'); assert.equal(request.maxTokens, 81
 assert.deepEqual(request.messages[0].content.map(x => x.type), ['text', 'text', 'image']);
 assert.equal(request.messages[0].content[2].attachment.attachmentId, 'sha256:fixture');
 await assert.rejects(model.call({ system: 's', prompt: 'p', images: [] }), e => e.code === 'COMPANION_IMAGES_REQUIRED' && !!e.hint);
+await assert.rejects(model.call({ system: 's', prompt: 'p', images: [frame, frame, frame, frame] }), e => e.code === 'COMPANION_IMAGES_REQUIRED' && !!e.hint);
 assert.equal(sends, 1, 'invalid frame request must not reach model');
 llm.listModels = async () => [{ id: COMPANION_ROUTE.model, inputModalities: ['text'] }];
 assert.equal((await model.readiness()).code, 'COMPANION_IMAGE_UNAVAILABLE');
@@ -68,6 +69,74 @@ budget.recordExternalUsage = () => new Promise(() => {});
 const usageStarted = Date.now();
 await assert.rejects(model.call({ system: 's', prompt: 'p', images: [frame], timeoutMs: 100 }), e => e.code === 'COMPANION_USAGE_PERSIST_FAILED' && !!e.hint);
 assert.ok(Date.now() - usageStarted < 1000, 'usage commit must be bounded');
+budget.recordExternalUsage = originalRecord;
+
+// Text-only reply uses the exact HY3 low route without saving or attaching images.
+const sendsBeforeReply = sends, usageBeforeReply = usageRecords, imageSavesBeforeReply = imageSaves;
+let replyGuardChecks = 0;
+const reply = await model.reply({ system: 'reply system', prompt: 'reply prompt', maxTokens: 8192, timeoutMs: 180_000, beforeSend: () => { replyGuardChecks++; } });
+assert.equal(reply.finishReason, 'stop'); assert.equal(sends, sendsBeforeReply + 1); assert.equal(usageRecords, usageBeforeReply + 1);
+assert.equal(imageSaves, imageSavesBeforeReply, 'reply never calls attachments.saveImages');
+assert.ok(replyGuardChecks >= 9, 'reply rechecks at preparation and actual stream-read boundaries');
+assert.equal(request.provider, COMPANION_ROUTE.provider); assert.equal(request.model, COMPANION_ROUTE.model);
+assert.equal(request.reasoningEffort, 'low'); assert.equal(request.maxTokens, 8192);
+assert.deepEqual(request.messages[0].content, [{ type: 'text', text: 'reply prompt' }]);
+assert.equal(Object.hasOwn(request, 'tools'), false, 'reply is dispatched without a tool surface');
+await assert.rejects(model.reply({ system: 's', prompt: 'p', images: [frame] }), e => e.code === 'COMPANION_REPLY_IMAGES_FORBIDDEN' && !!e.hint);
+assert.equal(sends, sendsBeforeReply + 1, 'reply rejects images before dispatch');
+
+// A role change while the reply awaits its model directory gate must stop before stream dispatch.
+let releaseCatalog, enterCatalog;
+const catalogEntered = new Promise(resolve => { enterCatalog = resolve; });
+const originalModelsForReply = llm.listModels;
+let replyEpoch = 1;
+llm.listModels = async () => { enterCatalog(); await new Promise(resolve => { releaseCatalog = resolve; }); return [{ id: COMPANION_ROUTE.model, inputModalities: ['text', 'image'] }]; };
+const sendsBeforeRoleChange = sends;
+const staleReply = model.reply({ system: 's', prompt: 'p', beforeSend: () => {
+  if (replyEpoch !== 1) throw Object.assign(new Error('reply role stale'), { code: 'DOUYIN_STALE_CHARACTER', hint: 'refresh current role' });
+} });
+await catalogEntered;
+replyEpoch = 2; releaseCatalog();
+await assert.rejects(staleReply, e => e.code === 'DOUYIN_STALE_CHARACTER' && !!e.hint);
+assert.equal(sends, sendsBeforeRoleChange, 'stale reply cannot dispatch after catalog await');
+llm.listModels = originalModelsForReply;
+let releaseBudget, enterBudget;
+const budgetEntered = new Promise(resolve => { enterBudget = resolve; });
+const originalBlockForReply = budget.block;
+replyEpoch = 1;
+budget.block = async () => { enterBudget(); await new Promise(resolve => { releaseBudget = resolve; }); return { blocked: false }; };
+const sendsBeforeBudgetChange = sends;
+const budgetStaleReply = model.reply({ system: 's', prompt: 'p', beforeSend: () => {
+  if (replyEpoch !== 1) throw Object.assign(new Error('reply role stale'), { code: 'DOUYIN_STALE_CHARACTER', hint: 'refresh current role' });
+} });
+await budgetEntered;
+replyEpoch = 2; releaseBudget();
+await assert.rejects(budgetStaleReply, e => e.code === 'DOUYIN_STALE_CHARACTER' && !!e.hint);
+assert.equal(sends, sendsBeforeBudgetChange, 'stale reply cannot dispatch after budget gate await');
+budget.block = originalBlockForReply;
+const sendsBeforeAbort = sends;
+const abortedReply = new AbortController(); abortedReply.abort();
+await assert.rejects(model.reply({ system: 's', prompt: 'p', signal: abortedReply.signal }), e => e.code === 'COMPANION_MODEL_CANCELLED' && !!e.hint);
+assert.equal(sends, sendsBeforeAbort, 'pre-aborted reply must not dispatch');
+
+// Tool use is rejected once with no retry; usage remains durably recorded.
+const originalStream = llm.stream;
+llm.stream = async function* (options) {
+  sends++; request = options;
+  yield { type: 'usage', usage: { uncachedInputTokens: 1, outputTokens: 1 } };
+  yield { type: 'tool-call-delta', text: 'forbidden' };
+};
+await assert.rejects(model.reply({ system: 's', prompt: 'p' }), e => e.code === 'COMPANION_TOOLS_REJECTED' && !!e.hint);
+assert.equal(sends, sendsBeforeAbort + 1, 'failed reply is not automatically retried');
+assert.equal(usageRecords, usageBeforeReply + 2, 'usage receipt is still persisted for a rejected tool call');
+llm.stream = originalStream;
+
+// A successful reply whose durable usage receipt fails is reported instead of acknowledged.
+budget.recordExternalUsage = () => new Promise(() => {});
+const replyUsageStarted = Date.now();
+await assert.rejects(model.reply({ system: 's', prompt: 'p', timeoutMs: 100 }), e => e.code === 'COMPANION_USAGE_PERSIST_FAILED' && !!e.hint);
+assert.ok(Date.now() - replyUsageStarted < 1000, 'reply usage persistence is bounded');
+assert.equal(sends, sendsBeforeAbort + 2);
 budget.recordExternalUsage = originalRecord;
 
 // Use the actual collector: a failed rename must not acknowledge durable usage.
