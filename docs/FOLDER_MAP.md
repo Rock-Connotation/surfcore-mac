@@ -101,8 +101,8 @@ docs/
 │                 #       TOKEN_USAGE_CONSOLE / CONSOLE-UI-TESTING / PRIVACY /
 │                 #       MEMORY_CARD / CHARACTER_PERSONA / PURPOSE_OUTREACH /
 │                 #       CONVERSATION_CLOSURE / CROSS_PLATFORM_IDENTITY
-├── design/       # 设计与规划：GEN2_SIMULATION_PLAN / SOCIAL_MODE_PLAN / DSH_QQ_TOOLS_PLAN / 真人语感策略
-├── research/     # 调研：SnowLuma功能调研 / 免打扰 / 表情包 / 本地模型选型
+├── design/       # 本地设计与规划；macos/ 是 2026-11-06 收录的 macOS 技术设计原稿与入口
+├── research/     # 本地调研；2026-11-06-development-tools.md 记录工具/skills 核验与调用抽样
 ├── audits/       # 审查与优化报告（最新的全项目体检是 AUDIT_REPORT_2026-09-20）
 └── legacy/       # 历史归档（已被取代 / 问题已全部修复的旧报告）
 ```
@@ -111,7 +111,7 @@ docs/
 > `docs/audits/`、`docs/design/`、`docs/legacy/`、`docs/research/` 以及
 > `docs/guides/PROJECT_GUIDE.md`、`docs/guides/VOICE.md` **整体排除**了
 > （原因写在那里：这批文档里扫出过多份含本机真实路径的内容）。
-> 也就是说：**只有 `docs/README.md`、`docs/FOLDER_MAP.md` 与 `docs/guides/` 下的其余几篇会出现在 GitHub 上**，
+> 上述被忽略的本地资料不随普通 Git 提交分发；`docs/guides/DEVELOPMENT-TOOLS.md` 是可跟踪的开发指引，
 > 上面那份索引里指向 `audits/` `design/` `legacy/` `research/` 的链接**对公开读者是死链**，只在本机有效。
 > 因此：**要公开的新文档请放 `docs/guides/`**（新写的 `DSH_020_ADAPTATION.md` 就放这里）；
 > 放进那四个目录 = 只在本机可见，`git add` 会直接被 .gitignore 挡下。

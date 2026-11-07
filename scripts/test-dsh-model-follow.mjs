@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import {
   SOURCE_CONFIG, SOURCE_DSH_DEFAULT, defaultSelectionOf, effectiveChatModel, writesGlobalDefault,
@@ -93,4 +94,32 @@ test('接线：bridge 跟随、控制台和设置页都有开关', () => {
   assert.match(client, /dsh\.followDefaultModel/);
   assert.match(client, /跟随 DSH 默认模型/);
   assert.match(client, /\/dsh\/follow-default/);
+});
+
+
+test('QQ model failure renders the repair hint in settings and console', async () => {
+  const hint = 'fixture repair action';
+  const client = fs.readFileSync(path.join(ROOT, 'plugins/surfcore/lib/client.js'), 'utf8');
+  const marker = 'const proof = (() => {';
+  const start = client.indexOf(marker);
+  assert.ok(start >= 0);
+  const end = client.indexOf('})();', start);
+  const proof = vm.runInNewContext(client.slice(start + 'const proof = '.length, end + 4), {
+    statusPending: false, info: {}, lastApply: { ok: false, error: 'fixture selection error', hint }, fmtProofTime: () => 'fixture time',
+  });
+  assert.equal(proof.kind, 'bad');
+  assert.ok(proof.text.includes(hint), 'settings failure must show the next action');
+
+  const html = fs.readFileSync(path.join(ROOT, 'public/console.html'), 'utf8');
+  const prefix = "document.getElementById('aiNotifySend').addEventListener('click', ";
+  const callbackStart = html.indexOf(prefix);
+  assert.ok(callbackStart >= 0);
+  const callbackEnd = html.indexOf('\n});', callbackStart);
+  const fields = { aiNotifyKind: { value: 'private' }, aiNotifyId: { value: '123' }, aiNotifyMessage: { value: 'fixture' }, aiNotifyMsg: {} };
+  const callback = vm.runInNewContext('(' + html.slice(callbackStart + prefix.length, callbackEnd + 2) + ')', {
+    document: { getElementById: (id) => fields[id] }, api: async () => ({ ok: false, error: 'fixture selection error', hint }), alert: () => assert.fail('unexpected alert'),
+  });
+  await callback();
+  assert.ok(fields.aiNotifyMsg.textContent.includes(hint), 'console failure must show the next action');
+  assert.equal(fields.aiNotifyMsg.className, 'meta err');
 });

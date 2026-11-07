@@ -108,6 +108,21 @@ const base = {
   assert.equal(buildInstallChecks(base).some((c) => c.name === '唤醒额度'), false);
 }
 
+// B 站单渠道不应被 QQ 的白名单、SnowLuma 或桥接状态阻塞；ASR 媒体缺失须报告。
+{
+  const checks = buildInstallChecks({ ...base, enabledChannels: { qq: false, bili: true }, groups: [], privates: [], snow: {}, bridgeSrc: false,
+    mediaRuntime: { ok: false, code: 'MEDIA_RUNTIME_NOT_FOUND', error: '缺少 FFprobe', hint: '安装 FFprobe 后重试' } });
+  assert.equal(checks.some((c) => ['白名单', 'SnowLuma 配置', 'QQ 桥接源码'].includes(c.name)), false);
+  const media = checks.find((c) => c.name === '媒体运行时（ASR）');
+  assert.equal(media.level, 'fail');
+  assert.match(media.detail, /MEDIA_RUNTIME_NOT_FOUND/);
+  assert.ok(media.fix);
+  const runtime = buildInstallChecks({ ...base, nodeRuntime: { ok: false, code: 'NODE_RUNTIME_OVERRIDE_INVALID', error: '坏路径', hint: '检查 DSH_NODE' } }).find((c) => c.name === 'Node 版本');
+  assert.equal(runtime.level, 'fail');
+  assert.match(runtime.detail, /NODE_RUNTIME_OVERRIDE_INVALID/);
+  assert.ok(runtime.fix);
+}
+
 // 9) 接线：体检必须用桥接状态判断 SnowLuma，并带上 wakeGuard。
 {
   const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');

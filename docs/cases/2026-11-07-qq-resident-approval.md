@@ -1,0 +1,62 @@
+# QQ 手动常驻与审批交互（2026-11-07）
+
+用户授权沿用官方 DeepSeek Harness App 的独立 profile、已登录小号和原唯一常用 QQ，验收手动启动后后台常驻、提问与审批。新一轮最多 12 次 WorkBuddy Hy4 请求、每次最多 8192 输出 tokens、不自动重试，最多 30 条纯文本私聊。旧轮账本封存；本轮没有每天重置额度的授权。不安装到常用 profile，不启动群聊、媒体、主动研究或 B站巡航，不发布。
+
+当前结果（2026-11-07 05:43）：真实允许一次、拒绝、自由文本问答、自动取消、过期编号零模型增量、完整手动停止与扫码接续恢复通过。无调试模式普通私聊已由平台和用户手机双端确认；无调试原生 Quit 及随后恢复就绪通过。独立受控实例留开，本轮累计11/12模型、19/30文本。精确选项A、睡眠及24小时稳定性未通过验收。
+
+## 完整逻辑
+
+1. **链路**：手动启动独立 NapCat、费用代理、文本网关和官方 App；Host 启动包内 bridge，OneBot 入站经过白名单进入 QQ 会话，官方事件流中的提问/审批经 bridge 通知原私聊，管理员带编号的回答经 `$events/result` 回到原官方请求。App 普通关窗会隐藏窗口；真正退出及所有依赖停止需要分别核验。
+2. **机制**：旧启动仅检查端口，旧 POSIX 停止仅检查锁 PID；隔离真实进程夹具分别证实误报成功和给无关进程发信号。现核验认证状态、程序根、锁 PID、可执行文件/完整参数及监听归属，未知即结构化拒绝。启动锁只自动归档明确死亡的有效 POSIX PID；空/畸形锁可能属于正在写入的启动进程，保留并拒绝抢占。旧交互先通知后登记导致快速回复漏接；重放会覆盖旧 pending，取消帧被忽略。现先登记、事件去重、回执单飞并匹配官方取消；未知回执不自动重复提交。
+3. **爆炸半径**：一个 Host、一个 bridge、一个 OneBot 容器和一个私聊对象；启停错误可误伤其他进程，故所有权不确定时拒绝。交互共同入口的读者是 QQ 入站与 DSH 事件流；新编号策略是显式可选项 `interaction.requireRequestId=true`，本独立 profile 启用，旧配置缺省兼容。无本地执行/文件工具放行；失败有 `code/error/hint` 并从 Host 入口透传。
+4. **取舍**：登录自动启动需额外处理 Docker/账号/重复实例和持续费用，用户选择手动启动后后台运行。已有安全 QQ 工具不产生确定的审批回合；临时无害诊断工具能在真实 agent turn 内等待官方审批，批准只改变内存标记。仅独立 profile 增加精确工具名，完成后恢复原守卫与插件条目。没有使用 shell 或文件工具制造审批，也不伪造 turn 或 waterfall。
+5. **生效与重启**：使用从 Git 对象构建的新包，官方 CLI 离线安装后才启动独立 App。诊断使用官方服务中有效 ask 策略，保留真实会话策略/请求/结果事件；恢复有效原值不等于恢复历史日志字节或继承语义，不改变 sandbox/agent preset。现已移除全部临时诊断条目并恢复原守卫，提问超时恢复 180000 毫秒。常用 App/profile 不重启。手动入口先启动代理和 QQ，再核验批准账号及在线状态，最后启动无 remote-debugging 参数的独立 App；完整恢复逻辑见下方实机记录。
+6. **验证**：隔离实际函数与真实临时进程先红后绿，见三个专项 case。最终运行 `npm run test:audit`、`npm run test:regressions`、插件完整测试；另实测原生设置、QQ 实际通知/编号回答、官方 requested/decided/cancel 和读回、关窗/恢复/重启。每项真实结论绑定实际制品与观察时间，不把假服务或静态源码当作真实回执。
+7. **回滚与残余**：原包、profile 配置、账号与新数据保留在私有备份；代码可回到上一程序 e013302 的同源包，但先停独立桥接并备份新增数据，不覆盖账本。发送未知先对账，不重置或补额。群聊、媒体、整机睡眠、账号重登和 24 小时稳定性没有由短时验收推出。POSIX 身份检查与信号之间仍存在很小的 PID 复用窗口；Linux 无 lsof、外层沙箱无法执行 ps 时明确拒绝。
+
+## 复现、检查和原始证据
+
+- [交互专项](2026-11-07-qq-interactions.md)：快速回复、重放、编号、取消、并发回执和未知结果。
+- [进程所有权](2026-11-07-qq-bridge-lifecycle.md)：陌生端口/无关 PID、真实自有进程和锁切换。
+- [启动锁](2026-11-07-qq-start-lock.md)：LISTEN、探测未知、有效 PID、空锁窗口及归档竞争。
+- 私有根 `_backups/20261107-qq-resident/`：runtime-plan、独立累计账本、源/制品指纹、检查日志、原生 UI 和官方会话证据。不把账号、凭据或完整截图放入发布物。
+- 第一次组合检查的媒体项因验证 PATH 遗漏已安装 FFmpeg 失败；真实进程项因外层 seatbelt 拒绝执行 setuid `/bin/ps` 而正确 fail closed。保留 checks-1 原日志。后续显式指定 FFmpeg/FFprobe；完整插件在隔离 HOME/DSH_HOME、官方 Node24 下运行，真实进程项不加额外 seatbelt，不弱化产品身份判据。其它审计/回归保持非回环网络禁止。
+- Astra 独立只读复核：空锁竞争 P2 修复后，13 个冻结指纹一致，未发现新增实质 P1/P2。不是实际运行通过。
+
+## 历史阶段：03:20–04:14 的验收结果（后续以最新结果为准）
+
+- **同源与离线检查**：实装程序f68fa63，第三包SHA256 `dbd6a3d63aca752a58bc90680f37a6821a73c9038f32c5b1a7e665ff271edb64`；官方CLI离线安装361持久文件未变、325包文件一致。checks-4-repair在固定HEAD下audit169/169、回归和完整插件exit0；Git对象清单790/790问题0。此前mixed-HEAD检查失败日志保留，不作最终通过证据。
+- **后台私聊**：实际“后台常驻验收-1107”回到原唯一常用QQ，平台get_msg确认机器人身份/私聊/正文，用户确认手机收到。实际2/12次Hy4，含一笔官方新会话自动标题；文本1/30。第一次Page.close销毁renderer而保留主App/Host/bridge，不冒称原生隐藏。
+- **原生关窗**：2026-11-07 04:09主线按精确独立PID/window取证并点击原生红色close，dry跨Space/遮挡/在场均pass；关闭动画后窗口on=0、原PID及dsh-app renderer仍活，Host/bridge/DSH/QQ均ready。证据native-before-hide、native-hide-settled；恢复原窗口和此状态下实际交互仍待补验。
+- **审批准备**：一次性qq_safe_diagnostic仅绑定上述实际新会话，以官方insert条目加载；官方列表include:qq-safe-diagnostic为active，临时guard仅增加该精确名。用户现场发起后才产生模型及通知；当前尚无真实approval/requested/decided或question结果，不能称审批通过。结束必须移除临时条目、恢复原preset并核对325包哈希。
+- **手动恢复入口**：私有manual候选离线11项（含受控Python子进程红绿）及配置专项通过，独立Astra复核已关闭发现的具体问题。一次真实只读status拒绝旧相对脚本runner，保留证据，不强行接管；完整新入口启停仍待实测，不视为已交付日常服务。没有每日续额或自动重启授权；本轮累计账本不会因重启重置。
+
+## 最新真实结果（05:43，受控验收收口）
+
+- 程序/实装0502afa；第四包9d6f1d0f…，325包文件逐hash一致、369持久文件安装前后不变。checks-6-expired官方Node24 audit169/169、regressions与完整插件0，清单791/791；未改版本、不发布。
+- 真实审批 allowed-once 和 rejected 有官方decided及平台回执；90秒初期取消暴露迟答误入模型，已修并真实复验旧编号只提示结束/不存在，模型计数不增。初期两次误入请求完整计入本轮账本，不退款或重置。
+- 两次用户实发文字为“编号 答案”；官方answers结构正确、selected=[]且custom有文本，因此自由文本往返通过，精确选项A未通过。第二次工具明确questionRoundtrip=true、optionA=false、cancel=CANCEL_OK；取消通知后约19.157秒桥接清除pending。诊断策略/sandbox/preset没有新增改变。
+- 原生关窗隐藏和后台私聊已有实际平台读回及用户手机确认；精确PID原生Quit及所有当时owned进程退出通过。完整manual stop成功后，缓存登录一次失败不重试，用户扫码后resume恢复；无debug App无调试参数、主App无TCP监听、旧debug端口关闭，bridge/DSH/QQ/root/mode及Host父链核验通过。详见[手动恢复](2026-11-07-qq-manual-recovery.md)。
+- 临时诊断条目为0，原guard恢复，questionTimeoutMs=180000。30分钟采样61次：16 ready、45计划维护、0未标记异常；最长连续ready6分30秒。没有24h、睡眠、常用profile、群聊或媒体结论。
+- 最终普通消息：第一次用户报告已发但未收到，DSH会话和模型账本未见该新入站；批准小号在线、gate两侧连接，只读10条历史未找到该测试。原因证据不足，不能归因为用户选错联系人。按原唯一对象授权发送1条定位提示并平台读回后，用户在同一聊天回复；05:41:28官方session收到、实际Hy4 HTTP200，05:41:41回到QQ，平台正文精确为“常驻恢复验收通过-1107”，用户手机确认一致。累计11/12模型、19/30文本（含定位提示），不按重启重置。
+- 无调试实例随后经精确PID原生Quit，9个自有进程全部退出（App退出876毫秒），保持现有已登录QQ与代理，再resume成功；05:43最终status全部就绪、mode=chat，主App无TCP LISTEN且没有remote-debugging参数。QR页面服务和自有浏览器标签已关闭。原30分钟观察结束在维护期间，最终恢复另有当前证据，不能把两者拼成30分钟连续ready。
+- 关键私有证据：question-cancel-real-proof、expired-reply-real-proof、final-install-proof、manual-final-stop/resume/status、final-resident-proof、final-onebot-inbound-proof、final-locate-notice、final-normal-qq-session-proof、resident-native-quit-proof、final-running-proof、qr-final-cleanup、soak/summary；账号/秘密不入本case或包。
+
+## 可直接转发的发布交接块
+
+```text
+改了哪些文件：bridge 启停身份核验、POSIX 启动锁、QQ 提问/审批时序/编号/取消/回执；原生设置开关与错误 hint；定向测试和专项 case
+测过什么、结果如何：见本 case 最终结果；静态、隔离夹具与真实 App/QQ 证据分开
+建议 patch 还是 minor：修复建议 patch，版本由发布会话决定；本轮不改版本、不发布
+case 路径：docs/cases/2026-11-07-qq-resident-approval.md 及三个专项 case
+改动层级/兼容：Host 进程控制与桥接交互；编号要求显式 opt-in，旧默认兼容，Windows 停止路径保留
+完整逻辑/爆炸半径：见七步；仅独立 profile 和原唯一私聊，无 QQ 本机能力扩大
+失败路径：身份无法核验/启动锁未知明确拒绝；回执未知提示核对不盲重试；code/error/hint 透传且有断言
+回滚/残余：旧包/配置和新增数据保留，不回退用量账本；不把短时观察当作 24 小时或睡眠验收
+发布注意：临时诊断工具/守卫、代理、容器、账号、截图和凭据均不进入正式包；常用 profile 与公开发布仍为独立事项
+```
+
+
+## 用户原生截图补修
+
+用户提供两张 L2 弹窗截图并要求处理。rootPkg 未定义已由真实 Host handler 夹具复现；包修复旧实现也证实会改写依赖及包资产。修法与红绿证据分别见注册修复和健康范围 case；主线还修复弹窗失败后无法重试。第三包实际原生按钮点击成功、重启提示可见，三个MCP各一次且官方active/stdio握手通过，qq_status只读实调成功；旧缺失L2由当前profile健康复核自动确认。安装位置/package.json/325包文件/B站凭据摘要保持，未手工点确认掩盖告警。原始截图仅保留私有目录，不入发布物。

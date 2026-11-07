@@ -687,13 +687,21 @@ export class NodeApiClient extends AbstractApiClient {
       }, signal);
       if (!response.result?.ok) {
         const { code, message: errMsg } = response.result?.error ?? {};
-        throw new Error(`$events/result rejected${code ? ` (${code})` : ''}: ${errMsg ?? 'unknown error'}`);
+        const error = new Error(`$events/result rejected${code ? ` (${code})` : ''}: ${errMsg ?? 'unknown error'}`);
+        error.code = 'DSH_EVENT_RESULT_REJECTED'; error.outcomeKnown = response.result?.ok === false;
+        throw error;
       }
       return response;
     }
     this.onEnvelope(message);
     const response = await this.postJson('/api/respond', message, signal);
-    return response.json();
+    const result = await response.json();
+    if (!response.ok || result?.result?.ok === false || result?.ok === false) {
+      const error = new Error('DSH respond rejected');
+      error.code = 'DSH_EVENT_RESULT_REJECTED'; error.outcomeKnown = response.ok && (result?.result?.ok === false || result?.ok === false);
+      throw error;
+    }
+    return result;
   }
 
   /** 新版 DSH 的 agentPresets 命名空间是复数；旧版基类仍映射到 agentPreset.list。 */
@@ -898,7 +906,9 @@ export class NodeApiClient extends AbstractApiClient {
             }
             // 其他 emit/waterfall 事件当前桥接不需要，保持忽略。
           }
-          // emit/cancel 帧忽略
+          else if (value.type === 'cancel' && eventClientId && typeof value.eventId === 'string' && value.eventId) {
+            enqueue({ kind: 'frame', envelope: { rpcId: value.eventId, payload: { type: 'interaction/cancelled', clientId: eventClientId, eventId: value.eventId } } });
+          }
         } else if (sessionId && msg.value?.type === 'event') {
           enqueue({
             kind: 'frame',

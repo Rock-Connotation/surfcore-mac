@@ -18,6 +18,7 @@ export const WATCH_HISTORY_FILE = () => biliState('watch-history.jsonl')
 export const WATCH_HISTORY_ROTATED = () => biliState('watch-history.1.jsonl')
 const MAX_BYTES = 2 * 1024 * 1024
 const DEDUPE_MS = 30 * 60 * 1000
+const SPEECH_RANK = { none: 0, queued: 1, running: 2, interrupted: 3, failed: 3, cancelled: 3, partial: 4, completed: 5 }
 
 const localDate = (value) => {
   const t = new Date(value)
@@ -25,6 +26,111 @@ const localDate = (value) => {
 }
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0))
 const short = (text, n) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
+const safeId = (value) => /^[A-Za-z0-9._:-]{1,120}$/.test(String(value ?? '')) ? String(value) : ''
+
+function normalizeCoverage(value) {
+  if (!value || typeof value !== 'object') return null
+  if (Number.isFinite(Number(value.requestedMs)) || Number.isFinite(Number(value.processedMs))) {
+    const missingRanges = (Array.isArray(value.missingRanges) ? value.missingRanges : []).slice(0, 100).map((range) => ({
+      startMs: clamp(range?.startMs, 0, 24 * 60 * 60 * 1000),
+      endMs: clamp(range?.endMs, 0, 24 * 60 * 60 * 1000),
+    })).filter((range) => range.endMs > range.startMs)
+    return {
+      complete: value.complete === true,
+      requestedMs: clamp(value.requestedMs, 0, 24 * 60 * 60 * 1000),
+      acquiredMs: clamp(value.acquiredMs, 0, 24 * 60 * 60 * 1000),
+      processedMs: clamp(value.processedMs, 0, 24 * 60 * 60 * 1000),
+      missingMs: clamp(value.missingMs, 0, 24 * 60 * 60 * 1000),
+      missingRanges,
+    }
+  }
+  const ranges = (items) => (Array.isArray(items) ? items : []).slice(0, 100).map((range) => ({
+    startMs: clamp(range?.startMs, 0, 24 * 60 * 60 * 1000),
+    endMs: clamp(range?.endMs, 0, 24 * 60 * 60 * 1000),
+  })).filter((range) => range.endMs > range.startMs)
+  const requestedRanges = ranges(value.requestedRanges)
+  const acquiredRanges = ranges(value.acquiredRanges)
+  const processedRanges = ranges(value.processedRanges)
+  const missingRanges = ranges(value.missingRanges)
+  const total = (items) => items.reduce((sum, range) => sum + range.endMs - range.startMs, 0)
+  return {
+    complete: value.complete === true,
+    requestedMs: total(requestedRanges),
+    acquiredMs: total(acquiredRanges),
+    processedMs: total(processedRanges),
+    missingMs: total(missingRanges),
+    missingRanges,
+  }
+}
+
+function normalizeFrameStatus(entry) {
+  const value = String(entry.frameStatus ?? entry.framesStatus ?? '').trim()
+  if (['skipped', 'completed', 'partial', 'failed'].includes(value)) return value
+  return entry.frames === true ? 'completed' : 'skipped'
+}
+
+function normalizeSafeError(value) {
+  if (!value || typeof value !== 'object') return null
+  const code = safeId(value.code)
+  if (!code) return null
+  const error = short(value.error, 180)
+  const hint = short(value.hint, 240)
+  const sensitive = /https?:\/\//i.test(error) || /cookie|SESSDATA|bili_jct|buvid3|auth_key|w_rid|token=/i.test(error)
+  return {
+    code,
+    error: sensitive ? '处理失败，详细错误已隐藏以保护访问凭据。' : error,
+    hint: /https?:\/\//i.test(hint) || /cookie|SESSDATA|bili_jct|buvid3|auth_key|w_rid|token=/i.test(hint)
+      ? '检查任务状态后重试。' : hint,
+  }
+}
+
+function speechStatusRank(entry) {
+  return SPEECH_RANK[entry.speechStatus] ?? 0
+}
+
+function observationKey(entry) {
+  if (entry.observationId) return `observation:${entry.observationId}`
+  if (entry.bvid && entry.cid) return `part:${entry.bvid}:${entry.cid}`
+  if (entry.bvid) return `legacy:${entry.bvid}`
+  return ''
+}
+
+function isUpgrade(previous, incoming) {
+  if (speechStatusRank(incoming) > speechStatusRank(previous)) return true
+  if (Number(incoming.coverage?.processedMs ?? 0) > Number(previous.coverage?.processedMs ?? 0)) return true
+  if (incoming.coverage?.complete === true && previous.coverage?.complete !== true) return true
+  if (incoming.frames === true && previous.frames !== true) return true
+  if (incoming.jobId && incoming.jobId !== previous.jobId && speechStatusRank(incoming) >= speechStatusRank(previous)) return true
+  return false
+}
+
+function mergeObservation(previous, incoming) {
+  const deeper = speechStatusRank(incoming) >= speechStatusRank(previous)
+  const merged = {
+    ...previous,
+    ...incoming,
+    observationId: previous.observationId || incoming.observationId,
+    revision: Math.max(1, Number(previous.revision) || 1) + 1,
+    title: incoming.title || previous.title,
+    up: incoming.up || previous.up,
+    upMid: incoming.upMid || previous.upMid,
+    page: incoming.page ?? previous.page,
+    cid: incoming.cid || previous.cid,
+    jobId: incoming.jobId || previous.jobId,
+    transcriptId: incoming.transcriptId || previous.transcriptId,
+    speechStatus: deeper ? incoming.speechStatus : previous.speechStatus,
+    speechSource: incoming.speechSource === 'none' ? previous.speechSource : incoming.speechSource,
+    speechState: incoming.speechState === 'unknown' ? previous.speechState : incoming.speechState,
+    coverage: (Number(incoming.coverage?.processedMs ?? 0) >= Number(previous.coverage?.processedMs ?? 0))
+      ? incoming.coverage ?? previous.coverage : previous.coverage,
+    frames: previous.frames || incoming.frames,
+    frameStatus: previous.frameStatus === 'completed' ? previous.frameStatus : incoming.frameStatus,
+    sheet: incoming.sheet || previous.sheet,
+    subs: incoming.subs || previous.subs,
+    error: incoming.error || (deeper ? null : previous.error),
+  }
+  return merged
+}
 
 function readTail(file, maxBytes = MAX_BYTES) {
   try {
@@ -63,12 +169,22 @@ export function normalizeWatchEntry(entry = {}) {
   }
   const unknownDate = entry.unknownDate === true
   if (!at) at = unknownDate ? '1970-01-01T00:00:00.000Z' : new Date().toISOString()
+  const speechStatus = ['none', 'queued', 'running', 'completed', 'partial', 'failed', 'cancelled', 'interrupted'].includes(String(entry.speechStatus ?? ''))
+    ? String(entry.speechStatus) : 'none'
+  const speechSource = ['none', 'platform-subtitle', 'asr'].includes(String(entry.speechSource ?? ''))
+    ? String(entry.speechSource) : 'none'
+  const speechState = ['speech', 'no_speech', 'unknown'].includes(String(entry.speechState ?? ''))
+    ? String(entry.speechState) : 'unknown'
+  const pageValue = Number(entry.page)
   return {
     at,
     unknownDate,
     dateOnly: dateOnly && !unknownDate,
     bvid: /^BV[0-9A-Za-z]{10}$/.test(String(entry.bvid ?? '')) ? String(entry.bvid) : '',
     aid: String(entry.aid ?? ''),
+    cid: /^\d{1,24}$/.test(String(entry.cid ?? '').trim()) ? String(entry.cid).trim() : '',
+    page: Number.isSafeInteger(pageValue) && pageValue > 0 ? pageValue : null,
+    pageCount: clamp(entry.pageCount, 0, 10_000),
     title: short(entry.title, 180),
     up: short(entry.up, 80),
     upMid: short(entry.upMid, 20),
@@ -76,6 +192,16 @@ export function normalizeWatchEntry(entry = {}) {
     tname: short(entry.tname, 40),
     mode: ['meta', 'full', 'frames', 'memory'].includes(entry.mode) ? entry.mode : 'meta',
     frames: entry.frames === true,
+    frameStatus: normalizeFrameStatus(entry),
+    observationId: safeId(entry.observationId),
+    revision: clamp(entry.revision, 1, 1_000_000) || 1,
+    jobId: safeId(entry.jobId),
+    transcriptId: safeId(entry.transcriptId),
+    speechStatus,
+    speechSource,
+    speechState,
+    coverage: normalizeCoverage(entry.coverage),
+    error: normalizeSafeError(entry.error),
     source: short(entry.source ?? 'debrief', 24),
     sheet: short(entry.sheet, 400),
     subs: short(entry.subs, 400),
@@ -96,15 +222,38 @@ export function appendWatch(entry = {}, { file = WATCH_HISTORY_FILE() } = {}) {
       .slice(-80)
       .map((line) => { try { return JSON.parse(line) } catch { return null } })
       .filter(Boolean)
-    const last = recent.findLast?.((x) => x.bvid === item.bvid) ?? [...recent].reverse().find((x) => x.bvid === item.bvid)
+    const normalizedRecent = recent.map((x) => ({ raw: x, item: normalizeWatchEntry(x) }))
+    const exactObservation = item.observationId
+      ? [...normalizedRecent].reverse().find((x) => x.item.observationId === item.observationId)
+      : null
     const itemTime = new Date(item.at).getTime()
-    if (last && last.mode === item.mode && itemTime - new Date(last.at).getTime() < DEDUPE_MS) {
-      return { ok: false, reason: 'duplicate', file }
+    const recentPart = item.bvid && item.cid
+      ? [...normalizedRecent].reverse().find((x) => x.item.bvid === item.bvid && x.item.cid === item.cid
+        && itemTime - new Date(x.item.at).getTime() < DEDUPE_MS)
+      : null
+    const legacy = item.bvid && !item.cid
+      ? [...normalizedRecent].reverse().find((x) => x.item.bvid === item.bvid && !x.item.cid
+        && itemTime - new Date(x.item.at).getTime() < DEDUPE_MS)
+      : null
+    const match = exactObservation ?? recentPart ?? legacy
+    const last = match?.raw ?? null
+    if (last) {
+      const prior = normalizeWatchEntry(last)
+      const withinWindow = itemTime - new Date(prior.at).getTime() < DEDUPE_MS
+      if (item.observationId && prior.observationId === item.observationId) {
+        if (!isUpgrade(prior, item)) return { ok: false, reason: 'duplicate', file, item: prior }
+        Object.assign(item, mergeObservation(prior, item))
+      } else if (withinWindow) {
+        if (!isUpgrade(prior, item)) return { ok: false, reason: 'duplicate', file, item: prior }
+        item.observationId = prior.observationId || item.observationId
+        Object.assign(item, mergeObservation(prior, item))
+      }
     }
     // 简单轮转：超过 2MB 就把当前文件改名成 .1，再从空文件开始追加。
     try {
       if (fs.statSync(file).size > MAX_BYTES) {
         const rotated = file.replace(/\.jsonl$/, '.1.jsonl')
+        if (fs.existsSync(rotated)) fs.renameSync(rotated, `${rotated}.${Date.now()}-${process.pid}`)
         fs.renameSync(file, rotated)
       }
     } catch {}
@@ -200,13 +349,17 @@ export function readWatchHistory({
     .filter((x) => x.bvid || x.title)
     .sort((a, b) => new Date(a.at) - new Date(b.at))
 
-  // 展示去重：同一条视频 30 分钟内的“浅看→深看”只留一行，并保留更深的读法/截图。
+  // 展示去重：同一分 P 的 30 分钟内升级只留一行；不同 cid 永不合并。
   // 隔天重看（>30 分钟）仍会保留两条，历史里能看出“又刷了一遍”。
   const rank = { memory: 0, meta: 1, full: 2, frames: 3 }
   const compact = []
   for (const item of entries) {
     const prev = compact[compact.length - 1]
-    if (prev && prev.bvid === item.bvid
+    const samePart = prev && prev.bvid === item.bvid && (
+      (prev.cid && item.cid && prev.cid === item.cid) || (!prev.cid && !item.cid)
+    )
+    const sameObservation = prev && item.observationId && prev.observationId === item.observationId
+    if (prev && (samePart || sameObservation)
       && new Date(item.at) - new Date(prev.at) < DEDUPE_MS) {
       const deeper = (rank[item.mode] ?? 0) >= (rank[prev.mode] ?? 0)
       const merged = {
@@ -220,6 +373,16 @@ export function readWatchHistory({
         sheet: (deeper ? item.sheet : prev.sheet) || prev.sheet || item.sheet,
         subs: (deeper ? item.subs : prev.subs) || prev.subs || item.subs,
         score: item.score ?? prev.score,
+        observationId: item.observationId || prev.observationId,
+        revision: Math.max(Number(prev.revision) || 1, Number(item.revision) || 1),
+        jobId: item.jobId || prev.jobId,
+        transcriptId: item.transcriptId || prev.transcriptId,
+        speechStatus: speechStatusRank(item) >= speechStatusRank(prev) ? item.speechStatus : prev.speechStatus,
+        speechSource: item.speechSource !== 'none' ? item.speechSource : prev.speechSource,
+        speechState: item.speechState !== 'unknown' ? item.speechState : prev.speechState,
+        coverage: (Number(item.coverage?.processedMs ?? 0) >= Number(prev.coverage?.processedMs ?? 0)) ? item.coverage ?? prev.coverage : prev.coverage,
+        frameStatus: prev.frameStatus === 'completed' ? prev.frameStatus : item.frameStatus,
+        error: item.error ?? prev.error,
       }
       compact[compact.length - 1] = merged
     } else {

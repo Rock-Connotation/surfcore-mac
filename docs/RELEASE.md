@@ -61,7 +61,7 @@
 ## 二、发布前检查（发布会话逐条做，不许凭记忆）
 
 ```bash
-cd D:\deepseekwork\surfcore
+cd "<REPOSITORY_ROOT>"
 git status --porcelain          # 必须干净，或有明确列出的待发文件
 git log --oneline -5            # 确认最近提交都是要发的
 node -e "console.log(require('./package.json').version)"   # 当前版本
@@ -100,7 +100,7 @@ cd plugins/surfcore && npm test # 必须 0 失败
 2. **写 CHANGELOG**：`## [x.y.z] - YYYY-MM-DD`，`### 修复 / 新增 / 变更`，
    末尾加 `> 调查记录：[标题](docs/cases/xxx.md)`。
 3. **提交本地**：`git add -A && git commit -m "release: vX.Y.Z（一句话）"`。
-4. **同步公开仓库** `D:\deepseekwork\opensource\surfcore`：
+4. **同步公开仓库** `<PUBLIC_MIRROR_ROOT>`：
    逐个 `cp` 本次改动的文件（不要整目录覆盖），提交、`git tag -a vX.Y.Z`。
 5. **推送**（`github.com:443` 常不通，用 GitHub Data API）：
    ```bash

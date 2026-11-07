@@ -6,6 +6,7 @@
 // - 发送类工具强制校验白名单：目标群/私聊必须命中 config.json 的
 //   allow.groups / allow.private，否则拒绝 —— agent 只能往被允许的地方发消息。
 // - 所有调用走 OneBot HTTP API（httpUrl + accessToken）。
+import { resolveQqDataPaths } from './qq-data-paths.js';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -23,10 +24,12 @@ import { EMOTION_LABELS } from './sticker-semantics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+const QQ_DATA_PATHS = resolveQqDataPaths({ programRoot: ROOT });
+const CONFIG_FILE = QQ_DATA_PATHS.config;
 
 function loadConfig() {
   try {
-    let text = fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8');
+    let text = fs.readFileSync(CONFIG_FILE, 'utf8');
     if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
     return JSON.parse(text);
   } catch {
@@ -123,7 +126,7 @@ function readConsoleToken() {
     if (/^[A-Za-z0-9_-]{16,128}$/.test(configured)) return configured;
   } catch {}
   try {
-    const tokenFile = path.join(ROOT, 'state', 'console-token');
+    const tokenFile = path.join(QQ_DATA_PATHS.stateDir, 'console-token');
     return fs.readFileSync(tokenFile, 'utf8').trim();
   } catch {
     return '';

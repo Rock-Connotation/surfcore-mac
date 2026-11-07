@@ -52,8 +52,8 @@ const read = (name) => fs.readFileSync(new URL(`../plugins/surfcore/tools/comman
 const watch = read('bili-watch.mjs');
 const debrief = read('debrief.mjs');
 const subtitles = read('subtitles.mjs');
-assert.ok(watch.includes('--keep-mp4') && watch.includes('pruneShots') && watch.includes('shotsPath'), 'watch 必须支持保留开关并触发清理');
-assert.ok(watch.includes('fs.rmSync(mp4'), 'watch 默认清理原片');
-assert.ok(debrief.includes('--keep-mp4') && debrief.includes('pruneShots') && debrief.includes('shotsPath'), 'debrief 必须保留到字幕条完成并触发清理');
+assert.ok(watch.includes('keep-mp4') && watch.includes('pruneShots') && watch.includes('shotsPath'), 'watch 必须支持保留开关并触发清理');
+assert.ok(watch.includes('media.destinationDir') && watch.includes('SURFCORE_WATCH_PARENT'), 'watch 应清理自身临时素材并尊重上游');
+assert.ok(debrief.includes('keep-mp4') && debrief.includes('pruneShots') && debrief.includes('shotsPath') && debrief.includes('submitBili'), 'debrief 应在生成画面后执行缓存策略');
 assert.ok(subtitles.includes('pruneShots') && subtitles.includes('shotsPath'), 'subtitles 必须走统一目录并触发清理');
 console.log('✅ shots 缓存轮转测试通过');

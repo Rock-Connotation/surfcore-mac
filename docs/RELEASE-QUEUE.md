@@ -2119,7 +2119,7 @@ B站/桌宠各用各的场景；全部手动编辑；角色页醒目说明本次
 **背景**：`v0.7.2`（5ca9122）之后发现；v0.7.2 不含此修复。
 **建议**：patch → **0.7.3**（或按发布会话决定）
 
-**问题**：用户在设置页「导入离线包」选中文目录（如 `D:\...\中文oice-local`），
+**问题**：用户在设置页「导入离线包」选中文目录（如 `<SELECTED_DIRECTORY>`），
 弹窗报 `IMPORT_PATH_NOT_FOUND`，路径里出现 `�`/`◆`。实际目录存在。
 **根因**：Windows PowerShell 5.1 重定向 stdout 用 GBK，Node 按 UTF-8 解码，中文路径损坏。
 **修法**：PowerShell 把选中路径写进 UTF-8 临时文件，Node 读文件后删除；不再解析 stdout。
@@ -2146,8 +2146,8 @@ B站/桌宠各用各的场景；全部手动编辑；角色页醒目说明本次
 - [docs/cases/2026-10-29-cloud-sample-download.md](cases/2026-10-29-cloud-sample-download.md)
 
 **候选离线包（POC，未上传网盘）**
-- `D:\surfcore-poc\release\voice-local-offline-v1.0.0-win-x64.zip`（4.7G，SHA256 `9e0a409dce55da45f3049b4a63e596dc4e0a59e517b61e1b44b2f7ef4e68347c`）
-- `D:\surfcore-poc\release\voice-cloud-offline-v1.0.0-win-x64.zip`（249M，SHA256 `8ea837706aacf6867ed454f124f878550a696a1b4ba3da1af53e8e46a47ab7ae`）
+- `<LOCAL_POC_ARCHIVE_1>`（4.7G，SHA256 `9e0a409dce55da45f3049b4a63e596dc4e0a59e517b61e1b44b2f7ef4e68347c`）
+- `<LOCAL_POC_ARCHIVE_2>`（249M，SHA256 `8ea837706aacf6867ed454f124f878550a696a1b4ba3da1af53e8e46a47ab7ae`）
 - 含微调 age12、GPL 合规目录；无 `config.toml`/密钥；云端 speaker 已清空。
 
 **交接块（复制这一整段给发布会话）**

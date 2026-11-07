@@ -1,7 +1,10 @@
 // 扫码登录的「账号归属」纯逻辑回归：鱼号/主人号不能互相覆盖。
 // 不启动 Edge、不联网。
 import assert from 'node:assert/strict';
-import { validateQrAccount } from '../plugins/surfcore/lib/bili-qr-login.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { findBrowser, terminateQrBrowser, validateQrAccount } from '../plugins/surfcore/lib/bili-qr-login.mjs';
 
 const fish = { mid: '1483638708', name: '卡哇伊的小肥鱼' };
 const owner = { mid: '37634003', name: '玛露Marrow' };
@@ -37,5 +40,59 @@ assert.equal(validateQrAccount({ selfMid: owner.mid, ownerMid: owner.mid, target
 
 // 没读到 mid 直接失败
 assert.equal(validateQrAccount({ target: 'fish', account: {} }).ok, false);
+
+// macOS discovery checks real app executables (including user Applications), not .app folders.
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-qr-browser-'));
+try {
+  const home = path.join(temp, '用户');
+  const edge = path.join(home, 'Applications', 'Microsoft Edge.app', 'Contents', 'MacOS', 'Microsoft Edge');
+  const chrome = path.join(home, 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome');
+  for (const file of [edge, chrome]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '#!/bin/sh\nexit 0\n');
+    try { fs.chmodSync(file, 0o755); } catch {}
+  }
+  const probe = (file) => file.startsWith(temp)
+    ? { ok: true, version: `Browser ${path.basename(file)}` }
+    : { ok: false, reason: 'outside test fixture' };
+  assert.equal(findBrowser({ env: {}, platform: 'darwin', home, probe }).executable, edge, 'Edge remains first when available');
+  fs.rmSync(edge);
+  assert.equal(findBrowser({ env: {}, platform: 'darwin', home, probe }).executable, chrome, 'Chrome is a supported fallback');
+  assert.throws(() => findBrowser({ env: { SURFCORE_EDGE: path.join(temp, 'missing-browser') }, platform: 'darwin', home, probe }), (error) => {
+    assert.equal(error.code, 'BROWSER_OVERRIDE_INVALID');
+    assert.ok(error.hint);
+    return true;
+  });
+
+  const signals = [];
+  const scheduled = [];
+  const spawned = [];
+  const browser = { pid: 8412, kill: (signal) => signals.push(['child', signal]) };
+  terminateQrBrowser(browser, {
+    platform: 'darwin',
+    processApi: { kill: (pid, signal) => signals.push([pid, signal]) },
+    spawnImpl: (...args) => { spawned.push(args); return { on() {} }; },
+    schedule: (callback) => { scheduled.push(callback); return { unref() {} }; },
+  });
+  assert.deepEqual(signals, [[-8412, 'SIGTERM']], 'macOS cleanup signals only this owned process group');
+  scheduled[0]();
+  assert.deepEqual(signals, [[-8412, 'SIGTERM'], [-8412, 'SIGKILL']]);
+  assert.equal(spawned.length, 0, 'macOS cleanup never invokes taskkill or another global process killer');
+
+  const winSignals = [];
+  const winScheduled = [];
+  const winBrowser = { pid: 9213, kill: (signal) => winSignals.push(signal) };
+  terminateQrBrowser(winBrowser, {
+    platform: 'win32',
+    processApi: { kill: () => assert.fail('Windows path should not signal a POSIX process group') },
+    spawnImpl: (...args) => { spawned.push(args); return { on() {} }; },
+    schedule: (callback) => { winScheduled.push(callback); return { unref() {} }; },
+  });
+  winScheduled[0]();
+  assert.deepEqual(winSignals, ['SIGTERM']);
+  assert.ok(spawned.at(-1)[0] === 'taskkill' && spawned.at(-1)[1][1] === '9213', 'Windows taskkill is limited to the owned child PID tree');
+} finally {
+  fs.rmSync(temp, { recursive: true, force: true });
+}
 
 console.log('OK test-bili-qr-login');

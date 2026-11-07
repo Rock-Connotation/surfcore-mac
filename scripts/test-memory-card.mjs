@@ -678,3 +678,41 @@ test('桌宠记忆在提示词预算里不会被普通最近记忆挤掉', () =>
   assert.match(out, /桌宠（私下相处）/, '桌宠小节必须出现在 QQ 注入块里');
   assert.match(out, /桌宠预算验证/, '预算紧张时也不能先砍掉桌宠记忆');
 });
+
+test('同日B站经历保留发生时刻与BV绑定，评分理由不靠行位置归属', () => {
+  const now = Date.parse('2026-11-07T02:00:00Z');
+  const card = createEmptyCard(now);
+  const cfg = normalizeMemoryCardConfig({ maxChars: 0 });
+  const common = { source: 'bili-experience', sourceChannel: 'bili', platform: 'bili', scope: 'bili', visibilityClassification: 'public', allowedContexts: ['bili'], importance: 65 };
+  addMemoryRecord(card, { ...common, sourceId: 'BV1AaBbCcDd1:cid:1', text: '早些时候取得语音转写', createdAt: '2026-11-06T17:03:32.274Z', eventId: 'old-video', visibilityClassification: 'restricted' }, cfg, now);
+  addMemoryRecord(card, { ...common, sourceId: 'BV1EeFfGgHh2:cid:2', text: '最近取得完整语音转写', createdAt: '2026-11-07T00:17:31.047Z', eventId: 'new-video', visibilityClassification: 'restricted' }, cfg, now);
+  addMemoryRecord(card, { ...common, sourceId: 'bv:BV1EeFfGgHh2', text: '独立评分理由：表达清楚但缺实测', createdAt: '2026-11-07T00:18:51.734Z', eventId: 'new-score', attributionSubject: 'self', speaker: '角色' }, cfg, now);
+  const before = JSON.stringify(card);
+  const out = renderMemoryCard(card, { platform: 'bili', config: cfg, now, maxChars: 2000 });
+  assert.match(out, /2026-11-06T17:03:32\.274Z[^\n]*BV1AaBbCcDd1[^\n]*早些时候取得语音转写/);
+  assert.match(out, /2026-11-07T00:17:31\.047Z[^\n]*BV1EeFfGgHh2[^\n]*最近取得完整语音转写/);
+  assert.match(out, /2026-11-07T00:18:51\.734Z[^\n]*BV1EeFfGgHh2[^\n]*独立评分理由/);
+  assert.equal(JSON.stringify(card), before, '渲染不能改写原记忆或评分');
+  assert.doesNotMatch(renderMemoryCard(card, { platform: 'qq', config: cfg, now }), /独立评分理由|取得.*语音转写|BV1AaBbCcDd1|BV1EeFfGgHh2/);
+});
+
+test('B站来源元数据不穿透模糊与私密边界，不回显任意sourceId', () => {
+  const now = Date.parse('2026-11-07T02:00:00Z');
+  const cfg = normalizeMemoryCardConfig({ maxChars: 0 });
+  const base = { source: 'bili-experience', sourceChannel: 'bili', platform: 'bili', scope: 'bili', visibilityClassification: 'public', allowedContexts: ['bili'], importance: 55, text: '旧视频内容', createdAt: '2026-11-07T00:17:31.047Z' };
+  for (const clarity of ['fuzzy', 'trace']) {
+    const card = createEmptyCard(now);
+    const added = addMemoryRecord(card, { ...base, sourceId: 'bv:BV1EeFfGgHh2', eventId: clarity }, cfg, now);
+    assert.ok(added.added); card.records[0].clarity = clarity;
+    const out = renderMemoryCard(card, { platform: 'bili', config: cfg, now });
+    assert.doesNotMatch(out, /BV1EeFfGgHh2|00:17:31/);
+  }
+  const card = createEmptyCard(now);
+  addMemoryRecord(card, { ...base, sourceId: 'BV1EeFfGgHh2:cid:2:untrusted-source-field', eventId: 'bad-source' }, cfg, now);
+  addMemoryRecord(card, { ...base, sourceId: 'bv:BV1AaBbCcDd1', eventId: 'private-source', private: true, visibilityClassification: 'private', allowedContexts: ['qq:private:owner'], text: '私密B站记录' }, cfg, now);
+  const out = renderMemoryCard(card, { platform: 'bili', config: cfg, now });
+  assert.doesNotMatch(out, /untrusted-source-field|BV1EeFfGgHh2|私密B站记录|BV1AaBbCcDd1/);
+  const full = renderMemoryCard(card, { platform: 'all', full: true, config: cfg, now });
+  assert.match(full, /私密B站记录/);
+  assert.doesNotMatch(full, /untrusted-source-field|BV1EeFfGgHh2|BV1AaBbCcDd1|00:17:31/);
+});

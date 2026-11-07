@@ -22,6 +22,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { syncBudgetFiles } from './token-budget-sync.mjs';
 import { usageOfEvent } from '../../../src/token-ledger.js';
 import {
   addBuckets,
@@ -571,7 +572,8 @@ export function createTokenBudgetService({
     };
   }
 
-  function persist(force = false) {
+  function persist(force = false, { durable = false } = {}) {
+    let committed = true;
     if (persistTimer) {
       clearTimeout(persistTimer);
       persistTimer = null;
@@ -584,6 +586,7 @@ export function createTokenBudgetService({
       fs.renameSync(tmp, stateFile);
       state.updatedAt = snapshot.updatedAt;
     } catch (error) {
+      committed = false;
       log(`[token-budget] 写采集状态失败：${String(error?.message ?? error).slice(0, 160)}`);
     }
     try {
@@ -591,9 +594,11 @@ export function createTokenBudgetService({
       for (const [id, entry] of Object.entries(state.sessions)) sessions[id] = entry.category;
       writeDailyUsage(dir, state.categories, { day: state.day, at: now(), source: 'surfcore-plugin', sessions });
     } catch (error) {
+      committed = false;
       log(`[token-budget] 写当日用量失败：${String(error?.message ?? error).slice(0, 160)}`);
     }
-    if (force) return;
+    if (durable && committed) { try { syncBudgetFiles([stateFile, dailyFile], dir); } catch { committed = false; } }
+    return committed;
   }
 
   function schedulePersist(delay = 800) {
@@ -694,7 +699,7 @@ export function createTokenBudgetService({
    * 这些回合没有 session/event 可采，如果不补记，额度看板会漏掉桌宠的消耗。
    * 分类默认 other；事件时间归属当天，价格按当前价目表折算。
    */
-  function recordExternalUsage({ category = 'other', sessionId = 'pet-chat', model = '', usage = null, at = now(), label = '' } = {}) {
+  function recordExternalUsage({ category = 'other', sessionId = 'pet-chat', model = '', usage = null, at = now(), label = '', durable = false } = {}) {
     const cat = CATEGORY_KEYS.includes(category) ? category : 'other';
     const when = Number(at) || now();
     ensureDay(when);
@@ -714,6 +719,7 @@ export function createTokenBudgetService({
     entry.seen = normalizeBuckets(addBuckets(entry.seen, buckets));
     entry.model = resolvedModel;
     if (label) entry.title = String(label);
+    if (durable) return persist(true, { durable: true });
     schedulePersist();
     return true;
   }

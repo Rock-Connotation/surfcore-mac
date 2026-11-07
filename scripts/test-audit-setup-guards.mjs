@@ -30,6 +30,7 @@ for (const preset of ['qq-chat', 'qq-chat-v2']) {
 // 这里只做"结构 + 编码"级断言：真正的 icacls/UAC 行为在这个环境里跑不了（沙箱禁止改 ACL），
 // 而**假装测过**比不测更危险，所以明确只钉住下面这些不会骗人的事实。
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 {
   const helperPath = path.join(root, 'scripts/harden-state-acl.mjs');
   assert.ok(fs.existsSync(helperPath), 'ACL 收紧助手必须存在（start.bat 依赖它）');
@@ -46,7 +47,14 @@ import fs from 'node:fs';
   const batText = bat.toString('latin1');
   const nonAscii = [...bat].filter((b) => b > 127).length;
   assert.equal(nonAscii, 0, 'start.bat 必须保持纯 ASCII（否则非 UTF-8 控制台会乱码）');
-  assert.equal(batText.match(/(?<!\r)\n/g)?.length ?? 0, 0, 'start.bat 必须使用 CRLF');
+  const attr = spawnSync('git', ['check-attr', 'eol', '--', 'start.bat'], { encoding: 'utf8' });
+  assert.equal(attr.status, 0, 'git check-attr 必须可执行');
+  assert.match(String(attr.stdout), /start\.bat:\s*eol:\s*crlf/, 'start.bat 必须声明 eol=crlf');
+  if (process.platform === 'win32') {
+    assert.equal(batText.match(/(?<!\r)\n/g)?.length ?? 0, 0, 'start.bat 必须使用 CRLF');
+  } else {
+    console.log(`start.bat: 跳过 CRLF 执行态断言（当前平台 ${process.platform}；Windows 检出/制品仍要求 CRLF）`);
+  }
   assert.ok(batText.includes('harden-state-acl.mjs'), 'start.bat 必须在启动桥接前调用 ACL 助手');
   // 助手必须排在 node src/bridge.js 之前，否则"启动时收紧"就不成立
   assert.ok(batText.indexOf('harden-state-acl.mjs') < batText.indexOf('node src/bridge.js'), 'ACL 助手必须先于桥接启动');

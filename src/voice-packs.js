@@ -29,6 +29,7 @@ import {
   removeWithRetry,
 } from './voice-pack-import.js';
 import { fileURLToPath } from 'node:url';
+import { resolveQqDataPaths } from './qq-data-paths.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -110,28 +111,27 @@ export const DEFAULT_MANIFESTS = [
   },
 ];
 
-function packsDir(cfg) {
-  // 默认目录必须和插件侧一致（插件用 <仓库根>/state/voice-packs）。
-  // 2026-10-27：以前用 process.cwd()，桥接 cwd 不同就会指到两个地方 → "装了却说没装"。
-  const base = cfg?.voicePacks?.dir || path.join(REPO_ROOT, 'state', 'voice-packs');
+function packsDir(cfg, dataPaths) {
+  // User data belongs to the resolved state directory; explicit pack directories remain authoritative.
+  const base = cfg?.voicePacks?.dir || path.join(dataPaths.stateDir, 'voice-packs');
   return path.resolve(base);
 }
 
-function stateFile(cfg) {
-  return path.join(packsDir(cfg), 'installed.json');
+function stateFile(cfg, dataPaths) {
+  return path.join(packsDir(cfg, dataPaths), 'installed.json');
 }
 
-async function readState(cfg) {
+async function readState(cfg, dataPaths) {
   try {
-    return JSON.parse(await fsp.readFile(stateFile(cfg), 'utf8'));
+    return JSON.parse(await fsp.readFile(stateFile(cfg, dataPaths), 'utf8'));
   } catch {
     return { packs: {} };
   }
 }
 
-async function writeState(cfg, state) {
-  await fsp.mkdir(packsDir(cfg), { recursive: true });
-  await fsp.writeFile(stateFile(cfg), JSON.stringify(state, null, 2), 'utf8');
+async function writeState(cfg, state, dataPaths) {
+  await fsp.mkdir(packsDir(cfg, dataPaths), { recursive: true });
+  await fsp.writeFile(stateFile(cfg, dataPaths), JSON.stringify(state, null, 2), 'utf8');
 }
 
 function manifests(cfg) {
@@ -142,14 +142,15 @@ function manifests(cfg) {
 }
 
 /** 已知会放语音包的目录（按可信度）：配置目录、仓库根、cwd、用户目录下常见位置。 */
-function packDirCandidates(cfg, id) {
+function packDirCandidates(cfg, id, dataPaths) {
   const list = [];
   const push = (base) => {
     const d = path.join(path.resolve(base), id);
     if (!list.includes(d)) list.push(d);
   };
-  push(packsDir(cfg));
-  push(path.join(REPO_ROOT, 'state', 'voice-packs'));
+  push(packsDir(cfg, dataPaths));
+  if (dataPaths.installationKind === 'package' || dataPaths.kind === 'package') return list;
+  push(path.join(dataPaths.programRoot, 'state', 'voice-packs'));
   push(path.join(process.cwd(), 'state', 'voice-packs'));
   // 旧版默认目录用过 cwd，用户把包装到「文档\surfcore」这种地方很常见（2026-10-28 反馈）。
   push(path.join(os.homedir(), 'Documents', 'surfcore', 'state', 'voice-packs'));
@@ -171,15 +172,15 @@ function killListeners(port) {
   });
 }
 
-function packDir(cfg, id) {
-  const root = packsDir(cfg);
+function packDir(cfg, id, dataPaths) {
+  const root = packsDir(cfg, dataPaths);
   const dir = path.join(root, id);
   if (!dir.startsWith(root + path.sep)) throw new Error(`非法语音包 id：${id}`);
   // 配置目录里没有，就去候选目录找已经装好的那份（否则"装了却说没装"）。
   try {
     if (fs.existsSync(path.join(dir, 'config.toml'))) return dir;
   } catch {}
-  for (const candidate of packDirCandidates(cfg, id)) {
+  for (const candidate of packDirCandidates(cfg, id, dataPaths)) {
     try {
       if (fs.existsSync(path.join(candidate, 'config.toml'))) return candidate;
     } catch {}
@@ -188,8 +189,8 @@ function packDir(cfg, id) {
 }
 
 /** 这个包是否不在「配置的安装目录」里（UI 用来提示"已在别处安装"）。 */
-function isExternalDir(cfg, id, dir) {
-  return path.resolve(dir) !== path.resolve(path.join(packsDir(cfg), id));
+function isExternalDir(cfg, id, dir, dataPaths) {
+  return path.resolve(dir) !== path.resolve(path.join(packsDir(cfg, dataPaths), id));
 }
 
 /** TCP 探活：给 300ms，够本机服务回应。 */
@@ -339,12 +340,15 @@ export async function ensurePackConfig(dir, { hadOwnConfig = false } = {}) {
   return { created, sanitized: cleaned !== raw, file };
 }
 
-export function createVoicePacks(cfg) {
+export function createVoicePacks(cfg, { programRoot = REPO_ROOT } = {}) {
+  const dataPaths = resolveQqDataPaths({ programRoot });
+  const configFile = dataPaths.installationKind === 'package' || dataPaths.kind === 'package' || dataPaths.kind === 'explicit-legacy'
+    ? dataPaths.config : path.join(process.cwd(), 'config.json');
   const activeInstalls = new Map(); // id → {progress, phase, startedAt, error}
   const activeImports = new Map(); // id → 导入进度/错误（离线包复制与切换）
 
   function importTarget(id) {
-    return path.join(packsDir(cfg), id);
+    return path.join(packsDir(cfg, dataPaths), id);
   }
 
   function importSnapshot(rec) {
@@ -468,7 +472,7 @@ export function createVoicePacks(cfg) {
       let switched = false;
       try {
         if (!inPlace) {
-          temp = path.join(packsDir(cfg), `.import-${id}-${Date.now()}`);
+          temp = path.join(packsDir(cfg, dataPaths), `.import-${id}-${Date.now()}`);
           await copyTree(source, temp, {
             onProgress: (pct, phase) => { rec.progress = pct; rec.phase = phase; },
             isCancelled: () => rec.cancelled,
@@ -517,7 +521,7 @@ export function createVoicePacks(cfg) {
           switched = true;
         }
 
-        const state = await readState(cfg);
+        const state = await readState(cfg, dataPaths);
         state.packs = state.packs || {};
         state.packs[id] = {
           ...(state.packs[id] || {}),
@@ -529,7 +533,7 @@ export function createVoicePacks(cfg) {
           backupDir: rec.backupDir || null,
           verified: Boolean(info.verified),
         };
-        await writeState(cfg, state);
+        await writeState(cfg, state, dataPaths);
         rec.phase = '完成';
         rec.progress = 100;
         rec.result = {
@@ -600,7 +604,7 @@ export function createVoicePacks(cfg) {
   }
 
   async function deleteImportSource(id, sourceDir) {
-    const state = await readState(cfg);
+    const state = await readState(cfg, dataPaths);
     const recorded = state.packs?.[id]?.importSource || '';
     const target = importTarget(id);
     const source = path.resolve(String(sourceDir || ''));
@@ -633,12 +637,12 @@ export function createVoicePacks(cfg) {
       });
     }
     delete state.packs[id].importSource;
-    await writeState(cfg, state);
+    await writeState(cfg, state, dataPaths);
     return { ok: true, freedBytes };
   }
 
   async function deleteImportBackup(id, backupDir) {
-    const state = await readState(cfg);
+    const state = await readState(cfg, dataPaths);
     const recorded = state.packs?.[id]?.backupDir || '';
     const target = importTarget(id);
     const backup = path.resolve(String(backupDir || ''));
@@ -661,18 +665,18 @@ export function createVoicePacks(cfg) {
       });
     }
     delete state.packs[id].backupDir;
-    await writeState(cfg, state);
+    await writeState(cfg, state, dataPaths);
     return { ok: true };
   }
 
 
   async function statusOne(m) {
-    const dir = packDir(cfg, m.id);
+    const dir = packDir(cfg, m.id, dataPaths);
     const hasFiles = await exists(path.join(dir, 'config.toml'));
     const portUp = await probePort(m.port);
     const engineUp = m.enginePort ? await probePort(m.enginePort) : null;
     // 「外部安装」两种：① 文件在别的目录（旧默认目录/cwd，2026-10-28 用户反馈）；② 只有端口在跑。
-    const external = hasFiles ? isExternalDir(cfg, m.id, dir) : portUp;
+    const external = hasFiles ? isExternalDir(cfg, m.id, dir, dataPaths) : portUp;
     const installed = hasFiles || portUp;
     const running = portUp;
     return {
@@ -701,7 +705,7 @@ export function createVoicePacks(cfg) {
   }
 
   async function list() {
-    const state = await readState(cfg);
+    const state = await readState(cfg, dataPaths);
     const packs = await Promise.all(manifests(cfg).map(statusOne));
     // 云端包装好但凭据没填全：给设置页一个明确信号（新装不再预置任何凭据，见 PITFALLS #79）。
     const withNeeds = await Promise.all(packs.map(async (p) => {
@@ -711,7 +715,7 @@ export function createVoicePacks(cfg) {
     }));
     return {
       ok: true,
-      packsDir: packsDir(cfg),
+      packsDir: packsDir(cfg, dataPaths),
       packs: withNeeds.map((p) => ({
         ...p,
         enabled: state.packs?.[p.id]?.enabled ?? false,
@@ -761,7 +765,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
       if (prev && (prev.phase === '完成' || prev.phase === '失败')) activeInstalls.delete(id);
       else throw new Error('这个包正在安装中');
     }
-    const dir = packDir(cfg, id);
+    const dir = packDir(cfg, id, dataPaths);
     if (!force && (await exists(path.join(dir, 'config.toml')))) throw new Error('已经安装过了');
 
     const rec = { progress: 0, phase: '准备中', startedAt: Date.now(), error: null, log: '', lastOutputAt: Date.now(), child: null, cancelled: false };
@@ -864,10 +868,10 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
         if (missing.length) {
           throw new Error(`下载不完整：缺 ${missing.join('、')}（多半是模型下载中断）。点「安装」重试，或先删掉 ${dir} 再装；网络慢可以换时段再试`);
         }
-        const state = await readState(cfg);
+        const state = await readState(cfg, dataPaths);
         state.packs = state.packs || {};
         state.packs[id] = { enabled: true, installedAt: new Date().toISOString(), version: m.version };
-        await writeState(cfg, state);
+        await writeState(cfg, state, dataPaths);
         // 记录安装版本 + 远端提交，供「检查更新」做提交级比对（语音包没有 package.json）。
         try {
           let sha = '';
@@ -896,7 +900,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
   }
 
   async function remove(id) {
-    const dir = packDir(cfg, id);
+    const dir = packDir(cfg, id, dataPaths);
     await stop(id).catch(() => {});
     // 端口还在 → 说明有进程占着目录，直接删会 EBUSY；给用户明确提示而不是抛原始错误。
     const m = manifests(cfg).find((x) => x.id === id);
@@ -912,10 +916,10 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
       }
       return { ok: false, error: msg };
     }
-    const state = await readState(cfg);
+    const state = await readState(cfg, dataPaths);
     if (state.packs?.[id]) {
       delete state.packs[id];
-      await writeState(cfg, state);
+      await writeState(cfg, state, dataPaths);
     }
     return { ok: true };
   }
@@ -923,7 +927,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
   async function start(id) {
     const m = manifests(cfg).find((x) => x.id === id);
     if (!m) throw new Error(`未知语音包：${id}`);
-    const dir = packDir(cfg, id);
+    const dir = packDir(cfg, id, dataPaths);
     if (!(await exists(path.join(dir, 'config.toml')))) throw new Error('还没安装');
     // 云端包：没填凭据就别启动——voxd 会起来，但每次合成都 401/403，
     // 用户只会看到"启动成功、一说话就失败"。给一句能直接照做的提示。
@@ -1060,7 +1064,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
   async function cleanPartial(id) {
     const m = manifests(cfg).find((x) => x.id === id);
     if (!m) throw new Error(`未知语音包：${id}`);
-    const dir = packDir(cfg, id);
+    const dir = packDir(cfg, id, dataPaths);
     let freed = 0;
     const rm = async (target) => {
       try {
@@ -1084,7 +1088,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
   async function stop(id) {
     const m = manifests(cfg).find((x) => x.id === id);
     if (!m) throw new Error(`未知语音包：${id}`);
-    const dir = packDir(cfg, id);
+    const dir = packDir(cfg, id, dataPaths);
     const script = path.join(dir, m.stopScript || 'stop.bat');
     if (await exists(script)) {
       await new Promise((resolve) => {
@@ -1113,7 +1117,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
 
   /** 写云端密钥：只改 config.toml 里那三行，其余原样保留。 */
   async function cloudConfig(id, body) {
-    const dir = packDir(cfg, id);
+    const dir = packDir(cfg, id, dataPaths);
     const file = path.join(dir, 'config.toml');
     if (!(await exists(file))) throw new Error('还没安装');
     let text = await fsp.readFile(file, 'utf8');
@@ -1154,7 +1158,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
     }
     // 顺手把路由切过去（写 config.json，宿主热读）
     try {
-      const cfgPath = path.join(process.cwd(), 'config.json');
+      const cfgPath = configFile;
       const disk = JSON.parse(await fsp.readFile(cfgPath, 'utf8'));
       disk.socialV2 = disk.socialV2 || {};
       disk.socialV2.voice = disk.socialV2.voice || {};
@@ -1171,17 +1175,17 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
   async function setEnabled(id, enabled) {
     const m = manifests(cfg).find((x) => x.id === id);
     if (!m) throw new Error(`未知语音包：${id}`);
-    const state = await readState(cfg);
+    const state = await readState(cfg, dataPaths);
     state.packs = state.packs || {};
     state.packs[id] = { ...(state.packs[id] || {}), enabled: !!enabled };
-    await writeState(cfg, state);
+    await writeState(cfg, state, dataPaths);
     return { ok: true, enabled: !!enabled };
   }
 
 
   /** 读云端配置：AppID / AccessKey（打码）/ 音色 ID，给设置页回显。 */
   async function readCloudConfig(id) {
-    const dir = packDir(cfg, id);
+    const dir = packDir(cfg, id, dataPaths);
     const file = path.join(dir, 'config.toml');
     const text = (await fsp.readFile(file, 'utf8').catch(() => ''));
     const pick = (k) => (text.match(new RegExp('^' + k + '\\s*=\\s*"([^"]*)"', 'm')) || [])[1] || '';
@@ -1209,7 +1213,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
 
   /** 云端用量：读包内 logs/requests.jsonl，汇总今天/本月字符数，按用户填的单价估算费用。 */
   async function cloudStats(id, opts = {}) {
-    const dir = packDir(cfg, id);
+    const dir = packDir(cfg, id, dataPaths);
     const file = path.join(dir, 'logs', 'requests.jsonl');
     const text = await fsp.readFile(file, 'utf8').catch(() => '');
     const now = new Date();
@@ -1234,7 +1238,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
     let cloudCfg = cfg?.socialV2?.voice?.cloud ?? {};
     // 面板刚保存的单价/额度在 config.json 里，内存 cfg 不会热更新，这里直接读盘
     try {
-      const disk = JSON.parse(await fsp.readFile(path.join(process.cwd(), 'config.json'), 'utf8'));
+      const disk = JSON.parse(await fsp.readFile(configFile, 'utf8'));
       cloudCfg = disk?.socialV2?.voice?.cloud ?? cloudCfg;
     } catch {}
     const pricePerKChar = Number(opts.pricePerKChar ?? cloudCfg.pricePerKChar ?? 0) || 0;
@@ -1257,7 +1261,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
 
   /** 包里预置的"参考音频"（用户拿去喂声音复刻模型，省得自己录）。 */
   async function sampleFile(id) {
-    const dir = packDir(cfg, id);
+    const dir = packDir(cfg, id, dataPaths);
     const vp = path.join(dir, 'voicepack');
     const files = (await fsp.readdir(vp).catch(() => [])).filter((f) => /\.(wav|mp3|m4a)$/i.test(f));
     if (!files.length) throw new Error('这个包没有预置参考音频');
@@ -1285,5 +1289,5 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
     return { ok: true, ms: Date.now() - t0, bytes: buf.length, seconds, duration: seconds };
   }
 
-  return { list, install, remove, start, stop, activate, cleanPartial, cancelInstall, cloudConfig, readCloudConfig, cloudStats, test, sampleFile, setEnabled, manifests, packsDir, inspectImport, startImport, cancelImport, deleteImportSource, deleteImportBackup };
+  return { list, install, remove, start, stop, activate, cleanPartial, cancelInstall, cloudConfig, readCloudConfig, cloudStats, test, sampleFile, setEnabled, manifests, packsDir: (options = cfg) => packsDir(options, dataPaths), inspectImport, startImport, cancelImport, deleteImportSource, deleteImportBackup };
 }

@@ -30,6 +30,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { sliceHead } from './safe-text.js';
+import { validateExperienceEvent } from './core/experience.js';
 
 export const MEMORY_CARD_VERSION = 1;
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -307,6 +308,8 @@ export function createEmptyCard(now = Date.now()) {
     meta: {
       inboxSeen: [],
       sourceSeen: [],
+      experienceSeen: [],
+      experienceOffset: 0,
       firstOwnerRecordId: '',
       // 「最初」窗口从第一次和主人互动开始；firstMet* 是用户可指定的“初次相遇”事件。
       firstOwnerAt: '',
@@ -361,6 +364,8 @@ export function normalizeCard(raw) {
   };
   card.meta.inboxSeen = asArray(card.meta.inboxSeen).map(String).slice(-5000);
   card.meta.sourceSeen = asArray(card.meta.sourceSeen).map(String).slice(-5000);
+  card.meta.experienceSeen = asArray(card.meta.experienceSeen).map(String);
+  card.meta.experienceOffset = Math.max(0, Math.floor(Number(card.meta.experienceOffset) || 0));
   card.meta.firstMetRecordIds = asArray(card.meta.firstMetRecordIds).map(String).filter(Boolean).slice(0, 20);
   card.alerts.lastNotified = asObject(card.alerts.lastNotified);
   for (const item of asArray(input.records)) {
@@ -378,6 +383,19 @@ export function normalizeCard(raw) {
   return card;
 }
 
+function normalizeMemoryEvidenceRefs(raw) {
+  return asArray(raw).slice(0, 16).map((value) => {
+    const source = asObject(value);
+    const item = {};
+    if (source.assetId) item.assetId = String(source.assetId).slice(0, 128);
+    if (source.sourceUrl) {
+      try { const url = new URL(String(source.sourceUrl)); if (['http:', 'https:'].includes(url.protocol)) item.sourceUrl = `${url.origin}${url.pathname}`.slice(0, 500); } catch {}
+    }
+    for (const key of ['startMs', 'endMs']) if (source[key] != null && Number.isFinite(Number(source[key])) && Number(source[key]) >= 0) item[key] = Math.round(Number(source[key]));
+    return item;
+  }).filter((item) => Object.keys(item).length);
+}
+
 function normalizeRecord(item) {
   const raw = asObject(item);
   const text = String(raw.text ?? '').trim();
@@ -388,8 +406,8 @@ function normalizeRecord(item) {
     id: String(raw.id ?? `mem_${hash(`${createdAt}|${title}|${text}`)}`),
     source: String(raw.source ?? 'system'),
     sourceId: String(raw.sourceId ?? ''),
-    platform: ['qq', 'bili', 'shared', 'pet'].includes(raw.platform) ? raw.platform : (SOURCE_PLATFORM[raw.source] ?? 'shared'),
-    scope: ['qq', 'bili', 'shared', 'pet'].includes(raw.scope) ? raw.scope : 'qq',
+    platform: ['qq', 'bili', 'shared', 'pet', 'local', 'douyin', 'experience'].includes(raw.platform) ? raw.platform : (SOURCE_PLATFORM[raw.source] ?? 'shared'),
+    scope: ['qq', 'bili', 'shared', 'pet', 'restricted'].includes(raw.scope) ? raw.scope : 'qq',
     kind: String(raw.kind ?? 'event'),
     title: short(title, 80),
     text: String(text).slice(0, 1200),
@@ -416,6 +434,15 @@ function normalizeRecord(item) {
     botReply: String(raw.botReply ?? '').slice(0, 600),
     isSelf: raw.isSelf === true,
     conversationKey: String(raw.conversationKey ?? ''),
+    eventId: String(raw.eventId ?? ''),
+    attributionSubject: ['self', 'user', 'external'].includes(raw.attributionSubject) ? raw.attributionSubject : '',
+    attributionCertainty: ['observed', 'reported', 'inferred'].includes(raw.attributionCertainty) ? raw.attributionCertainty : '',
+    evidenceRefs: normalizeMemoryEvidenceRefs(raw.evidenceRefs),
+    sourceChannel: String(raw.sourceChannel ?? ''),
+    visibilityClassification: ['public', 'private', 'restricted'].includes(raw.visibilityClassification) ? raw.visibilityClassification : '',
+    allowedContexts: asArray(raw.allowedContexts).map(String).filter(Boolean).slice(0, 32),
+    activityId: String(raw.activityId ?? ''),
+    characterEpoch: Number.isInteger(Number(raw.characterEpoch)) ? Math.max(0, Number(raw.characterEpoch)) : 0,
     // 「最初」是独立于「重要」的判定：仅和主人的互动，按首次接触的 30 天窗口分档。
     initialTier: ['first10', 'mid10', 'late10', 'after', 'first-meet'].includes(raw.initialTier) ? raw.initialTier : '',
     initialProbability: Number.isFinite(Number(raw.initialProbability)) ? Math.max(0, Math.min(1, Number(raw.initialProbability))) : 0,
@@ -730,8 +757,39 @@ export function loadFullStats(paths) {
   }
 }
 
+/** Sync rename metadata where the platform supports directory fsync; other I/O errors propagate. */
+export function syncDurableDirectory(dir, { platform = process.platform } = {}) {
+  // Windows FlushFileBuffers requires a write handle; fs.open(dir, 'r') cannot
+  // provide the POSIX directory durability barrier. Preserve file fsync + rename.
+  if (platform === 'win32') return false;
+  let fd;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch (error) {
+    if (!['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS'].includes(error?.code)) throw error;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
 function writeFullStats(paths, stats) {
-  writeTextAtomic(paths.fullStats, `${JSON.stringify(stats, null, 2)}\n`);
+  fs.mkdirSync(path.dirname(paths.fullStats), { recursive: true });
+  const tmp = `${paths.fullStats}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+  let fd;
+  try {
+    fd = fs.openSync(tmp, 'wx', 0o600);
+    fs.writeFileSync(fd, `${JSON.stringify(stats, null, 2)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tmp, paths.fullStats);
+    syncDurableDirectory(path.dirname(paths.fullStats));
+  } catch (error) {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+    try { fs.unlinkSync(tmp); } catch {}
+    throw error;
+  }
 }
 
 function fullSectionOf(record) {
@@ -823,34 +881,99 @@ export function ensureFullArchive(paths, config = {}, now = Date.now()) {
  * 把衰减卡里还没进全量卡的记录**追加**到 JSONL。
  * 必须在衰减/压缩/遗忘之前调用；只写新增行，不重写整个档案。
  */
-export function archiveDecayedToFull(paths, decayed, config = {}, now = Date.now()) {
+const MAX_ARCHIVE_BATCH_BYTES = 64 * 1024 * 1024;
+
+function fullArchiveKey(record) {
+  return record.eventId ? `event:${record.eventId}` : `record:${record.id}`;
+}
+
+function fullArchiveRecoveryError() {
+  const error = new Error('全量记忆追加批次不完整。');
+  error.code = 'MEMORY_ARCHIVE_RECOVERY_REQUIRED';
+  error.hint = '保留全量档案和统计文件，检查未完成的追加批次后重试。';
+  return error;
+}
+
+/** Recover only the recorded append range; never scan the existing JSONL archive. */
+function recoverFullArchiveAppend(paths, stats) {
+  const pending = stats.pendingAppend;
+  if (!pending) return;
+  const { offset, length, digest } = pending;
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1
+      || length > MAX_ARCHIVE_BATCH_BYTES || !/^[0-9a-f]{64}$/.test(String(digest ?? ''))
+      || !Array.isArray(pending.keys) || !Number.isSafeInteger(pending.records) || pending.records < 0
+      || !Number.isFinite(pending.chars) || pending.chars < 0 || !pending.counts || typeof pending.counts !== 'object') throw fullArchiveRecoveryError();
+  const size = fs.statSync(paths.fullJsonl).size;
+  if (size === offset) { delete stats.pendingAppend; writeFullStats(paths, stats); return; }
+  if (size !== offset + length) throw fullArchiveRecoveryError();
+  const bytes = Buffer.alloc(length);
+  const fd = fs.openSync(paths.fullJsonl, 'r+');
+  try {
+    if (fs.readSync(fd, bytes, 0, length, offset) !== length) throw fullArchiveRecoveryError();
+    if (crypto.createHash('sha256').update(bytes).digest('hex') !== digest) throw fullArchiveRecoveryError();
+    // A readable page-cache hit is not proof that an earlier failed append fsync reached disk.
+    // Keep the journal pending until this exact archive file sync succeeds.
+    try { fs.fsyncSync(fd); } catch {
+      const error = fullArchiveRecoveryError();
+      error.hint = '保留全量档案和统计文件，检查磁盘同步错误后重试。';
+      throw error;
+    }
+  } finally { fs.closeSync(fd); }
+  stats.records += pending.records;
+  stats.chars += pending.chars;
+  stats.bytes = size;
+  for (const key of Object.keys(stats.counts)) stats.counts[key] = (Number(stats.counts[key]) || 0) + (Number(pending.counts[key]) || 0);
+  stats.updatedAt = pending.at;
+  stats.lastArchiveAt = pending.at;
+  stats.uncommittedArchiveKeys = [...new Set([...asArray(stats.uncommittedArchiveKeys), ...pending.keys])];
+  if (Number.isSafeInteger(pending.experienceOffset) && pending.experienceOffset >= 0) {
+    stats.experienceArchiveOffset = Math.max(Number(stats.experienceArchiveOffset) || 0, pending.experienceOffset);
+    if (pending.experienceIdentity) stats.experienceInboxIdentity = pending.experienceIdentity;
+  }
+  delete stats.pendingAppend;
+  writeFullStats(paths, stats);
+}
+
+export function archiveDecayedToFull(paths, decayed, config = {}, now = Date.now(), { committedKeys = [], alreadyArchivedExperienceIds = [], experienceNextOffset = null, experienceIdentity = null } = {}) {
   if (!paths || !decayed) return 0;
-  // 归档前先把「最初 / 初次相遇」标记算好，否则全量卡里的早期互动会缺这些字段。
   refreshInitialState(decayed);
   const stats = ensureFullArchive(paths, config, now);
+  recoverFullArchiveAppend(paths, stats);
+  const committed = new Set(committedKeys);
+  const tracked = new Set(asArray(stats.uncommittedArchiveKeys).filter((key) => !committed.has(key)));
+  const priorTracked = asArray(stats.uncommittedArchiveKeys).length;
+  if (tracked.size !== priorTracked) { stats.uncommittedArchiveKeys = [...tracked]; writeFullStats(paths, stats); }
   const pending = asArray(decayed.records).filter((record) => record && record.id && !record.fullArchivedAt);
   if (!pending.length) return 0;
+  const previouslyArchived = new Set(asArray(alreadyArchivedExperienceIds).map((id) => `event:${id}`));
+  const fresh = pending.filter((record) => !tracked.has(fullArchiveKey(record)) && !previouslyArchived.has(fullArchiveKey(record)));
   const lines = [];
+  const keys = [];
   let chars = 0;
   const counts = { owner: 0, bili: 0, qq: 0, other: 0 };
-  for (const record of pending) {
+  for (const record of fresh) {
     const line = archivedLine(record, now);
     if (!line) continue;
     lines.push(line);
+    keys.push(fullArchiveKey(record));
     chars += String(record.text ?? '').length;
     counts[fullSectionOf(record)] += 1;
   }
   if (lines.length) {
-    fs.appendFileSync(paths.fullJsonl, `${lines.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
-    stats.records += lines.length;
-    stats.chars += chars;
-    stats.bytes = fs.statSync(paths.fullJsonl).size;
-    for (const key of Object.keys(counts)) stats.counts[key] = (Number(stats.counts[key]) || 0) + counts[key];
-    stats.updatedAt = iso(now);
-    stats.lastArchiveAt = iso(now);
+    const bytes = Buffer.from(`${lines.join('\n')}\n`, 'utf8');
+    if (bytes.length > MAX_ARCHIVE_BATCH_BYTES) throw fullArchiveRecoveryError();
+    const offset = fs.statSync(paths.fullJsonl).size;
+    const at = iso(now);
+    stats.pendingAppend = { offset, length: bytes.length, digest: crypto.createHash('sha256').update(bytes).digest('hex'), keys, records: lines.length, chars, counts, at, ...(Number.isSafeInteger(experienceNextOffset) && experienceNextOffset >= 0 ? { experienceOffset: experienceNextOffset, experienceIdentity } : {}) };
+    writeFullStats(paths, stats);
+    const fd = fs.openSync(paths.fullJsonl, 'a', 0o600);
+    try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    recoverFullArchiveAppend(paths, stats);
+  } else if (Number.isSafeInteger(experienceNextOffset) && experienceNextOffset > (Number(stats.experienceArchiveOffset) || 0)) {
+    stats.experienceArchiveOffset = experienceNextOffset;
+    if (experienceIdentity) stats.experienceInboxIdentity = experienceIdentity;
     writeFullStats(paths, stats);
   }
-  // 追加成功后才标记，避免「标记了但没写进去」。即使 normalize 失败也标记，避免反复重试同一条坏数据。
   const stamp = iso(now);
   for (const record of pending) record.fullArchivedAt = stamp;
   return lines.length;
@@ -1209,11 +1332,21 @@ function makeRecord(input, config, now) {
   if (!cleanText && !cleanTitle) return null;
   const scored = scoreMemory({ ...input, text: cleanText }, cfg);
   const createdAt = timeOf(input.createdAt, now);
-  const id = `mem_${hash(`${input.source}|${input.sourceId ?? ''}|${createdAt}|${cleanTitle}|${cleanText}`, 14)}`;
+  const eventSuffix = input.eventId ? `|${input.eventId}` : '';
+  const id = `mem_${hash(`${input.source}|${input.sourceId ?? ''}|${createdAt}|${cleanTitle}|${cleanText}${eventSuffix}`, 14)}`;
   return {
     id,
     source: String(input.source ?? 'system'),
     sourceId: String(input.sourceId ?? ''),
+    eventId: String(input.eventId ?? ''),
+    attributionSubject: ['self', 'user', 'external'].includes(input.attributionSubject) ? input.attributionSubject : '',
+    attributionCertainty: ['observed', 'reported', 'inferred'].includes(input.attributionCertainty) ? input.attributionCertainty : '',
+    evidenceRefs: normalizeMemoryEvidenceRefs(input.evidenceRefs),
+    sourceChannel: String(input.sourceChannel ?? ''),
+    visibilityClassification: String(input.visibilityClassification ?? ''),
+    allowedContexts: asArray(input.allowedContexts).map(String).filter(Boolean).slice(0, 32),
+    activityId: String(input.activityId ?? ''),
+    characterEpoch: Number.isInteger(Number(input.characterEpoch)) ? Math.max(0, Number(input.characterEpoch)) : 0,
     platform: scored.platform,
     scope: scored.scope,
     kind: scored.kind,
@@ -1251,6 +1384,7 @@ function makeRecord(input, config, now) {
 }
 
 function findDuplicate(card, record) {
+  if (record.eventId) return card.records.find((item) => item.eventId === record.eventId) ?? null;
   if (record.sourceId) {
     const same = card.records.find((item) => item.sourceId && item.sourceId === record.sourceId);
     if (same) return same;
@@ -1258,7 +1392,8 @@ function findDuplicate(card, record) {
   const windowMs = 2 * DAY_MS;
   const created = timeOf(record.createdAt, Date.now());
   const conversationKey = String(record.conversationKey ?? '');
-  return card.records.find((item) => item.source === record.source
+  return card.records.find((item) => (!record.eventId || !item.eventId || item.eventId === record.eventId)
+    && item.source === record.source
     && item.speaker === record.speaker
     && item.text === record.text
     && String(item.conversationKey ?? '') === conversationKey
@@ -1565,6 +1700,77 @@ export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) 
   return { added };
 }
 
+/** Project validated and deduplicated ExperienceEvents into the existing decay memory card. */
+export function ingestExperienceEvents(card, events, config = {}, now = Date.now()) {
+  const cfg = normalizeMemoryCardConfig(config);
+  const seenEvents = new Set(card.meta.experienceSeen);
+  const seenSources = new Set(card.meta.sourceSeen);
+  let added = 0;
+  let duplicates = 0;
+  let rejected = 0;
+  for (const raw of asArray(events)) {
+    const checked = validateExperienceEvent(raw);
+    if (!checked.ok) { rejected += 1; continue; }
+    const event = checked.event;
+    if (seenEvents.has(event.eventId)) { duplicates += 1; continue; }
+    const channel = event.source.channel;
+    const sourceId = event.source.objectId || event.eventId;
+    const legacyBili = channel === 'bili' && event.kind === 'observation' && !event.activityId;
+    if (legacyBili && event.source.objectId && seenSources.has(event.source.objectId)) {
+      seenEvents.add(event.eventId);
+      duplicates += 1;
+      continue;
+    }
+    const content = event.content;
+    const visibility = event.visibility;
+    const defaultScope = ['qq', 'bili', 'pet'].includes(channel) ? channel : 'restricted';
+    const scope = visibility.legacyScope || defaultScope;
+    const platform = ['qq', 'bili', 'pet', 'local', 'douyin'].includes(channel) ? channel : 'experience';
+    const sourcePrefix = channel === 'bili' || channel === 'qq' || channel === 'pet' ? channel : 'experience';
+    const result = addMemoryRecord(card, {
+      source: `${sourcePrefix}-experience`,
+      sourceId,
+      eventId: event.eventId,
+      attributionSubject: event.attribution.subject,
+      attributionCertainty: event.attribution.certainty,
+      evidenceRefs: event.evidenceRefs,
+      sourceChannel: channel,
+      visibilityClassification: visibility.classification,
+      allowedContexts: visibility.allowedContexts,
+      activityId: event.activityId,
+      characterEpoch: event.characterEpoch,
+      platform,
+      scope,
+      kind: event.kind,
+      text: content.summary,
+      title: content.title || short(content.summary, 80),
+      detail: content.details || content.detailsRef,
+      tags: ['experience', channel, event.kind, ...content.tags].slice(0, 12),
+      private: visibility.classification === 'private',
+      conversationKey: event.source.conversationId,
+      createdAt: event.occurredAt,
+      lastSeenAt: event.occurredAt,
+      speaker: event.attribution.subject === 'self' ? '角色' : '',
+      score: content.score,
+      favorite: content.favorite,
+      anecdote: Boolean(content.details),
+      manualImportance: content.favorite ? 70 : (content.score >= 15 ? 55 : 35),
+    }, cfg, now);
+    seenEvents.add(event.eventId);
+    if (legacyBili && event.source.objectId) seenSources.add(event.source.objectId);
+    if (result.added) {
+      added += 1;
+      if (channel === 'bili') card.stats.fromBili = (Number(card.stats.fromBili) || 0) + 1;
+      else if (channel === 'pet') card.stats.fromPet = (Number(card.stats.fromPet) || 0) + 1;
+      else card.stats.fromQq = (Number(card.stats.fromQq) || 0) + 1;
+      card.stats.lastIngestAt = iso(now);
+    } else duplicates += 1;
+  }
+  card.meta.experienceSeen = [...seenEvents];
+  card.meta.sourceSeen = [...seenSources].slice(-5000);
+  return { added, duplicates, rejected };
+}
+
 function ownerImportant(record, cfg) {
   return record.tags.includes('owner') && record.importance >= cfg.minOwnerImportance;
 }
@@ -1721,6 +1927,7 @@ function recordGroupId(record) {
 
 function recordIsPrivate(record) {
   return record?.private === true
+    || record?.visibilityClassification === 'private'
     || record?.source === 'qq-private'
     || String(record?.conversationKey ?? '').startsWith('private:');
 }
@@ -1729,6 +1936,9 @@ function memorySourceLabel(record) {
   if (recordIsPrivate(record)) return '私聊';
   if (record?.platform === 'pet' || record?.scope === 'pet') return '桌宠';
   if (record?.platform === 'bili' || record?.scope === 'bili') return 'B站';
+  if (record?.platform === 'local') return '本地';
+  if (record?.platform === 'douyin') return '抖音';
+  if (record?.scope === 'restricted') return '受限经历';
   if (record?.source === 'manual') return '手动记录';
   const gid = recordGroupId(record);
   const name = String(record?.groupName ?? '').trim();
@@ -1748,6 +1958,7 @@ function recordLine(record, { platform = 'qq', full = false } = {}) {
     body = short(rawText, record.clarity === 'vivid' ? 200 : 130);
   }
   const source = memorySourceLabel(record);
+  if (record.attributionSubject === 'external') body = `外部材料（作者观点，非角色信念）：${body}`;
   if (record.isSelf && record.speaker) body = `${record.speaker}（${source}）：${body}`;
   // 非主人的记忆也要带说话人：否则别人的「叫我X」会和主人的话混在一起，
   // 模型会把别人的称呼套到眼前的人身上（2026-10-31 用户反馈）。
@@ -1760,7 +1971,24 @@ function recordLine(record, { platform = 'qq', full = false } = {}) {
     const reply = redactForMemory(record.botReply, { scope, maxChars: 160 });
     body += ` → 她回：${short(reply, record.clarity === 'vivid' ? 160 : 100)}`;
   }
-  const head = `- ${dateOnly(record.createdAt)} [${CLARITY_LABEL[record.clarity] ?? '清楚'}] `;
+  // Douyin keeps the complete bounded reason and coverage beside its short summary.
+  // This renderer runs only after visibleFor has applied the requested audience.
+  if (record.sourceChannel === 'douyin' && !recordIsPrivate(record) && ['vivid', 'clear'].includes(record.clarity)) {
+    const detail = redactForMemory(record.detail, { scope, maxChars: 350 });
+    if (detail) body += `；${detail}`;
+  }
+  // Clear non-private video memories retain the identity/time stored on the event.
+  // visibleFor has already enforced each record's allowed audiences.
+  // Importance order is not chronology; date-only labels make same-day videos ambiguous.
+  const video = !recordIsPrivate(record) && ['vivid', 'clear'].includes(record.clarity)
+    ? record.sourceChannel === 'bili'
+      ? /^(?:bv:)?(BV[0-9A-Za-z]{10})(?::cid:[0-9]{1,20})?$/.exec(String(record.sourceId ?? ''))?.[1]
+      : record.sourceChannel === 'douyin' && /^[0-9]{1,32}$/.test(String(record.sourceId ?? ''))
+        ? `抖音:${record.sourceId}` : ''
+    : '';
+  const happened = Date.parse(String(record.createdAt ?? ''));
+  const stamp = video && Number.isFinite(happened) ? new Date(happened).toISOString() : dateOnly(record.createdAt);
+  const head = `- ${stamp} [${CLARITY_LABEL[record.clarity] ?? '清楚'}] ${video ? `[${video}] ` : ''}`;
   return full ? `${head}${body}（重要 ${record.importance}）` : `${head}${body}`;
 }
 
@@ -1784,11 +2012,26 @@ function visibleFor(card, platform, cfg, conversationKey = '') {
   return card.records.filter((record) => {
     // 完整卡（platform='all'）保留敏感条目供管理员查看；注入提示词的 QQ / B站 两版都排除。
     if (record.sensitive) return platform === 'all';
+    if (platform === 'all') return true;
+    if (!record.visibilityClassification && record.scope === 'restricted') return false;
+    if (record.visibilityClassification && Array.isArray(record.allowedContexts)) {
+      const contexts = new Set([platform, current, current ? `${platform}:${current}` : ''].filter(Boolean));
+      if (!record.allowedContexts.some((allowed) => contexts.has(allowed))) return false;
+      if (record.visibilityClassification === 'private' && !recordIsPrivate(record)) return false;
+      return true;
+    }
     if (platform === 'bili') {
       if (record.scope === 'bili' || record.scope === 'shared') return true;
       return cfg.includeQqInBili && record.scope === 'qq';
     }
-    if (platform !== 'qq' || !current) return true;
+    if (platform === 'pet') {
+      return record.scope === 'pet' || (record.scope === 'shared' && !recordIsPrivate(record));
+    }
+    if (platform !== 'qq') {
+      // Unknown/new channels see only explicitly shared, non-private legacy records.
+      return record.scope === 'shared' && !recordIsPrivate(record);
+    }
+    if (!current) return true;
     if (currentGroup) {
       // 私聊记忆永不出现在群里；跨群只看同圈。
       if (recordIsPrivate(record) || record.platform === 'pet' || record.scope === 'pet') return false;
@@ -1873,7 +2116,10 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {}, con
  *   · platform='qq'|'bili' + maxChars → 给提示词注入的裁剪版。
  */
 export function renderMemoryCard(card, options = {}) {
-  const platform = options.platform === 'bili' ? 'bili' : (options.platform === 'qq' ? 'qq' : 'all');
+  const requestedPlatform = String(options.platform ?? 'all');
+  const platform = ['all', 'bili', 'qq', 'pet', 'local', 'douyin'].includes(requestedPlatform)
+    ? requestedPlatform
+    : 'restricted';
   const full = options.full === true;
   const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
   const cfg = normalizeMemoryCardConfig(options.config ?? {});
@@ -2072,6 +2318,10 @@ export function maintainMemoryCard({
   config = {},
   biliEntries = [],
   inboxLines = [],
+  experienceEvents = [],
+  experienceNextOffset = null,
+  alreadyArchivedExperienceIds = [],
+  experienceIdentity = null,
   now = Date.now(),
   forceDecay = false,
   fullPaths = null,
@@ -2080,14 +2330,20 @@ export function maintainMemoryCard({
   const cfg = normalizeMemoryCardConfig(config);
   const fullCfg = normalizeMemoryCardConfig(fullConfig ?? config);
   let card = loadMemoryCard(paths) || createEmptyCard(now);
+  const committedArchiveKeys = [
+    ...asArray(card.meta?.experienceSeen).map((id) => `event:${id}`),
+    ...asArray(card.records).filter((record) => record.fullArchivedAt).map(fullArchiveKey),
+  ];
   let changed = false;
+  const experience = ingestExperienceEvents(card, experienceEvents, cfg, now);
+  if (experience.added || experience.duplicates || experience.rejected) changed = true;
   const bili = ingestBiliEntries(card, biliEntries, cfg, now);
   if (bili.added) changed = true;
   const qq = ingestInboxLines(card, inboxLines, cfg, now);
   if (qq.added) changed = true;
   // **先归档再衰减**：刚进来的旧记忆/冷门记忆也可能在同一次补跑里被忘掉。
   // 全量卡是 JSONL：这里只 append 新行，不读整个档案、也不重写。
-  const fullAdded = fullPaths ? archiveDecayedToFull(fullPaths, card, fullCfg, now) : 0;
+  const fullAdded = fullPaths ? archiveDecayedToFull(fullPaths, card, fullCfg, now, { committedKeys: committedArchiveKeys, alreadyArchivedExperienceIds, experienceNextOffset, experienceIdentity }) : 0;
   if (fullAdded) changed = true;
   if (forceDecay || needsDailyDecay(card, cfg, now)) {
     // 插件/DSH 关了一周再开：按「错过几天」补跑，而不是只降一档。
@@ -2118,11 +2374,22 @@ export function maintainMemoryCard({
   }
   card.lastMaintenanceAt = iso(now);
   card.updatedAt = iso(now);
+  if (experienceNextOffset !== null && Number.isFinite(Number(experienceNextOffset))) {
+    const nextOffset = Math.max(0, Math.floor(Number(experienceNextOffset)));
+    const previousOffset = Number(card.meta.experienceOffset) || 0;
+    if (nextOffset >= previousOffset) {
+      card.meta.experienceOffset = nextOffset;
+      if (nextOffset !== previousOffset) changed = true;
+    }
+  }
   const saved = saveMemoryCardOutputs(paths, card, cfg, now);
   const fullSaved = fullPaths ? saveFullMemoryCard(fullPaths, fullCfg, now) : null;
   return {
     card,
     changed,
+    experience: experience.added,
+    experienceDuplicates: experience.duplicates,
+    experienceRejected: experience.rejected,
     bili: bili.added,
     qq: Math.max(0, (qq.added || 0) - (qq.addedPet || 0)),
     pet: qq.addedPet || 0,

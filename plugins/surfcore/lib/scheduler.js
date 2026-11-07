@@ -29,7 +29,7 @@ import { pinOf, noteOf } from '../tools/lib/pins.mjs'
 import { markScheduleSlot } from '../tools/lib/night-schedule.mjs'
 import { normalizeWindow, windowContains } from '../tools/lib/time-window.mjs'
 import {
-  BILI_ALIGNMENT_FILE, BILI_CONFIG, QQ_STATE_DIR, findNodeExe,
+  BILI_ALIGNMENT_FILE, BILI_CONFIG, QQ_STATE_DIR, nodeRuntimeCommand, resolveNodeRuntime,
 } from './paths.js'
 import { resolvePersonaFile } from './persona.js'
 import { readUnified } from './store.js'
@@ -38,6 +38,7 @@ import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-id
 import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.js'
 import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText } from '../../../src/character-persona.js'
 import { composePersonaLayers } from '../../../src/persona-layers.js'
+import { buildCharacterContext } from '../../../src/core/context.js'
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js'
 import { interactEnabled } from '../tools/lib/interact.mjs'
 import { biliSessionCreateParams } from './bili-workspace.js'
@@ -104,7 +105,8 @@ function personaCardBlock() {
     maxChars: max,
     sceneId: 'bili',
   })
-  const safeCard = sanitizePersonaForBili(composed.text || card)
+  const context = buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' }, budget: { maxChars: max }, includeMemory: false })
+  const safeCard = sanitizePersonaForBili(context.ok ? context.text : (context.code === 'CHARACTER_CONTEXT_REQUIRED' ? composed.text || card : ''))
   const compact = composed.truncated ? `${safeCard}\n（人设卡按预算省略；完整卡在 ${file}）` : safeCard
   return [
     '［统一人设卡 · QQ 和 B站是同一个人］',
@@ -174,7 +176,8 @@ function qqMemoryBlockForBili() {
 function memoryCardBlockForBili() {
   const unified = readUnified().config
   if (unified.memoryCard?.enabled === false) return ''
-  return memoryCardPromptBlock('bili')
+  const context = buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' }, includePersona: false, includeLife: false })
+  return context.ok ? context.memoryText : (context.code === 'CHARACTER_CONTEXT_REQUIRED' ? memoryCardPromptBlock('bili') : '')
 }
 
 /** 每次唤醒都放在最前面的合体上下文（顺序：人设 → 自我锚点 → 管理员 → 对齐 → QQ 记忆 → 记忆卡）。 */
@@ -187,6 +190,13 @@ function identityContextLines() {
     qqMemoryBlockForBili(),
     memoryCardBlockForBili(),
   ].filter(Boolean)
+}
+
+/** Same Bili persona/memory composition, bound to one role revision. */
+export function biliContextForRound(request) {
+  const checked = buildCharacterContext({ ...request, scene: 'bili', audience: { channel: 'bili' } })
+  if (!checked.ok) return checked
+  return { ...checked, text: identityContextLines().join('\n\n') }
 }
 
 /** 今天已经搭了几条话（读账本，给唤醒提示看进度） */
@@ -332,7 +342,7 @@ function wakePrompt(st, tools = '') {
     `2) 读两本日记（\`${path.join(biliDir, 'whale-diary.md')}\` + \`${path.join(biliDir, 'whale-diary-private.md')}\`）`,
     // 2026-10-20：feed 已默认多源（搜索+热门+排行+关注）+ 去播放量偏向 + 偏好命中权重 ✓
     // 2026-10-23：feed 改成按「口味权重」分名额 + 排除观看历史/最近推过的 + 搜索页轮换。
-    '3) `feed` 选题（≤5 条）→ 对这 5 条跑 `debrief --no-frames`',
+    '3) `feed` 选题（≤5 条）→ 对这 5 条跑 `debrief --shallow --no-frames`',
     '   （按设置页的「口味权重」分配条数、偏好之间轮转；看过的/最近推过的自动排除，**不看播放量** ✓）',
     '   3.2) 如果你发现自己总在看同一类：不要自己改配置文件 —— 让主人去设置页「B站 → 口味权重 / 一键抓取」调低那个词、调高别的。',
     '   3.5) ⭐ 如果 `feed` 没有新内容（全是看过的/候选不够）→ **不要硬重复深读、不要为了凑数**；',
@@ -528,8 +538,15 @@ export function startScheduler(ctx, opts) {
   //   用主程序跑脚本时，B站 的 `gethistory` 返回**空数组**（nav 之类却正常 ✗）→ 直播间永远"听不见" ✗
   //   实测对照：真 node.exe 5 秒命中；主程序 25 秒 0 行 ✗
   //   → 必须找到 **真正的 node.exe**（DSH 自带的运行时）✓
-  const NODE_EXE = findNodeExe()
-  const NODE_ENV = { ...process.env }   // 真 node 不需要 ELECTRON_RUN_AS_NODE ✓
+  let NODE_RUNTIME = null
+  let NODE_RUNTIME_ERROR = null
+  try {
+    NODE_RUNTIME = resolveNodeRuntime()
+  } catch (error) {
+    NODE_RUNTIME_ERROR = error
+    log(`[运行时] Node 不可用${error?.code ? `（${error.code}）` : ''}：${String(error?.message ?? error)}；下一步：${String(error?.hint ?? '检查 DSH_NODE 与 DSH 内置 Node')}`)
+  }
+  const NODE_ENV = NODE_RUNTIME ? { ...process.env, ...NODE_RUNTIME.envPatch } : null
 
   // 每次调用都重读 config：设置页把 agent.sandbox 改成 workspace-write 后，下一 tick 生效。
   function ensurePermission(where = 'tick') {
@@ -561,8 +578,32 @@ export function startScheduler(ctx, opts) {
   }
 
   const runBili = (args) => new Promise((resolve) => {
-    execFile(NODE_EXE, [biliMjs, ...args], { timeout: 120_000, windowsHide: true, env: NODE_ENV }, (err, stdout, stderr) => {
-      resolve({ ok: !err, out: String(stdout ?? ''), err: String(stderr ?? '') })
+    if (!NODE_RUNTIME) {
+      resolve({
+        ok: false, out: '', err: String(NODE_RUNTIME_ERROR?.message ?? 'Node runtime unavailable'),
+        code: String(NODE_RUNTIME_ERROR?.code ?? 'NODE_RUNTIME_NOT_FOUND'),
+        error: String(NODE_RUNTIME_ERROR?.message ?? 'Node runtime unavailable'),
+        hint: String(NODE_RUNTIME_ERROR?.hint ?? '检查 DSH_NODE 与 DSH 内置 Node'),
+      })
+      return
+    }
+    execFile(NODE_RUNTIME.executable, [...NODE_RUNTIME.argvPrefix, biliMjs, ...args], {
+      timeout: 120_000, windowsHide: true, env: NODE_ENV,
+    }, (err, stdout, stderr) => {
+      const out = String(stdout ?? '')
+      const errorText = String(stderr ?? err?.message ?? '')
+      resolve({
+        ok: !err,
+        out,
+        err: errorText,
+        ...(err ? {
+          code: err.code === 'ENOENT' ? 'NODE_RUNTIME_EXEC_FAILED' : 'BILI_COMMAND_FAILED',
+          error: errorText,
+          hint: err.code === 'ENOENT'
+            ? '确认所选 Node runtime 仍可执行，然后重载 SurfCore。'
+            : '检查上面的 bili.mjs 错误信息，再重试对应命令。',
+        } : {}),
+      })
     })
   })
 
@@ -829,8 +870,10 @@ export function startScheduler(ctx, opts) {
     // ── 工具链绝对路径（2026-10-20）──────────────────────────────────
     //   她的会话 cwd 是用户主目录，`node bili.mjs` 在那里根本不存在 ✗
     //   2026-10-20 实测：她在 D:\ / C:\ 里 glob 了一圈找 bili.mjs，还超时了 ✗ → 每条提示都带上路径 ✓
-    const TOOL_CMD = `node "${biliMjs}"`
-    const toolLine = () => `［工具］所有命令都用这一条：\`${TOOL_CMD} <子命令>\`（提示里写 "bili.mjs" 的都指它）—— 别去别处找 ✗`
+    const TOOL_CMD = NODE_RUNTIME ? nodeRuntimeCommand(NODE_RUNTIME, biliMjs) : ''
+    const toolLine = () => NODE_RUNTIME
+      ? `［工具］所有命令都用这一条：\`${TOOL_CMD} <子命令>\`（提示里写 "bili.mjs" 的都指它）—— 别去别处找 ✗`
+      : `［工具阻塞］Node runtime 尚未就绪（${String(NODE_RUNTIME_ERROR?.code ?? 'NODE_RUNTIME_NOT_FOUND')}）：${String(NODE_RUNTIME_ERROR?.message ?? '没有可用的 Node runtime')}。下一步：${String(NODE_RUNTIME_ERROR?.hint ?? '检查 DSH_NODE 与 DSH 内置 Node')}。`
 
     async function dmTick() {
       if (!interactEnabled()) return
@@ -1015,7 +1058,12 @@ export function startScheduler(ctx, opts) {
     const awaitScript = path.join(path.dirname(biliMjs), 'commands', 'danmaku-await.mjs')
     const args = [awaitScript, '--room', room]
     if (String(L.liveScope ?? 'owner') === 'owner' && cfg.owner?.mid) args.push('--operator-uid', String(cfg.owner.mid))
-    liveProc = execFile(NODE_EXE, args, {   // ⚠️ 必须真 node（主程序会让 gethistory 返回空 ✗）
+    if (!NODE_RUNTIME) {
+      liveRetryAt = Date.now() + 30_000
+      log(`[scheduler] 直播间监听启动失败（${String(NODE_RUNTIME_ERROR?.code ?? 'NODE_RUNTIME_NOT_FOUND')}）：${String(NODE_RUNTIME_ERROR?.message ?? '没有可用的 Node runtime')}；下一步：${String(NODE_RUNTIME_ERROR?.hint ?? '检查 DSH_NODE 与 DSH 内置 Node')}`)
+      return
+    }
+    liveProc = execFile(NODE_RUNTIME.executable, [...NODE_RUNTIME.argvPrefix, ...args], {   // ⚠️ 必须使用已验证的 Node runtime
       // ⚠️ 千万不要写 `timeout: 0` ✗ —— 实测它会把子进程立刻 SIGTERM 掉（探针验过 ✓）；
       //   直播间监听本来就是长驻的，**不设 timeout** 才对 ✓
       windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: NODE_ENV,

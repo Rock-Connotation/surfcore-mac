@@ -28,6 +28,7 @@ import https from 'node:https';
 import { URL } from 'node:url';
 import YAML from 'js-yaml';
 import { resolveSafeAddresses, safeFetch } from './safe-fetch.js';
+import { resolveQqDataPaths } from './qq-data-paths.js';
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
@@ -63,9 +64,10 @@ function num(value, fallback, min, max) {
 
 /** 读取 config.json 里的 webSearch 段（不存在就用默认值）。 */
 export function loadSearchConfig(root) {
+  const configFile = resolveQqDataPaths({ programRoot: root }).config;
   let file = {};
   try {
-    const text = fs.readFileSync(path.join(root, 'config.json'), 'utf8');
+    const text = fs.readFileSync(configFile, 'utf8');
     file = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
   } catch {}
   const raw = file?.webSearch && typeof file.webSearch === 'object' && !Array.isArray(file.webSearch) ? file.webSearch : {};

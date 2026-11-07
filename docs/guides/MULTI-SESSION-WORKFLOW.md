@@ -10,7 +10,7 @@
 
 ## 1. 事故（为什么定这条规矩）
 
-2026-11-02 同时有三个会话在 `D:\deepseekwork\surfcore` 的同一个 `dev` 工作区里干活：
+2026-11-02 同时有三个会话在 `<REPOSITORY_ROOT>` 的同一个 `dev` 工作区里干活：
 
 | 会话 | 它以为自己在做的事 | 实际发生 |
 | --- | --- | --- |
@@ -30,7 +30,7 @@
 ### 2.1 先看现场
 
 ```powershell
-cd D:\deepseekwork\surfcore
+cd "<REPOSITORY_ROOT>"
 git status --porcelain
 git worktree list
 git log --oneline -5

@@ -8,6 +8,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveQqDataPaths } from '../../../src/qq-data-paths.js';
 import {
   buildBillingReport, renderCharacterBill, renderConversationBill, renderIndex,
 } from '../../../src/billing-report.js';
@@ -56,8 +57,9 @@ export function createBillingService({
   intervalMs = 10 * 60 * 1000,
 } = {}) {
   const outDir = path.join(stateDir, 'billing');
-  const ledgerFile = path.join(qqRoot, 'state', 'token-usage.jsonl');
-  const bridgeFile = path.join(qqRoot, 'state', 'context-telemetry-bridge.jsonl');
+  const qqStateDir = resolveQqDataPaths({ programRoot: qqRoot }).stateDir;
+  const ledgerFile = path.join(qqStateDir, 'token-usage.jsonl');
+  const bridgeFile = path.join(qqStateDir, 'context-telemetry-bridge.jsonl');
   const pluginFile = path.join(stateDir, 'context-telemetry-plugin.jsonl');
   let timer = null;
   let running = false;

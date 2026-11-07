@@ -26,6 +26,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { validatePending } from '../src/install-identity.js';
+
+const HELPER_INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const args = process.argv.slice(2);
 const valueOf = (name, fallback = '') => {
@@ -79,11 +83,50 @@ function copyZip(staging, target) {
   // /MIR 会删掉"源里没有"的文件，连用户自建文件一起删；现在宁可留旧文件也不误删。
   const exDirs = ['state', 'backups', 'node_modules', '.git', 'logs', 'staging', 'pet', 'characters', 'voice-packs', 'tmp-update*'];
   const exFiles = ['config.json', 'bili.config.json', 'updates-pending.json'];
+  // These are user-owned only at the install root; e.g. src/perception is product code.
+  const rootUserDirs = ['roles', 'model', 'models', 'perception'];
+  if (process.platform !== 'win32') {
+    const excludedDir = (name) => exDirs.some((pattern) => pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern);
+    const excludedFile = (name) => exFiles.includes(name);
+    const rejectSymlink = (p, label) => {
+      try {
+        if (fs.lstatSync(p).isSymbolicLink()) throw new Error(`${label}包含不允许的符号链接：${p}`);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    };
+    const root = path.resolve(staging);
+    const destination = path.resolve(target);
+    const preflight = (from, to) => {
+      rejectSymlink(from, '暂存目录');
+      rejectSymlink(to, '目标目录');
+      for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+        if (excludedDir(entry.name) || excludedFile(entry.name) || (from === root && rootUserDirs.includes(entry.name))) continue;
+        const source = path.join(from, entry.name);
+        const dest = path.join(to, entry.name);
+        const stat = fs.lstatSync(source);
+        if (stat.isSymbolicLink()) throw new Error(`暂存目录包含不允许的符号链接：${source}`);
+        if (stat.isDirectory()) preflight(source, dest);
+        else rejectSymlink(dest, '目标目录');
+      }
+    };
+    const copyTree = (from, to) => {
+      fs.mkdirSync(to, { recursive: true });
+      for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+        if (excludedDir(entry.name) || excludedFile(entry.name) || (from === root && rootUserDirs.includes(entry.name))) continue;
+        const source = path.join(from, entry.name);
+        const dest = path.join(to, entry.name);
+        const stat = fs.lstatSync(source);
+        if (stat.isDirectory()) copyTree(source, dest);
+        else if (stat.isFile()) { fs.copyFileSync(source, dest); fs.chmodSync(dest, stat.mode & 0o7777); }
+      }
+    };
+    try { rejectSymlink(root, '暂存目录'); rejectSymlink(destination, '目标目录'); preflight(root, destination); copyTree(root, destination); return { ok: true }; }
+    catch (error) { return { ok: false, error: `跨平台复制失败：${String(error?.message ?? error)}` }; }
+  }
   const argv = [
     staging, target,
     '/E',
     '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:2', '/W:1',
-    '/XD', ...exDirs,
+    '/XD', ...exDirs, ...rootUserDirs.flatMap((name) => [path.resolve(staging, name), path.resolve(target, name)]),
     '/XF', ...exFiles,
   ];
   try {
@@ -140,6 +183,21 @@ try {
   }
   log(`[apply-update] 宿主已退出，开始应用 ${pending.kind} → ${pending.target}`);
 
+  // 最后一道身份闸：等待宿主退出期间安装目录/身份可能已变化；在任何覆盖或 merge 前重新核对。
+  const identityCheck = validatePending(pending, { installRoot: HELPER_INSTALL_ROOT });
+  if (!identityCheck.ok) {
+    const reason = identityCheck.error;
+    log(`[apply-update] 身份校验失败：${reason}`);
+    try {
+      fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({
+        ...pending, error: reason, hint: identityCheck.hint, code: identityCheck.code, at: new Date().toISOString(),
+      }, null, 2));
+      // 故意保留 pending 原件，供诊断与人工处理；不启动任何覆盖操作。
+      fs.rmSync(`${pendingFile}.started`, { force: true });
+    } catch {}
+    process.exit(4);
+  }
+
   const result = jobKind === 'git'
     ? gitPull(pending.target, pending.branch)
     : copyZip(pending.staging, pending.target);
@@ -148,7 +206,7 @@ try {
     log(`[apply-update] 失败：${result.error}`);
     try {
       fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({
-        ...pending, error: result.error, code: result.code || 'apply.failed', at: new Date().toISOString(),
+        ...pending, error: result.error, hint: '请关闭宿主后重试；若仍失败请检查安装目录权限与符号链接', code: result.code || 'apply.failed', at: new Date().toISOString(),
       }, null, 2));
       fs.rmSync(pendingFile, { force: true });
       fs.rmSync(`${pendingFile}.started`, { force: true });

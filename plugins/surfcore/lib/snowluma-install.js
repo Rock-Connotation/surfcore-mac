@@ -2,7 +2,7 @@
 //
 // 背景（2026-10-29 用户反馈）：装好 SnowLuma2 后点检测仍然「没找到」。
 // 旧实现只在一组**写死的常见目录**里猜（见 findSnowLumaInstall），用户把包解压到
-// D:\软件\SnowLuma2 这类自定义位置时永远猜不到；而手动填路径的入口藏在 QQ 页高级设置里。
+// <CUSTOM_SNOWLUMA_ROOT> 这类自定义位置时永远猜不到；而手动填路径的入口藏在 QQ 页高级设置里。
 //
 // 这里的规则分两层：
 //   1. 归一（normalize）：一个路径可能是「根目录 / app 目录 / app\launcher.bat / SnowLuma.exe」，

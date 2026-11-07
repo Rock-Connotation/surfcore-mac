@@ -56,6 +56,7 @@ import * as modelOptions from '../src/model-options.js';
 import { createBiliMemory } from '../src/bili-memory.js';
 import { createOutbox } from '../src/outbox.js';
 import { isLoopbackBaseUrl } from '../src/dsh-port.js';
+import { resolveQqDataPaths } from '../src/qq-data-paths.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -83,6 +84,7 @@ function wavFixture() {
 
 export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, history = {} } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
+  const fixtureEnv = { DSH_HOME: path.join(temp, 'dsh'), HOME: temp };
   fs.mkdirSync(path.join(temp, 'src'));
   fs.mkdirSync(path.join(temp, 'state'));
   const harnessConfig = {
@@ -196,6 +198,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
+    pumpMux, pending, registerPending, handlePendingAnswer,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
     getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
     fishChatWindows, evaluateConversationFishGuard, fishGuardSendBlock, recordFishWindow,
@@ -230,6 +233,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText,
     voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk,
     setMode(value) { currentMode = value; },
+    getModelStatus() { return modelStatusState; },
     setReady(value) { dshReady = value; },
     setPresets(value) { dshPresetIds = value; dshDefaultPreset = 'standard'; },
     resetEpoch() { sessionEpoch++; },
@@ -245,7 +249,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // process 桩要带 env：voice-core / bridge 会读 process.env.FFMPEG_PATH、FFPROBE_PATH 等。
     // 之前只给 pid/platform/kill/exit，导致 `process.env.FFMPEG_PATH` 直接抛 TypeError。
     // DSH_HOME 指向临时目录：记忆卡的 inbox / 注入块只能写在 fixture 里，绝不能碰真实用户数据。
-    process: { pid: process.pid, platform: process.platform, kill: process.kill, env: { DSH_HOME: path.join(temp, 'dsh') }, exit: (code) => { throw new Error('unexpected exit ' + code); } },
+    process: { pid: process.pid, platform: process.platform, kill: process.kill, env: fixtureEnv, exit: (code) => { throw new Error('unexpected exit ' + code); } },
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timers.add(timer); return timer; },
     clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     NodeApiClient: class { constructor() { return api; } },
@@ -254,6 +258,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // DSH 端口兜底：isLoopbackBaseUrl 是真身（纯函数），两条探测是桩——
     // 测试不该在宿主机上真跑 netstat / 真去连 3080。
     isLoopbackBaseUrl,
+    // Use the production resolver with an isolated environment, never the user's HOME or roots.
+    resolveQqDataPaths: ({ programRoot }) => resolveQqDataPaths({ programRoot, env: fixtureEnv }),
     probeDshBaseUrl: async () => true,
     discoverDshBaseUrl: async () => null,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...selfIdentity, ...slang, ...sticker,

@@ -5,6 +5,23 @@ import { spawnSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
+  'test-update-archive.mjs',
+  'test-self-test-target.mjs',
+  'test-package-data-paths.mjs', 'test-package-data-consumers.mjs',
+  'test-install-identity.mjs', 'test-runtime-media.mjs', 'test-macos-shared-core.mjs',
+  '../plugins/surfcore/scripts/test-perception-api.mjs',
+  '../plugins/surfcore/scripts/test-persona-api-epoch.mjs',
+  '../plugins/surfcore/scripts/test-channel-contract.mjs',
+  '../plugins/surfcore/scripts/test-douyin-browser.mjs',
+  '../plugins/surfcore/scripts/test-douyin-data.mjs',
+  '../plugins/surfcore/scripts/test-douyin-service.mjs',
+  '../plugins/surfcore/scripts/test-douyin-api.mjs',
+  '../plugins/surfcore/scripts/test-douyin-client.mjs',
+  '../plugins/surfcore/scripts/test-bili-media.mjs',
+  '../plugins/surfcore/scripts/test-bili-media-host.mjs',
+  '../plugins/surfcore/scripts/test-bili-media-frames.mjs',
+  '../plugins/surfcore/scripts/test-bili-media-lifecycle.mjs',
+  '../plugins/surfcore/scripts/test-bili-media-no-history.mjs',
   'test-audit-bridge.mjs', 'test-audit-protocol.mjs', 'test-audit-protocol-helpers.mjs',
   'test-audit-security.mjs', 'test-audit-security-mcp.mjs',
   'test-audit-setup.mjs', 'test-audit-setup-guards.mjs',
@@ -216,6 +233,8 @@ const tests = [
   // 主人提问回答编码（2026-10-29）：DSH 单选不允许 selected+custom 并存 →
   // 单选走 custom-only、多选保留 selected；[仅主人] 只收窄谁能答，不是授权凭证。
   'test-question-answers.mjs',
+  'test-qq-interactions.mjs',
+  'test-bridge-lock.mjs',
   // 主人特权操作审计（2026-10-29）：1MB×5 轮转、跨文件读尾、写入失败可见、90 天清理。
   'test-owner-audit.mjs',
   // 检查更新三态（2026-10-29 事故）：无 git / 无安装记录时按版本号判断；
@@ -229,6 +248,8 @@ const tests = [
   'test-allowlist.mjs',
   // DSH 升级后 profile MCP / 会话 preset 审计（2026-11-01 升级后没有 qq_* 工具）。
   'test-dsh-health.mjs',
+  'test-dsh-health-scope.mjs',
+  'test-setup-dsh-package.mjs',
   // 验收报告 A–D：结构化 403 / 密钥打码 / 目的历史 / 超时 code。
   'test-acceptance-abcd.mjs',
   // dev 通道 / Pre-release 发布链路（2026-11-01）。
@@ -283,9 +304,16 @@ const tests = [
   'test-billing-service.mjs',
   // B站分享去重：新鲜池空时不得回退旧素材（2026-10-26 修复的"同一条反复发"）。
   'test-bili-share-dedup.mjs',
+  'test-bili-controlled.mjs',
   // 唤醒人格卡注入：二代唤醒必须带人格卡正文，且与 qq_get_prompt 同源（2026-11-01 A1）。
   'test-persona-wake-injection.mjs',
 ];
+if (process.platform === 'darwin') {
+  tests.push('test-package-patch-anchor.mjs');
+  tests.push('test-perception-silence.mjs', 'test-perception-resources.mjs', 'test-perception-service.mjs', 'test-perception-cli.mjs', 'test-perception-host.mjs');
+} else {
+  console.log('NOT RUN: native ASR integration fixtures currently require the macOS execution matrix; Windows/Intel ASR acceptance remains unverified.');
+}
 let failed = 0;
 for (const test of tests) {
   console.log(`\nRunning ${test}`);

@@ -1,3 +1,4 @@
+import { resolveQqDataPaths } from './qq-data-paths.js';
 // QQ ↔ DeepSeek Harness 桥接主程序。
 //
 // 链路：
@@ -85,6 +86,7 @@ import {
   readPersonaLayerText,
 } from './character-persona.js';
 import { composePersonaLayers, personaSceneFromKey } from './persona-layers.js';
+import { buildCharacterContext } from './core/context.js';
 import { isHardDirectWakeReason, hasStrictDirectUnread } from './wake-policy.js';
 import { DEFAULT_GROUP_POLICY, normalizeGroupPolicy, groupTier, shouldSkipTriggerForTier } from './group-policy.js';
 import { buildContextSnapshot, DEFAULT_SNAPSHOT_CAPS } from './context-snapshot.js';
@@ -130,7 +132,9 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const STATE_DIR = path.join(ROOT, 'state');
+const QQ_DATA_PATHS = resolveQqDataPaths({ programRoot: ROOT });
+const CONFIG_FILE = QQ_DATA_PATHS.config;
+const STATE_DIR = QQ_DATA_PATHS.stateDir;
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const GROUP_POLICY_FILE = path.join(STATE_DIR, 'group-policy.json');
@@ -375,7 +379,7 @@ function readActivityTail(n) {
 
 function listRoles() {
   try {
-    return fs.readdirSync(path.join(ROOT, 'roles'))
+    return fs.readdirSync(QQ_DATA_PATHS.personaDir)
       .filter((f) => f.endsWith('.md') && f !== 'README.md')
       .map((f) => f.slice(0, -3))
       .sort((a, b) => a.localeCompare(b, 'zh-CN'));
@@ -386,7 +390,7 @@ function listRoles() {
 
 // ── 人格文件读写 ────────────────────────────────────────────────────────────
 // 人格提示词 = roles/<名称>.md，由桥接在每条消息前注入（热生效，无需重启 DSH）。
-const ROLES_DIR = path.join(ROOT, 'roles');
+const ROLES_DIR = QQ_DATA_PATHS.personaDir;
 const ROLE_NAME_MAX = 40;
 const ROLE_CONTENT_MAX_BYTES = 64 * 1024;
 // 注入上限：**按模式筛完小节之后**再截断，避免另一模式的专属内容白白占掉预算。
@@ -718,13 +722,14 @@ function recordModelRequested(requested = {}) {
     lastError: null,
   });
 }
-function recordModelApplied({ ok, sessionId, selected = null, error = '', code = '', requested = null } = {}) {
+function recordModelApplied({ ok, sessionId, selected = null, error = '', code = '', hint = '', requested = null } = {}) {
   const apply = {
     ok: ok === true,
     sessionId: String(sessionId ?? ''),
     selected: selected && typeof selected === 'object' ? selected : null,
     error: String(error ?? ''),
     code: String(code ?? ''),
+    hint: String(hint ?? ''),
     at: new Date().toISOString(),
     evidence: 'session.selectModel',
   };
@@ -862,7 +867,7 @@ function normalizeIdList(value) {
 
 // ── 配置 ────────────────────────────────────────────────────────────────────
 function loadConfig() {
-  const p = path.join(ROOT, 'config.json');
+  const p = CONFIG_FILE;
   const file = readJsonSafe(p, null, true);
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error(`配置格式错误：${p}`);
   const cfg = {
@@ -911,6 +916,7 @@ function loadConfig() {
     ackMessage: file.ackMessage ?? '🤔 收到，正在思考…',
     sendDelayMs: file.sendDelayMs ?? 300,
     questionTimeoutMs: file.questionTimeoutMs ?? 5 * 60 * 1000,
+    interaction: { requireRequestId: file.interaction?.requireRequestId === true },
     consolePort: file.consolePort ?? 3100,
     consoleToken: file.consoleToken ?? '',
     // 价目表覆盖项（可选）。留空即用 src/model-prices.js 的官方默认价。
@@ -1427,91 +1433,91 @@ function saveState() {
 // 否则接管。进程退出/崩溃后锁自动失效（PID 校验）。
 const LOCK_FILE = path.join(STATE_DIR, 'bridge.lock');
 
-/**
- * 控制台端口是否已被占用 —— 用来判断「是不是真的还有一个桥接在跑」。
- *
- * 为什么需要它：锁文件只存了 PID，而 Windows 会回收 PID。`process.kill(pid, 0)` 成功
- * 只能证明「有进程占着这个号」，EPERM 更是连这一点都证明不了（受保护进程）。
- * 但桥接一定绑定控制台端口（绑不上会自己 exit 2），所以端口占用是一个可靠的判据。
- * 同步探测一次，只在启动期的可疑分支里跑，不影响正常运行。
- */
+/** A failed or unrecognizable probe is unknown and therefore treated as occupied. */
 function consolePortInUse() {
-  try {
-    const cfg = readJsonSafe(path.join(ROOT, 'config.json'), {});
-    const port = Number(cfg?.consolePort) || 3100;
-    if (process.platform === 'win32') {
-      const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+  const cfg = readJsonSafe(CONFIG_FILE, {});
+  const port = Number(cfg?.consolePort) || 3100;
+  const options = { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] };
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], options);
       return new RegExp(`[:.]${port}\\s+\\S+\\s+LISTENING`, 'i').test(out);
-    }
-    const out = execFileSync('sh', ['-c', 'ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
-    return new RegExp(`[:.]${port}\\s`).test(out);
-  } catch {
-    // 探测不出来时保守认为「有人在跑」，宁可让用户手动删锁，也不要冒双实例的风险。
-    return true;
+    } catch { return true; }
   }
+  const commands = process.platform === 'darwin'
+    ? [['netstat', ['-an', '-p', 'tcp']]]
+    : [['ss', ['-ltn']], ['netstat', ['-ltn']]];
+  for (const [program, args] of commands) {
+    try {
+      const out = execFileSync(program, args, options);
+      const lines = String(out).split(/\r?\n/);
+      let recognized = false, malformed = false;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const fields = line.trim().split(/\s+/);
+        if (/^(?:state|proto)$/i.test(fields[0]) || /^active internet/i.test(line.trim())) { recognized = true; continue; }
+        let state, local;
+        if (/^(?:LISTEN|ESTAB|ESTABLISHED|TIME-WAIT|CLOSE-WAIT|SYN-SENT)$/i.test(fields[0]) && fields.length >= 5) { recognized = true; state = fields[0]; local = fields[3]; }
+        else if (/^tcp\d*$/i.test(fields[0]) && fields.length >= 6) { recognized = true; state = fields[5]; local = fields[3]; }
+        else { malformed = true; continue; }
+        if (/^(?:LISTEN|LISTENING)$/i.test(state) && new RegExp(`[:.]${port}$`).test(local)) return true;
+      }
+      if (recognized && !malformed) return false;
+    } catch { /* Try the next supported command; never convert failure to free. */ }
+  }
+  return true;
 }
 
 function acquireLock() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  // 原子创建锁文件：把 PID 一次性写入（flag 'wx'），避免“先建空文件再写 PID”的窗口被第二个进程当作过期锁偷走。
   const tryCreate = () => {
-    try {
-      fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: 'wx', mode: 0o600 });
-      return true;
-    } catch (error) {
-      if (error?.code === 'EEXIST') return false;
-      throw error;
-    }
+    try { fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: 'wx', mode: 0o600 }); return true; }
+    catch (error) { if (error?.code === 'EEXIST') return false; throw error; }
   };
   if (tryCreate()) return;
-  // 锁文件已存在：检查 PID 是否仍存活；内容为空视为过期锁（仅兼容旧版本遗留），删除后重试一次。
-  let stale = false;
+  let content, original, stale = false, incomplete = false;
   try {
-    const content = fs.readFileSync(LOCK_FILE, 'utf8').trim();
-    if (!content) {
-      stale = true;
-    } else {
-      const pid = Number(content);
-      if (!Number.isInteger(pid) || pid <= 0) {
-        stale = true;
-      } else {
-        try {
-          process.kill(pid, 0);
-          // 没抛异常只说明「存在某个持有该 PID 的进程」，不能证明那就是桥接
-          // （PID 被回收给别的程序时会误判），所以再加一道端口探测。
-          if (!consolePortInUse()) stale = true;
-        } catch (error) {
-          if (error.code === 'ESRCH') {
-            stale = true;
-          } else if (error.code === 'EPERM') {
-            // EPERM = 该 PID 属于受保护/系统进程（权限不足，无法发信号）。
-            // 这**不能**证明桥接还在跑，但旧逻辑把它当成「已有实例」直接 exit(2)：
-            // 一旦锁文件里的 PID 被系统回收给一个受保护进程，桥接就永久起不来，
-            // 而且提示信息把人引向「已有实例在运行」这个错误方向。
-            // 这里改成按「疑似过期」处理，但要先确认控制台端口没有被占用。
-            if (consolePortInUse()) {
-              console.error(`[bridge] 控制台端口已被占用，判定已有实例在运行（锁文件 PID ${pid} 无权限探测）。`);
-              process.exit(2);
-            }
-            console.error(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
-            stale = true;
-          } else {
-            console.error(`[bridge] 已有实例在运行（PID ${pid}，锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
-            process.exit(2);
-          }
-        }
-      }
+    original = fs.statSync(LOCK_FILE);
+    content = fs.readFileSync(LOCK_FILE, 'utf8').trim();
+    const pid = Number(content);
+    if (!content || !Number.isInteger(pid) || pid <= 0) {
+      if (process.platform === 'win32') stale = true;
+      else incomplete = true; // A new owner may have opened the file but not yet written its PID.
     }
-  } catch (readError) {
-    console.error(`[bridge] 无法读取锁文件 ${LOCK_FILE}：${readError?.message ?? readError}`);
+    else {
+      let alive = false, permissionDenied = false;
+      try { process.kill(pid, 0); alive = true; }
+      catch (error) { if (error?.code === 'ESRCH') stale = true; else if (error?.code === 'EPERM') permissionDenied = true; else throw error; }
+      // POSIX live/permission-unknown owners may still be starting before binding.
+      // Windows retains the legacy PID-reuse probe for compatibility.
+      if ((alive || permissionDenied) && process.platform === 'win32' && !consolePortInUse()) stale = true;
+    }
+  } catch (error) {
+    console.error(`[bridge] 无法核验锁文件 ${LOCK_FILE}：${error?.message ?? error}。请检查权限后重试。`);
     process.exit(1);
+    return;
+  }
+  if (incomplete) {
+    console.error(`[bridge] 锁文件 ${LOCK_FILE} 为空或 PID 无效，可能仍在写入；未接管。请确认没有桥接启动进程后，先归档该锁再重试。`);
+    process.exit(2);
+    return;
   }
   if (stale) {
-    console.error(`[bridge] 检测到过期锁文件（PID 不存在或为空），删除后重试…`);
-    try { fs.unlinkSync(LOCK_FILE); } catch {}
-    if (tryCreate()) return;
+    const recovery = `${LOCK_FILE}.recovery`;
+    let owned = false;
+    try {
+      fs.mkdirSync(recovery, { mode: 0o700 }); owned = true;
+      const now = fs.statSync(LOCK_FILE);
+      if (now.dev !== original.dev || now.ino !== original.ino || fs.readFileSync(LOCK_FILE, 'utf8').trim() !== content) throw new Error('锁已变更');
+      const archive = `${LOCK_FILE}.stale-${Date.now()}-${crypto.randomUUID()}`;
+      fs.renameSync(LOCK_FILE, archive);
+      console.error(`[bridge] 过期锁已保留为 ${archive}；正在尝试启动。`);
+      if (tryCreate()) return;
+    } catch (error) {
+      console.error(`[bridge] 无法安全接管锁：${error?.message ?? error}。检查锁与恢复目录后重试。`);
+    } finally { if (owned) { try { fs.rmdirSync(recovery); } catch {} } }
   }
-  console.error(`[bridge] 已有实例在运行（锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
+  console.error(`[bridge] 锁仍由存活或无法确认的进程持有（${LOCK_FILE}）。请确认对应进程已停止，再检查锁文件后重试。`);
   process.exit(2);
 }
 function releaseLock() {
@@ -1853,7 +1859,7 @@ async function main() {
   // SurfCore 插件的 pet-purpose —— 两边共用同一套 purpose 逻辑与状态文件，
   // 但任何时刻只有一个执行者，避免桌宠和 QQ 同时收到一条。
   // 这里每次 tick 重读 config.json（30 秒缓存），切换载体不需要重启桥接。
-  const PURPOSE_CONFIG_FILE = path.join(ROOT, 'config.json');
+  const PURPOSE_CONFIG_FILE = CONFIG_FILE;
   let purposeCarrierCache = { at: 0, carrier: 'qq' };
   function purposeCarrierNow() {
     if (Date.now() - purposeCarrierCache.at < 30_000) return purposeCarrierCache.carrier;
@@ -3202,9 +3208,9 @@ async function main() {
         log(`DSH 端口探测：${cfg.dsh.baseUrl || '（未配置）'} 连不上，实际在运行的是 ${found}，本次改用它（并写回 config.json）`);
         cfg.dsh.baseUrl = found;
         try {
-          const raw = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+          const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
           raw.dsh = { ...(raw.dsh ?? {}), baseUrl: found };
-          fs.writeFileSync(path.join(ROOT, 'config.json'), `${JSON.stringify(raw, null, 2)}\n`);
+          fs.writeFileSync(CONFIG_FILE, `${JSON.stringify(raw, null, 2)}\n`);
         } catch (error) {
           log(`写回 dsh.baseUrl 失败（不影响本次运行）：${error?.message ?? error}`);
         }
@@ -3857,9 +3863,9 @@ async function main() {
           log('桥接模式已确定为 reserved2，恢复有限睡眠定时器');
           // 2026-10-31：重启前积压的 unread 不会触发事件，必须显式补唤醒；白名单也要先纠正。
           reconcileAllowlist('dsh-ready');
-          void auditDshHealth('dsh-ready');
-          wakeBacklogConversations('boot');
         }
+        void auditDshHealth('dsh-ready', { profileOnly: currentMode !== 'reserved2' });
+        if (currentMode === 'reserved2') wakeBacklogConversations('boot');
         try { await flushQueue(); } catch (error) { log('补投队列异常:', error?.message ?? error); }
         // DSH 恢复后，把离线期间攒下的黑话学习窗口补触发
         for (const key of [...slangWindows.keys()]) maybeQueueSlangExtraction(key);
@@ -3999,11 +4005,30 @@ async function main() {
    *   ② 旧会话的 preset 与当前配置不一致 → 工具表在创建时定死，必须重建。
    * 只审计“有记录 preset 且与期望不同”的会话，避免误删老会话。
    */
-  async function auditDshHealth(reason = 'dsh-ready') {
+  async function auditDshHealth(reason = 'dsh-ready', { profileOnly = false } = {}) {
     try {
       const home = process.env.USERPROFILE || os.homedir();
-      const check = checkProfileMcp(home);
-      if (check.checked > 0 && !check.ok) {
+      const check = checkProfileMcp(home, {
+        dshHome: process.env.DSH_HOME || path.join(home, '.dsh'),
+        profile: String(process.env.DSH_PROFILE || '').trim() || undefined,
+        resolveProfile: true,
+      });
+      if (check.status === 'healthy') {
+        gateEvents.ackByDedupe('dsh-profile-mcp-missing');
+        gateEvents.ackByDedupe('dsh-profile-mcp-unknown');
+      } else if (check.status === 'unknown') {
+        gateEvents.record({
+          gate: 'dsh', kind: 'fault', event: 'dsh-profile-mcp-unknown', action: 'blocked',
+          level: 'L1',
+          reason: { code: check.code, message: check.error },
+          impact: '无法确认当前 DSH profile 的 MCP 注册状态。',
+          recommendation: check.hint,
+          confidence: 'unknown',
+          dedupeKey: 'dsh-profile-mcp-unknown',
+          evidence: { manualOnly: true },
+        });
+      } else if (check.status === 'broken') {
+        gateEvents.ackByDedupe('dsh-profile-mcp-unknown');
         const broken = check.broken[0];
         gateEvents.record({
           gate: 'dsh', kind: 'fault', event: 'dsh-profile-mcp-missing', action: 'blocked',
@@ -4020,6 +4045,7 @@ async function main() {
     } catch (error) {
       log(`[dsh-health] profile 检查失败（继续）：${error?.message ?? error}`);
     }
+    if (profileOnly) return;
     try {
       const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
       const byId = new Map((list.items ?? []).map((item) => [item.sessionId, item]));
@@ -4061,7 +4087,7 @@ async function main() {
       });
       if (!changed) return false;
       cfg.allow = { ...(cfg.allow ?? {}), private: allow.private, groups: allow.groups };
-      const configFile = path.join(ROOT, 'config.json');
+      const configFile = CONFIG_FILE;
       const file = readConfigObject(configFile);
       file.allow = { ...(file.allow ?? {}), private: allow.private, groups: allow.groups };
       // 改配置前先留一份原始文件（AGENTS 铁律 6）；只保留最近 5 份。
@@ -4424,12 +4450,12 @@ async function main() {
     function getVoicePacksCached() {
       let key = 'default';
       try {
-        const st = fs.statSync(path.join(ROOT, 'config.json'));
+        const st = fs.statSync(CONFIG_FILE);
         key = `${st.mtimeMs}:${st.size}`;
       } catch {}
       if (!vpCache.vp || vpCache.key !== key) {
         let freshCfg = cfg;
-        try { freshCfg = readConfigObject(path.join(ROOT, 'config.json')); } catch {}
+        try { freshCfg = readConfigObject(CONFIG_FILE); } catch {}
         vpCache = { key, vp: createVoicePacks(freshCfg) };
       }
       return vpCache.vp;
@@ -4801,8 +4827,7 @@ async function main() {
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/bili/memory/refresh') {
-          const stats = await biliMemory.refresh({ force: true });
-          sendJson({ ok: stats?.ok !== false, stats });
+          sendJson({ ok: false, code: 'BILI_MEMORY_HOST_OWNED', error: 'B站记忆由宿主维护。', hint: '在设置页运行记忆卡整理。' }, 409);
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/bili/share-now') {
@@ -4888,7 +4913,7 @@ async function main() {
           const rs = readRoleState();
           if (body.role && typeof body.role === 'string') {
             const name = sanitizeRoleName(body.role);
-            if (!fs.existsSync(path.join(ROOT, 'roles', name + '.md'))) {
+            if (!fs.existsSync(path.join(QQ_DATA_PATHS.personaDir, name + '.md'))) {
               sendJson({ ok: false, error: `角色「${name}」不存在（roles/${name}.md）` }, 400);
               return;
             }
@@ -4947,7 +4972,7 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/roles/limit') {
           const body = await readBody();
           const next = applyRoleInjectLimit(body.maxInjectChars);
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           file.role = { ...(file.role ?? {}), maxInjectChars: next };
           atomicWriteJson(configFile, file);
@@ -5352,7 +5377,7 @@ async function main() {
           const body = await readBody();
           const oldPreset = cfg.slang?.learnerPreset;
           const oldWorkspaceTitle = cfg.slang?.workspaceTitle;
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           const merged = { ...(file.slang ?? {}), ...body };
           if (typeof merged.enabled === 'boolean') merged.enabled = merged.enabled;
@@ -5416,7 +5441,7 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/whitelist') {
           const body = await readBody();
           const toNum = (arr) => Array.isArray(arr) ? [...new Set(arr.map((x) => Number(String(x).trim())).filter((n) => Number.isFinite(n)))] : undefined;
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           // fail-fast：配置文件损坏时直接 500，绝不回写，避免把整个配置清成只剩 allow/deny/ownerQQ
           const file = readConfigObject(configFile);
           const allow = {
@@ -5605,7 +5630,7 @@ async function main() {
             }, 400);
             return;
           }
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           file.dsh = { ...(file.dsh ?? {}), provider, model, reasoningEffort: effort };
           atomicWriteJson(configFile, file);
@@ -5641,7 +5666,7 @@ async function main() {
           let effort;
           try { effort = normalizeReasoningEffort(body.reasoningEffort); }
           catch (error) { sendJson({ ok: false, error: error?.message ?? '思考强度无效' }, 400); return; }
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           // fail-fast：配置损坏时直接 500，绝不回写（与白名单接口同语义）
           const file = readConfigObject(configFile);
           file.dsh = { ...(file.dsh ?? {}), reasoningEffort: effort };
@@ -5663,7 +5688,7 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/dsh/follow-default') {
           const body = await readBody();
           const follow = body?.follow !== false;
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           try {
             // fail-fast：配置损坏时直接报错，绝不覆盖写（与白名单/强度接口同语义）。
             const file = readConfigObject(configFile);
@@ -5714,7 +5739,7 @@ async function main() {
             sendJson({ ok: stateDirHardened === true, hardened: stateDirHardened, path: STATE_DIR });
             return;
           }
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           const next = { ...(file.security ?? {}), ...body };
           if (typeof next.interceptNotify === 'boolean') next.interceptNotify = next.interceptNotify;
@@ -5746,7 +5771,7 @@ async function main() {
             sendJson({ ok: false, error: '控制台访问令牌只能包含字母、数字、下划线或短横线' }, 400);
             return;
           }
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           // 手动令牌写入 config.json（用户可见、可再改）；随机令牌写入 state/console-token 并清空 config 中的手动值。
           file.consoleToken = generated ? '' : newToken;
@@ -5765,7 +5790,7 @@ async function main() {
           try {
             // readBody() 已经返回解析好的对象（空体是 {}），不要再 JSON.parse。
             const body = await readBody();
-            const file = readConfigObject(path.join(ROOT, 'config.json'));
+            const file = readConfigObject(CONFIG_FILE);
             const m = file.greetings?.morning;
             const uin = m ? normalizeIdList([m.uin])[0] : null;
             cfg.greetings = {
@@ -5892,7 +5917,7 @@ async function main() {
         }
         if (req.method === 'POST' && url.pathname === '/api/social') {
           const body = await readBody();
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           // fail-fast：配置文件损坏时直接 500，绝不回写，避免把整个配置清成只剩 social
           const file = readConfigObject(configFile);
           const merged = { ...(file.social ?? {}), ...body };
@@ -6004,11 +6029,11 @@ async function main() {
               sendJson({ ok: true, key, sessionId });
             } else {
               popSilent();
-              sendJson({ ok: false, error: result.error || '投递失败' }, 500);
+              sendJson({ ok: false, error: result.error || '投递失败', ...(result.code ? { code: result.code, hint: result.hint } : {}) }, 500);
             }
           } catch (error) {
             if (popSilent) popSilent();
-            sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+            sendJson({ ok: false, error: error?.message ?? String(error), ...(error?.code === 'MODEL_APPLY_FAILED' ? { code: error.code, hint: error.hint } : {}) }, 500);
           }
           return;
         }
@@ -6019,7 +6044,7 @@ async function main() {
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/config') {
           const body = await readBody();
-          const configFile = path.join(ROOT, 'config.json');
+          const configFile = CONFIG_FILE;
           const file = readConfigObject(configFile);
           // current 必须是「当前**生效**的 socialV2」，而不是文件里恰好写着的那一份。
           //
@@ -7420,7 +7445,7 @@ async function main() {
         }
 
         if (url.pathname === '/api/voice/rules') {
-          const cfgFile = path.join(ROOT, 'config.json');
+          const cfgFile = CONFIG_FILE;
           try {
             if (req.method === 'GET') {
               const c = readConfigObject(cfgFile);
@@ -9481,6 +9506,8 @@ async function main() {
 
   // 待应答的提问/审批：convKey -> pending
   const pending = new Map(); // key -> { kind, rpcId, sessionId, ... }
+  const interactionEvents = new Set(); // already received or resolved in this bridge process
+  const interactionRequestIds = new Set();
 
   // QQ 发送队列（顺序发送 + 间隔，避免触发频率限制）
   let sendChain = Promise.resolve();
@@ -10534,7 +10561,7 @@ async function main() {
       defaultSelection: followed,
       defaultError: followed === null ? defaultModelCache.error : '',
     });
-    const selectionKey = `${chosen.source}|${chosen.provider}|${chosen.model}|${chosen.reasoningEffort || ''}`;
+    const selectionKey = `${chosen.source}|${chosen.provider}|${chosen.model}|${chosen.reasoningEffort || ''}|fallback:${cfg.dsh?.allowModelFallback !== false}`;
     if (modelAppliedSessions.get(sessionId) === modelSelectionEpoch
         && modelAppliedKeys.get(sessionId) === selectionKey) {
       return 'applied';
@@ -10588,7 +10615,7 @@ async function main() {
         log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${message}`);
         // 配置里的默认 provider/model 可能属于旧 DSH（如 deepseek-official 在 rc.5 已不存在）。
         // 只在 DSH 明确说模型不可用时，从真实目录挑一个可用项重试一次。
-        if (!fallbackTried && /model-unavailable|select an available model|unknown model|model.*(?:not available|not found|unavailable)/i.test(message)) {
+        if (cfg.dsh?.allowModelFallback !== false && !fallbackTried && /model-unavailable|select an available model|unknown model|model.*(?:not available|not found|unavailable)/i.test(message)) {
           fallbackTried = true;
           try {
             if (!modelCatalogInFlight) {
@@ -10619,12 +10646,14 @@ async function main() {
       modelAppliedKeys.delete(sessionId);
       recordModelApplied({
         ok: false, sessionId, error: message || 'DSH 会话不存在', code: 'MODEL_SESSION_NOT_FOUND',
+        hint: '检查 DSH 会话与模型设置，修复后重新发送。',
         requested: { provider, model, reasoningEffort: effort },
       });
       return 'not-found';
     }
     recordModelApplied({
       ok: false, sessionId, error: message || 'DSH 拒绝了模型选择', code: 'MODEL_APPLY_FAILED',
+      hint: '检查 DSH 模型连接与 QQ 模型设置，修复后重新发送。',
       requested: { provider, model, reasoningEffort: effort },
     });
     return 'failed';
@@ -10647,6 +10676,7 @@ async function main() {
           log(`会话 ${key} 在 DSH 侧已不存在，退役本地映射并在本次调用中重建`);
           retireSession(key);
         } else {
+          if (applied !== 'applied') throw modelSelectionFailure();
           if (epoch !== sessionEpoch || !isCurrentSession(key, existing)) throw new Error('会话创建期间已重置或权限已变化');
           return existing;
         }
@@ -10708,10 +10738,14 @@ async function main() {
       state.sessionPolicies[key] = policy;
       reverse.set(sessionId, key);
       saveState();
-      await ensureChatModel(sessionId);
+      const applied = await ensureChatModel(sessionId);
       if (epoch !== sessionEpoch || !isCurrentSession(key, sessionId)) {
         if (state.sessions[key] === sessionId) retireSession(key);
         throw new Error('会话创建期间已重置或权限已变化');
+      }
+      if (applied !== 'applied') {
+        if (applied === 'not-found') retireSession(key);
+        throw modelSelectionFailure();
       }
       log(`新会话 ${key} -> ${sessionId}（模式 ${currentMode}，preset: ${modePreset(key, currentMode, cfg) ?? '默认'}）`);
       return sessionId;
@@ -10723,6 +10757,13 @@ async function main() {
       // 只有仍持有该条目的 promise 才删除，避免旧 promise 误删 reset 后新建的 promise。
       if (sessionPromises.get(key) === promise) sessionPromises.delete(key);
     }
+  }
+
+  function modelSelectionFailure() {
+    const error = new Error('QQ 会话模型选择失败，消息未投递。');
+    error.code = 'MODEL_APPLY_FAILED';
+    error.hint = '检查 DSH 模型连接与 QQ 模型设置，修复后重新发送。';
+    return error;
   }
 
   // ── 仿真群友社交引擎（仿真模式，内部标识 reserved） ────────────────────────
@@ -12953,6 +12994,10 @@ async function main() {
         enqueueForRetry(key, promptText, opts);
         return { ok: true, retried: true };
       }
+      if (error?.code === 'MODEL_APPLY_FAILED') {
+        if (!opts.silent) await sendToQQ(key, `⚠️ ${error.message} ${error.hint}`);
+        return { ok: false, code: error.code, error: error.message, hint: error.hint };
+      }
       throw error;
     }
     let wakeState;
@@ -13394,6 +13439,14 @@ async function main() {
   let memoryCardGroupsCache = { key: '', blocks: null };
   function memoryCardPromptBlock(key = '') {
     const target = String(key ?? '').trim();
+    if (CHARACTER_ID) {
+      const unified = readJsonSafe(path.join(SURFCORE_DIR, 'config.json'), {});
+      if (unified?.memoryCard?.enabled === false) return '';
+      const context = buildCharacterContext({ characterId: CHARACTER_ID, characterEpoch: CHARACTER_EPOCH,
+        audience: { channel: 'qq', conversationKey: target }, memoryConfig: unified?.memoryCard,
+        includePersona: false, includeLife: false, budget: { maxChars: 6000 } });
+      return context.ok ? context.memoryText : '';
+    }
     if (target) {
       let mapFound = false;
       try {
@@ -13442,7 +13495,8 @@ async function main() {
     const composed = composePersonaLayers({
       core, scene, daily, tone, identity, personaMode, mode, maxChars: roleInjectMaxChars, sceneId,
     });
-    const base = composed.text || '';
+    const unified = CHARACTER_ID ? buildCharacterContext({ characterId: CHARACTER_ID, characterEpoch: CHARACTER_EPOCH, scene: sceneId, audience: { channel: 'qq', conversationKey: key }, identity, personaMode, mode, budget: { maxChars: roleInjectMaxChars }, includeMemory: false }) : null;
+    const base = unified?.ok ? unified.text : (CHARACTER_ID ? '' : composed.text || '');
     // personaOnly：只要人格卡正文（唤醒提示词用）。管理员规则 / B站简报 / 记忆卡
     // 唤醒侧自己已经各拼过一遍，这里再拼会让同一段内容在一张纸条上出现两次。
     if (opts.personaOnly) return base;
@@ -15634,6 +15688,20 @@ async function main() {
     const displayName = kind === 'group'
       ? (event.sender?.card || event.sender?.nickname || String(event.user_id))
       : '私聊';
+    const p = pending.get(key);
+    // Strict numbered replies are interaction protocol messages, even after
+    // their pending request was cancelled or expired; never turn them into chat.
+    if (!p && cfg.interaction.requireRequestId) {
+      const text = String(plainContent ?? '').trim();
+      const approval = /^(\S+)\s+([a-f0-9]{8})$/i.exec(text);
+      const action = String(approval?.[1] ?? '').toLowerCase();
+      const isApprovalReply = approval && (APPROVE_WORDS.has(action) || REJECT_WORDS.has(action));
+      const isQuestionReply = /^[a-f0-9]{8}\s+\S/i.test(text);
+      if (isApprovalReply || isQuestionReply) {
+        await sendToQQ(key, '⚠️ 该编号已结束或不存在，请等待新请求。');
+        return;
+      }
+    }
     // 记忆卡原料：在静默/审批/命令等分支之前记录，避免「主人说的话没进记忆」。
     noteSecretInInbound(key, plainContent || textContent, isOwner);
     recordMemoryInboxEvent({ key, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf });
@@ -15646,7 +15714,6 @@ async function main() {
 
     // 若该会话有挂起的提问/审批，先当作回答处理（用当前消息自己的文字，不含引用原文）。
     // 审批只有管理员消息会被消费；群友消息不能因为“审批挂起”而被吞掉，应继续走正常处理。
-    const p = pending.get(key);
     if (canConsumePending(p, isOwner)) {
       await handlePendingAnswer(p, plainContent, key, isOwner, String(event.user_id ?? ''), displayName);
       return;
@@ -15774,9 +15841,9 @@ async function main() {
           });
           await sendToQQ(key, '已清除角色，恢复正常人格。');
         } else {
-          const roleFile = path.join(ROOT, 'roles', name + '.md');
+          const roleFile = path.join(QQ_DATA_PATHS.personaDir, name + '.md');
           if (!fs.existsSync(roleFile)) {
-            await sendToQQ(key, `角色「${name}」不存在。角色文件放 qq-bridge/roles/ 目录。`);
+            await sendToQQ(key, `角色「${name}」不存在。角色文件放当前 QQ 人格目录。`);
           } else {
             writeRoleState(name, roleState.mode);
             auditOwner('role.switch', {
@@ -16093,6 +16160,10 @@ async function main() {
         enqueueForRetry(key, promptText, { media: mediaList });
         return;
       }
+      if (error?.code === 'MODEL_APPLY_FAILED') {
+        await sendToQQ(key, `⚠️ ${error.message} ${error.hint}`);
+        return;
+      }
       throw error;
     }
     let content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }];
@@ -16124,6 +16195,7 @@ async function main() {
   // 取消/拒绝一个挂起的提问或审批，并给 DSH 回执（超时、被新请求覆盖时使用）
   async function cancelPendingEntry(entry) {
     if (!entry) return;
+    if (entry.responding) return; // an in-flight result may already have reached DSH
     try {
       if (entry.kind === 'approval') {
         await withTimeout(api.respond({
@@ -16145,18 +16217,38 @@ async function main() {
     }
   }
 
+  function assertInteractionReceipt(receipt) {
+    if (receipt?.result?.ok === false || receipt?.ok === false) {
+      const error = new Error('DSH 明确拒绝回执'); error.outcomeKnown = true; throw error;
+    }
+    if (receipt?.result?.ok !== true && receipt?.ok !== true) throw new Error('DSH 未确认回执');
+  }
+
   // 回答挂起的提问/审批
   async function handlePendingAnswer(p, answerText, key, isOwner = false, senderId = '', senderName = '') {
+    if (p.responding) return;
+    let answer = String(answerText ?? '').trim();
+    if (cfg.interaction.requireRequestId) {
+      const match = p.kind === 'approval' ? /^(\S+)\s+([a-f0-9]{8})$/i.exec(answer) : /^([a-f0-9]{8})\s+([\s\S]+)$/i.exec(answer);
+      const code = p.kind === 'approval' ? match?.[2] : match?.[1];
+      if (!match || code.toLowerCase() !== p.requestId) {
+        await sendToQQ(key, p.kind === 'approval' ? `请回复「通过 ${p.requestId}」或「拒绝 ${p.requestId}」。` : `请回复「${p.requestId} 答案」。`);
+        return;
+      }
+      answer = p.kind === 'approval' ? match[1] : match[2];
+    }
     if (p.kind === 'question') {
       // 防御：owner-only 的提问即使被调用也拒绝（正常路径在消费点已经拦住）。
       if (p.ownerOnly === true && !isOwner) return;
-      const answers = buildQuestionAnswers(p, answerText, { isOwner, sender: senderName });
+      const answers = buildQuestionAnswers(p, answer, { isOwner, sender: senderName });
+      p.responding = true; clearTimeout(p.timer);
       try {
-        const receipt = await api.respond({
+        const receipt = await withTimeout(api.respond({
           clientId: p.clientId,
           eventId: p.eventId,
           outcome: { kind: 'result', value: { answers } }
-        });
+        }), 5000, '回答回执');
+        assertInteractionReceipt(receipt);
         log(`已回答提问 (${key}):`, receipt);
         auditOwner('question.answer', {
           actor: auditActor(senderId, isOwner),
@@ -16167,8 +16259,14 @@ async function main() {
         // 只有回执成功才移除挂起，且必须仍是同一个挂起（防止期间被新请求覆盖）
         if (pending.get(key) === p) pending.delete(key);
       } catch (error) {
-        log('回答问题失败（保留挂起以便重试）:', error.message);
-        await sendToQQ(key, '⚠️ 回答提交失败，请再回复一次。');
+        if (error?.outcomeKnown && pending.get(key) === p) {
+          p.responding = false; armInteractionTimeout(key, p);
+          await sendToQQ(key, '⚠️ DSH 明确拒绝回答回执，请检查 DSH 后重试。');
+        } else {
+          if (pending.get(key) === p) pending.delete(key);
+          log('回答回执结果未知:', error.message);
+          await sendToQQ(key, '⚠️ 回答回执结果未知，请在 DSH 核对，不要重复提交。');
+        }
       }
       return;
     }
@@ -16177,7 +16275,7 @@ async function main() {
         await sendToQQ(key, '审批仅管理员可操作');
         return;
       }
-      const t = answerText.trim().toLowerCase();
+      const t = answer.trim().toLowerCase();
       let outcome = null;
       for (const w of APPROVE_WORDS) if (t === w) outcome = 'allowed-once';
       for (const w of REJECT_WORDS) if (t === w) outcome = 'rejected';
@@ -16185,12 +16283,14 @@ async function main() {
         await sendToQQ(key, '请回复「通过」或「拒绝」来决定这个审批');
         return;
       }
+      p.responding = true; clearTimeout(p.timer);
       try {
-        const receipt = await api.respond({
+        const receipt = await withTimeout(api.respond({
           clientId: p.clientId,
           eventId: p.eventId,
           outcome: { kind: 'result', value: outcome }
-        });
+        }), 5000, '审批回执');
+        assertInteractionReceipt(receipt);
         log(`已处理审批 (${key}): ${outcome}`, receipt);
         await sendToQQ(key, outcome === 'allowed-once' ? '✅ 已通过审批' : '❌ 已拒绝审批');
         auditOwner('approval.answer', {
@@ -16202,8 +16302,14 @@ async function main() {
         // 只有回执成功才移除挂起，且必须仍是同一个挂起（防止期间被新请求覆盖）
         if (pending.get(key) === p) pending.delete(key);
       } catch (error) {
-        log('处理审批失败（保留挂起以便重试）:', error.message);
-        await sendToQQ(key, '⚠️ 审批回执提交失败，请再回复一次「通过」或「拒绝」。');
+        if (error?.outcomeKnown && pending.get(key) === p) {
+          p.responding = false; armInteractionTimeout(key, p);
+          await sendToQQ(key, '⚠️ DSH 明确拒绝审批回执，请检查 DSH 后重试。');
+        } else {
+          if (pending.get(key) === p) pending.delete(key);
+          log('审批回执结果未知:', error.message);
+          await sendToQQ(key, '⚠️ 审批回执结果未知，请在 DSH 核对，不要重复提交。');
+        }
       }
       return;
     }
@@ -16277,7 +16383,31 @@ async function main() {
     }
   }
 
+  function armInteractionTimeout(key, entry) {
+    entry.timer = setTimeout(() => {
+      if (pending.get(key) === entry) {
+        pending.delete(key);
+        log(`挂起请求超时 (${key})`);
+        cancelPendingEntry(entry).catch(() => {});
+        sendToQQ(key, '⏰ 等待回答超时，已取消该请求');
+      }
+    }, Math.max(0, entry.deadline - Date.now()));
+  }
+
   async function registerPending(key, entry) {
+    const identity = String(entry.eventId || entry.rpcId || '');
+    if (identity && interactionEvents.has(identity)) {
+      const current = pending.get(key);
+      if (current && String(current.eventId || current.rpcId || '') === identity && entry.clientId) current.clientId = entry.clientId;
+      return false;
+    }
+    if (identity && interactionEvents.size >= 10000) {
+      log('交互去重表已满，拒绝新请求；请检查 DSH 并重启桥接。');
+      void cancelPendingEntry(entry);
+      void sendToQQ(key, '⚠️ 交互记录已满，请检查 DSH 并重启 QQ 桥接。');
+      return false;
+    }
+    if (identity) interactionEvents.add(identity);
     const existing = pending.get(key);
     if (existing) {
       clearTimeout(existing.timer);
@@ -16285,18 +16415,14 @@ async function main() {
       log(`新挂起请求覆盖旧请求 (${key})`);
       cancelPendingEntry(existing).catch(() => {});
     }
-    const timer = setTimeout(() => {
-      if (pending.get(key) === entry) {
-        pending.delete(key);
-        log(`挂起请求超时 (${key})`);
-        cancelPendingEntry(entry).catch(() => {});
-        sendToQQ(key, '⏰ 等待回答超时，已取消该请求');
-      }
-    }, cfg.questionTimeoutMs);
-    entry.timer = timer;
+    do { entry.requestId = crypto.randomBytes(4).toString('hex'); } while (interactionRequestIds.has(entry.requestId));
+    interactionRequestIds.add(entry.requestId);
+    entry.deadline = Date.now() + Math.max(0, Number(cfg.questionTimeoutMs) || 0);
+    armInteractionTimeout(key, entry);
     // [仅主人] 是模型写的分类标记，只用于**收窄**谁能回答，绝不作为任何授权凭证。
     if (entry.kind === 'question') entry.ownerOnly = isOwnerOnlyFrame(entry.questions);
     pending.set(key, entry);
+    return true;
   }
 
   // DSH 事件流 → QQ
@@ -16878,7 +17004,13 @@ async function main() {
           } else if (frame.type === 'question/requested') {
             const key = reverse.get(frame.sessionId);
             if (!key) continue;
-            if (!isCurrentSession(key, frame.sessionId)) { await cancelPendingEntry({ ...frame, kind: 'question' }); continue; }
+            if (!isCurrentSession(key, frame.sessionId)) {
+              const id = String(frame.eventId || envelope.rpcId || '');
+              if (!id || !interactionEvents.has(id)) { if (id) interactionEvents.add(id); await cancelPendingEntry({ ...frame, kind: 'question' }); }
+              continue;
+            }
+            const entry = { kind: 'question', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, questions: frame.questions };
+            if (!await registerPending(key, entry)) continue;
             const lines = frame.questions.map((q, i) => {
               const qText = String(q.question ?? '');
               const sensitive = shouldAuditKey(key) && SENSITIVE_RE.test(qText);
@@ -16896,12 +17028,18 @@ async function main() {
               }
               return s;
             });
-            await sendToQQ(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n（直接回复选项文字或输入你的回答）');
-            await registerPending(key, { kind: 'question', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, questions: frame.questions });
+            const questionHint = cfg.interaction.requireRequestId ? `（回复时先写编号 ${entry.requestId}，空格后写你选的完整选项文字或自己的回答；不要照抄“答案”）` : '（直接回复选项文字或输入你的回答）';
+            void sendToQQ(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n' + questionHint).catch((error) => log(`提问通知失败 (${key}): ${error?.message ?? error}`));
           } else if (frame.type === 'approval/requested') {
             const key = reverse.get(frame.sessionId);
             if (!key) continue;
-            if (!isCurrentSession(key, frame.sessionId)) { await cancelPendingEntry({ ...frame, kind: 'approval' }); continue; }
+            if (!isCurrentSession(key, frame.sessionId)) {
+              const id = String(frame.eventId || envelope.rpcId || '');
+              if (!id || !interactionEvents.has(id)) { if (id) interactionEvents.add(id); await cancelPendingEntry({ ...frame, kind: 'approval' }); }
+              continue;
+            }
+            const entry = { kind: 'approval', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, toolName: frame.toolName };
+            if (!await registerPending(key, entry)) continue;
             const rawReason = frame.reason ?? '';
             const sensitiveReason = shouldAuditKey(key) && SENSITIVE_RE.test(rawReason);
             if (sensitiveReason) log(`⚠️ 审批理由含敏感信息，已隐藏 (${key})`);
@@ -16911,8 +17049,16 @@ async function main() {
             const sensitiveTool = shouldAuditKey(key) && SENSITIVE_RE.test(rawToolName);
             if (sensitiveTool) log(`⚠️ 审批工具名含敏感信息，已隐藏 (${key})`);
             const safeToolName = sensitiveTool ? '（含敏感信息，已隐藏）' : rawToolName;
-            await sendToQQ(key, `🔐 agent 请求审批：${safeToolName}${reason}\n回复「通过」或「拒绝」`);
-            await registerPending(key, { kind: 'approval', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, toolName: frame.toolName });
+            const approvalHint = cfg.interaction.requireRequestId ? `回复「通过 ${entry.requestId}」或「拒绝 ${entry.requestId}」` : '回复「通过」或「拒绝」';
+            void sendToQQ(key, `🔐 agent 请求审批：${safeToolName}${reason}\n${approvalHint}`).catch((error) => log(`审批通知失败 (${key}): ${error?.message ?? error}`));
+          } else if (frame.type === 'interaction/cancelled') {
+            for (const [key, entry] of pending) {
+              if (entry.eventId !== frame.eventId || entry.clientId !== frame.clientId) continue;
+              clearTimeout(entry.timer);
+              pending.delete(key);
+              log(`DSH 已取消挂起请求 (${key})`);
+              break;
+            }
           } else if (frame.type === 'stream/error') {
             log('事件流错误:', frame.error);
           }
@@ -17105,7 +17251,7 @@ async function main() {
     const previousWsUrl = cfg.snowluma.wsUrl;
     cfg.snowluma.wsUrl = wsUrl;
     try {
-      const w = persistSnowLumaEndpoint(path.join(ROOT, 'config.json'), {
+      const w = persistSnowLumaEndpoint(CONFIG_FILE, {
         accessToken: httpToken,
         ...(followEndpoint ? { wsUrl, httpUrl: r.baseUrl } : {})
       });
@@ -17126,7 +17272,7 @@ async function main() {
   /** 只写文件、不动物件（连接已成功时用）。 */
   async function syncTokenToFile() {
     try {
-      const r = persistToken(path.join(ROOT, 'config.json'), cfg.snowluma.accessToken ?? '');
+      const r = persistToken(CONFIG_FILE, cfg.snowluma.accessToken ?? '');
       // 只记「已写回」，不打印 token 片段：日志会被贴进 issue / 截图，
       // 前 4 个字符同样是凭据的一部分（CWE-532，见 PR #13）。
       if (r.updated) log('🔄 已把当前 token 写回 config.json');
@@ -17222,11 +17368,6 @@ async function main() {
   if (cfg.biliBridge?.enabled) {
     const shareGroups = biliGroupList(cfg.biliBridge.share.groups.length ? cfg.biliBridge.share.groups : cfg.allow.groups);
     const dynamicsGroups = biliGroupList(cfg.biliBridge.dynamics.groups.length ? cfg.biliBridge.dynamics.groups : cfg.allow.groups);
-    if (cfg.biliBridge.memory.enabled) {
-      void biliMemory.refresh({ force: true });
-      const t = setInterval(() => { void biliMemory.refresh(); }, cfg.biliBridge.memory.refreshIntervalMs);
-      t.unref?.();
-    }
     if (cfg.biliBridge.dynamics.enabled && dynamicsGroups.length) {
       biliDynamics = createBiliDynamicsSync({
         stateDir: PLATFORM_STATE_DIR,

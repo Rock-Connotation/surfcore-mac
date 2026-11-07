@@ -7,7 +7,7 @@
 - 本地语音包（voice-local）安装：
   - 一开始 `fetch failed`；
   - 绕过代码 zip 后，拉模型卡在 51%（进度条 95%），36 分钟后仍在；
-- 报告文件：`C:\Users\Mieksido\Downloads\REPORT-voice-pack-download-failure-2026-11-01.xls`
+- 报告文件：私有原始报告（本地保留，不在公开文档中记录绝对路径或报告标识）。
 - 环境：Windows 11、Node 24（undici 默认 connectTimeout 10s）、github.com 直连 10–17s、Python 只有 3.13。
 
 ## 2. 根因

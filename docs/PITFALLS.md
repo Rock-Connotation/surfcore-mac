@@ -2658,7 +2658,7 @@ node scripts/test-voice-cloud-credentials.mjs
 ## #80（2026-10-29）「装好了却检测不到 SnowLuma」—— 检测候选是封闭集合，手动入口藏在别的页
 
 **现象**
-- 用户把 SnowLuma2 解压到自定义目录（如 `D:\软件\SnowLuma2`），概览点「检测已安装的 SnowLuma」→ 一直「没找到」。
+- 用户把 SnowLuma2 解压到自定义目录（如 `<SNOWLUMA_INSTALL_ROOT>`），概览点「检测已安装的 SnowLuma」→ 一直「没找到」。
 - 错误文案还让用户「在 QQ → SnowLuma 里填安装目录」，但用户正在看的概览卡片上并没有这个入口。
 
 **根因**
@@ -2681,7 +2681,7 @@ cd plugins/surfcore && node scripts/test-snowluma-install.mjs   # 22 项
 cd plugins/surfcore && npm test                                  # 全绿
 npm run test:audit                                               # 78/78
 ```
-真机：装在 `D:\软件\SnowLuma2` → 点「浏览…」选这个目录（里面有 `app`）→ 提示已找到并保存。
+真机：装在 `<SNOWLUMA_INSTALL_ROOT>` → 点「浏览…」选这个目录（里面有 `app`）→ 提示已找到并保存。
 
 **预防 / 下次注意**
 - 凡是「自动探测」，都要回答：**探测失败时用户的下一步是什么？** 如果答案是「去另一个页面手填」，
@@ -2813,7 +2813,7 @@ npm run test:regressions
 
 ## #86（2026-10-29）原生「浏览…」选中文目录后路径变乱码，导入报不存在
 
-**现象**：用户选 `D:\...\中文目录\voice-local`，导入弹 `IMPORT_PATH_NOT_FOUND`，
+**现象**：用户选 `<SELECTED_DIRECTORY>`，导入弹 `IMPORT_PATH_NOT_FOUND`，
 弹窗路径里是 `�` / `◆`；实际目录存在。
 
 **根因**：`handleBrowse` 从 PowerShell stdout 读路径。Windows PowerShell 5.1 重定向
@@ -3216,10 +3216,10 @@ et.fetch 跟随 303，**303 新铸的 Set-Cookie 没有回传**，
 - 崩溃点在 bundle 加载完成之后的 Welcome 握手，与插件业务无数据依赖；
   surfcore 的桥接是独立进程、不写 Electron cookie jar。
 
-**处置**（2026-11-01，豆包执行的 asar 修复，报告与 diff 在 C:\Users\Mieksido\Doubao\chats\2026-11-01\new-chat\）
+**处置**（2026-11-01，豆包执行的 asar 修复，报告与 diff 在 `<LOCAL_ASAR_REPAIR_EVIDENCE>`）
 - P1：握手/跟随改用 undici，手动携带 303 的 Set-Cookie；
 - P2：种本次 token 前先清空同源旧 dsh-auth-*，只清认证 token；
-- 备份：D:\deepseek\resources\app.asar.doubao-backup-20261101；修复后连续两次启动零新增崩溃。
+- 备份：`<LOCAL_PATH>`；修复后连续两次启动零新增崩溃。
 
 **教训 / 下次注意**
 1. DSH 升级会覆盖 pp.asar，这两个补丁和本项目自己的会话护栏补丁**都会消失**；升级后先看崩溃日志签名，
@@ -4000,3 +4000,215 @@ npm run test:audit
   读写不对称（GET `/dsh/model` 已代理）导致“能显示、改不动”。
 - **修法**：补 `proxyDshFollowDefault` + 路由；新增静态契约测试，钉住前端路径 ⊆ 宿主路由。
 - **教训**：**中间代理层也是接口**；桥接新增一条路由，宿主必须同步开代理，否则前端只能 404。
+
+
+## 2026-11-06：开发工具入口与设计原稿的层级
+
+- **现象**：新 macOS 工作区只有旧的 Windows 交接；开发工具选择没有项目入口，下载的 8 份技术设计缺少目录首页。
+- **原因**：开发 Agent 工具与 QQ/B站产品工具属于两个权限面；`docs/design/` 与 `docs/research/` 又有明确的本地资料忽略规则，不能按“有工具就全部接入”或强制暂存处理。
+- **处置**：AGENTS 只挂条件入口，任务路由集中在 [开发工具指南](guides/DEVELOPMENT-TOOLS.md)；设计原稿完整复制到本地 `docs/design/macos/`，加阅读顺序，保留待实现状态与原件。
+- **验证与回滚**：原稿逐字节比较、相对链接检查、Git 忽略检查；编辑前备份在 `_backups/20261106-tooling-docs/`。按原文件恢复前先保留后续修改，新增资料通过隔离移出回滚。
+- **案例与门禁结果**：[工具路由与 macOS 设计归档](cases/2026-11-06-development-tools-and-macos-design.md)。完整审计在本机存在失败，不能把文档检查通过写成运行时验收通过。
+
+- **开发交接补充**：新工作树不会继承被忽略的设计原稿；[本地开发提示词](guides/MACOS-DEVELOPMENT-PROMPT.md)要求先核对并复制设计，再按 WP0—WP5 实施。历史 Windows-only 路线需在本次 macOS 开发目标下显式更新，设计归档与本提示词编写本身仍不是实现完成证据。
+
+
+## 2026-11-06 macOS 路径别名与更新平台边界
+
+`/var` 与 `/private/var` 指向同一文件，安全路径解析返回 realpath，fixture 和 Git 仓库根比较也必须使用真实路径；POSIX 比较不能全局转小写。离线测试不能依赖含密钥的用户 config.json。Windows chcp/CRLF 字节检查保留在相应平台，所有平台检查 Git eol 属性。更新 ZIP 在解压前校验本地头/中央目录名字与类型，拒绝穿越、符号链接；POSIX helper 在复制前检查源/目标链接，只覆盖程序文件，保留用户数据与目标独有文件。细节、恢复与未验项见同日 macOS WP0/platform/updates cases。
+
+
+## 2026-11-06 macOS组合：桌面隔离、资源与完成证据
+
+- 官方 DeepSeek Harness.app 的 DSH_HOME/profile 与 Electron userData/单例可分别隔离，但 macOS App 日志取 OS home + bundle name；启动无条件轮转崩溃日志，不随 user-data-dir 改变。不可把第二实例描述为零触碰用户数据；先保全共享日志、明确授权，再启动。已存在用户工作窗口，未为本次验收退出它。
+- CLI、设置页必须接同一 Host 队列；提交与恢复媒体处理都经过渠道可用性检查。completed 仅表示材料处理终态，memoryState=pending 仍须轮询，否则失败提示会丢。经历重投影属于本地维护，不重新下载或外发。
+- 剩余静默时间从最后来信计算，handler waitedMs 从请求进入后计算。HTTP/事件循环耗时会减少后者；测试应在服务端响应时校验静默截止，不能要求固定100ms。新夹具保留提前1ms必失败的下界检查。
+- 本机 Node import、真实CPU/Metal和HTTP fixture各有证据层级，均不能替代官方App装载、Finder、真实B站无字幕闭环或Windows实机。最终编号与证据见 cases/2026-11-06-macos-host-integration.md。
+- 本地自包含评审包内置已安装npm运行依赖（包含现有@snowluma SDK/MCP包，不含SnowLuma本体或原生组件）。这些SDK声明许可文件但上游包缺失，现有LICENSE已有记录；任何对外分发前须解决该边界，不能沿用源码归档“不含依赖字节”的判断。本次未发布或推送。
+
+- 旧Host冒烟脚本不是只读：ESM静态import先加载真实路径，apply/对齐夹具会建默认状态。现强制临时home+源码根后动态import，最终全套另设隔离环境；默认home既有诊断产物保留，详见组合case。
+
+## 2026-11-06 官方App真实包安装：生命周期和用户数据
+
+- 官方App自带 CLI 的 desktop-host carrier 与普通 dsh CLI 不同：前者明确允许 desktop 插件管理。实际隔离运行已进入 pnpm11，不能仅凭另一入口的 managed exclusively 报错推断全部官方入口禁止。
+- 自包含 tgz 即使内嵌依赖，根 postinstall 仍会被 pnpm11 的构建审批拒绝。不要放宽宿主策略；构建阶段 npm ci --ignore-scripts 后显式执行 SDK 兼容补丁，消费制品移除生命周期及旧 hasInstallScript 字段。最终制品还须用官方pnpm、全新store、--offline实际安装。
+- QQ关闭时普通设置保存仍会写QQ配置。验证为package的程序不能把配置/state写回pnpm包目录；共享resolver映射到DSH_HOME/surfcore/qq，程序、模板和更新身份固定新包。显式旧数据根只改变数据来源，不可启动旧程序。旧包含数据时结构化失败并给保全提示，未经授权不迁移。
+- 账单、语音包、搜索、MCP与端口缓存也是读取者；只改插件paths会造成设置保存A、运行读取B。详见同日package-lifecycle、package-data-paths、package-data-consumers cases。
+
+## 2026-11-06 原生验收发现：ASR边界与人格草稿
+
+- 固定whisper实际输出可能将最后一段预测到PCM结尾之外。JSON校验通过、处理覆盖、文本正确是三种不同证据。只在结构化segment-out-of-bounds时对同PCM exact core顺序重解码一次，仍用严格parser；再次失败保留partial。核心重试有代价且可能漏边界文字，warning必须显示；原始越界JSON保留。按片段中心过滤还会丢跨界句，改正交集保留与双边界时空/文本联合去重，算法版本隔离旧缓存/检查点，旧job schema不丢历史。
+- queued缓存键升级时，逐文件catch内persist会吞ENOSPC而丢列表项。键只在内存重算，后续正式入队持久化让错误传播成Host未就绪；注错断言保留原queued文件。
+- 原生角色页“当前角色”更新不代表子编辑器已换草稿。没有id/epoch key的编辑器只在mount读一次；随后保存会把旧草稿发往当前角色。真实验收发现后未保存。新编辑器需按身份重建、读取匹配后启用，每层和restore固定expectedCharacter；Host在读完整请求后、任何备份写入前比对，过期409+下一步；旧客户端省略字段保持兼容。
+- partial卡不能只显示100%和缺1段。显示确切范围、warning、嵌套错误码和恢复入口；cancelled仍终态。细节与发布交接见对应同日四个cases。
+
+
+## 2026-11-07：B站受控单轮不能把提交当完成，也不能把“已取消”当准入锁
+
+旧debrief只返回queued，必须等待Host父作业completed、精确角色/BV/P/cid和完整覆盖，才能把完整转写交给模型。两次显式llm.stream无工具，必须finish=stop和用量回执；partial、截断或用量缺失停止后续。完整音轨处理不是视觉理解，也不是准确率保证。
+
+切角色/关渠道的cancelActive只是一份快照；取消后到指针提交之间仍需transition挡住新round。取消等待必须放在配置版本校验与快照读取之前，防止另一请求在等待期间保存后被旧草稿覆盖。返回点评前的最后一次await后再次核对角色；父界面按id/epoch重建单轮panel。
+
+动态HTTP退出成功不等于平台成功。受控JSON正式发送绑定expected-mid和固定actionId，POST前独占持久意图；超时、缺ID、磁盘失败都不能自动重发。账号绑定与本地记账要分开证明；默认非分享动态额度没有“一条”上限，单次测试依靠动作编号和明确次数。
+
+新增CLI夹具必须从仓库根和npm --prefix插件目录分别验证，路径由import.meta.url解析；fetch桩要通过NODE_OPTIONS覆盖dispatcher的子进程。首轮动态夹具曾可能用虚构凭据尝试nav GET，未POST，实际出网未知，修正及原始限制保留在case。
+
+详见cases/2026-11-07-bili-round-integration.md、cases/2026-11-07-bili-controlled-round.md、cases/2026-11-07-bili-dynamic-receipts.md。
+
+
+### 同日真实Hy4输出上限反馈
+
+WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP200不代表模型完成。不得把截断JSON当选择；用户批准提高到8192后才执行剩余请求，默认2000保留。更高token预算需相应有界生成时限，不能仍用60秒硬截断；当前上限180秒且取消/无重试不变。原始字段收入折叠诊断，主界面应显示步骤/点评/草稿，避免让用户读传输对象。
+
+
+### 同日部分材料的显式续评
+
+真实自主选中94秒视频后，音轨只到93.391秒，完整点评应停止；不能为了验收把缺609毫秒改成complete。用户可显式选择复核同一作业的已处理内容并生成临时点评，仍为partial、不评分、不发布、不维护主观记忆。临时草稿复制区也附Host生成的范围说明，不能只靠模型自称知道缺口。
+
+
+## 2026-11-07 QQ macOS：入口异步错误与模型失败准入
+
+- 本机有QQ.app不等于有OneBot。SnowLuma安装检测仍是Windows布局，不得给macOS用户承诺官方SnowLuma原生包；本轮先准备独立NapCat Docker方案，部署和真实扫码另有明确对象授权。
+- 旧openLocalUrl直接spawn cmd.exe，先返回opened:true再异步ENOENT；同步try/catch接不住。假进程复现后改受限loopback打开器、按平台execFile并等待回调；失败code/error/hint含手动地址，不能把“请求打开”称为登录成功。见[WebUI case](cases/2026-11-07-qq-macos-webui.md)。
+- ensureChatModel失败返回failed，但ensureSession新建/复用仍继续prompt。真实bridge VM证明四场景各误投一次，现失败停止且QQ/控制台可见；dsh.allowModelFallback=false用于固定供应商验收，缺省保留旧目录兼容。见[模型case](cases/2026-11-07-qq-model-selection.md)。离线通过不能代替QQ对端可见或供应商路由证据。
+
+- 本轮额外sandbox-exec外壳会与官方Electron内置沙箱冲突，GPU/network/renderer报Operation not permitted并退出。不能为此加Electron --no-sandbox；保全日志、只回收独立profile的拥有进程，再以App默认安全设置启动。模型计数改在专用代理上执行，不能把未成功的外层网络沙箱说成隔离通过。
+- 工具返回QR图片不等于用户能看到。用户报告不可见后，用只绑定回环的专用扫码页展示放大QR/刷新/登录状态，凭据只留服务端；实际Chrome截图和人工ask完成才算显示/扫码完成。不要反复给不可见的工具图片。
+
+- QQ单条初始消息可能触发两笔费用：官方session-title-first-prompt-llm会继承主路由并发生成标题。本轮真实会话的session/title-llm-request证实这一点；2笔Hy4均算入3笔预算，QQ只回1条。费用上限应放在实际LLM入口，不按QQ消息条数估算。收工恢复独立profile原默认模型，保留两笔用量，不因恢复而重置账本。
+- 设置保存现场只确认了草稿未落盘、白名单为空以及fetch failed提示；复查原生配置GET为200，保全草稿后经重新读取/加入管理员/保存恢复。原失败请求响应未捕获，不能把启动时序当已证实根因；未新增自动重试逻辑。
+
+- 本轮功能提交后最终文档audit出现163/164：唯一失败是test-release-manifest，清单仍对应旧HEAD，并非QQ功能失败。--verify-ref HEAD读取的是已提交清单，不能在清单提交前拿旧HEAD验证新工作区清单。顺序应为：提交本批文档→从最新Git对象生成清单→提交清单→verify-ref HEAD→最终HEAD audit。保留原失败日志，不把旧工作区通过当作新HEAD已通过。
+
+
+## 2026-11-07 QQ 常驻：进程归属、空锁窗口与交互编号
+
+- 控制台端口打开不代表QQ桥接；锁PID存活也不是结束该进程的凭证。POSIX启停必须同时核对认证状态/根目录、锁PID、精确可执行与参数、该PID监听归属；未知给code/error/hint，不能误报成功或强杀。参数只能传execFile数组，不能交shell解释。
+- writeFileSync(wx)仍有open后write前的空锁窗口。POSIX空/畸形锁可能属于正在启动者，保留并拒绝；有效PID存活/EPERM也拒绝。只自动归档明确ESRCH的有效锁，恢复目录串行并重验inode/content，防双实例。不要再用“端口没开”偷走活锁。
+- 先发送通知再登记pending会漏快速回复；同event重放不能取消原请求。先登记、进程内event去重和responding单飞；官方cancel匹配event/client。严格编号是interaction.requireRequestId=true显式开关，旧默认兼容；本独立profile启用。未知回执先核对，不自动重交；进程重启后的去重残余不得隐藏。
+- 真实进程夹具在额外seatbelt中无法exec本机setuid /bin/ps，连allow default也EPERM；这是无法核验时的安全拒绝。保留红灯并在隔离HOME、官方Node24下无额外seatbelt跑自有进程夹具；不放松产品判据。媒体audit显式FFMPEG_PATH/FFPROBE_PATH，别让精简PATH伪造工具缺失。
+- 真实审批须在真实agent turn内经官方approval.request，不用slash命令伪造turn。无害诊断临时设ask后恢复的是原有效策略值，会追加真实会话事件；不是回滚会话日志，也不代表恢复继承语义。诊断问答用multiSelect并通过真实buildQuestionAnswers核验，不能假设单选返回selected。
+- 真实第一轮90秒后官方取消，8秒后到的有效带编号拒绝进入普通聊天，额外触发模型。严格编号模式必须在无pending时也识别交互语法并提示已结束/不存在，不进模型或记忆；活跃pending仍按原身份/编号校验，默认false兼容。测试应给手机操作足够等待时间并提供可直接复制的实际编号；不把超时取消当成人工拒绝成功。见[过期编号case](cases/2026-11-07-qq-expired-interaction.md)。
+
+- 自包含包的 dsh.bundle.patch 已相对包根定位到 plugins/surfcore/cordis.patch.yml；patch 内的 ./qq-mode/index.js 仍须相对 patch 目录。构建器再次添加 plugins/surfcore 会让官方Loader双重拼接，表现为4组件仅3运行。只移除文本改写，保留metadata前缀；用官方App实际锚定函数与旧前缀变异复现，并重建包实测4/4。
+
+
+## 2026-11-07 原生 L2 修复按钮 rootPkg 未定义
+
+- rootPkg 是版本读取函数内的局部变量，不能由注册按钮处理器引用。修复入口从统一 QQBOT_ROOT 取当前安装程序并固定当前 DSH_HOME/profile；歧义/不匹配返回 code/error/hint，不猜另一套 App。
+- 包安装的 MCP 修复只能更新当前 profile 的三个托管注册；不能沿源码安装流程重写 surfcore 依赖、重链目录、重生成包内 preset 或创建包内 state。身份缺失/安装不匹配/托管项歧义/备份失败/读取后变化均先停止。其它配置原文与全部旧备份保留。
+- 健康检测不能硬读 HOME/.dsh 或拿兄弟 profile 的健康遮住当前缺失。显式 DSH_HOME+DSH_PROFILE；未知不当正常。chat 只检 profile，不因此读或退役会话；当前目标健康并在 DSH-ready 边沿复核后才确认旧 L2。
+- 修复失败后显示 code/hint，按钮允许人工修正后重试；只在成功写回后禁用，避免重复。用实际弹窗组件先红后绿，不能把所有非空消息都当作成功禁用。
+
+## 2026-11-07 QQ手动恢复与真实交互边界
+
+- 严格编号提示里的“答案”会被用户原样发送；实际selected为空、custom非空只证明自由文本，不是选项选择成功。验收要给真实编号与可直接复制的完整文本，并以官方结构读回判定。
+- Browser.close不等于原生Quit；容器/runner收尾超过10秒不应立即强杀。记录PID、完整参数、出生时间和归属，桥接先停，精确原生菜单退出，再等待自有runner；未知即保留并提示。
+- NapCat缓存登录被拒绝时，每次明确start最多一次，保留服务并扫码后resume；不要靠反复start或删除锁“修复”。无debug常驻用进程身份、桥接状态和Host父链验证，端口存在本身不算就绪。
+- 本机urllib默认仍可能继承环境HTTP代理；带本机凭据的QR助手须显式ProxyHandler({})。离线测试必须禁止socket连接；本次首次假handler误配导致一条fake bearer本机只读请求，后续断网7项通过，不能把误触算纯离线证据。
+- 30分钟监测含45/61次计划维护，最长ready6分30秒，不能报告30分钟连续在线。详见[手动恢复case](cases/2026-11-07-qq-manual-recovery.md)。
+
+
+## 2026-11-07：抖音推荐来源、角色转场与浏览器退出
+
+- `/?recommend=1` 可能跳转精选；本轮真实推荐入口需 `/?recommend=1&from_nav=1`。固定 feed 来源与 self 身份均须验证；游客/作者作品不算该账号推荐。
+- 手写 CDP 捕获不稳定后改用 Playwright core；profile 存在不代表会话 cookie 能跨重启。原生 keychain 与 session restore 只能作为兼容措施，必须重启实证，不能靠参数宣布恢复。
+- 切角色前只 cancel 一次不足以覆盖中间 await；整个 Host switch/restore 要由抖音 withTransition 持有准入门闸。
+- Playwright context close 也可能源于 transport 断开；不能据此删锁。只复用首次主动 close Promise，超时保持锁；非主动断连显式拒绝重开。
+- 对应 [完整案例](cases/2026-11-07-douyin-native-integration.md)，专项：`node plugins/surfcore/scripts/test-douyin-service.mjs`、`node plugins/surfcore/scripts/test-douyin-browser.mjs`。
+
+
+## 2026-11-07 QQ编号提示的占位词误答
+
+- 真机两次照抄“编号 答案”只能证明自由文本回路；不要将占位词放进可复制回复引号。提示应写实际编号并说明空格后输入完整选项文字或自己的回答，不替用户把“答案”解析成某选项。
+- 回归必须穿过真实mux通知与handleIncoming，并断言官方answers.selected命中选项、来源保留、无普通模型唤醒。见[case](cases/2026-11-07-qq-answer-hint.md)。
+
+
+## 2026-11-07 B站整数声明与精确播放时间线
+
+- view.pages.duration=175秒与playurl.timelength=174613ms不是同一精度。完整音轨FFprobe174613ms若按175000请求，会制造387ms假缺口。仅在同一选定BV/CID的精确播放时长与原整秒声明一致时使用精确值，并保留declaredDurationMs/durationSource；原始下载、字节、解码和真实缺口检查不放宽。
+- 在fetchPlayurl新增await后必须再次检查角色/取消，之后才允许媒体获取。--shallow不应新增播放接口前提。视频流比音轨短时仍分别记录缺口，不把完整音轨等同于完整画面。见[case](cases/2026-11-07-bili-precise-timeline.md)。
+
+## 2026-11-07 复制profile不等于追加式收件箱身份迁移
+
+- `experienceArchiveOffset`与`experienceInboxIdentity`共同保护追加式收件箱。复制独立profile即使字节未变，也会改变文件身份；本轮实际因此返回`EXPERIENCE_ARCHIVE_INBOX_MISMATCH`，不得删除归档游标或放宽产品保护来“修绿”。
+- 本轮仅在用户明确批准、原6930字节前缀/归档字节/统计一致、App已停且完整备份后重绑独立副本身份；原profile和保护代码不改。原失败单轮保留，手动维护与新Node上下文另记通过，不宣称自动迁移或无人干预整轮通过。
+- 模型HTTP200只代表响应头/流开始；QQ真实180秒截断的官方turn仍是TRANSPORT错误。按实际请求累计，失败不退款、不重置。原生question-only诊断避开QQ入站工具指令被聊天防护拒绝；实际回答必须断言官方selected，不能仅看模型“验收通过”文字。见[组合case](cases/2026-11-07-macos-readiness.md)。
+
+## 2026-11-07 记忆渲染、路由计数与适配器窗口
+
+- 记忆持久记录的正确BV与事件时刻若在渲染层丢掉，模型仍会把同日旧视频当最近。由记忆renderer保留已获准清晰B站记录的受限BV来源和ISO发生时刻；restricted不等于private，受众过滤不变。真实Hy3修复后BV与评分理由逐字匹配，原生下一会话自动注入仍未验，见[记忆case](cases/2026-11-07-memory-source-recall.md)。
+- 单次客户端请求可能在Magpie内部尝试多次；旧B站4客户端/5上游，QQ6客户端/9上游。保留旧账、披露差异；新一轮内部重试经用户明确允许后单列核账。Hy4输出全耗在思考时HTTP200也可能没有答案；不能盲增预算或自动重试。
+- 本轮独立Hy3适配器误写64000上下文，DSH既有65536压缩预留加8192输出已超过窗口，实际MODEL_SWITCH_COMPACTION_FAILED发生在上游调用之前。目录可选/会话selectModel成功不代表prompt可投递；按已安装WorkBuddy插件声明纠正为192000，不用虚构大窗口绕过校验。压力预算恢复118272，随后官方turn8实证192000窗口，QQ普通回复completed、平台与手机正文一致；目录/算术检查本身仍不能替代实际prompt。
+- 严格隐私扫描每文件每规则最多显示三条，清理一轮可能暴露后续旧路径；反复逐项核清至零，不能只处理第一批46条或放宽allowlist。源头仅静态材料脱敏，保留操作路径与根/父目录含义；不称Git历史已清洗。详见[隐私case](cases/2026-11-07-privacy-path-sanitization.md)。
+
+## 2026-11-07 抖音DOM加载不等于播放器就绪，超时不等于取消动作
+
+- 真实已登录首页视频实际在播放，旧snapshot在DOMContentLoaded后读不到稍后出现的新手引导，连续4键不代表4次切换。按钮角色选择器实际可匹配，不能误诊选择器或接口失效；等待可见稳定播放器、核实引导关闭、确认新source切换后，原严格tab/feed可取得5项，不需要替换游客/SSR/module/feed。
+- 引导可能在首键后才出现；以轮询中的阻塞信号识别、仅补1个被遮罩挡住的键，总≤5键/4次确认切换。验证码不点，重复受阻必须code/error/hint失败，不能无限重试。
+- 最后身份复核只刷新获取cutoff之后的新self，不要复用“抓推荐+翻页”动作制造额外前提。身份不匹配/失效仍拒绝，原世代与响应来源不放宽。
+- Promise.race返回超时不取消旧action：独立复现过返回后继续3键。每个命令捕获context/active标记，finally撤销，并在异步点击/按键前复核；同一复现修复后extraKeys0。同步SDK轮询谓词用单次等待参数保存稳定状态，不往页面留全局变量；句柄必须finally释放。见[完整case](cases/2026-11-07-douyin-readiness-pagination.md)。
+
+
+## 2026-11-07：抖音SSR预览可播放不代表推荐应用已初始化
+
+真实独立副本中，#quickPlayer可见且readyState=4，ArrowDown仍无效，也无严格tab/feed请求；约5秒后预览节点消失、应用播放器出现。就绪谓词必须排除quickPlayer，继续等可交互推荐播放器，不能拿SSR媒体替代固定首页feed。新增浏览器夹具钉住预览阶段零按键与可行动失败。参见[陪伴升级case](cases/2026-11-07-douyin-companion-integration.md)。
+
+
+## 2026-11-07：推荐首键丢失与回执交错
+
+实机首键可能早于导航处理器，第5次切换才触发fixed tab/feed也已发生；固定4键不是平台契约。采用最多8次确认切换及共享一次初始/引导恢复，画面稳定1秒，收到新feed停止。for头检查不够：回执在readiness await中到达后，下一次输入前仍须检查；等待切换失败时先确认操作未失活，再检查有效回执，不能丢弃已获取的feed。保持角色/self/来源/序号与取消护栏。完整逻辑见[导航case](cases/2026-11-07-douyin-navigation-receipt.md)。
+
+
+## 2026-11-07：长摘要会吃掉拼在末尾的理由
+
+实际抖音两次模型点评与记忆入库成功，重启构造器能见视频ID却缺完整理由。generic记忆行clear130/vivid200会先截正文；把reason拼在summary后面，短fixture会假绿。改为摘要与详情分开，已有受众过滤后只对清晰、非私密Douyin补充≤240字理由和≤350字覆盖详情，两条长样本必须在默认1800字内保留完整理由/来源/ISO。旧QQ/B站/桌宠及模糊私密行为保持；真实旧经历不回写。参见[理由召回case](cases/2026-11-07-douyin-recall-reasons.md)。
+
+## 2026-11-07：用户选择的是少女鲸鱼娘，外观应是角色数据
+
+用户明确选择社区较修长少女立绘，动物SVG不是最终外观。当前角色WebP作为本机appearance资料保存，认证同源接口校验id/epoch、固定文件、目录/FD身份与签名；界面5秒超时、刷新重试、转角/退出中止旧请求，失败不抹除原动作错误。图片来源/哈希保留于本机，不把用户缓存随代码发布；成功partial记忆也应呈开心状态，音轨完整手动门闸仍单独说明。参见[少女立绘case](cases/2026-11-07-companion-girl-portrait.md)。
+
+原生立绘验收还应检查容器比例：iframe中的24vw可能仅124px，固定260px高且底部对齐会让方形原画缩在底部。采用220px/内容42%的宽度上限、原图自然比例与最大高度；实际浏览器几何断言应对旧高空框红灯，并覆盖375px窄屏。素材原字节保持，修法与实机临时预览见少女立绘case。
+
+
+## 2026-11-07：角色迁入须保留水位，只重绑最终收件箱身份
+
+复制app角色会改变inbox的dev/ino/birthtimeMs。源/目标整组hash相同、无pendingAppend、水位不越界且落完整JSONL边界后，只更新目标full-stats的experienceInboxIdentity，不能清水位/删归档键绕过保护；current最后发布，不调用增加epoch的switchCharacter。原插件/账户与common旧全局数据分开保留，ASR只复制models/runtimes并重定位，不带旧host secret/锁/任务。官方离线安装缺元数据可在保留13原插件版本的断言下改官方在线安装，不能手工覆盖整profile。实证见[迁入case](cases/2026-11-07-companion-common-migration.md)。
+
+
+## 2026-11-07：分享开场需在记忆落盘后写入独立存储
+
+- 旧 Douyin ledger v1 严格校验 job/item 字段；把 share/question 塞进 item 会破坏已有作业兼容。 opt-in 同一HY3图像点评生成开场，只在 memorySaved 已持久化后调用独立追加存储；开关关闭仍严格四字段，旧作业不迁移。
+- 分享记录失败时保留已成功的经历记忆，给出 DOUYIN_SHARING_SAVE_FAILED/error/hint 并沿用 daily 暂停；不自动再次调用或撤销记忆。回调必须遵守 AbortSignal 与当前角色epoch，防止取消/切角后追加。
+- 同页文字回复沿用固定HY3 route和用量记录，但必须是独立 text-only reply；不能给原图像call增加无图flag。目录、额度等await完成后及实际stream读取微任务前都同步复核角色，避免watch轮询间隙把旧角色请求发出。
+- 进程可能在追加成功、作业收尾前退出；独立分享store应按 jobId+source id 幂等。
+
+
+## 2026-11-07：自然措辞与模型用量不能用关键词或世代守卫混为一谈
+
+- 对自然分享的固定词黑名单会把“我立刻笑了”“批评催人下单的推销”误判成催促命令，甚至阻止合法点评记忆写入。安全结构、长度、隐私及单问句继续严格；语气判断以提示词为主，deterministic拦截只识别完整独立句中的明确强制回复/外发命令，并保留其反例。
+- 模型流的 `iterator.next()` 已返回 usage chunk 时，必须先快照usage再做epoch/取消guard。guard仍阻止迟到正文和后续读取，但已确认的消耗要在finally中durable入账；不能为了记账恢复旧角色回复或再次调用next。
+
+## 2026-11-07：分享轮询不能替用户确认已读
+
+聊天页与侧栏都读同源 sharing 状态，GET不ACK。所有GET/POST成功快照统一携带当前epoch追加事件条数revision；UI只应用同角色且不低于已应用revision的快照，缺版本显式报SHARING_RESPONSE_INVALID并给重新加载提示。不要用POST清GET timer代替状态排序，否则无在途GET时轮询会永久停；也不要只给GET排序，迟到ACK仍会盖掉回复。角色失效同时seq++退休已在途主GET，refresh(true)借现有pending队列发真正新读取，不能因refreshing=true丢掉重核。POST成功/失败在处理前都先检查pagehide与角色stamp；ACK/cancel不清掉它们发起后出现的新错误。操作显式带action ack/reply/cancel，仅用户点“我看到了”或“回一句”标记已读；后台poll/隐藏iframe不算。回复等待185秒只覆盖Host180秒终态与回包，失败保留草稿、提示刷新核对、不自动重发；角色失效收起旧草稿。文本用textContent/React节点，跨实例取消保留真实active/code/hint。独立V3三反例同revision合同旧红新绿；生产controller/browser另验迟到GET/ACK、持续poll与canonical码，见两份sharing UI专项。
+
+
+## 2026-11-07：命令语气需按整句组合判断
+
+- 明确催促/外发动作可能带宾语和轻结尾，如“请你转发这条视频吧”“你必须立刻回复我的问题”。拒绝规则应把明确命令前缀、动作、可选对象和结尾组合起来匹配整句；用互斥尾项会漏掉变体。不能退回全词黑名单，否则“立刻笑了”或批评“催着大家下单”的句子会误拒。
+
+
+## 2026-11-07：控制器单测不等于插件总路由可达
+
+sharing与module两个精确Douyin路径曾误置于仅/bili/*进入的handleBili，孤立controller与UI fixture全绿，原生却404。新增apply(ctx)注册总prefix的Host冒烟断言，按实际路径读取模块和角色缺失code/hint；路由应在总prefix按精确pathname分派。不要为绕过遗漏而在所有POST前无条件await控制器，否则可能丢早到body。原生模型0的失败保留，改后重新同源打包安装验证。
+
+
+## 2026-11-07：hash锚点须等异步日记布局完成
+
+初始#conversation会在远端状态前定位；填入已有长日记后聊天被推到屏外。一次性等分享已载入、立绘请求settle，再在RAF按当前角色stamp滚到聊天；每次poll重复滚动会抢用户阅读位置，禁止。用首主GET受控gate+长日记/窄弹层几何反例验证，不能靠Playwright.click自动滚动掩盖。
+
+
+### 2026-11-07 自然分享组合：真实Host总路由与异步定位必须单独证明
+
+controller专项通过不等于Host总路由可达：sharing/module误置Bili子handler，实装才404（0新增模型）。精确分派必须放总prefix，测试实际apply(ctx)注册入口，并保证无关POST不被提前await吞掉body监听。所有分享快照用当前epoch追加事件revision排序，不能用网络开始序号代表提交顺序；主GET/POST/pagehide与canonical角色失效都需退休旧请求，成功POST仍保留只读poll。长日记异步填充后再一次定位#conversation，等待当前分享/立绘就绪并复查stamp，避免轮询反复抢滚动。反例、真实2观看1接话/常用重启和完整门禁见自然分享组合case；累计11/12保留，备份回滚也不能抹消费。Windows目录fsync仅模拟接口通过，不冒充实机。

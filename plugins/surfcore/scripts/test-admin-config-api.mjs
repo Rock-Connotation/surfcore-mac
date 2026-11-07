@@ -203,6 +203,18 @@ try {
   assert.equal(afterBad.qq, '', '非法 QQ 必须被收敛成空串');
   assert.equal(readJson(qqConfigFile).ownerQQ, null, '非法 QQ 不能写进 ownerQQ');
 
+  // Closing the channel awaits round cancellation. Optimistic versions must be checked AFTER it.
+  const liveConfig = readJson(unifiedFile);
+  fs.writeFileSync(unifiedFile, JSON.stringify({ ...liveConfig, platforms: { start: { qq: false, bili: true } } }));
+  const versioned = await invoke('GET', '/config');
+  const closePending = invoke('POST', '/config', { baseStamp: versioned.data.stamps, unified: { platforms: { start: { qq: false, bili: false } } } });
+  const editPending = invoke('POST', '/config', { baseStamp: versioned.data.stamps, bili: { preferences: { keywords: ['concurrent-write-kept'] } } });
+  const [closed, concurrent] = await Promise.all([closePending, editPending]);
+  assert.equal(closed.status, 409, 'close must recheck versions after cancellation yields');
+  assert.equal(closed.data.code, 'CONFIG_STALE');
+  assert.equal(concurrent.status, 200);
+  assert.deepEqual(readJson(biliConfigFile).preferences.keywords, ['concurrent-write-kept']);
+
   console.log('admin config API tests OK');
 } catch (error) {
   console.error(error);

@@ -7,8 +7,13 @@
 // config.json 里的旧端口会让桥接一直 401/超时——表现却是「QQ 有消息、DSH 没反应」，
 // 极难自查。所以这里把探测抽成共用逻辑：脚本用它写回配置，桥接启动时用它兜底。
 //
-// 平台：Windows 走 netstat + tasklist；其他平台只做 HTTP 探活（不枚举进程）。
-import { execSync } from 'node:child_process';
+// Windows 使用 netstat + tasklist；macOS 只探测属于 DSH 进程的回环监听。
+import { execSync, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { resolveQqDataPaths } from './qq-data-paths.js';
 
 /** 列出「某个进程在 127.0.0.1 上监听的端口」。 */
 export function listeningLoopbackPorts() {
@@ -47,18 +52,81 @@ export async function looksLikeDsh(port, timeoutMs = 1500) {
   return probeDshBaseUrl(`http://127.0.0.1:${port}`, timeoutMs);
 }
 
-/** 枚举本机正在监听的 DSH，返回 `http://127.0.0.1:<port>`；找不到返回 null。 */
-export async function discoverDshBaseUrl() {
-  if (process.platform !== 'win32') return null;
-  const names = processNames();
-  const candidates = listeningLoopbackPorts()
-    .filter(({ pid }) => /harness|dsh/i.test(names.get(pid) ?? ''))
-    .map(({ port }) => port)
-    .filter((port, i, all) => all.indexOf(port) === i);
-  for (const port of candidates) {
-    if (await looksLikeDsh(port)) return `http://127.0.0.1:${port}`;
+function macProcessIsDsh(executable) {
+  const value = String(executable ?? '').trim();
+  return /(?:^|\/)DeepSeek Harness\.app\/Contents\/(?:MacOS|Frameworks|Resources)\//i.test(value)
+    || /(?:^|\/)(?:dsh|deepseek-harness)$/.test(value);
+}
+
+function loopbackListener(value) {
+  const match = String(value).match(/^(127\.0\.0\.1|\[::1\]|localhost):(\d{1,5})$/i);
+  if (!match || Number(match[2]) < 1 || Number(match[2]) > 65535) return null;
+  const host = match[1].toLowerCase() === 'localhost' ? '127.0.0.1' : match[1];
+  return `http://${host}:${Number(match[2])}`;
+}
+
+function cachedLoopback(file, readFile) {
+  try {
+    const value = JSON.parse(readFile(file, 'utf8'));
+    const raw = typeof value === 'number' ? value : value?.baseUrl ?? value?.url ?? value?.port;
+    const candidate = typeof raw === 'number' ? `http://127.0.0.1:${raw}` : String(raw ?? '');
+    const url = new URL(candidate);
+    if (url.protocol !== 'http:' || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) return null;
+    return loopbackListener(`${url.hostname}:${url.port}`);
+  } catch { return null; }
+}
+
+/** 枚举本机 DSH；macOS 缓存只能调整顺序，仍须同进程监听和探活。 */
+export async function discoverDshBaseUrl({
+  platform = process.platform,
+  env = process.env,
+  readFile = fs.readFileSync,
+  command = (file, args) => execFileSync(file, args, { encoding: 'utf8', timeout: 2000, maxBuffer: 1024 * 1024 }),
+  probe = probeDshBaseUrl,
+  programRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
+} = {}) {
+  if (platform === 'win32') {
+    const names = processNames();
+    const candidates = listeningLoopbackPorts()
+      .filter(({ pid }) => /harness|dsh/i.test(names.get(pid) ?? ''))
+      .map(({ port }) => port)
+      .filter((port, i, all) => all.indexOf(port) === i);
+    for (const port of candidates) {
+      if (await looksLikeDsh(port)) return `http://127.0.0.1:${port}`;
+    }
+    return null;
   }
-  return null;
+  if (platform !== 'darwin') return null;
+  const dshHome = env.DSH_HOME || path.join(os.homedir(), '.dsh');
+  const qqPaths = resolveQqDataPaths({ programRoot, env, dshHome });
+  const cached = [path.join(qqPaths.stateDir, 'dsh-port.json'), path.join(dshHome, 'surfcore', 'state', 'dsh-port.json')]
+    .map((file) => cachedLoopback(file, readFile)).filter(Boolean);
+  let output;
+  try { output = command('/usr/sbin/lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn']); } catch { return null; }
+  const candidates = [];
+  let pid = '';
+  const validPids = new Map();
+  for (const line of String(output).split(/\r?\n/)) {
+    if (/^p\d+$/.test(line)) { pid = line.slice(1); continue; }
+    if (!pid || !line.startsWith('n')) continue;
+    const candidate = loopbackListener(line.slice(1));
+    if (!candidate) continue;
+    if (!validPids.has(pid)) {
+      if (validPids.size >= 16) break;
+      let executable = '';
+      try { executable = command('/bin/ps', ['-p', pid, '-o', 'comm=']); } catch {}
+      validPids.set(pid, macProcessIsDsh(executable));
+    }
+    if (validPids.get(pid) && !candidates.includes(candidate)) candidates.push(candidate);
+  }
+  const ordered = [...cached.filter((url) => candidates.includes(url)), ...candidates].filter((url, index, all) => all.indexOf(url) === index).slice(0, 8);
+  const live = [];
+  for (const candidate of ordered) {
+    try { if (await probe(candidate, 1500)) live.push(candidate); } catch {}
+  }
+  // A cache is only a hint. Multiple live App/profile endpoints need an explicit
+  // target so one instance's credentials cannot be routed to another instance.
+  return live.length === 1 ? live[0] : null;
 }
 
 /**

@@ -19,24 +19,83 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import yaml from 'js-yaml';
 import { PRESETS, buildPatches, patchFileFor } from './build-agent-preset-patches.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
-// MCP 的 command 必须是真 node，不能是 DSH Desktop 的 Harness.exe。
-// 复制到别处单独运行时可能没有 ../src，退回当前进程（CLI 下就是 node）。
-let NODE_EXE = process.execPath;
+let packageMode = false;
+let PACKAGE_DATA_ROOT = '';
+if (fs.existsSync(path.join(REPO_ROOT, 'artifact-manifest.json')) && !fs.existsSync(path.join(REPO_ROOT, '.surfcore-install.json'))) {
+  fatal('DSH_REPAIR_IDENTITY_INVALID: 安装包缺少身份文件。\n下一步：保留当前安装与数据，检查包身份后重试。');
+}
+if (fs.existsSync(path.join(REPO_ROOT, '.surfcore-install.json'))) {
+  const { readInstallationIdentity } = await import('../src/install-identity.js');
+  const identity = readInstallationIdentity(REPO_ROOT);
+  if (!identity.ok) fatal(`DSH_REPAIR_IDENTITY_INVALID: 安装身份不可验证。\n下一步：保留安装和数据，检查安装身份后重试。`);
+  packageMode = identity.identity.kind === 'package';
+}
+if (packageMode) {
+  try {
+    const { resolveQqDataPaths } = await import('../src/qq-data-paths.js');
+    const paths = resolveQqDataPaths({ programRoot: REPO_ROOT, dshHome: DSH_HOME });
+    if (paths.kind === 'explicit-legacy') PACKAGE_DATA_ROOT = paths.dataRoot;
+  } catch (error) {
+    fatal(`${error?.code || 'DSH_REPAIR_DATA_ROOT'}: ${error?.error || '无法核对 QQ 数据目录。'}\n下一步：${error?.hint || '保留数据并检查安装目录后重试。'}`);
+  }
+}
+// MCP 的 command 必须使用经过探测的 Node runtime，不能只因 process.execPath 存在就当它是 Node。
+// 复制到别处单独运行时可能没有 ../src；此时 setup 本身已由 Node 执行，可沿用该进程，
+// 但显式 DSH_NODE 仍必须能被验证，不能静默退回。
+let NODE_RUNTIME = null;
 try {
-  const { findNodeExe } = await import('../src/node-path.js');
-  NODE_EXE = findNodeExe({ dshHome: DSH_HOME, home: process.env.USERPROFILE || os.homedir() });
-} catch {}
+  const { resolveNodeRuntime } = await import('../src/node-path.js');
+  NODE_RUNTIME = resolveNodeRuntime({ dshHome: DSH_HOME, home: process.env.USERPROFILE || process.env.HOME || os.homedir() });
+} catch (error) {
+  if (error?.code !== 'ERR_MODULE_NOT_FOUND' || process.env.DSH_NODE) {
+    fatal(`${String(error?.message ?? error)}${error?.hint ? `\n下一步：${error.hint}` : ''}`);
+  }
+  const [major, minor] = String(process.versions.node ?? '').split('.').map(Number);
+  const capabilities = {
+    esm: true,
+    fetch: typeof fetch === 'function',
+    abortSignalTimeout: typeof AbortSignal === 'function' && typeof AbortSignal.timeout === 'function',
+    webSocket: typeof WebSocket === 'function',
+  };
+  if (major < 22 || (major === 22 && minor < 13) || Object.values(capabilities).some((value) => !value)) {
+    fatal(`无法验证本机 Node runtime v${process.versions.node}；需要 v22.13.0 及 ESM/fetch/AbortSignal.timeout/WebSocket。`);
+  }
+  NODE_RUNTIME = {
+    executable: process.execPath, argvPrefix: [], envPatch: {}, kind: 'node',
+    version: process.versions.node, platform: process.platform, arch: process.arch,
+    source: 'setup-process', capabilities,
+  };
+}
+const NODE_EXE = NODE_RUNTIME.executable;
 // 没传 profile 就自动判断（环境变量 → 正在运行的 DSH 进程 → 最近使用 → 兜底 web）。
 // 用动态 import + 兜底：这个脚本偶尔会被单独复制到别处跑（审计台就在这么测），
 // 没有 detect-profile.mjs 时不能直接崩。
 let PROFILE = process.argv[2] || '';
-if (!PROFILE) {
+if (packageMode && !PROFILE) {
+  PROFILE = String(process.env.DSH_PROFILE ?? '').trim();
+  if (!PROFILE) {
+    let names = [];
+    try {
+      names = fs.readdirSync(path.join(DSH_HOME, 'profiles')).filter((name) => {
+        try {
+          const base = path.join(DSH_HOME, 'profiles');
+          if (name === '.' || name === '..' || name === 'node_modules' || /[\\/\x00-\x1f<>:"|?*]/.test(name) || /[. ]$/.test(name) || path.dirname(fs.realpathSync(path.join(base, name))) !== fs.realpathSync(base)) return false;
+          const pkg = JSON.parse(fs.readFileSync(path.join(DSH_HOME, 'profiles', name, 'package.json'), 'utf8'));
+          return Array.isArray(pkg?.dsh?.profile?.bundles) && pkg.dsh.profile.bundles.includes('surfcore');
+        } catch { return false; }
+      });
+    } catch {}
+    if (names.length !== 1) fatal('DSH_REPAIR_PROFILE_AMBIGUOUS: 无法唯一确定已安装 SurfCore 的 profile。\n下一步：指定当前 DSH_PROFILE 后重试。');
+    [PROFILE] = names;
+  }
+} else if (!PROFILE) {
   try {
     const { detectProfile } = await import('./detect-profile.mjs');
     PROFILE = await detectProfile();
@@ -49,6 +108,9 @@ if (!PROFILE) {
 if (PROFILE === '.' || PROFILE === '..' || PROFILE === 'node_modules'
     || /[\\/\x00-\x1f<>:"|?*]/.test(PROFILE) || /[. ]$/.test(PROFILE)) {
   fatal(`invalid profile name: ${JSON.stringify(PROFILE)}`);
+}
+if (packageMode && process.env.DSH_PROFILE && PROFILE !== String(process.env.DSH_PROFILE).trim()) {
+  fatal('DSH_REPAIR_PROFILE_MISMATCH: 指定 profile 与当前 DSH_PROFILE 不一致。\n下一步：确认当前 profile 后重试。');
 }
 
 function log(msg) {
@@ -203,7 +265,16 @@ function mcpEntries() {
     out += `        transport: stdio\n`;
     out += `        command: ${yamlSingleQuote(node)}\n`;
     out += `        args:\n`;
-    out += `          - ${yamlSingleQuote(s.script)}\n`;
+    for (const arg of [...NODE_RUNTIME.argvPrefix, s.script]) out += `          - ${yamlSingleQuote(arg)}\n`;
+    const runtimeEnv = { ...(NODE_RUNTIME.envPatch || {}), ...(packageMode ? { DSH_HOME, ...(PACKAGE_DATA_ROOT ? { SURFCORE_ROOT: PACKAGE_DATA_ROOT } : {}) } : {}) };
+    for (const [key, value] of Object.entries(runtimeEnv)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) fatal(`Node runtime 环境变量名称无效：${key}`);
+      out += `        env:\n`;
+      break;
+    }
+    for (const [key, value] of Object.entries(runtimeEnv)) {
+      out += `          ${key}: ${yamlSingleQuote(value)}\n`;
+    }
     // qq_wait_for_messages 最长可等 10 分钟；DSH 默认 60s 会提前掐断工具调用。
     if (s.toolCallTimeoutMs) out += `        toolCallTimeoutMs: ${s.toolCallTimeoutMs}\n`;
   }
@@ -453,6 +524,106 @@ function verifyProfileAfterInstall(file, expected) {
 function rollbackProfile(pkg, patch) {
   restoreProfileFile(pkg.pkgFile, pkg.backup);
   restoreProfileFile(patch.patchFile, patch.backup);
+}
+
+// Packaged installs are owned by the package manager. Repair only this profile's
+// managed MCP block; never regenerate shipped assets or rewrite package links.
+function repairPackagedProfile() {
+  const fail = (code, error, hint) => fatal(`${code}: ${error}\n下一步：${hint}`);
+  const base = path.join(DSH_HOME, 'profiles');
+  const dir = path.join(base, PROFILE);
+  let patchFile = path.join(dir, 'cordis.patch.yml');
+  try {
+    const profileRoot = fs.realpathSync(base), actualProfile = fs.realpathSync(dir);
+    if (path.dirname(actualProfile) !== profileRoot || !fs.statSync(actualProfile).isDirectory()) throw new Error('profile outside DSH_HOME');
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    if (!manifest?.dsh?.profile?.bundles?.includes('surfcore') || typeof manifest?.dependencies?.surfcore !== 'string' || !manifest.dependencies.surfcore) throw new Error('bundle not registered');
+    const installed = fs.realpathSync(path.join(dir, 'node_modules', 'surfcore'));
+    const expected = fs.realpathSync(REPO_ROOT);
+    const same = process.platform === 'win32' ? installed.toLowerCase() === expected.toLowerCase() : installed === expected;
+    if (!same) throw new Error('installed package mismatch');
+    for (const name of ['mcp-snowluma-safe.js', 'mcp-host-server.js', 'mcp-web-search-safe.js']) if (!fs.statSync(path.join(REPO_ROOT, 'src', name)).isFile()) throw new Error('missing MCP script');
+    if (fs.existsSync(patchFile) && !fs.lstatSync(patchFile).isFile()) throw new Error('patch is not regular file');
+  } catch {
+    fail('DSH_REPAIR_PACKAGE_BINDING', '目标 profile 未绑定当前安装包，或安装不完整。', '确认 DSH_HOME、profile 与已安装 SurfCore 后重试；保留现有文件。');
+  }
+  let original, patchExists;
+  try { patchExists = fs.existsSync(patchFile); original = patchExists ? fs.readFileSync(patchFile, 'utf8') : ''; }
+  catch { fail('DSH_REPAIR_PATCH_READ', '无法读取 profile 补丁。', '检查读取权限并保留原文件。'); }
+  const begin = '# === qq-bridge MCP BEGIN ===', end = '# === qq-bridge MCP END ===';
+  const starts = [...original.matchAll(/^# === qq-bridge MCP BEGIN ===[ \t]*\r?$/gm)];
+  const ends = [...original.matchAll(/^# === qq-bridge MCP END ===[ \t]*\r?$/gm)];
+  if (starts.length !== ends.length || starts.length > 1 || (starts.length && starts[0].index >= ends[0].index)) fail('DSH_REPAIR_PATCH_AMBIGUOUS', '托管区块标记不完整或重复。', '备份并检查 profile 补丁后重试。');
+  let before = original, after = '', owned = '';
+  if (starts.length) {
+    before = original.slice(0, starts[0].index);
+    let tail = ends[0].index + ends[0][0].length;
+    if (original[tail] === '\r') tail++;
+    if (original[tail] === '\n') tail++;
+    owned = original.slice(starts[0].index, tail);
+    after = original.slice(tail);
+  }
+  try {
+    const oldDoc = yaml.load(original || '[]') ?? [];
+    const outsideDoc = yaml.load((before + after) || '[]') ?? [];
+    if (!Array.isArray(oldDoc) || !Array.isArray(outsideDoc)) throw new Error('invalid root');
+    const ownedDoc = owned ? (yaml.load(owned) ?? []) : [];
+    if (!Array.isArray(ownedDoc)) throw new Error('invalid managed block');
+    for (const operation of ownedDoc) {
+      if (!operation || typeof operation !== 'object' || Object.keys(operation).some((key) => key !== 'insert') || !Array.isArray(operation.insert) || operation.insert.some((entry) => !MANAGED_MCP_IDS.includes(entry?.id))) throw new Error('unowned entry inside managed block');
+    }
+    const visited = new WeakSet();
+    const containsManagedId = (value) => {
+      if (!value || typeof value !== 'object' || visited.has(value)) return false;
+      visited.add(value);
+      if (MANAGED_MCP_IDS.includes(value.id)) return true;
+      return Object.values(value).some(containsManagedId);
+    };
+    if (containsManagedId(outsideDoc)) throw new Error('managed entry outside block');
+  } catch {
+    fail('DSH_REPAIR_PATCH_UNSAFE', 'profile 补丁无效，或托管条目位于区块外。', '保留并检查现有补丁，明确整理托管条目后重试。');
+  }
+  const separator = before && !before.endsWith('\n') ? '\n' : '';
+  const text = before + separator + mcpEntries() + after;
+  try { if (!Array.isArray(yaml.load(text))) throw new Error('invalid result'); }
+  catch { fail('DSH_REPAIR_PATCH_UNSAFE', '无法安全生成 profile 补丁。', '保留并检查现有补丁后重试。'); }
+  if (text === original) { log('package MCP 已是最新；无需改写。'); return; }
+  const syncDirectory = (directory) => {
+    try { const fd = fs.openSync(directory, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }
+    catch (error) { if (!(process.platform === 'win32' && ['EINVAL', 'ENOTSUP', 'EISDIR'].includes(error.code))) throw error; }
+  };
+  if (patchExists) {
+    const backup = `${patchFile}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}`;
+    try {
+      fs.copyFileSync(patchFile, backup, fs.constants.COPYFILE_EXCL);
+      const fd = fs.openSync(backup, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      syncDirectory(dir);
+    }
+    catch { fail('DSH_REPAIR_BACKUP_FAILED', '无法备份原 profile 补丁，未修改。', '检查目录权限及剩余空间后重试。'); }
+  }
+  const tmp = `${patchFile}.${randomUUID()}.tmp`;
+  let fd, created = false, writeError = false, changed = false;
+  try {
+    fd = fs.openSync(tmp, 'wx', 0o600); created = true;
+    fs.writeFileSync(fd, text, 'utf8'); fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
+    const currentExists = fs.existsSync(patchFile);
+    changed = currentExists !== patchExists || (currentExists && (!fs.lstatSync(patchFile).isFile() || fs.readFileSync(patchFile, 'utf8') !== original));
+    if (!changed) { fs.renameSync(tmp, patchFile); created = false; }
+  } catch { writeError = true; } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    if (created) try { fs.unlinkSync(tmp); } catch {}
+  }
+  if (changed) fail('DSH_REPAIR_PATCH_CHANGED', 'profile 补丁在修复期间发生变化，未覆盖。', '检查当前文件和备份后重新发起修复。');
+  if (writeError) fail('DSH_REPAIR_WRITE_FAILED', '无法原子保存 profile 补丁。', '检查目录权限和备份后重试。');
+  try { syncDirectory(dir); }
+  catch { fail('DSH_REPAIR_SYNC_FAILED', 'profile 补丁已写入但目录同步失败。', '先核对当前补丁和备份，再决定是否重试。'); }
+  log('package profile MCP 条目已修复；已保留包与旧备份。');
+}
+
+if (packageMode) {
+  repairPackagedProfile();
+  log('Done. Restart DSH (or reload the profile) so MCP registrations take effect.');
+  process.exit(0);
 }
 
 // Validate the existing YAML before changing any presets or configuration.

@@ -74,7 +74,14 @@ export function pruneShots({
   retentionDays = normalizeConfig().retentionDays,
   maxMB = normalizeConfig().maxMB,
   now = Date.now(),
+  protectedRoots = [path.join(DSH_HOME, 'surfcore', 'perception')],
 } = {}) {
+  const canonical = value => { try { return fs.realpathSync(value) } catch { return path.resolve(value) } };
+  const overlaps = (a, b) => { const relative = path.relative(a, b); return !relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)); };
+  const actualRoot = canonical(root);
+  if (protectedRoots.some(value => { const protectedRoot = canonical(value); return overlaps(actualRoot, protectedRoot) || overlaps(protectedRoot, actualRoot); })) {
+    return { root, retentionDays, maxMB, files: 0, bytes: 0, removed: 0, freed: 0, errors: [{ code: 'shots.protected-root', error: '缓存目录与感知资产目录重叠，已停止清理。' }] };
+  }
   const removed = [];
   const errors = [];
   const kept = [];
@@ -126,6 +133,9 @@ export function pruneShots({
       try {
         const st = fs.statSync(full);
         if (st.mtimeMs < tempCutoff) {
+          let active = false;
+          try { const lease = JSON.parse(fs.readFileSync(path.join(full, '.lease.json'), 'utf8')); if (Number.isSafeInteger(lease.pid) && lease.pid > 0) { try { process.kill(lease.pid, 0); active = true; } catch (error) { if (error.code !== 'ESRCH') active = true; } } } catch { /* old directories have no lease */ }
+          if (active) continue;
           fs.rmSync(full, { recursive: true, force: true });
           removed.push({ full, size: 0, mtime: st.mtimeMs });
         }

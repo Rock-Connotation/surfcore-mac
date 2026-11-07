@@ -5,13 +5,233 @@
 
 ---
 
+## 已交付：2026-11-07 经历后的自然分享与本机接话
+
+- 主树 `../surfcore-companion-sharing`，基线3ab73bd；实际程序/常用安装 **f882468**，版本0.8.8未改。最终文档/清单提交另见git，不冒充新的实装程序。官方CLI同源包348文件一致，常用安装时7695持久文件不变。
+- 两条真实观看生成自然感受/轻问题；完整音轨那条原生“回一句”及真实HY3接话成功，2消息/未读1/revision5。两次重启读回保持，无旧GET覆盖、无自动ACK，首次入口直达聊天。常用已恢复无debug普通启动；stage退出、4临时调试端口关闭，保留共享Magpie/Colima。
+- 新3客户端/3路由/3上游，全部WorkBuddy HY3 low/200，一次一上游无重试；累计 **11/12**、11路由/11上游，手动剩1，不再额外验收调用。原日常上海12:30/20:30开启/未暂停，每轮2条≤120秒/4请求、每日8请求，失败暂停/停机不补跑；stage日常关闭。
+- 原13插件版本、provider/通用默认模型配置、凭据、app/epoch4/小白鲸人格与少女立绘保留。只追加2新经历/5sharing事件、推进消费账本、生产服务合并token增量；旧inbox24254字节、full归档49687字节前缀完整，没有整份替换记忆卡。生产维护新增2条，第一条来源/ISO/完整理由入新上下文，第二条按既有敏感过滤完整存档但不注入，未放宽受众策略。
+- 最终UI程序audit174/174、完整plugin exit0；后端/协议回归17项exit0，之后仅UI/测试/文档变化。service V3、engine/adapter V3、UI V3、Host总路由和初始定位独立复核无剩余P1/P2，关键反例旧红新绿。严格隐私0命中/不完整0，最终Git对象清单858项/问题0；收口命令与结果保留checks-combined及FINAL-RESULTS。
+- 实机最初404为总路由误置，0新增模型，已由真实apply(ctx)Host入口反例修复；首轮fixture契约失败与文档冲突标记均保留并已纠正，不隐藏失败。064ea1c付费验收后仅初始定位/CSS增量，f882468同源重装与常用原生读回已通过。
+- 无待用户确认；入口为常用DSH左下角“伙伴”。原始聊天追加保存，近期24消息/8分享展示、模型最近10消息+受众过滤记忆，不宣称全聊天入长期卡。定时实际触发/睡眠24h/其它设备仍未验，无QQ/B站/平台外发、语音/桌宠或发布。
+- 七步逻辑、可转发发布块及回滚见[组合case](cases/2026-11-07-companion-natural-sharing.md)；私有证据 `_backups/20261107-sharing/FINAL-RESULTS.json`、`common-normal-final-status.json`、`model-accounting-current.json`。正常主PID79367为本次收工瞬时事实，后续应重新发现。
+
+---
+
+## 已交付：2026-11-07 14:11 少女鲸鱼娘陪伴与常用迁入
+
+- 主线../surfcore-companion；实际程序/实装c49721f，版本0.8.8未改。候选3 audit174/174、完整插件/严格隐私0、842清单通过；完整回归182418c退出0，后续仅布局CSS/断言/文字增量。343制品文件一致，独立安装6317持久文件不变；最终文档/清单提交另见git，不冒充新程序实装。
+- 用户选择较修长社区少女立绘：蓝渐变长发、鲸鳍耳/鲸尾、蓝白女仆装。已在独立及常用原生App解码显示，真实缺图code/hint/刷新恢复通过。保留app/epoch4、昵称小白鲸、原人格核心/关系/记忆；图片/来源保存在本机appearance，不随包发布。
+- 真实新全局8/12客户端、8路由/8上游，全部WorkBuddy HY3 low/200（7次图像点评+1次新进程文本回忆）；无客户端自动重试。旧账保留，独立stage退休并同步8/12、日常关闭，常用账本为唯一运行权威。
+- 独立17秒与常用26.7秒音轨均requested/acquired/processed完整一致、缺口0，真实ASR/3帧/模型/记忆通过。其它1/2/14/28ms缺口保留partial，画面始终稀疏取样。长summary理由遗漏已修；正常退出后的生产新上下文与真实HY3回忆编号/ISO/完整理由/稀疏限制四项通过，旧经历不改写。
+- 常用安装/迁入完成：原13插件版本/账户配置保留，6764角色文件复制hash一致；inbox水位/字节核验后仅重绑目标文件身份。生产维护ok/新增0，最终新上下文含最新完整理由。原抖音登录及严格固定首页5项/3次self回执通过；常用真实按钮再完成两次模型/记忆。
+- 已实际点击启用上海12:30/20:30两轮，重启后enabled=true/paused=false/manualAccepted epoch4；每轮≤2条≤120秒、≤4请求，每天≤8请求，停机不补跑、失败暂停。QQ/B站自启false、无平台外发。常用App无调试参数运行，独立/临时调试App退出，4个本轮调试端口关闭。定时真实触发、睡眠/24h/其它设备仍未观察，不称长期稳定通过。
+- 无待用户确认事项；使用入口为设置→SurfCore→抖音。七步逻辑/回滚/发布交接见[组合case](cases/2026-11-07-douyin-companion-integration.md)、[迁入case](cases/2026-11-07-companion-common-migration.md)。私有证据20261107-companion/common-normal-final-status.json与model-accounting-current.json；不发布/tag/push。
+
+---
+
+## 快照：2026-11-07 10:41（抖音首页推荐补修收工）
+
+- 功能faa7976、已验证程序6c88e72，版本0.8.8。根因为DOM加载与前端播放器/引导初始化不同步、连续键未确认切换；最终身份复核不应再次翻推荐。browser加入可见稳定状态/引导/逐次切换和超时取消门闸；service最后仅reload复核新self，身份、来源、世代和请求cutoff保持。
+- 真实严格service返回5条原tab/feed推荐，前/中/后账号核验通过；官方App设置页实际启用并点击“读取本页推荐”，真实HTTP200/5项、DOM5链接/无错误/截图核对，读后idle、账号保留。前轮“抖音仍0条”结论已由本次同源原生实证更新，旧失败证据保留。
+- 官方Node24 audit174/174、完整回归/插件、五专项/拥有方红绿及独立强复审通过；SDK谓词同步、迟引导最多5键/4次切换，超时/关闭后extraKeys0。815项Git对象清单问题0、严格隐私零命中。包SHA256 22ee50b67dae24c030ad02c4588b593e28841d54688c6ae6d3271d670f98b075，独立CLI实装330文件一致、670持久文件安装前后不变，收工330文件再次一致。
+- 验收在全新独立DSH副本，原测试资料和常用实例不覆盖。UI实际关回抖音、账号保留，临时fetch观察器移除；原生退出后8owned进程/2端口全停、目录中浏览器锁0、owned runtime0，常用App仍在。本轮模型0、点赞/评论/转发0，旧4/4模型与9/9QQ文本账本没有增量。
+- 剩余自动profile迁移、B站原生下一会话自动注入、睡眠/24h及设备矩阵没有新增证据；当前抖音通过的是账号与推荐文案读取，不代表视频ASR/自主点评/互动。无发布/tag/push，常用实例未升级。
+- 七步逻辑、失败路径与可转发发布块见[抖音补修case](cases/2026-11-07-douyin-readiness-pagination.md)；私有证据20261107-douyin-readonly/FINAL-RESULTS.json。无待用户回复事项。
+
+---
+
+## 快照：2026-11-07 10:06（Hy3补验收工）
+
+- 程序d8fe7e1、版本0.8.8；记忆来源/发生时刻与静态隐私材料补修已组合。官方Node24 audit174/174、完整插件/构建、记忆delta回归与29项红绿、两项独立审查通过；实装330文件一致、1965持久文件安装前后不变，收工330文件再核验一致。后续仅文档/清单，不冒充已实装程序。
+- B站生产构造器新上下文→Hy3：最新BV与完整评分理由逐字通过；QQ原生重启/窗口192000后turn8 completed，workbuddy/hy3约5.6秒/一次上游，官方输出、get_msg和用户手机正文三方一致，用户明确确认正常。之前MODEL_SWITCH_COMPACTION_FAILED是本轮独立适配器误写64000窗口，失败记录保留。
+- 最终新一轮4/4客户端、4上游，原唯一QQ文本9/9；投递前失败产生2条错误提示，另1条发送尝试被8条闸拒绝，第9条仅在用户明确批准后追加。旧B站4客户端/5上游、QQ6客户端/9上游、11/12模型与19/30文本账本均保留。无客户端自动重试/续额，无其它外发目标。
+- 第9条accepted后桥接自动正式stop，独立App/模型代理/文本网关/扫码服务/固定NapCat和8端口均关闭、owned运行进程0。QQ/B站启动开关关闭，账号、记忆、作业、评分、问答及账本保留。常用App仍在、其它5容器状态不变，共享Magpie/Colima保留。
+- 抖音真实首页feed仍0条，关闭拦截的私有克隆诊断未改变结论；两次浏览器关闭已确认，原profile不改。B站原生下一会话自动注入、自动迁移、睡眠/24h及其它设备矩阵仍未验，不称全天运行全面通过。
+- 本轮无待用户回复的问答；详细七步逻辑和可转发发布块见[补验case](cases/2026-11-07-hy3-readiness-followup.md)，私有证据20261107-followup/FINAL-RESULTS.json。未发布、未tag、未push，后续如需模型或QQ外发应另有明确预算，旧账不得重置。
+
+---
+
+## 快照：2026-11-07 09:46（Hy3补验，QQ投递前失败已纠正待手动补验）
+
+- 程序d8fe7e1，版本0.8.8不变：记忆来源/ISO发生时刻补修、静态隐私材料清理已组合；官方Node24 audit174/174、完整插件、构建和813项Git对象清单均通过；严格privacy扫描0命中/不完整0。记忆delta回归已通过，静态材料未碰协议。330文件实装一致、1965持久文件未变。
+- Hy3低思考本轮3/4客户端、3次上游尝试；首笔连通通过，第二笔旧上下文返回旧BV失败，渲染修复后第三笔27秒完成、最新BV及完整评分理由逐字通过。使用已安装生产构造器输出；原生下一会话自动注入仍未验。旧B站4/4与QQ6/6客户端账本保留；追溯上游分别5次与9次，旧账未归零，不能再称旧客户端禁止重试等同上游零重试。
+- QQ用户重新扫码后原小号身份/online通过，原生配置固定Hy3且不fallback。三次实际入站均在上游前MODEL_SWITCH_COMPACTION_FAILED：本轮独立适配器误写64000窗口，小于65536压缩预留+8192输出；按已安装WorkBuddy声明改为192000，Host已重启，只读目录核对通过，未再调用模型。两条错误提示累计文本8/8，第三条被网关拒绝；普通回复仍未通过。后续用户已明确批准一次手动补验及累计第9条文本；已有3次模型与8条文本保留，独立App重启固定Hy3、窗口192000、桥接ready，等待单次真实入站。
+- 上次失败后桥接/文本网关/模型代理/扫码服务已停；后续批准后重启App/模型代理/九条文本网关及桥接，仅等待一次现场消息，原固定小号容器身份/online复核通过；常用App/profile、共享Magpie/Colima和其它容器不动。收工必须再确认本轮runtime关闭，账号/新数据/用量保留。
+- 抖音私有克隆关闭request interception仍self有效、固定首页feed0条；DOM3个video无可见目标，没有盲滚。两次浏览器均确认关闭，原profile保持；推荐成功仍未验。
+- 详细逻辑、失败与发布交接见[本轮case](cases/2026-11-07-hy3-readiness-followup.md)、[记忆case](cases/2026-11-07-memory-source-recall.md)、[隐私case](cases/2026-11-07-privacy-path-sanitization.md)。私有检查点20261107-followup/WORKING-HANDOFF.json；无发布/tag/push。
+
+---
+
+## 快照：2026-11-07 08:37（macOS候选收口）
+
+- 主线 `../surfcore-readiness` / `fix/macos-readiness`，已验证程序0811aee、版本0.8.8不变。原抖音15脏文件哈希未变，原surfcore-mac仍0deb826。未改常用profile、版本号、tag、远端。最终文档提交见git log，不把文档SHA冒充已实装程序。
+- QQ提示修复534a4a8；B站精确时间线99aaa95/3d00f58/de7d21a及watch调用方f59f02f。最终官方Node24 audit174/174、媒体专项/构建0；d419f71完整回归/插件0，其后watch delta另有实际函数体红绿。同源0811aee包SHA256 bc856d0e7beed39924235fa67a9e337ef85e44dcef57e72409c5fda5f17d82b8，官方CLI实装330文件一致、1942持久文件未变，诊断移除后330文件再核验一致。
+- 抖音官方App已实测默认关闭、启用、扫码、重启绑定、错误可见；真实账号推荐仍DOUYIN_FEED_UNAVAILABLE。官方self有效，没有固定真实首页feed成功证据，禁止替换游客/SSR/作品来源冒充接通。渠道关闭、账号保留。
+- B站新原生轮自主选BV17qHc6pEA5/P1/cid43083434522，完整46058ms音轨9段转写、点评/草稿、正式15/20评分与理由读回通过。最后记忆因复制profile携带旧文件身份被保护拒绝，原轮保持failed/ROUND_MEMORY_FAILED。用户批准且原6930字节前缀/归档/统计一致后，仅备份重绑副本元数据，手动维护HTTP200、新Node上下文含本次BV及完整评分理由。额外一次上下文模型回忆超时502；不能称无人干预整轮或实际模型回忆通过。
+- QQ新有界轮两次普通入站工具指令触发聊天防护；改原生真实会话question-only诊断。第4次请求180秒TRANSPORT结束；用户批准仅一次300秒手动补验，第5次正式提问，用户实际编号+选项A，官方selectedCount=1/selectedA=true/customHasAnswerText=false，20秒自动cancel通过，第6次续接completed。临时entry/guard移除、原180秒提问超时恢复；重启bridge/dshReady/snowluma.connected均true，未再验普通消息。
+- 累计本轮B站4/4、QQ6/6、原唯一私聊6/8（含失败）；旧11/12、19/30账本保留。独立App/桥接/两代理/文本网关/扫码服务/固定NapCat及本轮端口均关闭，账号、新作业/评分/问答/用量保留。常用App仍在，5个其它容器状态不变，共享Colima VM和Magpie保留；浏览器控制未连接，扫码标签未关闭但本地服务已停。
+- 下一步：先只读查抖音真实首页来源、Hy4有界可用性；勿在额度耗尽后重试、勿开日常巡航。自动迁移、B站原生下一会话自动注入/实际回忆、QQ恢复普通消息、睡眠/24h和其它设备仍未验。完整逻辑、失败与可转发发布交接在[组合case](cases/2026-11-07-macos-readiness.md)，证据索引 `_backups/20261107-readiness/FINAL-RESULTS.json`；不发布。
+- 收工附加privacy-scan --strict为exit1：46命中、不完整0，逐项命中整行在fa64517与0811aee均已有，本轮无新增；未全面裁定历史命中，未改放行规则。对比`privacy-baseline-comparison.json`。首个文档提交3544798在检查失败后仍由命令序列提交，已用后续文档记录，不隐瞒失败、不推送或重写历史。
+
+---
+
+## 快照：2026-11-07 05:43（有界常驻与真实交互收口）
+
+- 程序/实装0502afa，版本0.8.8不变；第四包SHA256为9d6f1d0f02f1c203866ad915a455055f6a9108ff3406ae5d21dd0dd3fe64e556。官方CLI安装前后369持久文件不变，最终325包文件逐hash一致；checks-6-expired官方Node24 audit169/169、回归/完整插件0，HEAD冻结不变。清单791/791。常用profile和QQ.app不动、无发布。
+- 已真实核验allowed-once、rejected、自由文本question和约20秒自动cancel；selected=[]/custom非空，只证明文字回路，精确选项A未通过。两次实际用户文字为“编号 答案”；不把期望文字当实际输入。过期编号实际只提示已结束/不存在，模型计数无增量。对账发现初期迟答额外请求共两次，已全计入，不沿用04:28初步5次数字。
+- 原生红叉关闭后台实际收发已双端确认；原生Quit已确认所有当时owned进程退出。全新私有manual stop已实机返回STOPPED，App/runner/代理/gate及旧端口退出、固定容器停止；账本10/12模型、17/30文本保留。start缓存登录一次拒绝无自动重试；用户扫码后resume只读核对批准小号与online成功。最终普通QQ实际Hy4 HTTP200，平台正文“常驻恢复验收通过-1107”与用户手机一致；累计11/12模型、19/30文本（含定位提示）。随后无debug原生Quit确认9个自有进程全部退出，保留已登录服务resume后status全ready，主App无TCP监听/无debug参数，独立实例留开。首次未见入站原因不足，不能推断发错联系人。
+- 临时诊断entry为0、原guard恢复、questionTimeoutMs=180000。保留memory timer和migration保护，避免额外通知/未评估迁移；无开机自启、每日续额或无限期使用授权。私有助手审查关闭代理继承风险；QR断网测试7项、manual24、缓存登录11及身份/status通过。一次开发测试误触fake bearer本机只读状态已记录，无真实凭据/模型/QQ。
+- 原30分钟采样61次：16 ready、45计划维护、0未标记异常；最长同PID连续ready6分30秒，不能称30分钟连续稳定或24小时通过。最终普通消息与无debug退出恢复已有独立证据；QR页面/自有浏览器标签关闭，未新增模型请求。继续日常使用仍受本轮剩余1次模型/11条文本限制，不自动续额。使用/回滚见[手动恢复case](cases/2026-11-07-qq-manual-recovery.md)，全逻辑见[组合case](cases/2026-11-07-qq-resident-approval.md)；本地私有manual README包含入口，不把助手/秘密打包发布。
+
+---
+
+## 快照：2026-11-07 04:28（真实取消与迟答缺陷补修）
+
+- 已由官方App对既有真实QQ会话发起一次无害工具turn，requestId持久记录，没有伪造QQ入站或新建会话；开始前实际模型固定Hy4、唯一目标、桥接/diag active均核对。QQ第一条审批和两次编号提示平台读回匹配；90秒后官方outcome=cancelled，工具返回DIAGNOSTIC_ABORTED且有效策略恢复。不能算人工允许/拒绝通过。
+- 有效带编号拒绝晚到8秒进入普通聊天，实证额外模型调用。当前累计5/12模型、6/30文本；此轮与旧账本均不重置。用户已通知暂停旧编号回复。
+- 修复仅严格编号模式无pending的交互语法：可见提示已结束/不存在，不进模型/记忆；旧默认false兼容。Terra真实VM/pumpMux红绿、五专项0，Astra冻结指纹无新增P1/P2。主线组合检查及同源新包待做，真实迟答零增量尚未验证。
+- 已停止独立桥接；Browser.close后最初4秒App未退出，助手正确报告未确认，稍后重新读回主App/debug/bridge均已消失。不能把初次停止失败隐藏。原生隐藏后窗口恢复、完整新manual启停仍待实测。临时诊断待清场后重载更长等待时间；常用App/profile、账本与账号保留。
+
+---
+
+## 快照：2026-11-07 04:05（原生注册补修通过，审批现场进行中）
+
+- 程序及实装源 `f68fa63`；官方 Node24 最终冻结检查 checks-4：audit169/169、regressions/完整插件exit0，检查期间HEAD未变；Git对象清单790/790。独立官方CLI第三包离线安装361持久文件未变、325包文件一致，版本仍0.8.8。
+- 实际点击截图对应的原生“修复DSH注册”按钮，成功与重启提示可见、rootPkg错误消失；三个托管MCP各一次，安装/package.json/325包哈希和B站凭据不变。完整重启后官方插件列表三个MCP均active，stdio分别列32/1/2工具，qq_status实调只读成功；旧缺失L2已由健康检查自动确认，未点击“确认”掩盖。
+- 窗口页面关闭后的后台真实私聊成功：平台get_msg账号/正文与“后台常驻验收-1107”一致，用户已确认手机收到。该关闭是CDP Page.close导致renderer销毁，尚不算原生关窗隐藏通过。当前实际2/12次Hy4（含新会话自动标题）、1/30文本，累计不重置。
+- 安全停机助手首次因未显式DSH_NODE而误选常用缓存Node，所有权核验按设计拒绝且未发信号；明确官方内置Node后原stop全套核验成功。已保留诊断原始证据。独立App重启加载一次性无害诊断工具，绑定实际新QQ会话，临时精确guard例外；官方插件active。等待用户按QQ通知完成审批/提问，结束必须移除临时项并恢复325包哈希。
+- 原始证据 `_backups/20261107-qq-resident/`：checks-4-repair、package-3、native-registration-button、registration-after、mcp-plugin-status-after-restart-shape、mcp-stdio-readiness、first-background-reply、live-diagnostic-plugin-status。常用App/profile不动，NapCat与本轮代理保留，无发布。
+- 04:14补记：原生红色close经精确窗口dry三闸通过后实点，动画结束on=0而原App/renderer/Host/bridge/QQ仍活；目前尚未收到用户的诊断工具请求，2/12模型、1/30文本不变。私有manual候选离线11项和配置测试通过，Astra关闭全机ps引号/YAML跨块anchor/停止助手继承别名及framework Python身份问题，最后指纹匹配、无新增P1/P2；完整手动启停尚未实测。旧手启runner使用相对脚本，严格新入口拒绝接管是预期，下一次须由主线按原拥有证据停旧实例后实测新入口，不放宽为名字匹配。临时诊断仍在已授权独立profile中等待现场操作，不能跳过清场收口。
+
+---
+
+
+## 快照：2026-11-07（QQ 常驻期间用户原生修复弹窗补修）
+
+- 用户截图确认 rootPkg 未定义。独立官方App第二包已实测4/4组件运行；模式组件首次恢复后默认reserved2，已通过正式模式API切回chat，旧会话归档保留，尚未新发消息。
+- 新增修复：Host按钮从当前安装根运行；package只补三个MCP、不重链/重装/改包资产；健康检查限定DSH_HOME/profile，chat仅profile检查；弹窗失败可重试。专项红绿通过，组合与原生按钮/重启复核进行中。
+- 此时独立App/bridge已显式停止以安装新候选；原小号已重新扫码且身份匹配，独立NapCat及12/30代理保留，模型请求与QQ发送仍0；常用App/profile未改。不得把中间检查或旧包回执算新候选通过。
+- 对应case：注册修复、健康范围及QQ常驻/审批组合case；后续继续实际注册、MCP握手、关窗收发和审批，不结束于离线修复。
+
+---
+
+## 快照：2026-11-07 03:20（QQ 手动常驻与审批组合待实机）
+
+- 独立树 `../surfcore-qq-resident`，基线8659db3；用户批准手动启动后台运行，原唯一私聊对象，新预算12次Hy4/每次8192输出、30文本、不自动重试；旧账本封存，尚无每日重置授权。
+- 已修：启动端口与POSIX停止的进程归属核验；启动锁空/畸形/存活PID不抢占，明确死亡才归档；提问/审批先登记、编号opt-in、并发单飞、官方取消、已知拒绝与未知回执分离；原生QQ页编号开关和Host失败hint。
+- 组合checks-2：官方Node24 audit166/166、regressions/完整插件exit0；Astra关闭空锁竞争P2后，冻结13文件一致、无新增实质P1/P2。真实进程夹具不套外层seatbelt（系统setuid ps被拒），其它audit/回归禁非回环；checks-1环境失败日志保留。
+- 准备同源包与独立官方App实测；当前真实模型/QQ发送均0，不能称审批/常驻已通过。临时固定会话无害诊断工具只作内存标记，指定会话有效审批策略临时ask并恢复有效原值，保留真实会话事件；不改sandbox或agentpreset、不放行本机能力，结束移除诊断。
+- 权威case：[QQ常驻/审批](cases/2026-11-07-qq-resident-approval.md)。常用App/profile、QQ.app及其它容器不动；无发布/推送/版本变更。
+
+---
+
+## 快照：2026-11-07 02:47（QQ基础私聊受控验收收口）
+
+- 真实链路通过：常用号→NapCat小号→官方原生App/包内bridge→WorkBuddy Hy4→小号回复；get_msg账号/正文读回匹配，用户确认手机收到，原生QQ会话输入/回复可见。仅唯一私聊、测试角色，不是群/真实提问审批/常驻使用全部通过。
+- 程序e013302（功能a611b6a/e013302）：Mac WebUI异步异常、模型失败准入/固定模型策略和两处界面hint。官方Node24最终audit164/164、回归/完整插件exit0；Astra R2无新增P1/P2。版本0.8.8不变，未发布/推送。
+- 实际2/3次Hy4、每次上限8192，均HTTP200/stop。真实会话日志证实一笔为官方自动标题；发送1/6条文本，无其它QQ动作。不要把一条QQ消息算成一笔模型请求，也不要重置旧预算账本重复用量。
+- 官方CLI离线安装：319持久文件未变、324包文件一致。包源e013302ea39c53e59703b8b15d499a824fadbf1a，SHA daebaf6b95a9901605448476d385e7d5fbf84caa22fb0071212283f2b3b11996；后续文档/清单不改程序。
+- 收工QQ/B站启动关闭并显式停止独立桥接，拥有App/Host/renderer、模型代理/文本网关/扫码页与容器全停；相关10端口关闭，常用App及Host保留。仅恢复独立profile默认模型到DeepSeek原选择，账号/角色/新会话/用量/回执保留，B站凭据摘要未变。QQ.app未改；其它原3容器保留。
+- 全部原始证据在本地_backups/20261107-qq/final-results.json和FINAL-REVIEW.md；同源、权限、费用、两次启动/保存处理的证据界限及唯一发布块见[QQ组合case](cases/2026-11-07-qq-macos-integration.md)。worker树保留，不清理他人改动。
+- 后续门槛：群目标、真实问答/审批与媒体动作、常用profile安装/常驻预算须明确后再验。当前profile是有界测试配置；代理/容器已停，不能当作大飞鱼常驻上线。未使用的1次预算不代表可无确认扩大本轮对象或次数。
+
+---
+
+## 快照：2026-11-07 02:11（QQ受控验收进行中，需现场账号动作）
+
+- 程序e013302：a611b6a修复macOS打开WebUI的异步错误；e013302阻断QQ模型选用失败后投递、显式禁目录替代、界面显示下一步。最终checks-2-ui-final：官方Node24，audit164/164、regressions、完整插件exit0；Astra R2无新增实质P1/P2。源码未发布、版本0.8.8不变。
+- 官方CLI离线装入既有独立测试profile，319持久文件未变、324包文件一致；包SHA daebaf6b95a9901605448476d385e7d5fbf84caa22fb0071212283f2b3b11996。常用App仍在，不改QQ.app。
+- 用户已授权固定NapCat独立Docker和小号扫码；当前镜像v4.18.42/arm64摘要149fae81…已核查entrypoint与上游相同，只挂私有数据、仅回环37600/37601/37699、logging none、无privileged/自动重启。本机使用既有aicao-feedback Colima Docker，只创建本轮独立容器/网络，其他原3容器不动。
+- 用户已授权QQ本轮Hy4最多3请求/每次8192输出tokens、不自动重试；私有预算代理已启动但used0。专用provider qq-acceptance-hy4目录存在，模型workbuddy/hy4free；catalog不是请求通过。QQ/B站启动、purpose/greetings/黑话研究/跨端联动均关；QQ端点暂置回环9以阻断，目标尚未填入。发送及推理均0。
+- 现场待办：用户用“大飞鱼的小号”扫码NapCat；独立App QQ页管理员与私聊白名单填“本人的常用号”，两号必须不同，点仅保存不重启，并确认唯一目标。主线核对后才把QQ HTTP/WS接私有六次文本边界代理、批准ledger并启桥接。绝不把小号填成接收目标，群不开放。
+- 独立App第一次外层sandbox-exec与Electron自身沙箱冲突退出，已保全日志、回收仅本轮孤儿进程并用App默认安全设置重启成功；未禁用Electron沙箱。当前独立实例和模型代理、QQ容器仍运行，收工须按owned PID/容器准确停止，保留所有数据。
+- 原始方案、脚本、运行元数据、包、门禁在主线_backups/20261107-qq/；三worker树qq-model/qq-host/qq-runtime与qq-gateway保留。私有网关尚在Astra反馈修复后的最终核验，主线未启动其旧版本。最新进度及发布块见[QQ组合case](cases/2026-11-07-qq-macos-integration.md)。不是QQ链路通过，也不是设计06全绿。
+
+---
+
+## 快照：2026-11-07 01:30（本轮授权验收收口）
+
+- 程序744d64a：官方DeepSeek Harness.app0.2.2-rc.1、Node24.21.0，独立profile离线安装313持久文件未变、323包文件一致；最终audit164/164、regressions/完整插件均0，独立关键审核无新增实质P1/P2。自包含包SHA241b8e52…；文档后续提交不改程序。
+- 已实证：Hy4从3候选自主选中BV11qJ96LELG；素材0–93.391/94秒、末尾609ms未知，保持partial。用户显式批准后复核同一作业生成有范围说明的临时点评/草稿。正常返回，主界面可见、score/quota摘要不变；不正式评分、不维护主观记忆、不发布草稿。
+- 实际Hy4总共3请求：首笔2000触顶，选题706输出，续评7249输出；总4680输入/9955输出，无额外调用，不推断金额。路由均有MagpieWorkBuddy/hy4free回执。
+- 一次批准的固定测试动态1267640197110038528真实发送，认证与匿名detail均匹配ID/作者/正文，durable意图确认、quota一条。不是模型动态；未评论/点赞/转发/QQ通知，也未删除测试动态。
+- 收工QQ/B站/互动均关闭，controlledOnly保留；自有App/Host/子进程退出，61419/65287/52319调试端口全关闭，常用App未重启且仍运行。账号和新增作业、临时点评、用量、回执保留；勿用旧备份覆盖quota/action意图。
+- 原始证据：本地_backups/20261107-bili-round/FINAL-REVIEW.md与final-results.json；完整逻辑、实际源提交、唯一可转发发布块在[case](cases/2026-11-07-bili-round-integration.md)。本轮授权范围完成，软件未发布，设计06不全绿。
+- 后续门槛：完整素材→正式自主评分→长期记忆/新模型上下文仍未真实闭环；评论/点赞/转发要另给明确目标后验，旧auto可能联动点赞/通知、分享unknown回退/固定账号核验及fav路径尚未修验。不要因本轮通过启用自由工具巡航；其它设备/系统/质量矩阵沿前述残余。
+
+---
+
+## 快照：2026-11-07 01:13（真实自动选题通过，部分素材续评待实测）
+
+- 817b845已在独立官方App内通过Hy4正常返回，从真实3候选自主选择BV11qJ96LELG；1250输入/706输出。素材94秒但实取/处理仅0–93.391秒，末尾609毫秒未知，9帧成功。程序保持partial并停止完整点评与评分，未伪造完整覆盖。
+- 用户明确批准剩余一次8192请求，仅作有范围标注的临时点评/草稿，不正式评分、不外发、不算完整观看通过。新增reviewPartial复用原选择/媒体/角色/模型，复核完整范围分区，只追加一次模型流，终态partial；旧完整门槛不变。三专项通过、Astra R7无新增实质P1/P2；组合checks-7-provisional及新包原生复验进行中。
+- 已停止817b845独立App及全部拥有的进程/调试端口，原常用App29069及Host仍运行。一次已批准测试动态仍保留，作者/正文/ID/回执/quota均已独立验证，其它平台写入未执行。
+- 当前活跃工作树仍为surfcore-macos-implementation，worker独立surfcore-bili-partial-review；不改版本、不发布，最终材料与残余以组合case为准。
+
+---
+
+## 快照：2026-11-07 00:57（真实动态通过，Hy4预算补验中）
+
+- 独立官方App已加载25389e9：323包文件一致，266持久文件安装前后未变；模型目录和实际WorkBuddy路由均已验证，常用App仍运行。
+- 原生单轮首次选题请求实际HTTP200、1222输入/2000输出、stop=length；程序拒绝评分，未完成自主选题/点评。不是模型链路通过。用户已批准剩余最多2次请求各8192，显式预算/180秒硬超时/人读进度与截断原因已补，最终检查与新候选进行中；默认2000不变、无自动重试。
+- 用户批准固定原文一条测试动态，25389e9实际发送ID1267640197110038528；独立detail GET确认作者审批MID和正文均匹配，durable意图确认、quota仅一条。链接https://t.bilibili.com/1267640197110038528。不是模型生成的动态；评论/点赞/转发/QQ通知均未做，不删除该动态。
+- 已关闭互动开关并停止仅本轮独立App，所有拥有的PID和调试端口已回收，原常用App及其Host仍在。下次启动仅运行受控单轮，不启旧巡航。
+- 旧包/旧profile及新账号、回执、用量全部保留，勿回滚覆盖发布后的quota/意图。真实模型后续及最后制品见[组合case](cases/2026-11-07-bili-round-integration.md)，原始证据本地_backups/20261107-bili-round/。
+
+---
+
+## 快照：2026-11-07（B站自主单轮补验，离线完成）
+
+- 用户补验自动选题、模型自主点评与真实互动；本轮选择先只发已扫码测试账号自身一条测试动态，分享限定B站内转发。模型指定Magpie WorkBuddy Hy4，精确模型ID`workbuddy/hy4free`；评论/点赞/转发尚无目标。
+- 从dda2058继续独立实施树，Terra分别在独立round/receipts工作树产出；主线组合API/UI/调度隔离，Astra独立审查。未改常用App/profile，无版本或发布动作。
+- 已实现Host受控单轮：固定feed→模型选择→debrief父作业完成与严格覆盖/身份→模型点评→评分原子写/读回→Host记忆维护；无模型工具，初始最多2次stream、每次≤2000输出tokens，输入超限拒绝。仅产草稿，无自动外发。
+- 显式night.controlledOnly保持旧巡航暂停；切角色/回档/停渠道使用完整transition准入与主动取消，配置版本在取消等待后校验。返回点评前复核身份，原生panel按角色epoch重建并显示失败。
+- 动态：JSON go绑定固定actionId与expected-mid，POST前持久意图；未知/重放不再发送；平台已确认ID时本地失败要求对账；dry检查互动/身份/额度。角色和账号在最后发送前复核。
+- 官方Node24三专项通过；最终组合checks-3：audit164/164、regressions及完整插件均exit0。使用隔离HOME/DSH_HOME且sandbox禁非loopback外联；此前sandbox语法和新夹具cwd失败保留日志，已修正。Astra R5无新增实质P1/P2。
+- 尚无实际供应商调用或真实写动作。独立App已停止；其profile已备份并添加Magpie路由、重试0、仅文本和保守容量，默认模型保持原DeepSeek不变；渠道仍关、互动仍关。Magpie模型目录只读GET200确认有目标别名，不能作为路由成功证据。
+- 下一步：按功能本地提交、从git对象打包，官方App独立profile加载同源候选并实际Hy4/模型选题点评；具体草稿确认后仅一次测试动态并独立读回。详见cases/2026-11-07-bili-round-integration.md，所有原始记录本地_backups/20261107-bili-round/。不把受控单轮称全天自主巡航通过，不称金额硬上限。
+
+---
+
+## 快照：2026-11-06（macOS 官方 App 实测与静音补修）
+
+- 目标是官方原生 `/Applications/DeepSeek Harness.app` 0.2.2-rc.1，Electron44.7.0 / App Node24.21.0 / macOS26.6.2 / Apple M4 arm64。不是网页版或另一个 DSH Desktop.app。
+- 独立树 `../surfcore-macos-implementation` / `feat/macos-implementation` 从交接0c51bf2开始，本克隆无dev；原树与常用App/profile不改、不重启。WP0–WP5功能提交保留，候选与证据统一在本地 `_backups/20261106-macos-wp0/final-results.json`，忽略的设计/资产/日志跨机须另行携带。
+- 已实现：共享人格/上下文/经历与Host唯一记忆维护者、角色life和epoch；统一运行时；本地ASR持久队列、精确覆盖、分块、缓存、取消恢复；B站分P完整媒体/画面/历史/经历；渠道闸、安装身份、自包含包与DSH包更新所有者。每项case含七步逻辑、失败与回滚，编号验收沿用[组合case](cases/2026-11-06-macos-host-integration.md)的44项表。
+- b9a42b2已在官方App独立profile实际加载Host和原生settings客户端。官方CLI/pnpm11离线安装无脚本审批；包摘要040b784d…，实际Node24与媒体/ASR同根。原10份共享日志已保全，测试实例只监听PID核验过的loopback调试端口。最初pnpm根postinstall失败与包内可写数据问题均修复并保留原证据。
+- b9组合：audit162/162、regressions、完整插件测试通过；554程序输入逐blob匹配b9。真实241秒合成重复音频两块完整覆盖、边界句保留、ASR_CORE_RETRY可见。取消确认whisper退出；App退出回收Host/whisper，重启原job interrupted，由原生恢复按钮创建linked新job并完成。auto尾块无词是质量限制，不影响这次生命周期判据。
+- 用户现场扫码到独立fish测试账号，owner未绑定；只读身份核验和公开素材。QQ、生物钟、目的、桌宠聊天、跨端同步、互动、动态和分享保持关闭；B站仅在同一运行进程内普通保存启用手动读取，结束先普通保存关闭再重启/切角。未执行平台外发或宿主付费模型调用。
+- 真实BV1WW411a7qQ/P1/cid27455257无平台字幕，本地small/whisper完整0–96000ms。用户试听末句“生活你给我压力，我还你奇迹”，与转写繁简/标点归一后相同。另有带AI字幕仍调用ASR、真实P2字幕/画面/历史一致；29/390/832ms尾部未确认保留partial，教程P2非法时间戳保留OUTPUT_INVALID。不是全段CER或所有素材可用性保证。
+- CORE-T04：基于真实只读素材的人工评分/日记写本地账本，实际Host导入一次经历、统一卡，新Node的B站上下文读回两标记，QQ视图隐藏；重复maintain不重复事件/6条卡。不是模型自主评价或实际供应商会话回忆。
+- 原生角色编辑：短卡失败可见，合法测试卡保存成功；本地ASR运行中app/epoch2→artifact/epoch3，旧job保持app2、对新角色JOB_FORBIDDEN且不写新卡。编辑器丢弃旧未保存草稿、读取目标卡；旧人格请求实际409，两个文件hash不变。返回app/epoch4后再读正确97字卡。
+- 独立App停止时官方CLI回退b722222再装回b9，160持久文件摘要不变，含扫码后绑定/模型/人格/作业/评分/日记/记忆。旧包未执行，只证明包安装回滚保留数据，不能称schema降级迁移通过。
+- 新发现必要修复：原生10秒精确全零PCM被whisper幻觉成生日歌。现加入严格RIFF/PCM/data验证，全样本数值0才跳推理返回no_speech；±1非零保留识别，空/坏格式拒绝，partial/未知源时长仍unknown。缓存算法v3不复用旧幻觉/检查点，历史不删。独立Astra审核无新实质P1/P2；官方Node下新增静音、完整service/资源/CLI局部检查通过。最终程序/制品47e7e73（静音功能dc075d8），audit163/163、regressions及完整插件exit0；555程序文件逐blob同源，manifest756/756，原始结果 native-fixes/checks-20261106T152703Z/results.json。新包真实零PCM/241秒/96秒B站复验全部通过，原生UI说明/转写/经历完成均可见；最终新Node读回仍成立。
+- 未改版本0.8.8、tag、push或发布；常用profile未安装本候选。直接双击常用App默认profile、热重载/物理睡眠、真实durl多段、全面中文质量、Intel/Windows/其他macOS及真实外发未验，**不满足设计06全面通过或发布条件**。本轮测试实例与所有调试/Host端口已关闭，测试账号和新增数据保留；原常用App仍运行。Finder通过显式环境本地启动器启动官方App并完成新ASR，关窗保留Host/真正退出才回收也已实测。下一步按设计06补剩余设备/质量/热重载/睡眠/真实durl/外发矩阵，常用profile安装是另一对象。
+
+---
+
+## 快照：2026-11-06（macOS 开发工具与设计文档整理）
+
+- 当前工作树：`../surfcore-tooling-docs`，分支 `docs/tooling-macos`，基于 `feat/mac` 的 v0.8.8 / `0deb826`；本克隆没有 `dev`；开发工具与设计交接分批本地提交，未合并、未推送、未发布。
+- 已整理：AGENTS 的条件入口 → [开发工具调用指南](guides/DEVELOPMENT-TOOLS.md)；按代码检索、依赖查证、UI/宿主操作、故障诊断及验证路由 tools/skills。
+- 已归档：本地 [macOS 技术设计](design/macos/README.md)，8 份原稿字节不变、下载原件保留，新增首页；设计仍待实现/实机验证。
+- 本机工具/技能核验与其他项目的调用抽样见本地 [盘点记录](research/2026-11-06-development-tools.md)。安装、会话暴露和成功调用分别记录。
+- 本地资料沿用 `docs/design/`、`docs/research/` 的 Git 忽略策略；跨工作树/设备交接要另行复制，普通 Git 合并不会带过去。
+- 验证：原稿 8/8 一致，设计相对链接 53 处有效；完整 audit 结果见 [case](cases/2026-11-06-development-tools-and-macos-design.md)。插件测试在更新器用例失败，未修改基线同样复现，不能发布。
+- 本地提交：工具指引 `694f188`、设计索引与交接 `bd234aa`；随后一批提交 [本地开发提示词](guides/MACOS-DEVELOPMENT-PROMPT.md) 与本段状态，最终 SHA 以 `git log -3` 为准。
+- 下一步：用户将提示词交给本地 Agent 后，从 WP0 开始按依赖开发。提示词已包含独立工作树、忽略资料复制、基线失败复核、WP1—WP5 实施与真实验收。本会话只完成文档和本地提交，尚未执行功能开发。
+- 备份与可转发发布交接块：见上述 case；无需重启 DSH。
+
+---
+
 ## 快照：2026-11-03 04:05（v0.8.7 正式发布）
 
 ### 当前事实
 
 - **稳定版**：`0.8.7`（Release `SurfCore v0.8.7`；tag `v0.8.7` → 远端 `90872a7`）。
 - **远端 main**：`90872a7`（tree `2f4bae0`）；**本地 main**：`3a3100e`（release commit）；
-  **公开镜像**：`D:\deepseekwork\opensource\surfcore` @ `f849cc4`（tree 与远端一致）。
+  **公开镜像**：`<PUBLIC_MIRROR_ROOT>` @ `f849cc4`（tree 与远端一致）。
 - **本地 dev**：`7ed599c`（已把 main 合回 dev），版本 `0.8.7`。
 - **归档核对**：下载 tag zip → `release-manifest --verify` **678 / 不符 0 / 缺失 0**。
 - **测试**：`npm run test:audit` **142/142**；插件测试 0 失败；本地清单 `678 / 0`。
@@ -26,7 +246,7 @@
 
 - 本地源码仓库含 `video/`，公开镜像不含；**不要直接把本地 main 树推到 GitHub**；
 - 正确流程：本地 `main` 出 release commit → 按 `git diff 42ec20d..HEAD` 同步变更到
-  `D:\deepseekwork\opensource\surfcore` → 镜像生成自己的 manifest → tag → 用 API 发布镜像；
+  `<PUBLIC_MIRROR_ROOT>` → 镜像生成自己的 manifest → tag → 用 API 发布镜像；
 - 镜像 commit 与远端 API commit 的 hash 不同，但 **tree 必须一致**（本次 `2f4bae0`）。
 
 ### 下一版
@@ -245,7 +465,7 @@
 - **一键启动/停止、插件体检、L2-L3 弹窗、SnowLuma 断线提示还没有在真实设置页点过**；
   真实进程启停、真实回合 cancel、SnowLuma 断线零 token 增长需重启 DSH 后手测。
 - **语音离线包导入 UI 仍没在真实设置页点过**（确认框/错误弹窗/删源/删备份）；真实 7.9G 导入已跑通。
-- 语音包许可仍未定：piper GPL、huayan 数据集、age12 微调权重；候选包在 `D:\surfcore-poc\release\`，
+- 语音包许可仍未定：piper GPL、huayan 数据集、age12 微调权重；候选包在 `<LOCAL_MODEL_STAGING_ROOT>`，
   **不要当公开包直接上传**。
 - 0.7.18 的 `PERMISSIONS.md` 里仍有若干权限项标记“待补程序断言”（上一快照遗留）。
 - `docs/RELEASE-QUEUE.md` 顶部仍留着 0.7.4 之前的历史批次，**没有逐条改成“已发布”**；
@@ -281,7 +501,7 @@
 
 ### 候选离线包（POC）
 
-- 本地：`D:\surfcore-poc\release\voice-local-offline-v1.0.0-win-x64.zip`（4.7G）
+- 本地：`<LOCAL_PATH>`（4.7G）
   - 微调 age12 权重 `models/age12/`，`logs/gsv/tts_infer.yaml` 相对路径；
   - `.venv/.venv-gsv + runtime` 预装；GPL 合规目录在 `licenses/piper/`；
   - 无 `config.toml`，`config.example.toml` 凭据为空。
@@ -364,8 +584,8 @@
 ### 核实（先分析再动手）
 
 - 按钮**触发链路正常**：概览 `client.js` → `POST /dsh-surfcore/api/bridge {action:"detect-snowluma"}`
-  → 插件 `handleBridge` → `findSnowLumaInstall()`；本机 `D:\deepseekwork\SnowLuma2`（标准 `app\launcher.bat`）实测能命中。
-- 真正问题：候选是**封闭集合**（配置 + 2 个环境变量 + 7 个写死目录），装在 `D:\软件\SnowLuma2` 这类
+  → 插件 `handleBridge` → `findSnowLumaInstall()`；本机 `<LOCAL_PATH>`（标准 `app\launcher.bat`）实测能命中。
+- 真正问题：候选是**封闭集合**（配置 + 2 个环境变量 + 7 个写死目录），装在 `<LOCAL_PATH>` 这类
   自定义目录就永远失败；而手动填路径的入口在 QQ 页高级设置，概览卡片没有。
 - 结论：**目录浏览比选 launcher.bat 合理**（`launcherPath` 本来存根目录；选文件要反推两层，容易选错 exe/zip）。
   归一函数同时兼容 `app` 目录 / `app\launcher.bat` / `SnowLuma.exe`。
@@ -389,7 +609,7 @@
 - `node scripts/test-voice-cloud-credentials.mjs` → 通过；临时目录读取加了 EBUSY/ENOENT 重试
   （Windows Defender/索引器会短暂占住刚写的 `config.toml`，之前偶发 1/78 假红）；
 - `cd plugins/surfcore && npm test` → 全绿；`npm run test:audit` → **78/78**；
-- 本机配置 `launcherPath=D:\deepseekwork\SnowLuma2`，检测命中。
+- 本机配置 `launcherPath=<LOCAL_PATH>`，检测命中。
 
 ### 没验证 / 交接
 

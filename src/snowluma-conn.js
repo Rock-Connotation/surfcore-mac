@@ -29,7 +29,7 @@ export function snowLumaHomeCandidates({ cfg = null } = {}) {
   const push = (p) => { const v = String(p || '').trim(); if (v && !out.includes(v)) out.push(v); };
   const sl = cfg?.snowluma ?? cfg ?? {};
   // 一个"根目录"可能有两种写法：SnowLuma2 根（里面是 app/）或 app 目录（里面有 config/）。
-  // 以前只取 dirname(launcherPath)：用户填 D:\Tools\SnowLuma2 时会被算成 D:\Tools → 永远检测不到。
+  // 以前无条件取 dirname(launcherPath)：输入 SnowLuma 根目录时会被误当文件，退到安装目录的父目录而检测失败。
   const expand = (raw) => {
     const v = String(raw || '').trim();
     if (!v) return;

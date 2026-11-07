@@ -20,12 +20,13 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { execFile, spawn } from 'node:child_process';
+import { openLocalUrl } from './local-webui.js';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   ALIGN_FILE, BACKUP_DIR, BILI_AI_DIR, BILI_ALIGNMENT_FILE, BILI_CONFIG, BILI_CRED, BILI_DIR, BILI_MJS,
   BILI_TOOLS_DIR, DSH_HOME, EXTENSIONS_DIR, MEMORY_DIR, PLUGIN_ROOT, PLUGIN_LOG, QQ_ALIGNMENT_BRIEF,
-  QQ_CONFIG, QQBOT_ROOT, STATE_DIR, UNIFIED_FILE, ensureDirs, findNodeExe, maskPath,
+  QQ_CONFIG, QQBOT_ROOT, STATE_DIR, UNIFIED_FILE, ensureDirs, resolveNodeRuntime, maskPath,
 } from './paths.js';
 import { resolvePersonaFile } from './persona.js';
 import { discoverSnowLumaConnection } from '../../../src/snowluma-conn.js';
@@ -38,7 +39,7 @@ import {
   deleteCharacter, manualSnapshot, migrateIfNeeded, restoreCharacterSnapshot, switchToCharacter,
   updateCharacterFromPayload,
 } from './characters.js';
-import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
+import { activeMemoryPaths, activePlatformStateDir, characterPaths, personaLayersForCharacter, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
 import {
   backupFile, listBackups, pathSummary,
@@ -65,7 +66,23 @@ import {
 import { PlatformRegistry } from './platforms.js';
 import { ExtensionHost } from './extensions.js';
 import { isLoopbackReq, json, readBody, sameOrigin } from './http-guard.js';
-import { startScheduler } from './scheduler.js';
+import { startScheduler, biliContextForRound } from './scheduler.js';
+import { createBiliRoundController } from './bili-round-controller.js';
+import { createPerceptionService } from './perception.js';
+import { createPerceptionApiService } from './perception-api.js';
+import { createBiliPerceptionService } from './bili-perception.js';
+import { createDouyinService } from './douyin-service.mjs';
+import { createDouyinApi } from './douyin-api.mjs';
+import { createDouyinPerception } from './douyin-perception.mjs';
+import { createDouyinCompanion } from './douyin-companion.mjs';
+import { createCompanionModel } from './douyin-companion-model.mjs';
+import { createCompanionMemory } from './douyin-companion-memory.mjs';
+import { createCompanionController } from './douyin-companion-controller.mjs';
+import { createCompanionSharing } from './companion-sharing.mjs';
+import { createSharingController } from './companion-sharing-controller.mjs';
+import { appendExperienceEvent } from '../../../src/core/experience.js';
+import { resolveMediaRuntime } from '../tools/lib/ffmpeg.mjs';
+import { readInstallationIdentity } from '../../../src/install-identity.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../../src/gate-events.js';
@@ -184,7 +201,7 @@ export function apply(ctx) {
 
   // 上次的"退出后应用"可能没跑起来（Electron 宿主没带 ELECTRON_RUN_AS_NODE）：
   // 这里重新排队，用户下次退出 DSH 就会应用（2026-10-28 反馈：点几次都还是旧版本）。
-  try { resumePendingApply({ stateDir: STATE_DIR, pluginLog }); } catch (error) { pluginLog('[updates] 启动重试失败：', String(error?.message ?? error)); }
+  try { resumePendingApply({ stateDir: STATE_DIR, installRoot: QQBOT_ROOT, resolveNodeRuntime, pluginLog }); } catch (error) { pluginLog('[updates] 启动重试失败：', String(error?.message ?? error)); }
 
   // 2026-10-22 起：`surface_core` 迁移期的一次性逻辑**已整段删除**。
   // 原因：当年为了把旧工作区改名，留了「有 .legacy-workspace 标记就删/移旧目录」的代码；
@@ -266,11 +283,16 @@ export function apply(ctx) {
   // 组件清单每次动态解析：换路径 / 新装包 / 新扩展都不用重启插件。
   const updates = createUpdatesService({
     stateDir: STATE_DIR,
+    resolveNodeRuntime,
     pluginLog,
     githubToken: () => String(readUnified().config?.updates?.githubToken ?? ''),
     // 更新通道：stable（默认，只走正式 Release）/ dev（只走 Pre-release 的 -dev.N）
     channel: () => String(readUnified().config?.updates?.channel ?? 'stable'),
     blockedReason: (component) => {
+      if (component.id === 'surfcore') {
+        const identity = readInstallationIdentity(QQBOT_ROOT);
+        if (identity.ok && identity.identity.updateOwner === 'dsh-package-manager') return '此安装由 DSH 包管理器管理，请从 DSH 插件管理更新';
+      }
       if (component.kind === 'pet' || component.id === 'surfpet') {
         try {
           const st = petService.status();
@@ -283,7 +305,7 @@ export function apply(ctx) {
       const list = [];
       const updCfg = readUnified().config?.updates ?? {};
       // 1) SurfCore 本体：源码树，走 git
-      list.push({ id: 'surfcore', name: 'SurfCore 本体', dir: QQBOT_ROOT, kind: 'git', branch: 'main', versionRepo: 'Mieksido/surfcore' });
+      list.push({ id: 'surfcore', name: 'SurfCore 本体', dir: QQBOT_ROOT, kind: 'git', branch: 'main', versionRepo: 'Rock-Connotation/surfcore-mac' });
       // 2) 语音包**不进入自动更新列表**：它是离线运行时/模型/vendor 包，
       //    不是 SurfCore 那种代码 zip；统一 updateFromZip 会按 surfcore-* + package.json
       //    解析而必然失败（2026-10-30 用户反馈）。需要新包时在「语音」页重新导入离线包，
@@ -369,6 +391,10 @@ export function apply(ctx) {
   // 失败后也能手动拉起。
   function startSchedulerNow() {
     if (scheduler && schedulerStatus.running) return schedulerStatus;
+    if (readBiliConfig().config.night?.controlledOnly === true) {
+      schedulerStatus = idleSchedulerStatus('controlled-only');
+      return schedulerStatus;
+    }
     if (!platformStartEnabled('bili')) {
       schedulerStatus = idleSchedulerStatus('disabled');
       pluginLog('生物钟未启动：B站 启动开关关闭（设置 → B站 → 启动 B站）');
@@ -538,6 +564,11 @@ export function apply(ctx) {
 
   async function switchCharacterEverywhere(id) {
     const current = readCurrentCharacter();
+    if (current?.id === id) return { ok: true, already: true, current };
+    return companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id)))));
+  }
+  async function switchCharacterImplementation(id) {
+    const current = readCurrentCharacter();
     if (current && current.id === id) return { ok: true, already: true, current };
     const target = characterDetail(id).character;
     const skipPlatform = process.env.SURFCORE_DISABLE_PLATFORM_RESTART === '1';
@@ -600,6 +631,115 @@ export function apply(ctx) {
   // 记忆卡：插件宿主是唯一维护者。启动 8 秒后整理一次（摄取桥接 inbox + B站记忆），
   // 之后每 10 分钟一次；每日衰减由 memory-card 自己按 dailyHour 判断。
   memoryCardTimer = startMemoryCardTimer({ log: pluginLog, callBridge });
+
+  const perceptionConfig = () => readUnified().config?.perception ?? {};
+  const perceptionOptions = (config = perceptionConfig()) => {
+    const media = resolveMediaRuntime({ env: { ...process.env,
+      ...(config.ffmpegPath ? { FFMPEG: config.ffmpegPath } : {}),
+      ...(config.ffprobePath ? { FFPROBE_PATH: config.ffprobePath } : {}) } });
+    return { engine: config.engine, ffmpegPath: config.ffmpegPath || media.ffmpegPath,
+      ffprobePath: config.ffprobePath || media.ffprobePath };
+  };
+  const transcription = createPerceptionService({ ...perceptionOptions(), dataRoot: STATE_DIR, getCharacter: readCurrentCharacter });
+  const douyin = createDouyinService({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter });
+  const companionModel = createCompanionModel({ ctx, tokenBudget });
+  const companionMemory = createCompanionMemory({ getCharacter: readCurrentCharacter,
+    maintainMemory: options => runMemoryCardMaintenance(options),
+  });
+  const douyinPerception = createDouyinPerception({ stateDir: STATE_DIR, asrService: transcription,
+    getCharacter: readCurrentCharacter, ...perceptionOptions(),
+  });
+  const companionReadiness = async () => {
+    const state = await douyin.status();
+    if (!state.ok) return state;
+    if (!state.enabled || !state.account?.configured) return { ok: false, code: 'COMPANION_LOGIN_REQUIRED', error: '当前角色的抖音账号尚未就绪。', hint: '在下方开启抖音并完成专用浏览器登录与账号绑定。' };
+    return companionModel.readiness();
+  };
+  const companionSharing = createCompanionSharing({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
+    buildContext: context => companionMemory.buildContext(context),
+    modelReply: options => companionModel.reply(options), readiness: companionReadiness,
+  });
+  const douyinCompanion = createDouyinCompanion({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
+    readFeed: context => douyin.readFeedForCompanion(context),
+    perceive: (item, context, options) => douyinPerception.perceive(item, context, options),
+    modelCall: options => companionModel.call(options),
+    buildContext: context => companionMemory.buildContext(context),
+    recordMemory: (context, value, options) => companionMemory.recordMemory(context, value, options),
+    recordSharing: (context, value, options) => companionSharing.record(context, value, options),
+    readiness: companionReadiness,
+  });
+  const companionController = createCompanionController({ engine: douyinCompanion, getCharacter: readCurrentCharacter, readiness: companionReadiness });
+  const sharingController = createSharingController({ service: companionSharing, getCharacter: readCurrentCharacter });
+  const companionTimer = setInterval(() => { void douyinCompanion.tick().catch(() => pluginLog('[抖音陪伴] 定时状态检查失败，请打开日记页核对；不会补跑')); }, 30000);
+  companionTimer.unref?.();
+  const unregisterDouyin = platforms.register({
+    id: 'douyin', name: '抖音', version: '0.1.0', status: 'active', builtin: true,
+    capabilities: ['identity', 'prompt.block'],
+    status: () => douyin.status(),
+    promptBlock: () => '【抖音来源】推荐文案不等于观看、点赞或认可；观看日记另注明音轨处理和稀疏画面覆盖。互动只能生成本机待审草稿。账号登录与绑定在设置页完成。',
+  }, 'surfcore');
+  const unregisterDouyinRuntime = platforms.setRuntime('douyin', {
+    status: async () => {
+      const state = await douyin.status();
+      return { state: state.ok === false ? 'error' : !state.enabled ? 'disabled' : state.account?.configured ? 'ready' : 'needs_auth' };
+    },
+    observe: (_request, context) => douyin.readFeed(context),
+    dispose: () => douyin.dispose(),
+  });
+  const douyinApi = createDouyinApi({ service: douyin, getCharacter: readCurrentCharacter,
+    withTransition: action => companionSharing.withTransition(action),
+    cancelCompanion: context => douyinCompanion.configure(context, { enabled: false }),
+    observeFeed: context => platforms.observe('douyin', { operation: 'homepage-feed' }, { ...context, activityId: `douyin-${randomUUID()}` }),
+  });
+  const perception = createBiliPerceptionService({ asrService: transcription, stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
+    onExperience: async (event) => {
+      const role = readCurrentCharacter();
+      if (!role || role.id !== event.characterId || role.epoch !== event.characterEpoch) {
+        return { ok: false, code: 'CHARACTER_STALE', error: '角色已切换，经历未投影', hint: '保留原作业证据，以当前角色发起新活动' };
+      }
+      const appended = appendExperienceEvent(characterPaths(role.id), event);
+      if (!appended.ok) return appended;
+      const projected = await runMemoryCardMaintenance({});
+      if (projected.ok === false) return projected;
+      const after = readCurrentCharacter();
+      if (!after || after.id !== role.id || after.epoch !== role.epoch) return { ok: false, code: 'CHARACTER_STALE', error: '角色已切换，原经历保留在原角色队列', hint: '以当前角色重新发起活动；旧证据不会进入新角色' };
+      return { ok: true, eventId: appended.eventId };
+    },
+  });
+  const biliRoundController = createBiliRoundController({
+    ctx, stateDir: STATE_DIR, tokenBudget, perception, runBili,
+    getCharacter: readCurrentCharacter, buildContext: biliContextForRound,
+    maintainMemory: async () => { const result = await runMemoryCardMaintenance({}); return { ...result, ok: result.ok !== false }; },
+    readConfig: () => readBiliConfig().config, saveConfig: value => saveBiliConfig(value),
+    platformEnabled: () => platformStartEnabled('bili'), legacyRunning: () => Boolean(scheduler),
+    stopLegacy: async () => { await scheduler?.retire?.(); scheduler = null; schedulerStatus = idleSchedulerStatus('controlled-only'); },
+    json, readBody,
+  });
+  platforms.setRuntime('bili', {
+    status: async () => ({ state: readUnified().config?.platforms?.start?.bili === false ? 'disabled' : fs.existsSync(BILI_CRED) ? 'ready' : 'needs_auth' }),
+    observe: async (request, context) => {
+      try { return { ok: true, ...await (request.operation === 'resume' ? perception.resume(request.jobId) : perception.submitBili({ ...request.request, ...context })) }; }
+      catch (error) { return { ok: false, code: error.code || 'BILI_JOB_SUBMIT_FAILED', error: 'B站作业未能提交', hint: error.hint || '检查视频、角色和本地依赖后重新提交' }; }
+    },
+  });
+  const perceptionApi = createPerceptionApiService({
+    service: perception, stateDir: STATE_DIR, currentDshUrl, getCharacter: readCurrentCharacter, getConfig: perceptionConfig,
+    observeBili: (request, context) => platforms.observe('bili', { operation: 'submit', request }, context),
+    resumeBili: (job, context) => platforms.observe('bili', { operation: 'resume', jobId: job.jobId }, context),
+    getChannels: async () => [await platforms.channelCapabilities('bili')],
+    configure: async (config) => {
+      const previous = perceptionConfig();
+      if (!config || typeof config !== 'object' || Array.isArray(config)) {
+        return { ok: false, code: 'ASR_CONFIG_INVALID', error: '感知设置格式错误', hint: '填写本地引擎、模型与媒体工具后重新保存' };
+      }
+      config = { engine: config.engine, ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath };
+      await perception.configure(perceptionOptions(config));
+      try { saveUnified({ perception: config }); }
+      catch (error) { await perception.configure(perceptionOptions(previous)); throw error; }
+      return { ok: true, doctor: await perception.doctor() };
+    },
+  });
+
 
   // 角色自动存档：启动 10 秒后跑一次，之后每 6 小时检查（每天最多一份 + 11 个年龄档轮换）。
   const runCharacterAutoSave = () => {
@@ -819,6 +959,10 @@ export function apply(ctx) {
       return;
     }
     const body = JSON.parse(await readBody(req) || '{}');
+    const transition = platformStartEnabled('bili') && body.unified?.platforms?.start?.bili === false ? biliRoundController.beginTransition() : null;
+    try {
+    // Await cancellation BEFORE reading snapshots or checking their optimistic versions.
+    if (transition) await transition.ready;
     // 乐观并发：设置页加载后，如果配置被控制台/别的窗口改过，这里拒绝整份回写，
     // 否则会把别人的修改覆盖掉（2026-10-29：语音开关"自己回弹"）。
     const baseStamp = body?.baseStamp && typeof body.baseStamp === 'object' ? body.baseStamp : null;
@@ -892,11 +1036,12 @@ export function apply(ctx) {
       result.biliBackup = saved.backup;
       if (Array.isArray(saved.warnings) && saved.warnings.length) result.warnings.push(...saved.warnings);
       result.notes.push('B站配置已保存；生物钟每轮重读配置，下一轮即生效。');
+      if (saved.config.night?.controlledOnly === true && scheduler) await biliRoundController.pause();
     }
     // 角色名校验：tts.character 必须是 [voice.characters] 里的名字，不能填音色 id。
     const incomingCharacter = body?.unified?.socialV2?.voice?.tts?.character;
     if (typeof incomingCharacter === 'string' && incomingCharacter.trim()) {
-      const packsDir = path.resolve(String(currentQq?.voicePacks?.dir || path.join(QQBOT_ROOT, 'state', 'voice-packs')));
+      const packsDir = path.resolve(String(currentQq?.voicePacks?.dir || path.join(QQ_STATE_DIR(), 'voice-packs')));
       const { characters } = readPackCharacters(packsDir);
       const verdict = validateCharacter(incomingCharacter, characters);
       if (!verdict.ok) {
@@ -972,13 +1117,13 @@ export function apply(ctx) {
         result.bridgeStop = stopped;
         result.warnings.push(stopped.ok
           ? 'QQ 启动开关已关闭：QQ 桥接已停止。'
-          : `QQ 启动开关已关闭，但桥接没停下来：${stopped.error ?? stopped.message ?? '未知'}`);
+          : `QQ 启动开关已关闭，但桥接没停下来：${[stopped.error ?? stopped.message ?? '未知', stopped.hint].filter(Boolean).join('；')}`);
       } else if (afterPlatformStart.qq && !beforePlatformStart.qq && body.restartBridge !== true) {
         const started = await startBridge({ dshWebUrl: currentDshUrl() });
         result.bridgeStart = started;
         result.warnings.push(started.ok
           ? 'QQ 启动开关已打开：QQ 桥接已启动。'
-          : `QQ 启动开关已打开，但桥接启动失败：${started.error ?? started.message ?? '未知'}`);
+          : `QQ 启动开关已打开，但桥接启动失败：${[started.error ?? started.message ?? '未知', started.hint].filter(Boolean).join('；')}`);
       }
     }
     // 关闭管理员温柔模式并选择“丢弃上下文”：保存配置后先退役 QQ 会话/社交上下文，再重启桥接。
@@ -1020,6 +1165,7 @@ export function apply(ctx) {
       unified: fileStamp(path.join(STATE_DIR, 'config.json')),
     };
     json(res, 200, result);
+    } finally { transition?.finish(); }
   }
 
   // ── 角色人格 ────────────────────────────────────────────────────────────
@@ -1072,6 +1218,10 @@ export function apply(ctx) {
         if (!id) throw new Error('缺少角色 id');
         const current = readCurrentCharacter();
         if (!current || current.id !== id) throw new Error('只能回档当前角色；先加载这个角色再回档');
+        return await companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(async () => {
+        const transition = biliRoundController.beginTransition();
+        try {
+        await transition.ready;
         const skipPlatform = process.env.SURFCORE_DISABLE_PLATFORM_RESTART === '1';
         const wasRunning = skipPlatform ? false : (await bridgeStatus()).running;
         await memoryCardIdle();
@@ -1094,6 +1244,8 @@ export function apply(ctx) {
         if (!skipPlatform) startSchedulerNow();
         json(res, 200, { ...restored, bridgeRestarted: wasRunning, scheduler: schedulerStatus });
         return;
+        } finally { transition.finish(); }
+        })));
       }
       if (action === 'migrate') {
         json(res, 200, ensureCharacterSystem());
@@ -1174,8 +1326,7 @@ export function apply(ctx) {
     }
   }
 
-  function personaIdentityLine() {
-    const cur = readCurrentCharacter();
+  function personaIdentityLine(cur = readCurrentCharacter()) {
     const name = String(cur?.name || '').trim() || '这个角色';
     let admin = {};
     try {
@@ -1211,109 +1362,129 @@ ${body}`;
   }
 
   async function handlePersona(req, res) {
-    const layerPaths = () => {
-      const layers = activePersonaLayers();
-      return layers ? {
-        core: layers.core || resolvePersonaFile(),
-        daily: layers.daily,
-        tone: layers.tone,
-        scenes: layers.scenes,
-        scenesDir: layers.scenesDir,
-      } : { core: resolvePersonaFile(), daily: '', tone: '', scenes: {}, scenesDir: '' };
-    };
-    const sceneLabels = { 'qq-group': 'QQ 群聊', 'qq-private': 'QQ 私聊', bili: 'B站', pet: '桌宠' };
-    if (req.method === 'GET') {
-      const paths = layerPaths();
-      const core = readTextFile(paths.core);
-      const daily = paths.daily ? withDailyIdentity(readTextFile(paths.daily)) : withDailyIdentity('');
-      const scenes = {};
-      for (const [id, file] of Object.entries(paths.scenes || {})) {
-        scenes[id] = { path: file, text: readTextFile(file), chars: readTextFile(file).length };
+    try {
+      const layerPaths = (character) => {
+        const layers = character ? personaLayersForCharacter(character.id) : null;
+        return layers ? {
+          core: layers.core || resolvePersonaFile(),
+          daily: layers.daily,
+          tone: layers.tone,
+          scenes: layers.scenes,
+          scenesDir: layers.scenesDir,
+        } : { core: resolvePersonaFile(), daily: '', tone: '', scenes: {}, scenesDir: '' };
+      };
+      const sceneLabels = { 'qq-group': 'QQ 群聊', 'qq-private': 'QQ 私聊', bili: 'B站', pet: '桌宠' };
+      if (req.method === 'GET') {
+        const character = readCurrentCharacter();
+        const paths = layerPaths(character);
+        const core = readTextFile(paths.core);
+        const identity = personaIdentityLine(character);
+        const daily = paths.daily ? withDailyIdentity(readTextFile(paths.daily), identity) : withDailyIdentity('', identity);
+        const scenes = {};
+        for (const [id, file] of Object.entries(paths.scenes || {})) {
+          scenes[id] = { path: file, text: readTextFile(file), chars: readTextFile(file).length };
+        }
+        const backups = listBackups(120).filter((item) => /^persona(?:-|$)/.test(item.name));
+        json(res, 200, {
+          ok: true,
+          character: character ? { id: character.id, epoch: character.epoch } : null,
+          path: paths.core,
+          text: core,
+          chars: core.length,
+          mtime: mtimeIso(paths.core),
+          layers: {
+            core: { path: paths.core, text: core, chars: core.length },
+            tone: { path: paths.tone, text: readTextFile(paths.tone), chars: readTextFile(paths.tone).length },
+            daily: { path: paths.daily, text: daily, chars: daily.length },
+            scenes,
+          },
+          sceneLabels,
+          backups,
+          note: '人格卡分层：persona.md 是核心；persona.tone.md 是语气；persona.daily.md 是日常；persona.scenes/* 是场景。所有层都手动编辑，不会自动改写。',
+        });
+        return;
       }
-      const backups = listBackups(120).filter((item) => /^persona(?:-|$)/.test(item.name));
-      json(res, 200, {
-        ok: true,
-        path: paths.core,
-        text: core,
-        chars: core.length,
-        mtime: mtimeIso(paths.core),
-        layers: {
-          core: { path: paths.core, text: core, chars: core.length },
-          tone: { path: paths.tone, text: readTextFile(paths.tone), chars: readTextFile(paths.tone).length },
-          daily: { path: paths.daily, text: daily, chars: daily.length },
-          scenes,
-        },
-        sceneLabels,
-        backups,
-        note: '人格卡分层：persona.md 是核心；persona.tone.md 是语气；persona.daily.md 是日常；persona.scenes/* 是场景。所有层都手动编辑，不会自动改写。',
-      });
-      return;
-    }
-    const body = JSON.parse(await readBody(req) || '{}');
-    if (body.action === 'restore') {
-      const name = safeBackupName(body.name);
-      if (!name) { json(res, 400, { ok: false, error: '备份名非法' }); return; }
-      const source = path.join(BACKUP_DIR, name);
-      if (!fs.existsSync(source)) { json(res, 404, { ok: false, code: 'PERSONA_BACKUP_MISSING', error: '备份不存在', hint: '刷新备份列表后重试' }); return; }
-      const paths = layerPaths();
+      if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'PERSONA_METHOD', error: '只支持 GET 或 POST。', hint: '刷新角色页后重试。' }); return; }
+      let body;
+      try { body = JSON.parse(await readBody(req) || '{}'); }
+      catch { json(res, 400, { ok: false, code: 'PERSONA_BODY_INVALID', error: '人格请求不是有效 JSON。', hint: '刷新角色页后重试。' }); return; }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) { json(res, 400, { ok: false, code: 'PERSONA_BODY_INVALID', error: '人格请求必须是对象。', hint: '刷新角色页后重试。' }); return; }
+      const character = readCurrentCharacter();
+      if (Object.prototype.hasOwnProperty.call(body, 'expectedCharacter')) {
+        const expected = body.expectedCharacter;
+        if (!expected || typeof expected !== 'object' || Array.isArray(expected)
+          || typeof expected.id !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(expected.id)
+          || !Number.isSafeInteger(expected.epoch) || expected.epoch < 1
+          || !character || expected.id !== character.id || expected.epoch !== character.epoch) {
+          json(res, 409, { ok: false, code: 'PERSONA_CHARACTER_STALE', error: '角色已切换或人格草稿的角色身份无效。', hint: '刷新并检查当前角色后重新编辑/保存' });
+          return;
+        }
+      }
+      if (body.action === 'restore') {
+        const name = safeBackupName(body.name);
+        if (!name) { json(res, 400, { ok: false, code: 'PERSONA_BACKUP_INVALID', error: '备份名非法', hint: '刷新备份列表后重试。' }); return; }
+        const source = path.join(BACKUP_DIR, name);
+        if (!fs.existsSync(source)) { json(res, 404, { ok: false, code: 'PERSONA_BACKUP_MISSING', error: '备份不存在', hint: '刷新备份列表后重试' }); return; }
+        const paths = layerPaths(character);
+        let target = paths.core;
+        let label = 'persona';
+        if (name.startsWith('persona-daily-')) { target = paths.daily; label = 'persona-daily'; }
+        else if (name.startsWith('persona-tone-')) { target = paths.tone; label = 'persona-tone'; }
+        else if (name.startsWith('persona-scene-')) {
+          const scene = Object.keys(sceneLabels).find((id) => name.startsWith(`persona-scene-${id}-`));
+          if (!scene) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: '备份对应的场景未知', hint: '检查备份文件名' }); return; }
+          target = paths.scenes?.[scene] || '';
+          label = `persona-scene-${scene}`;
+        }
+        if (!target) { json(res, 400, { ok: false, code: 'PERSONA_LAYER_UNAVAILABLE', error: '这个层在当前角色里没有路径（可能未启用角色系统）', hint: '先创建/加载角色' }); return; }
+        backupFile(target, label);
+        fs.copyFileSync(source, target);
+        if (character) touchCharacter(character.id);
+        json(res, 200, { ok: true, restored: name, target, text: readTextFile(target), layers: layerPaths(character) });
+        return;
+      }
+      const layer = String(body.layer || 'core');
+      const scene = String(body.scene || '');
+      const paths = layerPaths(character);
       let target = paths.core;
       let label = 'persona';
-      if (name.startsWith('persona-daily-')) { target = paths.daily; label = 'persona-daily'; }
-      else if (name.startsWith('persona-tone-')) { target = paths.tone; label = 'persona-tone'; }
-      else if (name.startsWith('persona-scene-')) {
-        const scene = Object.keys(sceneLabels).find((id) => name.startsWith(`persona-scene-${id}-`));
-        if (!scene) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: '备份对应的场景未知', hint: '检查备份文件名' }); return; }
+      if (layer === 'tone') {
+        target = paths.tone;
+        label = 'persona-tone';
+      } else if (layer === 'daily') {
+        target = paths.daily;
+        label = 'persona-daily';
+      } else if (layer === 'scene') {
+        if (!sceneLabels[scene]) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: `未知场景：${scene}`, hint: '只支持 qq-group / qq-private / bili / pet' }); return; }
         target = paths.scenes?.[scene] || '';
         label = `persona-scene-${scene}`;
       }
-      if (!target) { json(res, 400, { ok: false, code: 'PERSONA_LAYER_UNAVAILABLE', error: '这个层在当前角色里没有路径（可能未启用角色系统）', hint: '先创建/加载角色' }); return; }
-      backupFile(target, label);
-      fs.copyFileSync(source, target);
-      const cur = readCurrentCharacter();
-      if (cur) touchCharacter(cur.id);
-      json(res, 200, { ok: true, restored: name, target, text: readTextFile(target), layers: layerPaths() });
-      return;
+      if (!target) {
+        json(res, 400, { ok: false, code: 'PERSONA_LAYER_UNAVAILABLE', error: '这个层在当前角色里没有路径（可能未启用角色系统）', hint: '先创建/加载角色' });
+        return;
+      }
+      const text = String(body.text ?? '');
+      if (layer === 'core' && text.length < 50) { json(res, 400, { ok: false, code: 'PERSONA_CORE_TOO_SHORT', error: '人格核心太短（至少 50 字）', hint: '核心卡是每次注入的底座，不能留空' }); return; }
+      if (text.length > 64 * 1024) { json(res, 400, { ok: false, code: 'PERSONA_TOO_LARGE', error: '人格内容超过 64KB', hint: '拆成核心/场景/日常层，或精简内容' }); return; }
+      const scan = scanText(text);
+      const severe = scan.secrets.length > 0 || scan.pii.some((hit) => hit.severe);
+      if (severe) {
+        json(res, 400, {
+          ok: false,
+          code: 'PERSONA_SENSITIVE',
+          error: '人格内容里命中密钥/密码/身份证/住址规则，拒绝保存',
+          hint: '删掉这些内容后再保存；人格卡不应包含凭据',
+          labels: [...new Set([...scan.secrets, ...scan.pii.filter((h) => h.severe)].map((h) => h.label))],
+        });
+        return;
+      }
+      const backup = backupFile(target, label);
+      writeTextAtomic(target, text.endsWith('\n') ? text : `${text}\n`);
+      if (character) touchCharacter(character.id);
+      json(res, 200, { ok: true, layer, scene: layer === 'scene' ? scene : '', chars: text.length, backup, path: target, layers: layerPaths(character) });
+    } catch {
+      json(res, 500, { ok: false, code: 'PERSONA_OPERATION_FAILED', error: '人格读取或保存失败。', hint: '检查角色文件和目录权限后重试。' });
     }
-    const layer = String(body.layer || 'core');
-    const scene = String(body.scene || '');
-    const paths = layerPaths();
-    let target = paths.core;
-    let label = 'persona';
-    if (layer === 'tone') {
-      target = paths.tone;
-      label = 'persona-tone';
-    } else if (layer === 'daily') {
-      target = paths.daily;
-      label = 'persona-daily';
-    } else if (layer === 'scene') {
-      if (!sceneLabels[scene]) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: `未知场景：${scene}`, hint: '只支持 qq-group / qq-private / bili / pet' }); return; }
-      target = paths.scenes?.[scene] || '';
-      label = `persona-scene-${scene}`;
-    }
-    if (!target) {
-      json(res, 400, { ok: false, code: 'PERSONA_LAYER_UNAVAILABLE', error: '这个层在当前角色里没有路径（可能未启用角色系统）', hint: '先创建/加载角色' });
-      return;
-    }
-    const text = String(body.text ?? '');
-    if (layer === 'core' && text.length < 50) { json(res, 400, { ok: false, code: 'PERSONA_CORE_TOO_SHORT', error: '人格核心太短（至少 50 字）', hint: '核心卡是每次注入的底座，不能留空' }); return; }
-    if (text.length > 64 * 1024) { json(res, 400, { ok: false, code: 'PERSONA_TOO_LARGE', error: '人格内容超过 64KB', hint: '拆成核心/场景/日常层，或精简内容' }); return; }
-    const scan = scanText(text);
-    const severe = scan.secrets.length > 0 || scan.pii.some((hit) => hit.severe);
-    if (severe) {
-      json(res, 400, {
-        ok: false,
-        code: 'PERSONA_SENSITIVE',
-        error: '人格内容里命中密钥/密码/身份证/住址规则，拒绝保存',
-        hint: '删掉这些内容后再保存；人格卡不应包含凭据',
-        labels: [...new Set([...scan.secrets, ...scan.pii.filter((h) => h.severe)].map((h) => h.label))],
-      });
-      return;
-    }
-    const backup = backupFile(target, label);
-        writeTextAtomic(target, text.endsWith('\n') ? text : `${text}\n`);
-    const cur = readCurrentCharacter();
-    if (cur) touchCharacter(cur.id);
-    json(res, 200, { ok: true, layer, scene: layer === 'scene' ? scene : '', chars: text.length, backup, path: target, layers: layerPaths() });
   }
 
   // ── 记忆 ────────────────────────────────────────────────────────────────
@@ -1376,6 +1547,7 @@ ${body}`;
     const action = String(body.action ?? '');
     if (action === 'maintain') {
       const result = await runMemoryCardMaintenance({ forceDecay: body.forceDecay === true, config });
+      if (result.ok === false) { json(res, 409, result); return; }
       const snapshot = memoryCardSnapshot(config);
       json(res, 200, { ...snapshot, changed: result.changed, addedBili: result.addedBili, addedQq: result.addedQq, addedPet: result.addedPet });
       return;
@@ -1558,8 +1730,14 @@ ${body}`;
     let snowState = { state: 'unknown', hint: '' };
     try { snowState = await diagnoseSnowLuma(runtimeBridge?.snowluma ?? {}, { bridge: runtimeBridge }); } catch {}
     const bridgeSrc = path.join(QQBOT_ROOT, 'src', 'bridge.js');
-    return buildInstallChecks({
-      nodeVersion: process.versions.node,
+    let nodeRuntime;
+    try { nodeRuntime = resolveNodeRuntime(); }
+    catch (error) { nodeRuntime = { ok: false, code: error.code, error: error.message, hint: error.hint }; }
+    const enabledChannels = readUnified().config?.platforms?.start ?? {};
+    const checks = buildInstallChecks({
+      nodeRuntime,
+      enabledChannels,
+      mediaRuntime: enabledChannels.bili !== false ? resolveMediaRuntime() : undefined,
       hasUnified: readUnified().hasUserFile,
       unifiedMasked: maskPath(UNIFIED_FILE),
       ownerQQ: String(all.unified?.admin?.qq ?? '').trim(),
@@ -1573,6 +1751,11 @@ ${body}`;
       profile: dshProfileWithSurfcore(),
       token: String(qqCfg.consoleToken ?? '').trim(),
     });
+    const asr = await perception.doctor();
+    const ready = asr.ready === true || asr.ok === true;
+    checks.push({ name: '共享本地 ASR', level: ready ? 'ok' : 'fail', ok: ready,
+      detail: ready ? '引擎与模型校验通过' : `${asr.code || 'ASR_NOT_READY'}：${asr.error || '识别尚未就绪'}`, fix: ready ? '' : asr.hint });
+    return checks;
   }
 
   let installJob = { running: false, startedAt: null, finishedAt: null, steps: [] };
@@ -1583,9 +1766,9 @@ ${body}`;
     return step;
   }
 
-  function runCommand(cmd, args, { cwd, timeoutMs = 600_000 } = {}) {
+  function runCommand(cmd, args, { cwd, timeoutMs = 600_000, env = process.env } = {}) {
     return new Promise((resolve) => {
-      const child = spawn(cmd, args, { cwd, windowsHide: true, shell: process.platform === 'win32' });
+      const child = spawn(cmd, args, { cwd, env, windowsHide: true, shell: process.platform === 'win32' });
       let out = '';
       const timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
       child.stdout?.on('data', (d) => { out += String(d).slice(0, 4000); });
@@ -1623,7 +1806,8 @@ ${body}`;
             profile = names.includes('web') ? 'web' : (names[0] ?? 'web');
           } catch { profile = 'web'; }
         }
-        const r = await runCommand(process.execPath, [path.join(QQBOT_ROOT, 'scripts', 'setup-dsh.mjs'), profile], { cwd: QQBOT_ROOT, timeoutMs: 120_000 });
+        const runtime = resolveNodeRuntime();
+        const r = await runCommand(runtime.executable, [...runtime.argvPrefix, path.join(QQBOT_ROOT, 'scripts', 'setup-dsh.mjs'), profile], { cwd: QQBOT_ROOT, timeoutMs: 120_000, env: { ...process.env, ...runtime.envPatch } });
         done(dshStep, r.ok, r.ok ? '已注册（重启 DSH 生效）' : (r.out.slice(-400)));
       }
 
@@ -1710,7 +1894,7 @@ ${body}`;
       const add = (name, ok, detail = '') => checks.push({ name, ok: Boolean(ok), detail });
       add('插件目录', fs.existsSync(PLUGIN_ROOT), PLUGIN_ROOT);
       add('surfcore 根目录', fs.existsSync(QQ_CONFIG), maskPath(QQ_CONFIG));
-      add('QQ 桥接源码', fs.existsSync(path.join(path.dirname(QQ_CONFIG), 'src', 'bridge.js')), 'src/bridge.js');
+      add('QQ 桥接源码', fs.existsSync(path.join(QQBOT_ROOT, 'src', 'bridge.js')), 'src/bridge.js');
       add('B站工具链', fs.existsSync(BILI_MJS), maskPath(BILI_MJS));
       add('B站配置', fs.existsSync(BILI_CONFIG), maskPath(BILI_CONFIG));
       add('B站 cookie', fs.existsSync(BILI_CRED), fs.existsSync(BILI_CRED) ? '已写入（不回显内容）' : '未写入');
@@ -1946,20 +2130,6 @@ ${body}`;
     return { port, url: `http://127.0.0.1:${port}` };
   }
 
-  // 只用系统默认浏览器打开本地回环地址；URL 由端口拼出，不接受外部输入。
-  function openLocalUrl(url) {
-    if (process.env.SURFCORE_SKIP_AUTOSTART === '1') return false;
-    if (!/^http:\/\/127\.0\.0\.1:\d{2,5}$/.test(String(url))) return false;
-    try {
-      spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${url}"`], {
-        detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true,
-      }).unref();
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   // SnowLuma 连不上时到底卡在哪一步：进程没起 / 停在登录页 / token 或端口不对。
   // 桥接的 goodError 只有一句 fetch failed，光看它没法给用户任何可执行的信息。
   async function diagnoseSnowLuma(bridgeSnow = {}, { bridge = null } = {}) {
@@ -2018,13 +2188,13 @@ ${body}`;
 
     // 进程在、但 OneBot 没起 → 多半停在登录页：直接把 WebUI 打开让人扫码。
     if (await portOpen(webui.port)) {
-      const opened = openLocalUrl(webui.url);
+      const openResult = await openLocalUrl(webui.url);
       return {
-        ok: true,
+        ...openResult,
         needsLogin: true,
-        opened,
+        opened: openResult.opened,
         webui: webui.url,
-        message: opened ? `SnowLuma 在登录页，已打开控制台 ${webui.url}` : `SnowLuma 在登录页：请打开 ${webui.url} 扫码`,
+        message: openResult.opened ? `SnowLuma 在登录页，已请求打开控制台 ${webui.url}` : openResult.error,
       };
     }
 
@@ -2050,14 +2220,14 @@ ${body}`;
       while (Date.now() < until) {
         await new Promise((resolve) => setTimeout(resolve, 400));
         if (await portOpen(webui.port)) {
-          const opened = openLocalUrl(webui.url);
+          const openResult = await openLocalUrl(webui.url);
           return {
-            ok: true,
+            ...openResult,
             started: true,
-            opened,
+            opened: openResult.opened,
             webui: webui.url,
             launcher,
-            message: opened ? `已启动 SnowLuma 并打开控制台 ${webui.url}` : `已启动 SnowLuma：${webui.url}`,
+            message: openResult.opened ? `已启动 SnowLuma 并请求打开控制台 ${webui.url}` : openResult.error,
           };
         }
       }
@@ -2693,8 +2863,10 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         });
       }
       if (id === 'bili') {
-        const r = stopSchedulerNow();
-        return launchItem(id, true, { message: r.wasRunning ? 'B站生物钟已停止' : 'B站生物钟本来就没在跑', detail: r });
+        return biliRoundController.withTransition(() => {
+          const r = stopSchedulerNow();
+          return launchItem(id, true, { message: r.wasRunning ? 'B站生物钟已停止' : 'B站生物钟本来就没在跑', detail: r });
+        });
       }
       if (id === 'pet') {
         const r = await petService.stop();
@@ -2772,6 +2944,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       const snowluma = await launchSnowLuma();
       json(res, 200, {
         ok: bridge?.ok !== false,
+        ...(bridge?.ok === false ? {
+          code: bridge.code || 'BRIDGE_START_FAILED',
+          error: bridge.error || bridge.message || 'QQ 桥接未能启动',
+          hint: bridge.hint || '检查 QQ 桥接状态和日志，处理错误后重试。',
+        } : {}),
         message: [bridge?.message, snowluma?.message || snowluma?.error].filter(Boolean).join('；'),
         bridge,
         snowluma,
@@ -2889,9 +3066,19 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   }
 
   // ── B站动作：依赖体检 / cookie / 待审 / 通知测试 ────────────────────────
-  function runBili(args, timeoutMs = 120_000) {
+  function runBili(args, timeoutMs = 120_000, options = {}) {
+    let runtime;
+    try { runtime = resolveNodeRuntime(); }
+    catch (error) { return Promise.resolve({ ok: false, code: error.code || 'NODE_RUNTIME_NOT_FOUND', error: error.message, hint: error.hint || '检查本地 Node 后重试', out: '', err: 'Node 运行时不可用' }); }
+    // Controlled rounds run a fixed leaf command, so abort also stops its actual process.
+    const controlled = Boolean(options.envPatch?.SURFCORE_EXPECTED_CHARACTER_ID);
+    const fixed = new Set(['feed', 'debrief', 'score', 'dynamic']);
+    if (controlled && !fixed.has(args[0])) return Promise.resolve({ ok: false, code: 'BILI_COMMAND_FORBIDDEN', error: '单轮命令不在白名单', hint: '使用固定的B站单轮流程', out: '', err: '' });
+    const command = controlled ? [path.join(BILI_TOOLS_DIR, 'commands', args[0] + '.mjs'), ...args.slice(1)] : [BILI_MJS, ...args];
     return new Promise((resolve) => {
-      execFile(findNodeExe(), [BILI_MJS, ...args], {
+      execFile(runtime.executable, [...runtime.argvPrefix, ...command], {
+        env: { ...process.env, ...runtime.envPatch, ...(options.envPatch ?? {}) },
+        ...(options.signal ? { signal: options.signal } : {}),
         cwd: BILI_TOOLS_DIR,
         timeout: timeoutMs,
         windowsHide: true,
@@ -2978,6 +3165,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   }
 
   async function handleBili(req, res, url) {
+    if (await biliRoundController.handle(req, res, url)) return;
     const pathname = url.pathname;
     if (req.method === 'GET' && pathname.endsWith('/fish-guard')) {
       const dir = activePlatformStateDir(BILI_DIR);
@@ -3135,9 +3323,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       } catch (error) {
         pluginLog(`[扫码登录] 打开失败：${String(error?.message ?? error)}`);
         json(res, 503, {
-          ok: false, code: 'bili.qr-start-failed',
+          ok: false, code: error.code || 'bili.qr-start-failed',
           error: String(error?.message ?? error),
-          hint: '确认本机有 Edge（扫码用 headless Edge 打开 B站 登录页）；再试一次或重启 DSH 后重试',
+          hint: error.hint || '确认本机有可用 Edge 或 Chrome，再重试扫码',
         });
       }
       return;
@@ -3273,12 +3461,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       return;
     }
     if (action === 'notify-test') {
-      const notifyMjs = path.join(BILI_TOOLS_DIR, 'commands', 'notify.mjs');
-      const result = await new Promise((resolve) => {
-        execFile(findNodeExe(), [notifyMjs, '--test'], { cwd: BILI_TOOLS_DIR, timeout: 60_000, windowsHide: true }, (error, stdout, stderr) => resolve({
-          ok: !error, out: String(stdout ?? '').slice(0, 2000), err: String(stderr ?? '').slice(0, 2000),
-        }));
-      });
+      const result = await runBili(['notify', '--test'], 60_000);
       json(res, 200, { ok: result.ok, ...result });
       return;
     }
@@ -3326,7 +3509,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       // 只支持「打开所在文件夹」；路径固定，不接受任何用户输入。
       if (body.action !== 'open') { json(res, 400, { ok: false, error: '未知 action' }); return; }
       if (process.platform !== 'win32') { json(res, 200, { ok: false, error: '只有 Windows 支持打开文件夹' }); return; }
-      const dir = path.join(QQBOT_ROOT, 'state');
+      const dir = QQ_STATE_DIR();
       try {
         spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
         json(res, 200, { ok: true, path: dir });
@@ -3340,7 +3523,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // ── 平台 ────────────────────────────────────────────────────────────────
   async function handlePlatforms(req, res) {
-    json(res, 200, { ok: true, platforms: await platforms.statusAll(), capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] });
+    json(res, 200, { ok: true, platforms: await platforms.statusAll(), channels: await Promise.all(platforms.list().map(item => platforms.channelCapabilities(item.id))), capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] });
   }
 
   // ── DSH 注册修复（2026-11-01）───────────────────────────────────────────
@@ -3420,13 +3603,47 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   async function handleDshRepair(req, res) {
     if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'DSH_REPAIR_METHOD', error: '只支持 POST', hint: '从设置页点「修复 DSH 注册」' }); return; }
     let body = {};
-    try { body = JSON.parse((await readBody(req)) || '{}'); } catch { json(res, 400, { ok: false, code: 'DSH_REPAIR_BODY', error: '请求体不是合法 JSON' }); return; }
-    const profile = String(body.profile ?? '').trim();
-    if (profile && (profile === '.' || profile === '..' || /[\\/\x00-\x1f<>:"|?*]/.test(profile) || /[. ]$/.test(profile))) {
+    try { body = JSON.parse((await readBody(req)) || '{}'); } catch { json(res, 400, { ok: false, code: 'DSH_REPAIR_BODY', error: '请求体不是合法 JSON', hint: '重新打开设置页后重试。' }); return; }
+    const requested = String(body.profile ?? '').trim();
+    const active = String(process.env.DSH_PROFILE ?? '').trim();
+    let profile = requested || active;
+    const invalidProfile = (name) => name === '.' || name === '..' || name === 'node_modules' || /[\\/\x00-\x1f<>:"|?*]/.test(name) || /[. ]$/.test(name);
+    if ((requested && invalidProfile(requested)) || (active && invalidProfile(active))) {
       json(res, 400, { ok: false, code: 'DSH_REPAIR_PROFILE', error: 'profile 名非法', hint: '只填 profile 目录名（如 desktop），不要填路径' });
       return;
     }
-    const repoRoot = path.dirname(rootPkg);
+    if (requested && active && requested !== active) {
+      json(res, 409, { ok: false, code: 'DSH_REPAIR_PROFILE_MISMATCH', error: '指定 profile 与当前 DSH profile 不一致。', hint: '确认当前 App 的 profile 后重试。' });
+      return;
+    }
+    const profilesRoot = path.join(DSH_HOME, 'profiles');
+    if (!profile) {
+      let names = [];
+      try {
+        names = fs.readdirSync(profilesRoot).filter((name) => {
+          if (invalidProfile(name)) return false;
+          try {
+            if (path.dirname(fs.realpathSync(path.join(profilesRoot, name))) !== fs.realpathSync(profilesRoot)) return false;
+            const pkg = JSON.parse(fs.readFileSync(path.join(profilesRoot, name, 'package.json'), 'utf8'));
+            return Array.isArray(pkg?.dsh?.profile?.bundles) && pkg.dsh.profile.bundles.includes('surfcore');
+          } catch { return false; }
+        });
+      } catch {}
+      if (names.length !== 1) {
+        json(res, 409, { ok: false, code: 'DSH_REPAIR_PROFILE_AMBIGUOUS', error: '无法唯一确定已安装 SurfCore 的 profile。', hint: '确认当前 DSH profile 并显式指定后重试。' });
+        return;
+      }
+      [profile] = names;
+    }
+    try {
+      const root = fs.realpathSync(profilesRoot);
+      const dir = fs.realpathSync(path.join(profilesRoot, profile));
+      if (path.dirname(dir) !== root || !fs.statSync(dir).isDirectory()) throw new Error('invalid profile');
+    } catch {
+      json(res, 400, { ok: false, code: 'DSH_REPAIR_PROFILE', error: '目标 profile 不存在或不属于当前 DSH_HOME。', hint: '确认当前 profile 后重试。' });
+      return;
+    }
+    const repoRoot = QQBOT_ROOT;
     const script = path.join(repoRoot, 'scripts', 'setup-dsh.mjs');
     if (!fs.existsSync(script)) {
       json(res, 400, {
@@ -3435,28 +3652,30 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       });
       return;
     }
-    const args = [script, ...(profile ? [profile] : [])];
-    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', PYTHONIOENCODING: 'utf-8' };
+    let runtime;
+    try { runtime = resolveNodeRuntime(); }
+    catch (error) { json(res, 503, { ok: false, code: error.code || 'NODE_RUNTIME_NOT_FOUND', error: error.message, hint: error.hint || '修复 DSH Node 运行时后重试' }); return; }
+    const args = [...runtime.argvPrefix, script, profile];
+    const env = { ...process.env, ...runtime.envPatch, DSH_HOME, DSH_PROFILE: profile, PYTHONIOENCODING: 'utf-8' };
     const run = (cmd) => new Promise((resolve) => {
       execFile(cmd, args, { cwd: repoRoot, timeout: 180_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env }, (error, stdout, stderr) => resolve({ error, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') }));
     });
-    let result = await run(process.execPath);
-    if (result.error && (result.error.code === 'ENOENT' || result.error.code === 'EACCES')) {
-      result = await run('node');
-    }
+    const result = await run(runtime.executable);
     const output = `${result.stdout}\n${result.stderr}`.trim();
     if (result.error) {
+      const repairCode = /\bDSH_REPAIR_[A-Z_]+\b/.exec(result.stderr)?.[0];
+      const repairHint = /下一步：([^\r\n]+)/.exec(result.stderr)?.[1]?.trim();
       json(res, 500, {
-        ok: false, code: 'DSH_REPAIR_FAILED',
+        ok: false, code: repairCode || 'DSH_REPAIR_FAILED',
         error: String(result.stderr || result.error.message || result.error).slice(0, 1200),
-        hint: '在宿主机终端手动运行 node scripts\\setup-dsh.mjs <profile> 查看完整输出；按提示完全重启 DSH',
+        hint: repairHint || '在宿主机终端运行 node scripts/setup-dsh.mjs <profile> 查看完整输出；按提示完全重启 DSH',
         output: output.slice(-4000),
       });
       return;
     }
     json(res, 200, {
       ok: true,
-      profile: profile || '(auto)',
+      profile,
       requiresRestart: true,
       hint: '已写回 profile。请**完全退出并重开 DSH**（不是刷新页面），然后到控制台重置旧的 QQ 会话。',
       output: output.slice(-4000),
@@ -3562,6 +3781,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   route('prefix', API_PREFIX, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
+    if (pathname === `${API_PREFIX}/douyin/companion-sharing` || pathname === `${API_PREFIX}/douyin/companion-sharing-client`) {
+      await sharingController.handle(req, res, url); return;
+    }
+    if (pathname === `${API_PREFIX}/douyin/companion` || pathname === `${API_PREFIX}/douyin/companion-page` || pathname === `${API_PREFIX}/douyin/companion-portrait`) {
+      await companionController.handle(req, res, url); return;
+    }
+    if (pathname === `${API_PREFIX}/douyin`) { await douyinApi(req, res); return; }
+    if (pathname === `${API_PREFIX}/perception`) { await perceptionApi.handle(req, res, url, { trusted: true }); return; }
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
@@ -3685,6 +3912,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     },
   }));
 
+  disposers.push(ctx.webServer.register({ kind: 'prefix', path: perceptionApi.prefix,
+    handler: (req, res) => perceptionApi.handle(req, res, new URL(req.url, 'http://127.0.0.1')) }));
+  try { perceptionApi.writeHostFile(); } catch (error) { pluginLog('[感知] 服务发现文件不可写，请检查当前数据根权限'); }
+  const perceptionHostTimer = setInterval(() => { try { perceptionApi.writeHostFile(); } catch {} }, 120_000);
+  perceptionHostTimer.unref?.();
+
   route('exact', '/dsh-surfcore/health', async (req, res) => {
     json(res, 200, { ok: true, name, version: VERSION, privacyPolicyVersion: PRIVACY_POLICY_VERSION });
   });
@@ -3718,7 +3951,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
+    clearInterval(companionTimer);
+    void companionSharing.dispose().catch(() => pluginLog('[伙伴对话] 停止回复失败，请打开对话核对已有记录'));
+    void douyinCompanion.dispose().catch(() => pluginLog('[抖音陪伴] 停止活动失败，请检查中断状态'));
+    void douyin.dispose().then(result => { if (!result?.ok) pluginLog('[抖音] 专用浏览器退出未确认，请手动关闭该窗口；资料保留'); }).catch(() => pluginLog('[抖音] 专用浏览器退出未确认，请手动关闭该窗口；资料保留'));
+    if (typeof unregisterDouyinRuntime === 'function') unregisterDouyinRuntime();
+    unregisterDouyin();
     try { scheduler?.stop?.(); } catch {}
+    void biliRoundController.dispose().catch(() => pluginLog('[B站单轮] 停止失败，请检查中断状态'));
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);
@@ -3726,11 +3966,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { billing.dispose(); } catch {}
     try { tokenBudget.dispose(); } catch {}
     try { memoryCardTimer?.stop?.(); } catch {}
+    clearInterval(perceptionHostTimer);
+    try { void Promise.resolve(perception.dispose()).catch(() => pluginLog('[感知] 停止作业失败，请检查中断记录')); } catch {}
     try { closeAllQrLogins(); } catch {}
+    clearTimeout(characterInitial);
     if (characterTimer) clearInterval(characterTimer);
     if (syncTimer) clearInterval(syncTimer);
     if (bridgeRepairTimer) clearInterval(bridgeRepairTimer);
-    void extensionHost.deactivateAll();
+    void extensionHost.deactivateAll().finally(() => platforms.dispose());
     for (const dispose of disposers) { try { dispose(); } catch {} }
   });
 

@@ -156,7 +156,8 @@ function parseDiaryBlocks(text, fallbackDate) {
 /**
  * @param {{stateDir:string, home?:string, biliDir?:string|null, log?:(...args:any[])=>void}} options
  */
-export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null, log = () => {} }) {
+export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null, characterId = null, configFile = null, allowNetwork = true, log = () => {} }) {
+  const pinnedCharacterId = characterId ?? readCurrentCharacter()?.id ?? '';
   const paths = {
     ...resolveBiliPaths(home),
     doc: path.join(stateDir, 'bili-memory.md'),
@@ -166,12 +167,13 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     dynamics: path.join(stateDir, 'bili-dynamics-cache.json'),
     history: path.join(stateDir, 'bili-share-history.json'),
   };
+  if (configFile) paths.config = configFile;
   // 行为账本（日记/评分/额度/收藏）优先角色级；角色级缺文件时只读回退账号级，
   // 兼容角色系统上线前的旧布局，避免旧用户升级后“历史突然消失”。
   const accountBili = paths.bili;
   if (biliDir) paths.bili = biliDir;
   const ledgerFile = (name) => {
-    for (const dir of [paths.bili, accountBili]) {
+    for (const dir of (characterId ? [paths.bili] : [paths.bili, accountBili])) {
       const file = path.join(dir, name);
       try { if (fs.existsSync(file)) return file; } catch {}
     }
@@ -185,9 +187,8 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
   function cfg() {
     const base = readJson(paths.config, {}) ?? {};
     // 角色系统：B站 侧的角色名/称呼以当前角色包为准，不读全局 bili.config.persona（换角色会串）。
-    const cur = readCurrentCharacter();
-    if (cur) {
-      const meta = characterPersonaMeta(cur.id);
+    if (pinnedCharacterId) {
+      const meta = characterPersonaMeta(pinnedCharacterId);
       if (meta) base.persona = { ...(base.persona ?? {}), name: meta.name || base.persona?.name, ...(meta.ownerTitle ? { ownerTitle: meta.ownerTitle } : {}) };
     }
     return base;
@@ -220,6 +221,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     if (!force && Array.isArray(cache.items) && cache.items.length > 0 && Date.now() - Number(cache.at || 0) < 30 * 60 * 1000) {
       return cache;
     }
+    if (!allowNetwork) return cache;
     const res = await fetchMyDynamics({ home });
     if (!res.ok) {
       return cache;
@@ -234,6 +236,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     const items = { ...(cache.items ?? {}) };
     let changed = false;
     let fetched = 0;
+    if (!allowNetwork) return items;
     for (const bv of bvs) {
       if (!BV_RE.test(bv)) continue;
       if (!force && items[bv]?.title) continue;

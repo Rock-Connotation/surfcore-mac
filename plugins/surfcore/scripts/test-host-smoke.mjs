@@ -2,17 +2,27 @@
  * 宿主冒烟测试（不启动 DSH）：
  *   · 用 mock ctx 装配插件；
  *   · 验证路由注册、配置读取、隐私闸门、身份对齐、扩展清单；
- *   · 不写真实配置（只读），不启停桥接。
+ *   · 只写隔离夹具，绝不继承真实配置；不启停桥接。
  *
  * 运行：node scripts/test-host-smoke.mjs
  */
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+// Never inherit a user's active data root, even when the caller forgot isolation.
+const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-host-smoke-'));
+process.env.DSH_HOME = path.join(fixtureRoot, 'dsh');
+process.env.SURFCORE_ROOT = path.join(fixtureRoot, 'repo');
+fs.mkdirSync(path.join(process.env.SURFCORE_ROOT, 'src'), { recursive: true });
+fs.copyFileSync(new URL('../../../config.example.json', import.meta.url), path.join(process.env.SURFCORE_ROOT, 'config.json'));
+fs.writeFileSync(path.join(process.env.SURFCORE_ROOT, 'src', 'bridge.js'), '// fixture; never executed\n');
 // 冒烟测试不启动真实桥接（即使本机 unified 配置开了 autoStart）。
 process.env.SURFCORE_SKIP_AUTOSTART = '1';
 process.env.SURFCORE_DISABLE_CHARACTER_MIGRATION = '1';
 // 不写真实记忆卡 / 不跑后台整理。
 process.env.SURFCORE_DISABLE_MEMORY_TIMER = '1';
-import { apply } from '../lib/index.js';
+const { apply } = await import('../lib/index.js');
 
 const routes = [];
 const effects = [];
@@ -81,6 +91,16 @@ if (!apiRoute || !extRoute || !healthRoute) throw new Error('路由没有全部�
 
 const health = await invoke(healthRoute, 'GET', '/dsh-surfcore/health');
 console.log('health:', health.statusCode, health.body.slice(0, 200));
+
+const sharingClient = await invoke(apiRoute, 'GET', '/dsh-surfcore/api/douyin/companion-sharing-client');
+if (sharingClient.statusCode !== 200 || !String(sharingClient.headers['content-type']).startsWith('text/javascript') || !sharingClient.body.includes('export function mountSharingEntry')) {
+  throw new Error('伙伴客户端必须通过插件总API路由到达实际模块');
+}
+const sharingStatus = await invoke(apiRoute, 'GET', '/dsh-surfcore/api/douyin/companion-sharing');
+const sharingFailure = JSON.parse(sharingStatus.body);
+if (sharingStatus.statusCode !== 409 || sharingFailure.code !== 'DOUYIN_CHAT_CHARACTER_REQUIRED' || !sharingFailure.hint) {
+  throw new Error('伙伴状态必须到达真实控制器并返回可行动的角色缺失错误');
+}
 
 for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/dsh-surfcore/api/persona', '/dsh-surfcore/api/memory', '/dsh-surfcore/api/memory-card', '/dsh-surfcore/api/memory-card/full', '/dsh-surfcore/api/align', '/dsh-surfcore/api/extensions', '/dsh-surfcore/api/platforms', '/dsh-surfcore/api/diagnostics', '/dsh-surfcore/api/bili/automation', '/dsh-surfcore/api/watch-history', '/dsh-surfcore/api/preferences/scan?sources=local&limit=5', '/dsh-surfcore/api/bili/fish-guard', '/dsh-surfcore/api/fish-guard/qq']) {
   const res = await invoke(apiRoute, 'GET', path);

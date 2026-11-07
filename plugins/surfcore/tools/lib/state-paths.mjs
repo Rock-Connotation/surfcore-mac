@@ -49,6 +49,18 @@ export function currentCharacter() {
   return cached
 }
 
+/** Optional caller-pinned identity; read the pointer afresh before effects. */
+export function assertExpectedCharacter() {
+  const id = String(process.env.SURFCORE_EXPECTED_CHARACTER_ID ?? '')
+  const rawEpoch = String(process.env.SURFCORE_EXPECTED_CHARACTER_EPOCH ?? '')
+  if (!id && !rawEpoch) return null
+  const stale = () => Object.assign(new Error('当前角色与活动归属不一致。'), { code: 'STALE_CHARACTER', hint: '保留本轮证据，选择当前角色后重新发起活动。' })
+  if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(id) || !/^[1-9]\d*$/.test(rawEpoch) || !Number.isSafeInteger(Number(rawEpoch))) throw stale()
+  const actual = readJson(CURRENT_FILE, null)
+  if (String(actual?.id ?? '') !== id || Number(actual?.epoch) !== Number(rawEpoch) || !fs.existsSync(path.join(CHARACTERS_DIR, id, 'character.json'))) throw stale()
+  return { id, epoch: Number(rawEpoch) }
+}
+
 /** 当前角色的 B站 行为目录；没有角色系统时回退旧目录。 */
 export function biliStateDir() {
   return currentCharacter()?.biliDir || ACCOUNT_BILI_DIR

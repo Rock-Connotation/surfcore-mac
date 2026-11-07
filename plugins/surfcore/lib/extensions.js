@@ -17,7 +17,7 @@ import { pathToFileURL } from 'node:url';
 import {
   BILI_AI_DIR, BILI_ALIGNMENT_FILE, BILI_CONFIG, BILI_CRED, BILI_MJS,
   EXTENSIONS_DIR, PLUGIN_ROOT, QQBOT_ROOT, QQ_ALIGNMENT_BRIEF, QQ_CONFIG,
-  STATE_DIR, findNodeExe,
+  STATE_DIR, resolveNodeRuntime,
 } from './paths.js';
 import { EXT_STATE_FILE } from './paths.js';
 import { backupFile, readJson, writeJsonAtomic } from './store.js';
@@ -230,15 +230,35 @@ export class ExtensionHost {
 
   execBili(args = [], { timeoutMs = 120_000 } = {}) {
     return new Promise((resolve) => {
-      execFile(findNodeExe(), [BILI_MJS, ...args.map(String)], {
+      let runtime;
+      try { runtime = resolveNodeRuntime(); }
+      catch (error) {
+        resolve({
+          ok: false,
+          code: String(error?.code ?? 'NODE_RUNTIME_NOT_FOUND'),
+          error: String(error?.message ?? error),
+          hint: String(error?.hint ?? '检查 DSH_NODE 与 DSH 内置 Node'),
+          out: '',
+          err: String(error?.message ?? error),
+        });
+        return;
+      }
+      execFile(runtime.executable, [...runtime.argvPrefix, BILI_MJS, ...args.map(String)], {
         cwd: path.dirname(BILI_MJS),
         timeout: Math.max(1000, Math.min(600_000, Number(timeoutMs) || 120_000)),
         windowsHide: true,
+        env: { ...process.env, ...runtime.envPatch },
         maxBuffer: 8 * 1024 * 1024,
       }, (error, stdout, stderr) => {
         resolve({
           ok: !error,
-          code: error?.code ?? 0,
+          code: error?.code === 'ENOENT' ? 'NODE_RUNTIME_EXEC_FAILED' : error?.code ?? 0,
+          ...(error ? {
+            error: String(stderr || error.message),
+            hint: error.code === 'ENOENT'
+              ? '确认所选 Node runtime 仍可执行，然后重载 SurfCore。'
+              : '检查上面的 bili.mjs 错误信息，再重试对应命令。',
+          } : {}),
           out: String(stdout ?? '').slice(-20_000),
           err: String(stderr ?? '').slice(-4000),
         });

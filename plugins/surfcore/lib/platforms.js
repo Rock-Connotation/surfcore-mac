@@ -32,6 +32,43 @@ const BUILTIN_PLATFORMS = [
   { id: 'tieba', name: '贴吧', version: '0.0.0', status: 'planned', builtin: true, capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block'] },
 ];
 
+const CHANNEL_STATES = new Set(['disabled', 'unsupported', 'needs_setup', 'needs_auth', 'ready', 'degraded', 'error']);
+const CHANNEL_METHODS = ['observe', 'prepareMedia', 'execute'];
+
+function failure(code, error, hint) { return { ok: false, code, error, hint }; }
+
+function channelRuntime(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    status: typeof raw.status === 'function' ? raw.status : null,
+    observe: typeof raw.observe === 'function' ? raw.observe : null,
+    prepareMedia: typeof raw.prepareMedia === 'function' ? raw.prepareMedia : null,
+    execute: typeof raw.execute === 'function' ? raw.execute : null,
+    dispose: typeof raw.dispose === 'function' ? raw.dispose : null,
+    disposed: false,
+  };
+}
+
+function disposeRuntime(runtime) {
+  if (!runtime) return Promise.resolve();
+  if (runtime.disposed) return runtime.disposePromise || Promise.resolve();
+  runtime.disposed = true;
+  try { runtime.disposePromise = Promise.resolve(runtime.dispose?.()).catch(() => {}); }
+  catch { runtime.disposePromise = Promise.resolve(); }
+  return runtime.disposePromise;
+}
+
+function captureActivityContext(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const characterId = String(raw.characterId ?? '');
+  const characterEpoch = raw.characterEpoch;
+  const activityId = String(raw.activityId ?? '');
+  if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(characterId)
+    || !Number.isSafeInteger(characterEpoch) || characterEpoch < 1
+    || !/^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/.test(activityId)) return null;
+  return Object.freeze({ ...raw, characterId, characterEpoch, activityId });
+}
+
 function normalizeAdapter(adapter) {
   if (!adapter || typeof adapter !== 'object') throw new Error('平台适配器必须是对象');
   const id = String(adapter.id ?? '').trim();
@@ -53,6 +90,8 @@ function normalizeAdapter(adapter) {
     promptBlock: typeof adapter.promptBlock === 'function' ? adapter.promptBlock : null,
     actions: adapter.actions && typeof adapter.actions === 'object' ? adapter.actions : {},
     dispose: typeof adapter.dispose === 'function' ? adapter.dispose : null,
+    channelRuntime: channelRuntime({ status: adapter.channelStatus, observe: adapter.observe, prepareMedia: adapter.prepareMedia, execute: adapter.execute }),
+    retired: false,
   };
 }
 
@@ -75,8 +114,12 @@ export class PlatformRegistry {
     const previous = this.adapters.get(normalized.id);
     this.adapters.set(normalized.id, normalized);
     return () => {
+      if (normalized.retired) return;
+      normalized.retired = true;
+      disposeRuntime(normalized.channelRuntime);
       try { normalized.dispose?.(); } catch {}
-      if (previous) this.adapters.set(normalized.id, previous);
+      if (this.adapters.get(normalized.id) !== normalized) return;
+      if (previous && !previous.retired) this.adapters.set(normalized.id, previous);
       else this.adapters.delete(normalized.id);
     };
   }
@@ -92,6 +135,69 @@ export class PlatformRegistry {
     adapter.statusFn = typeof fn === 'function' ? fn : null;
     return true;
   }
+
+  /** Host attaches an owned runtime to a registered adapter without changing legacy metadata. */
+  setRuntime(id, handlers) {
+    const adapter = this.get(id);
+    if (!adapter) return failure('CHANNEL_UNKNOWN', '渠道未注册。', '先注册渠道，再连接运行能力。');
+    if (adapter.channelRuntime && !adapter.channelRuntime.disposed && CHANNEL_METHODS.some((method) => adapter.channelRuntime[method])) {
+      return failure('CHANNEL_RUNTIME_EXISTS', '渠道运行能力已连接。', '先卸载本实例的运行能力后重试。');
+    }
+    const runtime = channelRuntime(handlers);
+    if (!runtime || !CHANNEL_METHODS.some((method) => runtime[method])) return failure('CHANNEL_RUNTIME_INVALID', '渠道运行能力没有可用入口。', '提供 observe、prepareMedia 或 execute 后重试。');
+    adapter.channelRuntime = runtime;
+    return () => {
+      const disposed = disposeRuntime(runtime);
+      if (adapter.channelRuntime === runtime) adapter.channelRuntime = null;
+      return disposed;
+    };
+  }
+
+  /** Legacy advertised capabilities remain intact; runtime implementation/readiness are separate. */
+  async channelCapabilities(id) {
+    const adapter = this.get(id);
+    if (!adapter) return failure('CHANNEL_UNKNOWN', '渠道未注册。', '检查渠道标识或先注册适配器。');
+    const runtime = adapter.channelRuntime;
+    const implemented = Object.fromEntries(CHANNEL_METHODS.map((method) => [method, Boolean(runtime && !runtime.disposed && runtime[method])]));
+    let state = adapter.status === 'disabled' ? 'disabled' : adapter.status !== 'active' ? 'unsupported' :
+      !Object.values(implemented).some(Boolean) ? 'unsupported' : 'needs_setup';
+    let availableFlags = {};
+    if (state === 'needs_setup' && runtime.status) {
+      try {
+        const result = await runtime.status();
+        if (this.get(id) !== adapter || adapter.channelRuntime !== runtime || runtime.disposed) return failure('CHANNEL_RUNTIME_CHANGED', '渠道运行实例已变化。', '重新获取渠道状态后重试。');
+        state = CHANNEL_STATES.has(result?.state) ? result.state : 'error';
+        availableFlags = result?.available && typeof result.available === 'object' ? result.available : {};
+      } catch { state = 'error'; }
+    }
+    const available = Object.fromEntries(CHANNEL_METHODS.map((method) => [method,
+      implemented[method] && (state === 'ready' ? availableFlags[method] !== false : state === 'degraded' && availableFlags[method] === true)]));
+    return { ok: true, id: adapter.id, state, implemented, available };
+  }
+
+  async invokeChannel(id, method, request, activityContext) {
+    if (!CHANNEL_METHODS.includes(method)) return failure('CHANNEL_UNSUPPORTED', '渠道未实现这项能力。', '选择受支持的渠道入口。');
+    const context = captureActivityContext(activityContext);
+    if (!context) return failure('CHANNEL_ACTIVITY_INVALID', '渠道活动身份不完整。', '提交前固定 characterId、正整数 characterEpoch 和 activityId。');
+    const adapter = this.get(id);
+    if (!adapter) return failure('CHANNEL_UNKNOWN', '渠道未注册。', '检查渠道标识或先注册适配器。');
+    const runtime = adapter.channelRuntime;
+    const status = await this.channelCapabilities(id);
+    if (!status.ok) return status;
+    if (!status.implemented[method]) return failure('CHANNEL_UNSUPPORTED', '渠道未实现这项能力。', '选择已实现该能力的渠道。');
+    if (!status.available[method]) return failure(`CHANNEL_${status.state.toUpperCase()}`, '渠道当前不能执行这项能力。', '检查渠道开关、配置和登录状态后重试。');
+    if (this.get(id) !== adapter || adapter.channelRuntime !== runtime || runtime.disposed) return failure('CHANNEL_RUNTIME_CHANGED', '渠道运行实例已变化。', '重新获取渠道状态后重试。');
+    try {
+      const result = await runtime[method](request, context);
+      if (!result || typeof result !== 'object' || typeof result.ok !== 'boolean') return failure('CHANNEL_RESULT_INVALID', '渠道未返回有效结果。', '检查渠道实现后重试。');
+      if (result.ok === false && (!result.code || !result.error || !result.hint)) return failure('CHANNEL_OPERATION_FAILED', '渠道操作失败。', '检查渠道状态并重试。');
+      return result;
+    } catch { return failure('CHANNEL_OPERATION_FAILED', '渠道操作失败。', '检查渠道状态和操作日志后重试。'); }
+  }
+
+  observe(id, request, context) { return this.invokeChannel(id, 'observe', request, context); }
+  prepareMedia(id, request, context) { return this.invokeChannel(id, 'prepareMedia', request, context); }
+  execute(id, request, context) { return this.invokeChannel(id, 'execute', request, context); }
 
   require(id) {
     const adapter = this.get(id);
@@ -157,9 +263,13 @@ export class PlatformRegistry {
   }
 
   dispose() {
+    const pending = [];
     for (const adapter of this.adapters.values()) {
+      pending.push(disposeRuntime(adapter.channelRuntime));
+      adapter.retired = true;
       try { adapter.dispose?.(); } catch {}
     }
     this.adapters.clear();
+    return Promise.all(pending).then(() => undefined);
   }
 }

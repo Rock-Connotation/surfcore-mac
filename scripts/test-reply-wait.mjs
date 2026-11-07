@@ -16,7 +16,7 @@ async function fixture(run, cfg = {}) {
   const st = h.getSocialV2State(key);
   const server = h.startConsoleServer();
   if (!server.listening) await new Promise(resolve => server.once('listening', resolve));
-  const request = (route, body) => new Promise((resolve, reject) => {
+  const request = (route, body, { beforeSendMs = 0 } = {}) => new Promise((resolve, reject) => {
     const req = http.request({ hostname: '127.0.0.1', port: server.address().port,
       path: `/api/socialV2/${route}?key=${encodeURIComponent(key)}`,
       method: body === undefined ? 'GET' : 'POST',
@@ -28,7 +28,9 @@ async function fixture(run, cfg = {}) {
     });
     req.on('error', reject);
     req.setTimeout(5000, () => req.destroy(new Error('Fixture request timed out')));
-    req.end(body === undefined ? undefined : JSON.stringify({ key, ...body }));
+    const send = () => req.end(body === undefined ? undefined : JSON.stringify({ key, ...body }));
+    if (beforeSendMs > 0) setTimeout(send, beforeSendMs);
+    else send();
   });
   // GET routes carry their options in the query string, not the body.
   const get = (route, query = '') => new Promise((resolve, reject) => {
@@ -46,7 +48,7 @@ async function fixture(run, cfg = {}) {
     req.end();
   });
   const append = text => h.appendSocialV2Message(key, 'fixture-person', text, text, false, false, `fixture-${st.lastUnreadSeq + 1}`, [], '789', []);
-  try { await run({ h, key, st, request, get, append }); }
+  try { await run({ h, key, st, server, request, get, append }); }
   finally { await new Promise(resolve => server.close(resolve)); await h.close(); }
 }
 
@@ -66,13 +68,46 @@ test('first reply does not wait out timeout when the snapshot message is already
   assert.equal('preSleepWaitRemainingMs' in result.data, false, 'first reply must not be presented as an unfinished sleep countdown');
 }));
 
-test('reply waits only for the remaining quiet time after model reading', () => fixture(async ({ h, key, st, request, append }) => {
+// Observe the server response, not HTTP arrival at the client: a late client callback
+// must not make an early server response look as if the quiet window elapsed.
+function assertQuietWindow(lastIncomingAt, serverRespondedAt, quietMs) {
+  assert.ok(Number.isFinite(serverRespondedAt), 'server response timestamp missing');
+  const elapsed = serverRespondedAt - lastIncomingAt;
+  assert.ok(elapsed >= quietMs, `server responded after ${elapsed}ms of ${quietMs}ms quiet`);
+}
+
+test('reply quiet-window assertion rejects an early response', () => {
+  assert.throws(() => assertQuietWindow(1000, 1799, 800), /server responded after 799ms/);
+  assert.doesNotThrow(() => assertQuietWindow(1000, 1800, 800));
+});
+
+test('reply waits only for the remaining quiet time after model reading', () => fixture(async ({ h, key, st, server, request, append }) => {
   append('complete message');
   await h.sendWakePromptV2(key, 'question');
-  st.lastIncomingAt = Date.now() - 600;
-  const result = await request('wait', { purpose: 'reply', timeoutMs: 1500, quietMs: 800 });
-  assert.equal(result.data.quiet, true);
-  assert.ok(result.data.waitedMs >= 100 && result.data.waitedMs < 600, `remaining wait was ${result.data.waitedMs}ms`);
+  let respondedAt = null;
+  const observe = (req, res) => {
+    const end = res.end;
+    res.end = function (...args) {
+      respondedAt = Date.now();
+      return end.apply(this, args);
+    };
+  };
+  server.prependListener('request', observe);
+  try {
+    for (const beforeSendMs of [0, 300]) {
+      st.lastIncomingAt = Date.now() - 600;
+      const lastIncomingAt = st.lastIncomingAt;
+      respondedAt = null;
+      const result = await request('wait', { purpose: 'reply', timeoutMs: 1500, quietMs: 800 }, { beforeSendMs });
+      assert.equal(result.status, 200);
+      assert.equal(result.data.quiet, true);
+      assert.equal(result.data.timeout, false);
+      assertQuietWindow(lastIncomingAt, respondedAt, 800);
+      // When transmission starts after the quiet deadline, the handler must not
+      // start a fresh 800ms wait. Its own waitedMs excludes the intentional delay.
+      if (beforeSendMs) assert.ok(result.data.waitedMs < 600, `already-quiet handler waited ${result.data.waitedMs}ms`);
+    }
+  } finally { server.removeListener('request', observe); }
 }));
 
 test('a message between snapshot and wait is returned without duplicate snapshot content', () => fixture(async ({ h, key, st, request, append }) => {
