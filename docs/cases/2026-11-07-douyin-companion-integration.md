@@ -54,3 +54,5 @@ case：docs/cases/2026-11-07-douyin-companion-integration.md
 失败：界面可行动错误；恢复不补跑、不重置调用账本。
 未验：以最终本case与HANDOFF为准，目前仍在实施。
 ```
+
+媒体补修组合约定：导航只在内存返回公开navigator UA，经service内部素材、引擎候选与perceive两个显式投影传入下载器；不进入作业账本/日记/记忆。引擎专项钉住UA传入及账本无UA字段/值。实际同FEED官方play跳转加真实UA/固定Referer返回200完整5333134字节；直连prime CDN拒绝，Range返回206，因此生产不发送Range、不放宽206。媒体代码尚在独立工单，未把诊断文件计为完整观看。

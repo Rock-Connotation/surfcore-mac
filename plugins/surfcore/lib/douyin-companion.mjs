@@ -352,7 +352,7 @@ export function createDouyinCompanion({
     job.items.push(item);
     saveJob(localLedger, job);
     try {
-      const input = { id: entry.id, url: entry.url, title: entry.title, durationMs: entry.durationMs, mediaSource: entry.mediaSource };
+      const input = { id: entry.id, url: entry.url, title: entry.title, durationMs: entry.durationMs, mediaSource: entry.mediaSource, mediaUserAgent: entry.mediaUserAgent };
       job.phase = 'perceive'; saveJob(localLedger, job);
       let perceived;
       try {
@@ -478,7 +478,7 @@ export function createDouyinCompanion({
         const durationMs = raw.durationMs;
         if (!id || !url || seen.has(id) || !Number.isSafeInteger(durationMs) || durationMs <= 0 || durationMs > 120_000) continue;
         seen.add(id);
-        candidates.push({ id, url, title: safeDisplayText(raw.title, 240) || '', durationMs, mediaSource: raw.mediaSource });
+        candidates.push({ id, url, title: safeDisplayText(raw.title, 240) || '', durationMs, mediaSource: raw.mediaSource, mediaUserAgent: raw.mediaUserAgent });
       }
       if (!candidates.length) throw problem('DOUYIN_NO_QUALIFIED_MATERIAL', '首页推荐中没有时长合规且来源可验证的素材。', '检查首页推荐是否可用；没有合格素材时不会调用模型或记为观看。');
       job.phase = 'context'; saveJob(localLedger, job);

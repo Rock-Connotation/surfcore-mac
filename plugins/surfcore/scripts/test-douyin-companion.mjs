@@ -16,6 +16,7 @@ const recommendation = (id = 'video-1', durationMs = 1000) => ({
   title: `推荐 ${id}`,
   durationMs,
   mediaSource,
+  mediaUserAgent: 'Mozilla/5.0 SurfCore-ephemeral-browser-UA',
 });
 
 function fixture(options = {}) {
@@ -116,6 +117,7 @@ async function startAndFinish(f, options) {
   assert.equal(manual.acceptanceQualified, true);
   assert.equal(manual.items.length, 2);
   assert.equal(f.calls.models.length, 2);
+  assert.equal(f.calls.perceived[0].item.mediaUserAgent, 'Mozilla/5.0 SurfCore-ephemeral-browser-UA');
   assert.equal(f.calls.memory.length, 2);
   assert.equal(manual.items[0].url, 'https://www.douyin.com/video/video-1');
   assert.equal(manual.items[0].occurredAt, '2026-11-07T03:01:02.000Z');
@@ -153,6 +155,7 @@ async function startAndFinish(f, options) {
   assert.ok(!data.includes('PRIVATE_MEDIA_SECRET'));
   assert.ok(!data.includes('data:image'));
   assert.ok(!data.includes('mediaSource'));
+  assert.ok(!data.includes('mediaUserAgent') && !data.includes('SurfCore-ephemeral-browser-UA'));
   assert.ok(!data.includes('system') && !data.includes('prompt'));
   await f.api.dispose();
   const restarted = fixture({ stateDir: f.stateDir, time: f.time });
