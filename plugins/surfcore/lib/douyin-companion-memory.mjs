@@ -19,11 +19,24 @@ export function createCompanionMemory({ getCharacter, maintainMemory }) {
       return { ok: false, code: 'COMPANION_MEMORY_INVALID', error: '本次经历缺少视频编号、感受或理由。', hint: '检查活动证据，不会凭推荐标题补写观看经历。' };
     }
     const at = value.occurredAt || value.observedAt;
+    const missingRanges = Array.isArray(value.coverage?.missingRanges) ? value.coverage.missingRanges.length : null;
+    const audioCoverage = value.coverage?.complete === true && missingRanges === 0
+      ? '音轨完整处理，未见缺口'
+      : (missingRanges === null
+        ? '音轨覆盖未确认，可能漏句'
+        : `音轨部分覆盖${missingRanges ? `，${missingRanges}段缺口` : ''}，可能漏句`);
+    const frameSamples = Number.isSafeInteger(value.coverage?.frameSamples) && value.coverage.frameSamples >= 1 && value.coverage.frameSamples <= 3
+      ? value.coverage.frameSamples
+      : null;
+    const frameCoverage = frameSamples === null
+      ? '画面稀疏取样，取样帧数未确认；只代表已取样画面，不推断未取样部分。'
+      : `画面稀疏取样，${frameSamples}帧；只代表已取样画面，不推断未取样部分。`;
+    const details = `理由：${String(value.reason).trim().slice(0, 240)}；${audioCoverage}。${frameCoverage}`.slice(0, 350);
     const appended = appendExperienceEvent(characterPaths(context.characterId), {
       schemaVersion: 1, eventId: `douyin:${value.activityId}:${value.id}`, ...context, activityId: value.activityId,
       occurredAt: at, observedAt: at, source: { channel: 'douyin', objectId: value.id }, kind: 'reflection',
       visibility: { classification: 'restricted', allowedContexts: ['douyin', 'local'] },
-      content: { title: value.title, summary: `${value.summary}\n理由：${value.reason}`, details: `音轨${value.coverage?.complete ? '处理完整' : '部分覆盖'}；画面仅稀疏取样。`, tags: ['观看感受', '稀疏画面'], type: 'reflection' },
+      content: { title: value.title, summary: value.summary, details, tags: ['观看感受', '稀疏画面'], type: 'reflection' },
       evidenceRefs: [{ sourceUrl: `https://www.douyin.com/video/${value.id}` }], attribution: { subject: 'self', certainty: 'reported' },
     });
     if (!appended.ok) return appended;

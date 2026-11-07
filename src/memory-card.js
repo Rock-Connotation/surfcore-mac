@@ -1971,6 +1971,12 @@ function recordLine(record, { platform = 'qq', full = false } = {}) {
     const reply = redactForMemory(record.botReply, { scope, maxChars: 160 });
     body += ` → 她回：${short(reply, record.clarity === 'vivid' ? 160 : 100)}`;
   }
+  // Douyin keeps the complete bounded reason and coverage beside its short summary.
+  // This renderer runs only after visibleFor has applied the requested audience.
+  if (record.sourceChannel === 'douyin' && !recordIsPrivate(record) && ['vivid', 'clear'].includes(record.clarity)) {
+    const detail = redactForMemory(record.detail, { scope, maxChars: 350 });
+    if (detail) body += `；${detail}`;
+  }
   // Clear non-private video memories retain the identity/time stored on the event.
   // visibleFor has already enforced each record's allowed audiences.
   // Importance order is not chronology; date-only labels make same-day videos ambiguous.
