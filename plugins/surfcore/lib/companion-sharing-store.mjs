@@ -90,7 +90,11 @@ export function createSharingStore(stateDir) {
       let written = 0;
       while (written < data.length) written += fs.writeSync(fd, data, written, data.length - written);
       fs.fsyncSync(fd);
-      const dir = fs.openSync(files.dir, 'r'); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+      // Match the existing memory archive contract: Windows cannot supply a
+      // POSIX directory-fsync handle; the append itself is still fsynced.
+      if (process.platform !== 'win32') {
+        const dir = fs.openSync(files.dir, 'r'); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+      }
     } catch (error) {
       if (/^DOUYIN_/.test(error.code || '')) throw error;
       throw unavailable();
