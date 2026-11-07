@@ -15,7 +15,7 @@
 Context7 用于 DSH 官方 Host/模型/附件文档；实际安装 0.2.2-rc.1 的 app.asar 源码确认 `attachments.saveImages`、`ImageBlock.attachment`、模型 `inputModalities`、`reasoningEffort`。WorkBuddy 本机插件声明 HY3 支持图像，只是元数据，真实上游仍须请求证明。
 
 - [dsh-pet-plugin](https://github.com/zuoyunlai/dsh-pet-plugin)：可参考表现，独立一次性聊天不能代替 SurfCore 的角色上下文。
-- [dsh-whale-pet](https://github.com/luweiyabo/dsh-whale-pet)：代码 MIT 与媒体授权不同；不直接携入其受额外条款限制的动画。本轮采用原创内联 SVG。
+- [dsh-whale-pet](https://github.com/luweiyabo/dsh-whale-pet)：代码 MIT 与媒体授权不同；不直接携入其受额外条款限制的动画。初版采用原创内联SVG；用户随后明确选择社区少女立绘，最终图片作为本机角色资料保存。
 - [dsh-auto-memory](https://github.com/Aik358/dsh-auto-memory)：参考召回机制，不安装第二记忆维护者。
 - [douyin-mcp](https://github.com/Kuhakucai/douyin-mcp)：创作者后台非个人首页推荐；不替换既有严格源。
 - [Download API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API)：额外后端成本较高，本轮不部署。
@@ -25,8 +25,8 @@ Context7 用于 DSH 官方 Host/模型/附件文档；实际安装 0.2.2-rc.1 �
 
 1. **链路**：DSH 原生 SurfCore 设置→抖音日记 iframe→同源认证 API→角色绑定引擎→严格首页 service→本地媒体与共享 ASR→HY3 多模态请求→已有 ExperienceEvent/inbox/Host 唯一维护者→受众过滤后的新上下文。源媒体 URL 和帧数据不进入公开状态、日记或记忆。
 2. **机制**：此前只投影首页 metadata，缺媒体经历/日程/模型链路。新引擎在每个异步边界复核角色、取消，调用前持久预留额度；角色切换/回档/关渠道先取消活动。图像通过宿主附件服务进入真正的 image block，不用标题冒充图像理解。
-3. **爆炸半径**：一 Host、两类读者（日记 UI/同角色上下文）、错误显式=1，基础乘积2；会读取已授权登录资料与调用订阅模型，故另加身份、取消、原子额度和无外发边界。新记忆只在 douyin/local 可见，不改变 QQ/B站既有受众。
-4. **取舍**：扩展现有链路比引入多套插件工作量较高，但身份/状态同源、回滚清楚；独立插件起步快，却缺视频/记忆联动且有双状态和素材许可成本，故未选。原创轻量图形成本低、可随状态变化。
+3. **爆炸半径**：一 Host、三类读者（日记UI/立绘/同角色上下文）、错误显式=1，基础乘积3；会读取已授权登录资料与调用订阅模型，故另加身份、取消、原子额度和无外发边界。新记忆只在 douyin/local 可见，不改变 QQ/B站既有受众。
+4. **取舍**：扩展现有链路比引入多套插件工作量较高，但身份/状态同源、回滚清楚；独立插件起步快，却缺视频/记忆联动且有双状态和素材许可成本，故未选。本机立绘以轻量动效表达状态；用户图像与代码制品分别保留。
 5. **生效**：Host 与 settings client 需重新加载包；人格按当前角色的 tone/scene 文件读取，同一身份的其他渠道继续原核心/关系。默认日常关闭，实机手动验收通过才配置开启；本轮不发布。
 6. **验证**：主线 Host 专项已验证真实 image block 契约、固定路由、取消前零请求、token拒绝、同源/epoch、来源ID与精确时刻召回及QQ/B站/桌宠不可见。原人格分层、共享core22项、用量服务39项通过。独立审查V1确认两P2（准备/记账可能无界等待、既有用量true不是持久回执），V2统一有界等待并新增durable opt-in后复审关闭；包括永不resolve及rename/daily写/fsync故障注入。旧批处理默认保留，不把新确认语义全局强加给旧消费者。后续需组合 audit/regressions/plugin、媒体与引擎审查、真实视频/ASR/模型、原生按钮、重启记忆和迁入读回。
 7. **回滚与残余**：关闭日常和抖音、停止本次活动，再回装上一个包；恢复前备份人格和配置。新增经历/调用账本保留，不以旧快照覆盖。媒体精度、上游图像接受、真正记忆召回与最终常用安装尚未实测，不称交付通过。
@@ -46,7 +46,7 @@ Host V3、媒体V2、引擎V2独立复审均通过。引擎V1确认的旧请求�
 ## 发布交接块（待完成后更新）
 
 ```text
-改动：抖音多模态陪伴、持久额度/日程、原创DSH形象/日记、角色tone/scene及受限经历。
+改动：抖音多模态陪伴、持久额度/日程、DSH本机少女立绘/日记、角色tone/scene及受限经历。
 验证：Host专项通过；组合门禁/独立审查/实机与迁入仍待完成，不能发布。
 建议版本：由发布会话决定 minor；本轮不改version/tag/push。
 case：docs/cases/2026-11-07-douyin-companion-integration.md
