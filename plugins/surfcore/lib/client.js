@@ -4032,6 +4032,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const stateLabel = { verification_required: "请在专用窗口完成验证", login_required: "请在专用窗口扫码登录", candidate: "请确认登录账号", reading: "正在核对账号并读取推荐" };
       const label = stateLabel[data?.state] || (data?.account?.configured ? "已有绑定账号，读取时复核登录" : "尚未绑定账号");
       return h("div", null,
+        h("iframe", { title: "小白鲸的发现日记", src: "/dsh-surfcore/api/douyin/companion-page", style: { width: "100%", minHeight: "680px", border: "1px solid var(--qbw-line)", borderRadius: "10px", marginBottom: "16px" } }),
         h("div", { className: "qbw-card" },
           h("h3", null, "抖音账号与首页推荐"),
           h("p", { className: "qbw-hint" }, "使用独立登录窗口；每次返回最多 5 条首页推荐文案。"),

@@ -1974,9 +1974,12 @@ function recordLine(record, { platform = 'qq', full = false } = {}) {
   // Clear non-private video memories retain the identity/time stored on the event.
   // visibleFor has already enforced each record's allowed audiences.
   // Importance order is not chronology; date-only labels make same-day videos ambiguous.
-  const video = record.sourceChannel === 'bili'
-    && !recordIsPrivate(record) && ['vivid', 'clear'].includes(record.clarity)
-    ? /^(?:bv:)?(BV[0-9A-Za-z]{10})(?::cid:[0-9]{1,20})?$/.exec(String(record.sourceId ?? ''))?.[1] : '';
+  const video = !recordIsPrivate(record) && ['vivid', 'clear'].includes(record.clarity)
+    ? record.sourceChannel === 'bili'
+      ? /^(?:bv:)?(BV[0-9A-Za-z]{10})(?::cid:[0-9]{1,20})?$/.exec(String(record.sourceId ?? ''))?.[1]
+      : record.sourceChannel === 'douyin' && /^[0-9]{1,32}$/.test(String(record.sourceId ?? ''))
+        ? `抖音:${record.sourceId}` : ''
+    : '';
   const happened = Date.parse(String(record.createdAt ?? ''));
   const stamp = video && Number.isFinite(happened) ? new Date(happened).toISOString() : dateOnly(record.createdAt);
   const head = `- ${stamp} [${CLARITY_LABEL[record.clarity] ?? '清楚'}] ${video ? `[${video}] ` : ''}`;

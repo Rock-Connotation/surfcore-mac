@@ -4148,3 +4148,8 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 - 引导可能在首键后才出现；以轮询中的阻塞信号识别、仅补1个被遮罩挡住的键，总≤5键/4次确认切换。验证码不点，重复受阻必须code/error/hint失败，不能无限重试。
 - 最后身份复核只刷新获取cutoff之后的新self，不要复用“抓推荐+翻页”动作制造额外前提。身份不匹配/失效仍拒绝，原世代与响应来源不放宽。
 - Promise.race返回超时不取消旧action：独立复现过返回后继续3键。每个命令捕获context/active标记，finally撤销，并在异步点击/按键前复核；同一复现修复后extraKeys0。同步SDK轮询谓词用单次等待参数保存稳定状态，不往页面留全局变量；句柄必须finally释放。见[完整case](cases/2026-11-07-douyin-readiness-pagination.md)。
+
+
+## 2026-11-07：抖音SSR预览可播放不代表推荐应用已初始化
+
+真实独立副本中，#quickPlayer可见且readyState=4，ArrowDown仍无效，也无严格tab/feed请求；约5秒后预览节点消失、应用播放器出现。就绪谓词必须排除quickPlayer，继续等可交互推荐播放器，不能拿SSR媒体替代固定首页feed。新增浏览器夹具钉住预览阶段零按键与可行动失败。参见[陪伴升级case](cases/2026-11-07-douyin-companion-integration.md)。

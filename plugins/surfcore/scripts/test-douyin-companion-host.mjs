@@ -1,0 +1,126 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { Readable } from 'node:stream';
+import { createCompanionModel, COMPANION_ROUTE } from '../lib/douyin-companion-model.mjs';
+import { createCompanionController } from '../lib/douyin-companion-controller.mjs';
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-companion-host-'));
+process.env.DSH_HOME = root;
+const chars = await import('../../../src/character-persona.js');
+const { createCompanionMemory } = await import('../lib/douyin-companion-memory.mjs');
+const { runMemoryCardMaintenance } = await import('../lib/memory-card.js');
+const { buildCharacterContext } = await import('../../../src/core/context.js');
+const { createTokenBudgetService } = await import('../lib/token-budget.js');
+const { whaleCompanionTone, whaleCompanionDouyinScene } = await import('../lib/whale-companion-persona.mjs');
+const role = chars.characterPaths('alpha');
+fs.mkdirSync(role.personaScenesDir, { recursive: true });
+fs.writeFileSync(role.persona, '# Existing identity\nKeep existing relationship.');
+fs.writeFileSync(role.personaTone, whaleCompanionTone);
+fs.writeFileSync(role.personaScenes.douyin, whaleCompanionDouyinScene);
+fs.writeFileSync(role.manifest, JSON.stringify({ id: 'alpha', name: 'Alpha', version: 1 }));
+fs.writeFileSync(chars.CURRENT_FILE, JSON.stringify({ id: 'alpha', epoch: 1, name: 'Alpha' }));
+const owner = { characterId: 'alpha', characterEpoch: 1 };
+const frame = { atMs: 100, dataUrl: 'data:image/jpeg;base64,/9j/2Q==' };
+let sends = 0, usageRecords = 0, request;
+const budget = { block: async () => ({ blocked: false }), recordExternalUsage: async () => { usageRecords++; return true; } };
+const llm = { listModels: async () => [{ id: COMPANION_ROUTE.model, inputModalities: ['text', 'image'] }],
+  async *stream(options) { sends++; request = options; yield { type: 'text-delta', text: '{"summary":"海洋"}' }; yield { type: 'usage', usage: { uncachedInputTokens: 12, outputTokens: 6 } }; yield { type: 'finish', reason: { kind: 'stop' } }; } };
+const attachments = { saveImages: async list => { assert.equal(list[0].mediaType, 'image/jpeg'); return [{ attachmentId: 'sha256:fixture', mediaType: 'image/jpeg' }]; } };
+const ctx = { get: name => ({ llm, attachments })[name] };
+const model = createCompanionModel({ ctx, tokenBudget: budget });
+assert.equal((await model.readiness()).ok, true);
+const output = await model.call({ system: 'system', prompt: 'prompt', images: [frame] });
+assert.equal(output.finishReason, 'stop'); assert.equal(sends, 1); assert.equal(usageRecords, 1);
+assert.equal(request.reasoningEffort, 'low'); assert.equal(request.maxTokens, 8192);
+assert.deepEqual(request.messages[0].content.map(x => x.type), ['text', 'text', 'image']);
+assert.equal(request.messages[0].content[2].attachment.attachmentId, 'sha256:fixture');
+await assert.rejects(model.call({ system: 's', prompt: 'p', images: [] }), e => e.code === 'COMPANION_IMAGES_REQUIRED' && !!e.hint);
+assert.equal(sends, 1, 'invalid frame request must not reach model');
+llm.listModels = async () => [{ id: COMPANION_ROUTE.model, inputModalities: ['text'] }];
+assert.equal((await model.readiness()).code, 'COMPANION_IMAGE_UNAVAILABLE');
+assert.ok((await model.readiness()).hint); assert.equal(sends, 1);
+llm.listModels = async () => [{ id: COMPANION_ROUTE.model, inputModalities: ['text', 'image'] }];
+const abort = new AbortController(); abort.abort();
+await assert.rejects(model.call({ system: 's', prompt: 'p', images: [frame], signal: abort.signal }), e => e.code === 'COMPANION_MODEL_CANCELLED' && !!e.hint);
+assert.equal(sends, 1, 'pre-aborted request must not reach model');
+const noBudget = createCompanionModel({ ctx, tokenBudget: { block: async () => ({ blocked: true }) } });
+await assert.rejects(noBudget.call({ system: 's', prompt: 'p', images: [frame] }), e => e.code === 'COMPANION_TOKEN_BLOCKED' && !!e.hint);
+assert.equal(sends, 1);
+
+// Every asynchronous preparation seam must obey the same total request deadline.
+const originalModels = llm.listModels, originalImages = attachments.saveImages, originalBlock = budget.block;
+for (const stage of ['catalog', 'budget', 'images']) {
+  const never = () => new Promise(() => {});
+  llm.listModels = stage === 'catalog' ? never : originalModels;
+  attachments.saveImages = stage === 'images' ? never : originalImages;
+  budget.block = stage === 'budget' ? never : originalBlock;
+  const started = Date.now();
+  await assert.rejects(model.call({ system: 's', prompt: 'p', images: [frame], timeoutMs: 100 }), e => /^COMPANION_/.test(e.code) && !!e.hint);
+  assert.ok(Date.now() - started < 1000, stage + ' must be bounded');
+  assert.equal(sends, 1, stage + ' must not dispatch a late model request');
+}
+llm.listModels = originalModels; attachments.saveImages = originalImages; budget.block = originalBlock;
+const originalRecord = budget.recordExternalUsage;
+budget.recordExternalUsage = () => new Promise(() => {});
+const usageStarted = Date.now();
+await assert.rejects(model.call({ system: 's', prompt: 'p', images: [frame], timeoutMs: 100 }), e => e.code === 'COMPANION_USAGE_PERSIST_FAILED' && !!e.hint);
+assert.ok(Date.now() - usageStarted < 1000, 'usage commit must be bounded');
+budget.recordExternalUsage = originalRecord;
+
+// Use the actual collector: a failed rename must not acknowledge durable usage.
+const collector = createTokenBudgetService({ ctx: {}, dshHome: path.join(root, 'durable-usage'), qqStateDir: path.join(root, 'qq-state'), log: () => {} });
+const paid = { category: 'other', usage: { uncachedInputTokens: 2, outputTokens: 1 }, model: 'workbuddy/hy3', durable: true };
+assert.equal(collector.recordExternalUsage(paid), true);
+assert.ok(fs.existsSync(collector.stateFile)); assert.ok(fs.existsSync(collector.dailyFile));
+const rename = fs.renameSync;
+fs.renameSync = (...args) => { if (args[1] === collector.stateFile) throw Object.assign(new Error('fixture disk failure'), { code: 'EIO' }); return rename(...args); };
+try { assert.equal(collector.recordExternalUsage(paid), false, 'disk failure cannot be acknowledged'); }
+finally { fs.renameSync = rename; collector.dispose(); }
+
+const memory = createCompanionMemory({ getCharacter: chars.readCurrentCharacter, maintainMemory: options => runMemoryCardMaintenance(options) });
+const when = new Date().toISOString();
+const remembered = await memory.recordMemory(owner, { activityId: 'activity-fixture', id: '1234567890123456789', title: '海洋发现', occurredAt: when,
+  summary: '喜欢那只缓慢摆尾的小鱼', reason: '清楚看见取样画面中的尾鳍，旁白说它在休息', coverage: { complete: true } });
+assert.equal(remembered.ok, true, JSON.stringify(remembered));
+fs.mkdirSync(path.dirname(role.lifeState), { recursive: true });
+fs.writeFileSync(role.lifeState, JSON.stringify({ version: 1, characterId: 'alpha', currentFocus: 'UNSCOPED_PRIVATE_FOCUS' }));
+assert.match(buildCharacterContext({ ...owner, audience: { channel: 'local' } }).text, /UNSCOPED_PRIVATE_FOCUS/, 'control: legacy life text is available without a scoped adapter');
+const view = memory.buildContext(owner);
+assert.doesNotMatch(view.text, /UNSCOPED_PRIVATE_FOCUS/, 'new channel must not import unscoped cross-channel free text');
+assert.match(view.text, /软萌/); assert.match(view.text, /标题不是观看经历/);
+assert.match(view.memoryText, /抖音:1234567890123456789/); assert.match(view.memoryText, /尾鳍/); assert.ok(view.memoryText.includes(when));
+for (const channel of ['bili', 'qq', 'pet']) {
+  const external = buildCharacterContext({ ...owner, audience: { channel, conversationKey: channel === 'qq' ? 'private:123' : '' } });
+  assert.doesNotMatch(external.memoryText, /尾鳍|1234567890123456789/, 'new Douyin memory must not broaden prior audiences');
+}
+const before = fs.readFileSync(role.experienceInbox, 'utf8');
+const stale = await memory.recordMemory({ ...owner, characterEpoch: 2 }, { id: '123' });
+assert.equal(stale.code, 'COMPANION_CHARACTER_STALE'); assert.ok(stale.hint); assert.equal(fs.readFileSync(role.experienceInbox, 'utf8'), before);
+const stopMemory = new AbortController(); stopMemory.abort();
+const cancelledMemory = await memory.recordMemory(owner, { id: '123' }, { signal: stopMemory.signal });
+assert.equal(cancelledMemory.code, 'COMPANION_MEMORY_CANCELLED'); assert.ok(cancelledMemory.hint); assert.equal(fs.readFileSync(role.experienceInbox, 'utf8'), before);
+const cardBefore = fs.readFileSync(role.memoryJson);
+const queued = runMemoryCardMaintenance({ expectedCharacter: owner, signal: stopMemory.signal });
+const cancelledProjection = await queued; assert.equal(cancelledProjection.code, 'MEMORY_REQUEST_CANCELLED'); assert.ok(cancelledProjection.hint); assert.ok(fs.readFileSync(role.memoryJson).equals(cardBefore));
+const staleProjection = await runMemoryCardMaintenance({ expectedCharacter: { ...owner, characterEpoch: 2 } });
+assert.equal(staleProjection.code, 'MEMORY_REQUEST_STALE'); assert.ok(staleProjection.hint); assert.ok(fs.readFileSync(role.memoryJson).equals(cardBefore));
+
+let current = { id: 'alpha', epoch: 1, name: 'Alpha' }, starts = 0;
+const engine = { status: async () => ({ ok: true }), start: async () => { starts++; return { ok: true }; } };
+const controller = createCompanionController({ engine, getCharacter: () => current, readiness: async () => ({ ok: true }) });
+async function call(method, body, origin) {
+  const req = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]);
+  req.method = method; req.headers = { host: '127.0.0.1:1234', 'content-type': 'application/json', ...(origin ? { origin } : {}) };
+  const response = { writeHead(status) { this.status = status; }, end(text) { this.value = JSON.parse(text); } };
+  await controller.handle(req, response, new URL('http://127.0.0.1:1234/dsh-surfcore/api/douyin/companion'));
+  return response;
+}
+assert.equal((await call('POST', { ...owner, action: 'start' })).status, 200); assert.equal(starts, 1);
+const rejected = await call('POST', { ...owner, characterEpoch: 0, action: 'start' });
+assert.equal(rejected.value.code, 'COMPANION_CHARACTER_STALE'); assert.ok(rejected.value.hint); assert.equal(starts, 1);
+assert.equal((await call('POST', { ...owner, action: 'start' }, 'https://evil.invalid')).status, 403); assert.equal(starts, 1);
+engine.status = async () => { current = { id: 'beta', epoch: 2 }; return { ok: true }; };
+const changed = await call('GET'); assert.equal(changed.value.code, 'COMPANION_CHARACTER_STALE'); assert.ok(changed.value.hint);
+console.log('PASS companion Host: exact image blocks, route/usage/abort guards, scoped source/time recall, controller epoch/origin guards');

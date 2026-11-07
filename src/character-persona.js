@@ -144,6 +144,7 @@ export function characterPaths(id) {
       'qq-private': path.join(dir, 'persona.scenes', 'qq-private.md'),
       bili: path.join(dir, 'persona.scenes', 'bili.md'),
       pet: path.join(dir, 'persona.scenes', 'pet.md'),
+      douyin: path.join(dir, 'persona.scenes', 'douyin.md'),
     },
     memoryDir,
     memoryJson: path.join(memoryDir, 'memory-card.json'),

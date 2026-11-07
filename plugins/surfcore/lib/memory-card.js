@@ -297,7 +297,7 @@ export function fullMemoryCardSnapshot({ q = '', limit = 40, config = memoryCard
 const aggregationInputs = new Map();
 
 /** Host owns local B站 aggregation; identity and paths are pinned before the await. */
-async function aggregateBiliExperiences(role, now) {
+async function aggregateBiliExperiences(role, now, requestFailure = () => null) {
   if (!role) return { ok: true, skipped: true };
   const character = characterPaths(role.id);
   const memory = createBiliMemory({ stateDir: character.biliDir, biliDir: character.biliDir,
@@ -319,6 +319,7 @@ async function aggregateBiliExperiences(role, now) {
     }
   } catch { return { ok: false, code: 'BILI_AGGREGATE_BACKUP_FAILED', error: '无法备份 B站汇总，已停止覆盖。', hint: '检查角色备份目录的空间和权限后重试。' }; }
   const refreshed = await memory.refresh({ force: true });
+  const stopped = requestFailure(); if (stopped) return stopped;
   if (!refreshed.ok) return { ok: false, code: 'BILI_AGGREGATE_FAILED', error: 'B站本地账本汇总失败。', hint: '检查角色 B站目录的读取和写入权限后重试。' };
   }
   let entries;
@@ -348,8 +349,18 @@ async function aggregateBiliExperiences(role, now) {
 }
 
 /** 真正跑一次维护；并发调用会排队，不会互相覆盖。 */
-export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCardConfig(), now = Date.now() } = {}) {
+export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCardConfig(), now = Date.now(), signal, expectedCharacter = null } = {}) {
+  // Optional guards are captured before queue admission. Legacy maintenance retains its contract.
+  const requestFailure = () => {
+    if (signal?.aborted) return { ok: false, code: 'MEMORY_REQUEST_CANCELLED', error: '记忆整理请求已取消。', hint: '保留原经历队列，确认活动停止后再手动整理。' };
+    if (expectedCharacter) {
+      const role = readCurrentCharacter();
+      if (role?.id !== expectedCharacter.characterId || role?.epoch !== expectedCharacter.characterEpoch) return { ok: false, code: 'MEMORY_REQUEST_STALE', error: '角色已变化，本次整理请求已停止。', hint: '以当前角色重新发起活动；原经历队列会保留。' };
+    }
+    return null;
+  };
   return serialize(async () => {
+    const rejected = requestFailure(); if (rejected) return rejected;
     const role = readCurrentCharacter();
     const paths = pathsNow();
     let stagedJson = null;
@@ -384,7 +395,8 @@ export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCa
           backupFile(paths.fullStats, 'memory-card-full-stats');
         }
       } catch {}
-      const aggregation = await aggregateBiliExperiences(role, now);
+      const aggregation = await aggregateBiliExperiences(role, now, requestFailure);
+      const stopped = requestFailure(); if (stopped) return stopped;
       if (!aggregation.ok) return rememberMaintenanceFailure(paths, aggregation);
       const queue = readExperienceInbox(paths, { offset: before?.meta?.experienceOffset || 0 });
       if (!queue.ok) return rememberMaintenanceFailure(paths, { ...queue, error: queue.error || '经历收件箱读取失败。', hint: queue.hint || '保留收件箱并检查文件和游标后重试。' });
