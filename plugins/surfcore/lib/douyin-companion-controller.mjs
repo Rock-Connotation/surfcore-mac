@@ -1,5 +1,6 @@
 import { sameOrigin, readBody, json } from './http-guard.js';
 import { douyinCompanionPage } from './douyin-companion-page.mjs';
+import { readCompanionPortrait } from './douyin-companion-portrait.mjs';
 
 const fail = (code, error, hint) => ({ ok: false, code, error, hint });
 export function createCompanionController({ engine, getCharacter, readiness }) {
@@ -8,10 +9,35 @@ export function createCompanionController({ engine, getCharacter, readiness }) {
   const stale = () => fail('COMPANION_CHARACTER_STALE', '角色已变化，本次请求停止。', '刷新当前角色后重新操作。');
   async function handle(req, res, url) {
     const page = url.pathname === '/dsh-surfcore/api/douyin/companion-page';
-    if (!page && url.pathname !== '/dsh-surfcore/api/douyin/companion') return false;
+    const portrait = url.pathname === '/dsh-surfcore/api/douyin/companion-portrait';
+    if (!page && !portrait && url.pathname !== '/dsh-surfcore/api/douyin/companion') return false;
     if (!sameOrigin(req)) { json(res, 403, fail('COMPANION_ORIGIN', '跨站陪伴请求被拒绝。', '从 DSH 的 SurfCore 设置页重新操作。')); return true; }
     if (page && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); res.end(douyinCompanionPage); return true;
+    }
+    if (portrait) {
+      if (req.method !== 'GET') { json(res, 405, fail('COMPANION_PORTRAIT_METHOD', '立绘接口只支持 GET。', '从小白鲸日记页刷新本机立绘。')); return true; }
+      const context = capture();
+      if (!context) { json(res, 409, fail('COMPANION_CHARACTER_REQUIRED', '当前没有活动角色。', '在角色页载入已确认的伙伴后再刷新立绘。')); return true; }
+      const ids = url.searchParams.getAll('characterId'), epochs = url.searchParams.getAll('characterEpoch');
+      const epochText = epochs[0], requestedEpoch = Number(epochText);
+      if (ids.length !== 1 || epochs.length !== 1 || !/^(0|[1-9][0-9]*)$/.test(epochText || '') || !Number.isSafeInteger(requestedEpoch) || requestedEpoch < 0 ||
+        ids[0] !== context.characterId || requestedEpoch !== context.characterEpoch) {
+        json(res, 409, stale()); return true;
+      }
+      const result = readCompanionPortrait(context.characterId);
+      if (!matches(context)) { json(res, 409, stale()); return true; }
+      if (!result.ok) {
+        const status = result.code === 'COMPANION_PORTRAIT_MISSING' ? 404
+          : result.code === 'COMPANION_PORTRAIT_INVALID' ? 415
+            : result.code === 'COMPANION_PORTRAIT_READ_FAILED' ? 500 : 409;
+        json(res, status, result); return true;
+      }
+      res.writeHead(200, {
+        'content-type': 'image/webp', 'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff', 'content-length': String(result.bytes.length),
+      });
+      res.end(result.bytes); return true;
     }
     if (page || !['GET', 'POST'].includes(req.method)) { json(res, 405, fail('COMPANION_METHOD', '请求方法不支持。', '使用小白鲸日记页的按钮。')); return true; }
     const context = capture();

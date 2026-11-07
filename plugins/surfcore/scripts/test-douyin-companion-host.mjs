@@ -16,6 +16,7 @@ const { createTokenBudgetService } = await import('../lib/token-budget.js');
 const { whaleCompanionTone, whaleCompanionDouyinScene } = await import('../lib/whale-companion-persona.mjs');
 const role = chars.characterPaths('alpha');
 fs.mkdirSync(role.personaScenesDir, { recursive: true });
+fs.mkdirSync(path.join(role.dir, 'appearance'), { recursive: true });
 fs.writeFileSync(role.persona, '# Existing identity\nKeep existing relationship.');
 fs.writeFileSync(role.personaTone, whaleCompanionTone);
 fs.writeFileSync(role.personaScenes.douyin, whaleCompanionDouyinScene);
@@ -110,11 +111,11 @@ assert.equal(staleProjection.code, 'MEMORY_REQUEST_STALE'); assert.ok(staleProje
 let current = { id: 'alpha', epoch: 1, name: 'Alpha' }, starts = 0;
 const engine = { status: async () => ({ ok: true }), start: async () => { starts++; return { ok: true }; } };
 const controller = createCompanionController({ engine, getCharacter: () => current, readiness: async () => ({ ok: true }) });
-async function call(method, body, origin) {
+async function call(method, body, origin, pathname = '/dsh-surfcore/api/douyin/companion') {
   const req = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]);
   req.method = method; req.headers = { host: '127.0.0.1:1234', 'content-type': 'application/json', ...(origin ? { origin } : {}) };
-  const response = { writeHead(status) { this.status = status; }, end(text) { this.value = JSON.parse(text); } };
-  await controller.handle(req, response, new URL('http://127.0.0.1:1234/dsh-surfcore/api/douyin/companion'));
+  const response = { writeHead(status, headers = {}) { this.status = status; this.headers = headers; }, end(text) { this.body = text; const type = Object.entries(this.headers || {}).find(([key]) => key.toLowerCase() === 'content-type')?.[1]; if (String(type || '').startsWith('application/json')) this.value = JSON.parse(String(text)); } };
+  response.handled = await controller.handle(req, response, new URL(`http://127.0.0.1:1234${pathname}`));
   return response;
 }
 assert.equal((await call('POST', { ...owner, action: 'start' })).status, 200); assert.equal(starts, 1);
@@ -123,4 +124,48 @@ assert.equal(rejected.value.code, 'COMPANION_CHARACTER_STALE'); assert.ok(reject
 assert.equal((await call('POST', { ...owner, action: 'start' }, 'https://evil.invalid')).status, 403); assert.equal(starts, 1);
 engine.status = async () => { current = { id: 'beta', epoch: 2 }; return { ok: true }; };
 const changed = await call('GET'); assert.equal(changed.value.code, 'COMPANION_CHARACTER_STALE'); assert.ok(changed.value.hint);
-console.log('PASS companion Host: exact image blocks, route/usage/abort guards, scoped source/time recall, controller epoch/origin guards');
+
+current = { id: 'alpha', epoch: 1, name: 'Alpha' };
+const portraitUrl = '/dsh-surfcore/api/douyin/companion-portrait?characterId=alpha&characterEpoch=1';
+const webp = Buffer.alloc(16); webp.write('RIFF', 0, 'ascii'); webp.writeUInt32LE(8, 4); webp.write('WEBP', 8, 'ascii'); webp.write('VP8 ', 12, 'ascii');
+const portraitFile = path.join(role.dir, 'appearance', 'companion-portrait.webp');
+fs.writeFileSync(portraitFile, webp);
+const portrait = await call('GET', undefined, undefined, portraitUrl.split('?')[0] + '?' + portraitUrl.split('?')[1]);
+assert.equal(portrait.status, 200); assert.equal(portrait.headers['content-type'], 'image/webp'); assert.equal(portrait.headers['cache-control'], 'no-store');
+assert.equal(portrait.headers['x-content-type-options'], 'nosniff'); assert.deepEqual(portrait.body, webp);
+assert.doesNotMatch(String(portrait.body), /characters|appearance|https?:/i);
+const stalePortrait = await call('GET', undefined, undefined, '/dsh-surfcore/api/douyin/companion-portrait?characterId=alpha&characterEpoch=0');
+assert.equal(stalePortrait.status, 409); assert.equal(stalePortrait.value.code, 'COMPANION_CHARACTER_STALE'); assert.ok(stalePortrait.value.error); assert.ok(stalePortrait.value.hint);
+const traversal = await call('GET', undefined, undefined, '/dsh-surfcore/api/douyin/companion-portrait?characterId=../alpha&characterEpoch=1');
+assert.equal(traversal.status, 409); assert.equal(traversal.value.code, 'COMPANION_CHARACTER_STALE'); assert.ok(traversal.value.hint);
+const foreignPortrait = await call('GET', undefined, 'https://evil.invalid', portraitUrl.split('?')[0] + '?' + portraitUrl.split('?')[1]);
+assert.equal(foreignPortrait.status, 403); assert.equal(foreignPortrait.value.code, 'COMPANION_ORIGIN'); assert.ok(foreignPortrait.value.hint);
+fs.unlinkSync(portraitFile);
+const missingPortrait = await call('GET', undefined, undefined, portraitUrl.split('?')[0] + '?' + portraitUrl.split('?')[1]);
+assert.equal(missingPortrait.status, 404); assert.equal(missingPortrait.value.code, 'COMPANION_PORTRAIT_MISSING'); assert.ok(missingPortrait.value.error); assert.ok(missingPortrait.value.hint);
+const outside = path.join(root, 'outside.webp'); fs.writeFileSync(outside, webp); fs.symlinkSync(outside, portraitFile);
+const symlinkPortrait = await call('GET', undefined, undefined, portraitUrl.split('?')[0] + '?' + portraitUrl.split('?')[1]);
+assert.equal(symlinkPortrait.status, 409); assert.equal(symlinkPortrait.value.code, 'COMPANION_PORTRAIT_UNSAFE'); assert.ok(symlinkPortrait.value.error); assert.ok(symlinkPortrait.value.hint);
+assert.doesNotMatch(JSON.stringify(symlinkPortrait.value), /outside\.webp|\/(?:Users|tmp|var)\/|file:|https?:/i);
+fs.unlinkSync(portraitFile); fs.writeFileSync(portraitFile, webp);
+const openSync = fs.openSync;
+fs.openSync = (file, ...args) => { if (String(file).endsWith(path.join('alpha', 'appearance', 'companion-portrait.webp'))) throw Object.assign(new Error('fixture read failure'), { code: 'EIO' }); return openSync(file, ...args); };
+let readFailure;
+try { readFailure = await call('GET', undefined, undefined, portraitUrl.split('?')[0] + '?' + portraitUrl.split('?')[1]); }
+finally { fs.openSync = openSync; }
+assert.equal(readFailure.status, 500); assert.equal(readFailure.value.code, 'COMPANION_PORTRAIT_READ_FAILED'); assert.ok(readFailure.value.error); assert.ok(readFailure.value.hint);
+assert.doesNotMatch(JSON.stringify(readFailure.value), /fixture|EIO|https?:/i);
+fs.writeFileSync(portraitFile, Buffer.alloc(4 * 1024 * 1024 + 1, 0));
+const largePortrait = await call('GET', undefined, undefined, portraitUrl.split('?')[0] + '?' + portraitUrl.split('?')[1]);
+assert.equal(largePortrait.status, 415); assert.equal(largePortrait.value.code, 'COMPANION_PORTRAIT_INVALID'); assert.ok(largePortrait.value.hint);
+fs.writeFileSync(portraitFile, Buffer.from('not an image!'));
+const invalidPortrait = await call('GET', undefined, undefined, portraitUrl.split('?')[0] + '?' + portraitUrl.split('?')[1]);
+assert.equal(invalidPortrait.status, 415); assert.equal(invalidPortrait.value.code, 'COMPANION_PORTRAIT_INVALID'); assert.ok(invalidPortrait.value.error); assert.ok(invalidPortrait.value.hint);
+
+let consumed = 0;
+const untouchedBody = Readable.from({ *[Symbol.iterator]() { consumed++; yield Buffer.from('{"action":"start"}'); } });
+untouchedBody.method = 'POST'; untouchedBody.headers = { host: '127.0.0.1:1234', 'content-type': 'application/json' };
+const unusedResponse = { writeHead(status) { this.status = status; }, end() {} };
+assert.equal(await controller.handle(untouchedBody, unusedResponse, new URL('http://127.0.0.1:1234/dsh-surfcore/api/douyin/unrelated')), false);
+assert.equal(consumed, 0, 'unrelated routes must not consume their request body');
+console.log('PASS companion Host: exact image blocks, route/usage/abort guards, scoped source/time recall, portrait current-role/signature/size/symlink checks, unrelated-route body untouched');
