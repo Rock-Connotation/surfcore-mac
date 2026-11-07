@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { assertManagedAsset } from '../tools/lib/perception-client.mjs';
-import { downloadDouyinMedia, DOUYIN_MEDIA_LIMITS, extractDouyinAudio, extractDouyinFrames, probeDouyinMedia, validateDouyinMediaUrl } from './douyin-media.mjs';
+import { downloadDouyinMedia, DOUYIN_MEDIA_LIMITS, extractDouyinAudio, extractDouyinFrames, probeDouyinMedia, validateDouyinMediaUrl, validateDouyinMediaUserAgent } from './douyin-media.mjs';
 
 const TERMINAL_ASR = new Set(['completed', 'partial', 'failed', 'cancelled', 'interrupted']);
 
@@ -58,7 +58,8 @@ function validateItem(item) {
     if (error?.code === 'DOUYIN_MEDIA_URL_INVALID') throw asError('DOUYIN_MEDIA_SOURCE_MISSING', '首页推荐没有可用的视频播放地址。', '刷新固定首页推荐后重试。');
     throw error;
   }
-  return { id, url: `https://www.douyin.com/video/${id}`, title: typeof item.title === 'string' ? item.title.slice(0, 2000) : '', declaredDurationMs, mediaSource };
+  const mediaUserAgent = validateDouyinMediaUserAgent(item.mediaUserAgent);
+  return { id, url: `https://www.douyin.com/video/${id}`, title: typeof item.title === 'string' ? item.title.slice(0, 2000) : '', declaredDurationMs, mediaSource, mediaUserAgent };
 }
 
 function ensureTransientDirectory(stateDirectory) {
@@ -205,7 +206,7 @@ export function createDouyinPerception({
       fs.mkdirSync(workDirectory, { mode: 0o700 });
       const videoPath = path.join(workDirectory, 'source.mp4');
       const audioPath = path.join(workDirectory, 'audio.wav');
-      await downloadMedia(selected.mediaSource, videoPath, { signal });
+      await downloadMedia(selected.mediaSource, videoPath, { signal, userAgent: selected.mediaUserAgent });
       let videoStat;
       try { videoStat = fs.lstatSync(videoPath); } catch { throw asError('DOUYIN_MEDIA_DOWNLOAD_FAILED', '本地视频文件没有通过完整性检查。', '重新读取这条首页推荐。'); }
       if (!videoStat.isFile() || videoStat.isSymbolicLink() || videoStat.size < 1) throw asError('DOUYIN_MEDIA_DOWNLOAD_FAILED', '本地视频文件没有通过完整性检查。', '重新读取这条首页推荐。');

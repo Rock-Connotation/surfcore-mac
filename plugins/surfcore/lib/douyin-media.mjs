@@ -17,6 +17,8 @@ const ALLOWED_HOST_SUFFIXES = Object.freeze([
 const MAX_VIDEO_BYTES = 128 * 1024 * 1024;
 const DEFAULT_MAX_REDIRECTS = 3;
 const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_USER_AGENT = 'SurfCore local media observer';
+const DOUYIN_REFERER = 'https://www.douyin.com/';
 const blockedAddresses = new BlockList();
 
 for (const [range, prefix] of [
@@ -61,6 +63,14 @@ export function validateDouyinMediaUrl(value) {
   return url.toString();
 }
 
+export function validateDouyinMediaUserAgent(value) {
+  if (typeof value !== 'string' || value.length <= 'Mozilla/'.length || value.length > 512
+    || !value.startsWith('Mozilla/') || /[^\x20-\x7e]/.test(value)) {
+    throw problem('DOUYIN_MEDIA_USER_AGENT_INVALID', '独立浏览器的视频播放身份信息无效。', '返回抖音首页重新读取推荐；若持续失败，请检查独立浏览器状态。');
+  }
+  return value;
+}
+
 async function resolvePublicAddresses(hostname, lookupImpl, signal) {
   if (signal?.aborted) throw cancelled();
   const lookup = Promise.resolve().then(() => lookupImpl(hostname, { all: true, verbatim: true }));
@@ -88,7 +98,7 @@ async function resolvePublicAddresses(hostname, lookupImpl, signal) {
   return addresses.map(record => ({ address: record.address, family: record.family ?? isIP(record.address) }));
 }
 
-function requestPinned(url, addresses, { requestImpl, signal, timeoutMs }) {
+function requestPinned(url, addresses, { requestImpl, signal, timeoutMs, userAgent }) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(cancelled()); return; }
     let settled = false;
@@ -108,7 +118,7 @@ function requestPinned(url, addresses, { requestImpl, signal, timeoutMs }) {
       req = requestImpl(url, {
         method: 'GET',
         lookup: pinnedLookup,
-        headers: { 'user-agent': 'SurfCore local media observer', accept: 'video/*,application/octet-stream' },
+        headers: { 'user-agent': userAgent, referer: DOUYIN_REFERER, accept: 'video/*,application/octet-stream' },
       }, response => finish(resolve, { req, response }));
     } catch {
       finish(reject, problem('DOUYIN_MEDIA_REQUEST_FAILED', '无法连接视频 CDN。', '检查网络后重新读取这条首页推荐。'));
@@ -316,10 +326,12 @@ export async function downloadDouyinMedia(value, outputPath, {
   totalTimeoutMs = DEFAULT_TIMEOUT_MS,
   lookupImpl = dnsLookup,
   requestImpl = httpsRequest,
+  userAgent,
 } = {}) {
   if (!path.isAbsolute(String(outputPath ?? '')) || !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw problem('DOUYIN_MEDIA_PATH_INVALID', '媒体临时路径无效。', '重新发起本轮视频读取。');
   }
+  const requestUserAgent = userAgent === undefined ? DEFAULT_USER_AGENT : validateDouyinMediaUserAgent(userAgent);
   let parent;
   try {
     parent = path.dirname(path.resolve(outputPath));
@@ -343,7 +355,7 @@ export async function downloadDouyinMedia(value, outputPath, {
       const url = new URL(current);
       const addresses = await resolvePublicAddresses(url.hostname, lookupImpl, combinedSignal);
       if (combinedSignal.aborted) throw signal?.aborted ? cancelled() : problem('DOUYIN_MEDIA_TIMEOUT', '视频下载超过时间限制。', '检查网络后重新读取这条首页推荐。');
-      const { response } = await requestPinned(url, addresses, { requestImpl, signal: combinedSignal, timeoutMs });
+      const { response } = await requestPinned(url, addresses, { requestImpl, signal: combinedSignal, timeoutMs, userAgent: requestUserAgent });
       const status = Number(response.statusCode ?? 0);
       if ([301, 302, 303, 307, 308].includes(status)) {
         const location = response.headers?.location;
@@ -376,6 +388,9 @@ export async function downloadDouyinMedia(value, outputPath, {
         if (combinedSignal.aborted) throw signal?.aborted ? cancelled() : problem('DOUYIN_MEDIA_TIMEOUT', '视频下载超过时间限制。', '检查网络后重新读取这条首页推荐。');
         if (error?.code === 'DOUYIN_MEDIA_TOO_LARGE') throw error;
         throw problem('DOUYIN_MEDIA_DOWNLOAD_FAILED', '视频下载未能完整写入本地临时文件。', '检查网络和本地磁盘空间后重试。');
+      }
+      if (announced !== null && bytes !== announced) {
+        throw problem('DOUYIN_MEDIA_LENGTH_MISMATCH', '视频响应字节数与 CDN 声明长度不一致。', '丢弃这次不完整下载，刷新首页推荐后重试。');
       }
       let stat;
       try { stat = fs.lstatSync(outputPath); } catch {}
