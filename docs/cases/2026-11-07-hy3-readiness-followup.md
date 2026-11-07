@@ -22,13 +22,9 @@
 
 原浏览器profile保持，使用私有克隆、同一生产wrapper和解析器，固定真实首页与feed来源。关闭请求拦截后仍selfVerified=true、validFeedCount=0，排除了本次拦截假设；DOM有3个video却无可见视频目标，第二轮没有盲滚。两次浏览器均确认关闭，没有模型/互动，未替换游客、SSR或作品来源。真实首页推荐仍未接通，根因证据不足，不据此更改产品成功判据。
 
-## QQ普通私聊（现场进行中）
+## QQ普通私聊（补验前失败，最终结果见收工）
 
 新包原生重启，临时diagnostic保持移除、原聊天防护/180秒提问超时不变。固定容器首次启动后需要重新扫码；用户已扫码，独立读回确认原小号身份与online。首次bridge start被关闭的平台开关返回409，打开独立QQ开关后HTTP200且bridge/dshReady/QQ连接ready。原生配置读回固定qq-readiness-hy3/workbuddy/hy3、fallback关闭；旧lastUsed/请求状态仍为历史Hy4，不能算本轮调用。网关继续原6/8文本账本；已请用户只发一次普通消息，入站后官方turn5/6/7均以MODEL_SWITCH_COMPACTION_FAILED结束：本轮适配器误写64000窗口，小于65536压缩预留+8192输出。没有请求到代理，因此模型仍3/4；两条错误提示使原文本达到8/8，第三条发送被SEND_LIMIT拒绝。桥接、网关和模型代理立即停止。
-
-## 发布交接块（非发布授权）
-
-程序d8fe7e1，版本0.8.8不变；主要新增7ad69b0记忆来源/时刻补修与58d0fad静态隐私清理。前者保持受众/衰减/schema，后者不改运行逻辑与扫描放行规则。audit174/174、完整插件、构建、严格隐私扫描与813项Git对象清单均通过；实装330文件一致、1965持久文件未变。新包SHA256为6ed4b98e659363fc4eddc81a784e24e6eeb1dec5b7d2871b3ab701ef6571c681。真实Hy3记忆回忆通过，QQ普通私聊结果尚待收工补记；抖音推荐仍失败。回滚重装旧包/恢复独立配置，新增数据及账本保留。无发布/tag/push授权，最终运行终态和用量见收工节。
 
 ## QQ失败后的具体修正与人工边界
 
@@ -41,3 +37,26 @@
 用户明确回复“我批准”，允许一次手动补验：本轮模型总4、已用3不变；原唯一QQ目标文本总上限从8增至9、已用8不变。仍Hy3 low/8192输出/180秒、无客户端自动重试，Magpie内部尝试另计。只把旧文本账本maxSends改为9，8个已用intent完整保留并私有备份，旧模型/其它历史账本不变。九条网关并发/鉴权/失败/重启及“已用8仅再允许1条”离线夹具均通过。
 
 原固定小号身份/online复核通过；停旧独立App后重绑新回环代理/网关，192000窗口与118272压力预算核对、重启原生App/Host，固定Hy3且fallback禁用、桥接ready。已请求用户仅发一次普通私聊；自动观察器只读账本，在第9条发送回执或最后模型请求200秒期限处停桥接，实际结果待下节记录。
+
+## 收工：2026-11-07 10:06
+
+- 最后一笔真实普通私聊通过。官方既有QQ会话turn8为completed，request/context为qq-readiness-hy3/workbuddy/hy3、contextWindow=192000；输出391tokens，整笔输入15869tokens。只读get_msg核对原小号sender/self身份，第9条平台文本与官方assistant输出逐字匹配；用户引用手机正文并明确确认“算正常”，三方正文一致。临时diagnostic没有恢复，也没有伪造QQ入站。
+- Magpie最后路由HTTP200/done=true、约5569ms、单次上游尝试。新一轮最终4/4客户端、4次上游、原唯一QQ文本9/9；包含此前旧BV失败与两条错误提示，不退款、不归零。更早B站4客户端/5上游、QQ6客户端/9上游及11/12、19/30账本均保留。
+- 第9条accepted后观察器立即正式stop桥接；另读回running=false。随后关闭独立原生App、模型代理、九条文本网关、扫码服务与固定NapCat；8个本轮端口关闭、owned运行进程0。其它5容器状态不变，常用App仍在，共享Magpie/Colima保留。独立QQ/B站启动开关关闭，账号、记忆、作业、评分、会话及账本保留；没有开机自启或日常续额。
+- 最终实装程序仍d8fe7e1，330文件逐hash零差异；后续仅文档/清单提交，版本0.8.8不变。程序audit174/174、完整插件/构建、记忆delta回归/29项红绿及两项独立审查已通过，源码未变化因此复用这些结果；最终文档严格隐私与Git对象清单核对另记。Windows提示语没有新增Windows真机证据。
+- 证据：私有20261107-followup的qq-final-platform-result、qq-final-official-result、route-reconciliation-final、qq-final-auto-stop、cleanup-final与最终FINAL-RESULTS.json。完整官方会话由zstd CLI解码串接帧；仅解第一帧会漏掉实际turn。
+- 仍未验：抖音固定真实首页推荐成功、B站原生下一会话自动注入、自动profile迁移、睡眠/24h与其它设备矩阵；本轮不称日常运行全面通过。无后续未授权模型/QQ预算，无发布/tag/push。
+
+## 可直接转发的发布交接块（非发布授权）
+
+```text
+分支fix/macos-readiness；已验证程序d8fe7e1，后续文档提交见git log，版本保持0.8.8。
+改动：7ad69b0记忆renderer补已获准清晰B站视频的BV来源与ISO发生时刻；58d0fad清理22文件静态本机路径/报告标识/检索片段。前者不改受众/衰减/schema，后者不改运行逻辑或扫描放行规则。QQ Hy3窗口192000是独立验收配置纠正，不冒充已交付的公共provider设置。
+文件：src/memory-card.js、scripts/test-memory-card.mjs；静态client.js/pet.js/snowluma-install.js/snowluma-conn.js和README/历史说明；关联三份case、HANDOFF/ROADMAP/PITFALLS/COORDINATION。
+验证：程序官方Node24 audit174/174、完整插件、构建、记忆delta回归与拥有方29项/基线红绿、独立审查通过；严格隐私扫描0命中/不完整0，最终文档与清单见Git对象核对。同源包SHA256 6ed4b98e659363fc4eddc81a784e24e6eeb1dec5b7d2871b3ab701ef6571c681，实装330文件一致、1965持久文件安装前后未变，收工330文件再次一致。
+真实结果：生产B站上下文显式送Hy3，最新BV与完整评分理由逐字通过；QQ原生重启后普通私聊turn8 completed、平台固定messageId独立get_msg、用户手机正文三方一致。仍不证明B站原生下一会话自动注入；原ROUND_MEMORY_FAILED和旧错误/超时/错误BV均保留。抖音账号仍有效，固定首页feed仍0条。
+机制与风险：同日记忆需来源和真实发生时刻；客户端请求次数不等于上游重试次数；窗口必须覆盖压缩预留+输出。预算最终4/4客户端、4上游、原唯一QQ文本9/9，旧账保留，无自动续额。完整七步逻辑见本case及memory-source-recall/privacy-path-sanitization。
+生效/回滚：重装候选后重启Host/桥接；旧磁盘记忆块需现有维护流程重建。可回装旧包/恢复独立配置，保留新增账号、记忆、作业、评分、问答和所有用量，不用旧快照覆盖新数据。原始材料仅私有备份，Git历史未清洗。
+运行终态：本轮独立App/桥接/代理/文本网关/扫码服务/固定容器及8端口均关闭，owned运行进程0；常用App、其它5容器和共享Magpie/Colima保留。
+未验/发布意见：抖音真实推荐、B站下一会话自动注入、自动迁移、睡眠/24h及设备矩阵仍有缺口；当前不建议整体稳定发布，后续可由发布会话评估拆分已验证补修。最终版本由发布会话决定并重跑发布三门禁；本轮未bump/tag/push/Release。
+```
