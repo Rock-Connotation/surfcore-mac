@@ -3,6 +3,15 @@ import { whaleCompanionTone, whaleCompanionDouyinScene } from './whale-companion
 
 const LEGACY_FIELDS = ['draft', 'feeling', 'reason', 'summary'];
 const SHARING_FIELDS = [...LEGACY_FIELDS, 'question', 'share'];
+const PRESSURE_SENTENCES = [
+  /^(?:(?:请|请你)(?:务必|必须|一定要)?|(?:你)?(?:必须|务必|一定要|非得)(?:立刻|马上|立即)?)(?:回答|回复|告诉)(?:我|我们)(?:一下)?$/,
+  /^(?:(?:请|请你|你(?:必须|务必|一定要)|必须|务必|一定要|赶紧|马上|立刻)(?:马上|立刻|赶紧)?)(?:去)?(?:转发|关注|点击|私信|下单)(?:(?:这|此|本)?(?:条|个)?(?:视频|内容|链接)?|我|我们|一下|吧)?$/,
+];
+
+function hasExplicitPressure(text) {
+  return text.split(/[，,。！？!?；;\n]+/).map(sentence => sentence.trim()).filter(Boolean)
+    .some(sentence => PRESSURE_SENTENCES.some(pattern => pattern.test(sentence)));
+}
 
 export function buildDouyinReflectionSystem({ sharingEnabled = false, trustedPersonaIncluded = false } = {}) {
   if (!sharingEnabled) {
@@ -49,7 +58,7 @@ export function parseDouyinReflection(text, { sharingEnabled = false } = {}) {
     check(!/[?？]/.test(review.share), 'DOUYIN_SHARING_OUTPUT_INVALID', '模型开场不能同时包含提问。', '重新生成自然陈述和独立轻问题；不会自动发送。');
     check(/^[^?？]*[?？]$/.test(review.question) && (review.question.match(/[?？]/g) ?? []).length === 1,
       'DOUYIN_SHARING_OUTPUT_INVALID', '模型必须返回一个独立的轻问题。', '检查开场格式后重新手动操作；不会自动发送。');
-    check(!/(?:必须|务必|立刻|马上|不回复|回答我|回复我|告诉我|转发|关注|点击|私信|下单)/.test(`${review.share}${review.question}`),
+    check(!hasExplicitPressure(`${review.share}。${review.question}`),
       'DOUYIN_SHARING_OUTPUT_INVALID', '模型开场包含催促或外发动作。', '检查开场语气后重新手动操作；不会自动发送。');
   }
   return review;

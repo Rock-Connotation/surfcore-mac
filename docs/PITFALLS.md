@@ -4182,3 +4182,9 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 - 分享记录失败时保留已成功的经历记忆，给出 DOUYIN_SHARING_SAVE_FAILED/error/hint 并沿用 daily 暂停；不自动再次调用或撤销记忆。回调必须遵守 AbortSignal 与当前角色epoch，防止取消/切角后追加。
 - 同页文字回复沿用固定HY3 route和用量记录，但必须是独立 text-only reply；不能给原图像call增加无图flag。目录、额度等await完成后及实际stream读取微任务前都同步复核角色，避免watch轮询间隙把旧角色请求发出。
 - 进程可能在追加成功、作业收尾前退出；独立分享store应按 jobId+source id 幂等。
+
+
+## 2026-11-07：自然措辞与模型用量不能用关键词或世代守卫混为一谈
+
+- 对自然分享的固定词黑名单会把“我立刻笑了”“批评催人下单的推销”误判成催促命令，甚至阻止合法点评记忆写入。安全结构、长度、隐私及单问句继续严格；语气判断以提示词为主，deterministic拦截只识别完整独立句中的明确强制回复/外发命令，并保留其反例。
+- 模型流的 `iterator.next()` 已返回 usage chunk 时，必须先快照usage再做epoch/取消guard。guard仍阻止迟到正文和后续读取，但已确认的消耗要在finally中durable入账；不能为了记账恢复旧角色回复或再次调用next。

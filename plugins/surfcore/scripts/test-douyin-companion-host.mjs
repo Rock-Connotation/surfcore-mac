@@ -139,6 +139,27 @@ assert.ok(Date.now() - replyUsageStarted < 1000, 'reply usage persistence is bou
 assert.equal(sends, sendsBeforeAbort + 2);
 budget.recordExternalUsage = originalRecord;
 
+// A usage chunk already returned by iterator.next is durably recorded before the stale-role guard stops text.
+let staleStreams = 0, staleNexts = 0, staleReturns = 0;
+const staleUsage = { uncachedInputTokens: 7, outputTokens: 3 }, staleReceipts = [];
+replyEpoch = 1;
+llm.stream = options => {
+  staleStreams++; request = options;
+  return {
+    [Symbol.asyncIterator]() { return this; },
+    async next() { staleNexts++; replyEpoch = 2; return { done: false, value: { type: 'usage', usage: staleUsage } }; },
+    async return() { staleReturns++; return { done: true }; },
+  };
+};
+budget.recordExternalUsage = async receipt => { staleReceipts.push(receipt); return true; };
+await assert.rejects(model.reply({ system: 's', prompt: 'p', beforeSend: () => {
+  if (replyEpoch !== 1) throw Object.assign(new Error('reply role stale'), { code: 'DOUYIN_STALE_CHARACTER', hint: 'refresh current role' });
+} }), e => e.code === 'DOUYIN_STALE_CHARACTER' && !!e.hint);
+assert.equal(staleStreams, 1); assert.equal(staleNexts, 1, 'stale reply must not fetch body or later usage chunks');
+assert.equal(staleReturns, 1, 'stale reply returns its iterator');
+assert.equal(staleReceipts.length, 1); assert.deepEqual(staleReceipts[0].usage, staleUsage); assert.equal(staleReceipts[0].durable, true);
+llm.stream = originalStream; budget.recordExternalUsage = originalRecord;
+
 // Use the actual collector: a failed rename must not acknowledge durable usage.
 const collector = createTokenBudgetService({ ctx: {}, dshHome: path.join(root, 'durable-usage'), qqStateDir: path.join(root, 'qq-state'), log: () => {} });
 const paid = { category: 'other', usage: { uncachedInputTokens: 2, outputTokens: 1 }, model: 'workbuddy/hy3', durable: true };
