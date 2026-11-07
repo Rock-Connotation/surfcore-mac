@@ -25,3 +25,5 @@
 - 主线另用移除新增await后角色检查的隔离变异件证明转场断言会红；修复绿灯。完整lifecycle用例同时覆盖取消，late playurl不能调用prepareMedia。初次测试错把STALE_CHARACTER的既有interrupted终态写成failed，已修正测试并保留失败日志；未修改产品终态迎合断言。
 - DASH回归按真实audio174613/video174600形状断言：音轨完整、视频仍缺13ms；不能把音轨完整说成完整视频覆盖。本轮正式点评仅以完整音轨为依据，沿用原UI声明。
 - 新补验授权累计上限：B站3次Hy4、QQ4次Hy4及原唯一私聊8文本，每次最多8192输出，不自动重试；旧账本保持11/12与19/30，不重置。私有代理分别拦截实际入口，cap3/cap4并发和cap8文本网关离线边界已验证。实际最终结果由本轮收口case补记。
+
+- 调用方最终核对补齐了独立watch-video：它原来在prepare已使用精确时间线后，仍按整数part.durationMs抽帧/记历史/输出。主线用实际CLI函数体加传输夹具先红4000!=3500，修正为同一已校验playurl/part后绿；日志watch-timeline-{red,green}.log。没有复制第二套时长规则。

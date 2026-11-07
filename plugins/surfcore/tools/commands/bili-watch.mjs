@@ -7,7 +7,7 @@ import { SURFCORE_DIR, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import { appendWatch } from '../lib/watch-history.mjs'
 import { formatShotsStats, pruneShots, shotsPath } from '../lib/shots-cache.mjs'
 import {
-  createBiliApi, createFrameSheet, parseBiliReference, prepareBiliMedia, resolveBiliPart, structuredError,
+  createBiliApi, createFrameSheet, normalizeBiliPartTimeline, parseBiliReference, prepareBiliMedia, resolveBiliPart, structuredError,
 } from '../lib/bili-media.mjs'
 
 const VALUE_OPTIONS = new Set(['page', 'cid', 'grid', 'out'])
@@ -59,10 +59,12 @@ async function main() {
   const parsed = parseBiliReference(reference, { page: options.page })
   const api = createBiliApi()
   const view = await api.fetchView(parsed.bvid)
-  const part = resolveBiliPart(view, { page: parsed.page, cid: options.cid, urlPage: parsed.urlPage })
+  const declaredPart = resolveBiliPart(view, { page: parsed.page, cid: options.cid, urlPage: parsed.urlPage })
+  const playurl = await api.fetchPlayurl(declaredPart)
+  const part = normalizeBiliPartTimeline(declaredPart, playurl)
   const media = await prepareBiliMedia({
     part,
-    fetchPlayurl: api.fetchPlayurl,
+    playurl,
     dataRoot: path.join(SURFCORE_DIR, 'perception', 'assets'),
     needAudio: false,
     needVideo: true,
@@ -127,7 +129,7 @@ async function main() {
     error: frameError?.error,
     hint: frameError?.hint,
     bvid: part.bvid,
-    part: { page: part.page, pageCount: part.pageCount, cid: part.cid, durationMs: part.durationMs, title: part.partTitle || part.title },
+    part: { page: part.page, pageCount: part.pageCount, cid: part.cid, durationMs: part.durationMs, declaredDurationMs: part.declaredDurationMs, durationSource: part.durationSource, title: part.partTitle || part.title },
     media: { status: media.video.status, strategy: media.video.strategy, ...(options['keep-mp4'] || process.env.SURFCORE_KEEP_MP4 === '1' ? { path: media.video.path } : {}), acquiredRanges: media.video.acquiredRanges, missingRanges: media.video.missingRanges },
     frames: frames ?? { status: 'failed', source: 'video-frames', samples: [] },
     history,

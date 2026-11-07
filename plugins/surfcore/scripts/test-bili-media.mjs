@@ -75,3 +75,27 @@ assert.equal(calls[0].init.headers['x-perception-token'], 'fixture'); assert.equ
 const failClient = createPerceptionClient({ stateDir: root, fetchImpl: async () => Response.json({ ok: false, code: 'model.missing', error: '模型不可用', hint: '安装模型' }, { status: 400 }) })
 await assert.rejects(failClient.status(), e => e.code === 'model.missing' && e.hint === '安装模型')
 console.log('bili media: part, subtitle cid, coverage, cancellation, history and protected Host checks passed')
+
+// Execute the actual watch CLI body with fake transport/media, preserving its output/history contract.
+{
+  const vm = await import('node:vm'), crypto = await import('node:crypto');
+  const raw = fs.readFileSync(new URL('../tools/commands/bili-watch.mjs', import.meta.url), 'utf8');
+  const code = raw.replace(/^#!.*\n/, '').replace(/^import[\s\S]*?from ['"][^'"]+['"]\s*;?\s*$/gm, '');
+  const body = code.slice(0, code.lastIndexOf('\nmain().catch'));
+  let written = '', frameDuration, historyDuration;
+  const fixturePart = { bvid: 'BV1234567890', aid: 1, owner: {}, pages: [{ page: 1, cid: 11, duration: 4 }] };
+  await vm.runInNewContext(body + '\nmain()', { fs, path, crypto, JSON, Date, URL,
+    process: { argv: ['node', 'watch', fixturePart.bvid, '--json', '--keep-mp4'], env: {}, stdout: { write: s => { written += s } }, stderr: { write() {} } },
+    readCurrentCharacter: () => ({ id: 'fixture', epoch: 1 }), characterPaths: () => ({ biliDir: root }), SURFCORE_DIR: root,
+    biliState: file => path.join(root, file), biliStateDir: () => root, shotsPath: () => root, pruneShots: () => ({}), formatShotsStats: () => '',
+    parseBiliReference, resolveBiliPart, normalizeBiliPartTimeline,
+    createBiliApi: () => ({ fetchView: async () => fixturePart, fetchPlayurl: async () => ({ timelength: 3500 }) }),
+    prepareBiliMedia: async () => ({ durationMs: 3500, video: { path: 'fixture.media', status: 'completed', acquiredRanges: [{ startMs: 0, endMs: 3500 }], missingRanges: [] } }),
+    createFrameSheet: async options => { frameDuration = options.sourceDurationMs; return { status: 'completed', sheet: 'fixture.jpg' } },
+    appendWatch: record => { historyDuration = record.duration; return { ok: true } },
+    structuredError: e => ({ code: 'fixture.error', error: e.message, hint: 'fixture' }) });
+  assert.equal(frameDuration, 3500, 'watch frames must use the validated precise timeline');
+  assert.equal(historyDuration, 3.5, 'watch history must agree with the frame timeline');
+  assert.equal(JSON.parse(written).part.durationMs, 3500);
+}
+console.log('actual watch CLI preserves precise frame, history and output duration');
