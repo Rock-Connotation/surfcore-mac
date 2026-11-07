@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createDouyinBrowser } from './douyin-browser.mjs';
 import { parseDouyinSelf, parseDouyinFeed, publicDouyinAccount } from './douyin-data.mjs';
-import { validateDouyinMediaUrl } from './douyin-media.mjs';
+import { validateDouyinMediaUrl, validateDouyinMediaUserAgent } from './douyin-media.mjs';
 
 const SELF = '/aweme/v1/web/user/profile/self/';
 const FEED = '/aweme/v1/web/tab/feed/';
@@ -102,19 +102,28 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
   async function navigate(op, recommendations = true) { try { const result = await (recommendations && typeof op.browser.loadRecommendations === 'function' ? op.browser.loadRecommendations() : op.browser.reload()); if (!current(op)) return stale(); return result?.ok ? result : result || auth(); } catch { return current(op) ? error('DOUYIN_BROWSER_FAILED', '独立浏览器刷新失败', '检查浏览器后重试。') : stale(); } }
   const same = (a, b) => a && b && a.uid === b.uid && a.secUid === b.secUid && a.accountKey === b.accountKey;
   async function finish(op, result) { const closed = await stop(op); if (!closed.ok) return closed; return current(op) ? (op.identityFailure || result) : stale(); }
-  function companionItems(feed) {
+  function companionItems(feed, mediaUserAgent) {
     const rawItems = Array.isArray(feed?.rawFeed?.aweme_list) ? feed.rawFeed.aweme_list : [];
     return feed.items.slice(0, 5).map((item, index) => {
       const raw = rawItems[index];
-      if (!raw || String(raw.aweme_id ?? '') !== String(item.id)) return { ...item };
+      const privateItem = { ...item, mediaUserAgent };
+      if (!raw || String(raw.aweme_id ?? '') !== String(item.id)) return privateItem;
       const candidates = raw?.video?.play_addr?.url_list;
-      if (!Array.isArray(candidates)) return { ...item };
+      if (!Array.isArray(candidates)) return privateItem;
+      let firstCdn = null;
       for (const candidate of candidates.slice(0, 8)) {
         if (typeof candidate !== 'string') continue;
-        try { return { ...item, mediaSource: validateDouyinMediaUrl(candidate) }; }
+        try {
+          const mediaSource = validateDouyinMediaUrl(candidate);
+          const parsed = new URL(mediaSource);
+          if (parsed.hostname === 'www.douyin.com' && parsed.pathname === '/aweme/v1/play/') {
+            return { ...privateItem, mediaSource };
+          }
+          firstCdn ||= mediaSource;
+        }
         catch { /* A rejected host is never returned to the caller. */ }
       }
-      return { ...item };
+      return firstCdn ? { ...privateItem, mediaSource: firstCdn } : privateItem;
     });
   }
   async function readFeed(context, includeMedia) {
@@ -128,6 +137,11 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
     if (!same(first.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '当前登录账号与绑定账号不一致', '重新登录并确认账号。'));
     let state = browserStatus(op); if (!state.ok || !state.running) return finish(op, state.ok ? auth() : state);
     let cutoff = state.requestSeq; op.identityCutoff = cutoff; result = await navigate(op); if (!result.ok) return finish(op, result);
+    let mediaUserAgent = null;
+    if (includeMedia) {
+      try { mediaUserAgent = validateDouyinMediaUserAgent(result.mediaUserAgent); }
+      catch { return finish(op, error('DOUYIN_MEDIA_USER_AGENT_INVALID', '独立浏览器没有返回可用的视频播放身份信息。', '返回抖音首页重新读取推荐；若持续失败，请检查独立浏览器状态。')); }
+    }
     const feed = await findEvent(op, FEED, cutoff); if (!feed.ok) return finish(op, feed);
     const feedEvent = op.events.find(e => e.meta.pathname === FEED && e.meta.requestSeq > cutoff && e.meta.sessionId === op.session);
     const afterFeed = await findEvent(op, SELF, cutoff); if (!afterFeed.ok) return finish(op, afterFeed);
@@ -138,7 +152,7 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
     const after = await findEvent(op, SELF, cutoff); if (!after.ok) return finish(op, after);
     if (!same(after.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '读取后登录账号发生变化', '重新登录并确认账号。'));
     if (!Array.isArray(feed.items) || !feed.items.length) return finish(op, error('DOUYIN_FEED_EMPTY', '首页推荐为空', '检查首页内容和账号状态后重试。'));
-    const items = includeMedia && feedEvent ? companionItems({ ...feed, rawFeed: feedEvent.rawFeed }) : feed.items.slice(0, 5);
+    const items = includeMedia && feedEvent ? companionItems({ ...feed, rawFeed: feedEvent.rawFeed }, mediaUserAgent) : feed.items.slice(0, 5);
     return finish(op, { ok: true, source: 'homepage-recommendation', items });
   }
   function expectedPage(snap) { try { const u = new URL(snap.url); return u.protocol === 'https:' && u.hostname === 'www.douyin.com' && u.port === '' && u.pathname === '/'; } catch { return false; } }

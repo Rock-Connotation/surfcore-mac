@@ -7,12 +7,13 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { createDouyinService } from '../lib/douyin-service.mjs';
 import { createDouyinPerception } from '../lib/douyin-perception.mjs';
-import { downloadDouyinMedia, validateDouyinMediaUrl } from '../lib/douyin-media.mjs';
+import { downloadDouyinMedia, validateDouyinMediaUrl, validateDouyinMediaUserAgent } from '../lib/douyin-media.mjs';
 import { runProcess } from '../../../src/perception/process.js';
 
 const SELF = '/aweme/v1/web/user/profile/self/';
 const FEED = '/aweme/v1/web/tab/feed/';
 const RUNTIME = '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node';
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36';
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-companion-media-test-'));
 const fixtureDir = path.join(stateDir, 'fixtures');
 fs.mkdirSync(fixtureDir, { recursive: true, mode: 0o700 });
@@ -78,9 +79,10 @@ function assertFailure(result, code) {
 }
 
 function createRequestHarness(plans, lookupImpl = async () => [{ address: '93.184.216.34', family: 4 }]) {
-  let calls = 0;
-  const requestImpl = (_url, _options, callback) => {
+  let calls = 0, requests = [];
+  const requestImpl = (_url, options, callback) => {
     calls += 1;
+    requests.push({ headers: { ...options.headers } });
     const plan = plans.shift();
     const req = new EventEmitter();
     req.setTimeout = () => {};
@@ -93,12 +95,14 @@ function createRequestHarness(plans, lookupImpl = async () => [{ address: '93.18
     });
     return req;
   };
-  return { requestImpl, lookupImpl, get calls() { return calls; } };
+  return { requestImpl, lookupImpl, get calls() { return calls; }, get requests() { return requests; } };
 }
 
 const safeUrl = 'https://v26-web.douyinvod.com/path/video.mp4?auth_key=fixture-secret';
 assert.equal(validateDouyinMediaUrl(safeUrl), safeUrl);
 assert.equal(validateDouyinMediaUrl('https://www.douyin.com/aweme/v1/play/?video_id=1&auth_key=signed'), 'https://www.douyin.com/aweme/v1/play/?video_id=1&auth_key=signed');
+assert.equal(validateDouyinMediaUserAgent(BROWSER_UA), BROWSER_UA);
+assert.throws(() => validateDouyinMediaUserAgent('Chrome/130'), error => error.code === 'DOUYIN_MEDIA_USER_AGENT_INVALID' && !!error.hint);
 for (const value of [
   'http://v26-web.douyinvod.com/video.mp4',
   'https://user@v26-web.douyinvod.com/video.mp4',
@@ -142,6 +146,21 @@ for (const value of [
 }
 
 {
+  const plan = createRequestHarness([
+    { status: 302, headers: { location: 'https://v26-web-prime.douyinvod.com/video.mp4' }, chunks: [] },
+    { headers: { 'content-length': '2' }, chunks: [Buffer.from('ok')] },
+  ]);
+  const out = path.join(fixtureDir, 'signed-redirect.mp4');
+  const downloaded = await downloadDouyinMedia('https://www.douyin.com/aweme/v1/play/?video_id=1&auth_key=fixture', out, { ...plan, userAgent: BROWSER_UA });
+  assert.equal(downloaded.sizeBytes, 2);
+  assert.equal(plan.calls, 2);
+  assert.ok(plan.requests.every(request => request.headers['user-agent'] === BROWSER_UA));
+  assert.ok(plan.requests.every(request => request.headers.referer === 'https://www.douyin.com/'));
+  assert.ok(plan.requests.every(request => !('cookie' in request.headers) && !('authorization' in request.headers) && !('range' in request.headers)));
+  fs.unlinkSync(out);
+}
+
+{
   const controller = new AbortController();
   let lateRejected = false;
   const plan = createRequestHarness([], () => new Promise((_resolve, reject) => {
@@ -167,12 +186,36 @@ for (const value of [
 }
 
 {
-  const plan = createRequestHarness([{ headers: { 'content-length': '8' }, chunks: [Buffer.from('fixture')] }]);
+  const plan = createRequestHarness([{ headers: { 'content-length': '7' }, chunks: [Buffer.from('fixture')] }]);
   const out = path.join(fixtureDir, 'download.mp4');
   const downloaded = await downloadDouyinMedia(safeUrl, out, plan);
   assert.equal(downloaded.sizeBytes, 7);
+  assert.equal(plan.requests[0].headers['user-agent'], 'SurfCore local media observer', 'direct fixture callers retain the existing default user-agent');
+  assert.equal(plan.requests[0].headers.referer, 'https://www.douyin.com/');
+  assert.ok(!('cookie' in plan.requests[0].headers) && !('authorization' in plan.requests[0].headers) && !('range' in plan.requests[0].headers));
   assert.doesNotMatch(JSON.stringify(downloaded), /auth_key|fixture-secret|douyinvod/);
   fs.unlinkSync(out);
+}
+
+{
+  const plan = createRequestHarness([{ headers: { 'content-length': '8' }, chunks: [Buffer.from('fixture')] }]);
+  const out = path.join(fixtureDir, 'content-length-mismatch.mp4');
+  await assert.rejects(downloadDouyinMedia(safeUrl, out, plan), error => error.code === 'DOUYIN_MEDIA_LENGTH_MISMATCH' && !!error.hint);
+  assert.equal(fs.existsSync(out), false, 'a short body must be discarded instead of accepted as a complete video');
+}
+
+{
+  const plan = createRequestHarness([{ status: 206, headers: { 'content-range': 'bytes 0-6/7' }, chunks: [Buffer.from('fixture')] }]);
+  const out = path.join(fixtureDir, 'unexpected-partial.mp4');
+  await assert.rejects(downloadDouyinMedia(safeUrl, out, plan), error => error.code === 'DOUYIN_MEDIA_HTTP_FAILED' && !!error.hint);
+  assert.equal(fs.existsSync(out), false, 'partial Content-Range responses remain unsupported when the request had no Range');
+}
+
+{
+  const plan = createRequestHarness([]);
+  const out = path.join(fixtureDir, 'invalid-user-agent.mp4');
+  await assert.rejects(downloadDouyinMedia(safeUrl, out, { ...plan, userAgent: 'not-a-browser' }), error => error.code === 'DOUYIN_MEDIA_USER_AGENT_INVALID' && !!error.hint);
+  assert.equal(plan.calls, 0, 'invalid media user-agent must fail before DNS or HTTP');
 }
 
 const role = { id: 'role1', epoch: 1 };
@@ -180,10 +223,13 @@ let browserCount = 0;
 const rawItems = Array.from({ length: 5 }, (_, index) => ({
   aweme_id: String(index + 1),
   desc: `fixture ${index + 1}`,
-  video: { duration: 2000, play_addr: { url_list: [`https://v26-web.douyinvod.com/${index + 1}.mp4?auth_key=fixture-secret`] } },
+  video: { duration: 2000, play_addr: { url_list: [
+    `https://v26-web.douyinvod.com/${index + 1}.mp4?auth_key=fixture-secret`,
+    ...(index === 0 ? [`https://www.douyin.com/aweme/v1/play/?video_id=${index + 1}&auth_key=fixture-redirect-secret`] : []),
+  ] } },
 }));
 const selfPayload = { status_code: 0, user: { uid: '123456', sec_uid: 'sec', nickname: 'fixture account' } };
-let feedSelfPayload = selfPayload, delayFeedResponse = false, stickyMismatchScenario = false;
+let feedSelfPayload = selfPayload, delayFeedResponse = false, stickyMismatchScenario = false, browserMediaUserAgent = BROWSER_UA;
 const otherAccountSelfPayload = { status_code: 0, user: { uid: '999999', sec_uid: 'other-sec', nickname: 'other account' } };
 const otherAccountFeed = { status_code: 0, aweme_list: Array.from({ length: 5 }, (_, index) => ({
   aweme_id: String(90 + index), desc: `other account ${index}`,
@@ -208,7 +254,7 @@ function browserFactory(options) {
         emit(selfPayload, SELF);
       } else if (delayFeedResponse) setTimeout(() => { emit({ status_code: 0, aweme_list: rawItems }, FEED); emit(feedSelfPayload, SELF); }, 5);
       else { emit({ status_code: 0, aweme_list: rawItems }, FEED); emit(feedSelfPayload, SELF); }
-      return { ok: true };
+      return { ok: true, mediaUserAgent: browserMediaUserAgent };
     },
     async reload() { emit(selfPayload, SELF); return { ok: true }; },
     async snapshot() { return { ok: true, url: 'https://www.douyin.com/', title: '', text: '' }; },
@@ -227,19 +273,22 @@ assert.equal((await douyin.confirmAccount({ ...context(), candidateId: login.can
 const publicFeed = await douyin.readFeed(context());
 assert.equal(publicFeed.ok, true);
 assert.equal(publicFeed.items.length, 5);
-assert.doesNotMatch(JSON.stringify(publicFeed), /mediaSource|douyinvod|fixture-secret|play_addr/);
+assert.doesNotMatch(JSON.stringify(publicFeed), /mediaSource|mediaUserAgent|douyinvod|fixture-secret|play_addr/);
 const privateFeed = await douyin.readFeedForCompanion(context());
 assert.equal(privateFeed.ok, true);
 assert.equal(privateFeed.source, 'homepage-recommendation');
 assert.equal(privateFeed.items.length, 5);
-assert.equal(privateFeed.items[0].mediaSource, rawItems[0].video.play_addr.url_list[0]);
-assert.doesNotMatch(JSON.stringify(await douyin.status()), /douyinvod|fixture-secret/);
+assert.equal(privateFeed.items[0].mediaSource, rawItems[0].video.play_addr.url_list[1], 'prefer the exact first-party signed redirect from this FEED item');
+assert.equal(privateFeed.items[1].mediaSource, rawItems[1].video.play_addr.url_list[0], 'fall back to the first allowed CDN when no signed redirect exists');
+assert.ok(privateFeed.items.every(item => item.mediaUserAgent === BROWSER_UA));
+assert.doesNotMatch(JSON.stringify(await douyin.status()), /douyinvod|fixture-secret|mediaUserAgent|Mozilla/);
 assert.equal(browserCount, 3);
 delayFeedResponse = true;
 const delayedFeed = await douyin.readFeedForCompanion(context());
 delayFeedResponse = false;
 assert.equal(delayedFeed.ok, true);
-assert.equal(delayedFeed.items[0].mediaSource, rawItems[0].video.play_addr.url_list[0], 'the raw fixed-feed response arriving during findEvent wait must remain available internally');
+assert.equal(delayedFeed.items[0].mediaSource, rawItems[0].video.play_addr.url_list[1], 'the raw fixed-feed response arriving during findEvent wait must remain available internally');
+assert.equal(delayedFeed.items[0].mediaUserAgent, BROWSER_UA, 'the initial successful recommendation navigation supplies the private UA');
 stickyMismatchScenario = true;
 const stickyPublicMismatch = await douyin.readFeed(context());
 assertFailure(stickyPublicMismatch, 'DOUYIN_ACCOUNT_CHANGED');
@@ -248,6 +297,14 @@ const stickyCompanionMismatch = await douyin.readFeedForCompanion(context());
 assertFailure(stickyCompanionMismatch, 'DOUYIN_ACCOUNT_CHANGED');
 assert.doesNotMatch(JSON.stringify(stickyCompanionMismatch), /other-secret|other account|mediaSource|90/);
 stickyMismatchScenario = false;
+browserMediaUserAgent = undefined;
+const missingUaFeed = await douyin.readFeedForCompanion(context());
+assertFailure(missingUaFeed, 'DOUYIN_MEDIA_USER_AGENT_INVALID');
+assert.doesNotMatch(JSON.stringify(missingUaFeed), /Mozilla|mediaUserAgent|douyinvod|fixture-secret/);
+browserMediaUserAgent = 'Chrome/130';
+const invalidUaFeed = await douyin.readFeedForCompanion(context());
+assertFailure(invalidUaFeed, 'DOUYIN_MEDIA_USER_AGENT_INVALID');
+browserMediaUserAgent = BROWSER_UA;
 feedSelfPayload = { status_code: 0, user: { uid: '999999', sec_uid: 'other', nickname: 'other account' } };
 const wrongAccount = await douyin.readFeedForCompanion(context());
 assertFailure(wrongAccount, 'DOUYIN_ACCOUNT_CHANGED');
@@ -260,6 +317,11 @@ const copyFixture = fixture => async (_source, outputPath, { signal } = {}) => {
   return { path: outputPath, sizeBytes: fs.statSync(outputPath).size };
 };
 const mediaFixture = copyFixture(partialFixture);
+let observedDownloadUserAgent;
+const recordingMediaFixture = async (...args) => {
+  observedDownloadUserAgent = args[2]?.userAgent;
+  return await mediaFixture(...args);
+};
 
 function asrHarness({ state = 'completed', gateCancel = false } = {}) {
   let request, jobCalls = 0, cancelCalls = 0, releaseCancel;
@@ -292,9 +354,10 @@ function asrHarness({ state = 'completed', gateCancel = false } = {}) {
 }
 
 const asr = asrHarness();
-const perception = createDouyinPerception({ stateDir, asrService: asr, getCharacter: () => role, ffmpegPath, ffprobePath, downloadMedia: mediaFixture, pollMs: 50 });
+const perception = createDouyinPerception({ stateDir, asrService: asr, getCharacter: () => role, ffmpegPath, ffprobePath, downloadMedia: recordingMediaFixture, pollMs: 50 });
 const result = await perception.perceive(privateFeed.items[0], context(), { activityId: 'activity1' });
 assert.equal(result.ok, true, JSON.stringify(result));
+assert.equal(observedDownloadUserAgent, BROWSER_UA, 'perception passes the validated FEED-session user-agent to its downloader');
 assert.equal(result.source, 'homepage-recommendation');
 assert.equal(result.transcript.text, 'fixture transcript');
 assert.equal(result.transcript.coverage.complete, false, 'the shorter ffprobe audio track must remain partial');
@@ -303,7 +366,7 @@ assert.equal(result.frames.length, 3);
 assert.ok(result.frames.every(frame => /^data:image\/jpeg;base64,/.test(frame.dataUrl)));
 assert.deepEqual(result.frames.map(frame => frame.atMs), [200, 1000, 1800]);
 assert.ok(result.warnings.some(warning => warning.code === 'DOUYIN_AUDIO_PARTIAL' && warning.error && warning.hint));
-assert.doesNotMatch(JSON.stringify(result), /mediaSource|douyinvod|fixture-secret|localPath|assetId/);
+assert.doesNotMatch(JSON.stringify(result), /mediaSource|mediaUserAgent|Mozilla|douyinvod|fixture-secret|localPath|assetId/);
 assert.equal(asr.request.provenance.sourceUrl, undefined, 'signed CDN URLs must never enter the ASR job');
 assert.equal(asr.request.provenance.channel, 'douyin');
 assert.equal(asr.request.source.channel, 'douyin');
@@ -356,6 +419,10 @@ const longDuration = await strictPerception.perceive({ ...privateFeed.items[0], 
 assertFailure(longDuration, 'DOUYIN_MEDIA_DURATION_TOO_LONG');
 const unsafeHost = await strictPerception.perceive({ ...privateFeed.items[0], mediaSource: 'https://evil.example/video.mp4' }, context(), { activityId: 'unsafe' });
 assertFailure(unsafeHost, 'DOUYIN_MEDIA_URL_REJECTED');
+const missingUa = await strictPerception.perceive({ ...privateFeed.items[0], mediaUserAgent: undefined }, context(), { activityId: 'missing-ua' });
+assertFailure(missingUa, 'DOUYIN_MEDIA_USER_AGENT_INVALID');
+const invalidUa = await strictPerception.perceive({ ...privateFeed.items[0], mediaUserAgent: 'Chrome/130' }, context(), { activityId: 'invalid-ua' });
+assertFailure(invalidUa, 'DOUYIN_MEDIA_USER_AGENT_INVALID');
 assert.equal(downloads, 0);
 
 const unknownProbeAsr = asrHarness();
