@@ -92,6 +92,16 @@ if (!apiRoute || !extRoute || !healthRoute) throw new Error('路由没有全部�
 const health = await invoke(healthRoute, 'GET', '/dsh-surfcore/health');
 console.log('health:', health.statusCode, health.body.slice(0, 200));
 
+const sharingClient = await invoke(apiRoute, 'GET', '/dsh-surfcore/api/douyin/companion-sharing-client');
+if (sharingClient.statusCode !== 200 || !String(sharingClient.headers['content-type']).startsWith('text/javascript') || !sharingClient.body.includes('export function mountSharingEntry')) {
+  throw new Error('伙伴客户端必须通过插件总API路由到达实际模块');
+}
+const sharingStatus = await invoke(apiRoute, 'GET', '/dsh-surfcore/api/douyin/companion-sharing');
+const sharingFailure = JSON.parse(sharingStatus.body);
+if (sharingStatus.statusCode !== 409 || sharingFailure.code !== 'DOUYIN_CHAT_CHARACTER_REQUIRED' || !sharingFailure.hint) {
+  throw new Error('伙伴状态必须到达真实控制器并返回可行动的角色缺失错误');
+}
+
 for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/dsh-surfcore/api/persona', '/dsh-surfcore/api/memory', '/dsh-surfcore/api/memory-card', '/dsh-surfcore/api/memory-card/full', '/dsh-surfcore/api/align', '/dsh-surfcore/api/extensions', '/dsh-surfcore/api/platforms', '/dsh-surfcore/api/diagnostics', '/dsh-surfcore/api/bili/automation', '/dsh-surfcore/api/watch-history', '/dsh-surfcore/api/preferences/scan?sources=local&limit=5', '/dsh-surfcore/api/bili/fish-guard', '/dsh-surfcore/api/fish-guard/qq']) {
   const res = await invoke(apiRoute, 'GET', path);
   const data = JSON.parse(res.body || '{}');

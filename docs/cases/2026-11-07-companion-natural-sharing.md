@@ -46,3 +46,5 @@
 最终离线门禁：df1b159生产修复经V3独立7夹具通过，三处剩余P2同revision合同旧红新绿；源码4hash首尾一致。1018162 Git对象清单858/858、官方Node24 audit174/174、严格隐私0、同源348文件包构建通过。原browser fixture补齐单调revision（只在模拟状态变化时推进、读取不推进），30项亦通过；真实事件条数计数另由生产service专项验证，不能把fake状态计数冒充生产日志。完整plugin与原生App尚待后续实证。
 
 组合测试补充：首轮完整plugin在旧日记fixture失败：其generic GET把sharing误回成companion结构，新增格式保护正确显示第二个alert，原日记断言因两个alert严格匹配失败。为该fixture补revision0/空分享专用路由，保留原断言，旧UI11项重新通过；未修改产品代码规避错误。首轮plugin.log失败原件保留，完整plugin待第二轮结果。
+
+原生首轮结果（0新增模型）：官方CLI安装1018162后348文件逐hash一致、7648持久文件不变；真实DSH PID27931 footer显示模块加载失败。原生fetch读回overview/companion为200、sharing及module为404。根因是主线误把两条精确路由放进handleBili（仅/bili/*能进入），控制器孤立测试不能证明Host总路由可达。已新增通过真实apply(ctx)注册的总API入口验证JS模块200及无角色409+code/hint，旧实现红，路由移至总prefix后绿；不改dynamic import机制，不无条件await所有请求，保留其它POST body监听时序。该独立实例已按精确PID正常Quit，原失败截图/HTTP/安装证据保留；8/12未动，常用未升级。索引/Host专项及完整门禁、同源第二包/重装实机待后续。

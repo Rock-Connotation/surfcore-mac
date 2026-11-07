@@ -3167,9 +3167,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   async function handleBili(req, res, url) {
     if (await biliRoundController.handle(req, res, url)) return;
     const pathname = url.pathname;
-    if (pathname === `${API_PREFIX}/douyin/companion-sharing` || pathname === `${API_PREFIX}/douyin/companion-sharing-client`) {
-      await sharingController.handle(req, res, url); return;
-    }
     if (req.method === 'GET' && pathname.endsWith('/fish-guard')) {
       const dir = activePlatformStateDir(BILI_DIR);
       const stateFile = path.join(dir, 'fish-guard.json');
@@ -3784,6 +3781,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   route('prefix', API_PREFIX, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
+    if (pathname === `${API_PREFIX}/douyin/companion-sharing` || pathname === `${API_PREFIX}/douyin/companion-sharing-client`) {
+      await sharingController.handle(req, res, url); return;
+    }
     if (pathname === `${API_PREFIX}/douyin/companion` || pathname === `${API_PREFIX}/douyin/companion-page` || pathname === `${API_PREFIX}/douyin/companion-portrait`) {
       await companionController.handle(req, res, url); return;
     }

@@ -12,6 +12,7 @@
 - UI V1独立发现P1缺action（已修并合入）、P2同角色旧GET覆盖新POST、P2真实角色失效码未识别；后两项、客户端60秒短于Host180秒及late-error guard顺序均已由3f64531修复，UI专项30项与旧UI11通过；主线真实controller/browser最新组合亦通过canonical码/挂起主GET/旧GET时序。V2再实证迟到ACK、迟到主GET及成功POST停止poll三P2，主线改为日志revision统一快照顺序、seq++退休主GET并队列新刷新，移除两项临时旗标。真实controller新时序与V3独立7夹具均绿；fake browser按状态变化推进revision（只读不推进），30项通过。1018162程序/清单858、audit174/174、strict隐私0和348文件同源包已通过；最终完整plugin/回归及原生验收在收口。
 - 独立native副本已复制当前app/epoch4/小白鲸的7623文件并逐hash相同，源资料不改；只重绑目标inbox身份（24254字节，水位保留）。沿用8/12账本，stage日常关闭，常用原日常开启设置保留；尚未launch或新增模型。
 - 下一步：UI最小增量与冻结复核→组合audit/完整插件/清单/同源包→独立App最多2观看+1接话、重启只读→原包官方CLI装入常用、仅追加新经历/分享和已消费额度，用生产服务合并新token增量，不整体覆盖记忆卡→常用原生读回及正常无debug恢复。原13插件版本现读一致，QQ/B站自启关闭；不外发、语音/外部桌宠或发布。
+- 原生首包1018162实装348一致/7648持久不变，但总路由误放Bili子handler导致sharing/module404，0新增模型；PID27931已正常Quit。已移至总API精确分派，并补真实apply(ctx)Host路由旧红新绿；新完整门禁与第二包/复验待做，常用仍退出、8/12。
 - 私有检查点_backups/20261107-sharing/WORKING-HANDOFF.json；组合case见cases/2026-11-07-companion-natural-sharing.md。无待用户确认项，按既定范围继续。
 
 ---
