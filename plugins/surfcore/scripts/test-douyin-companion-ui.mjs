@@ -9,12 +9,21 @@ import { douyinCompanionPage } from '../lib/douyin-companion-page.mjs';
 
 let posts = [], getRequests = 0, portraitRequests = [], character = { id: 'alpha', epoch: 1, name: '小白鲸' };
 const failures = [], dir = fs.mkdtempSync(path.join(os.tmpdir(), 'companion-ui-'));
+const fixtureStats = new Map(), statusGates = new Map(), actionGates = new Map();
 const webp = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA==', 'base64');
 const testStartedAt = Date.now();
+function makeGate() {
+  let markStarted, release;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const released = new Promise(resolve => { release = resolve; });
+  return { started, release, hold: async () => { markStarted(); await released; } };
+}
 const server = http.createServer(async (req, res) => {
   if (req.url === '/') { res.writeHead(200, { 'content-type': 'text/html;charset=utf-8' }); res.end(douyinCompanionPage); return; }
   const url = new URL(req.url, 'http://127.0.0.1');
+  const fixtureTag = req.headers['x-companion-fixture'], stats = fixtureStats.get(fixtureTag);
   if (url.pathname === '/dsh-surfcore/api/douyin/companion-portrait') {
+    if (stats) stats.portrait++;
     portraitRequests.push(url.pathname + url.search);
     if (portraitRequests.length === 1) {
       await new Promise(resolve => setTimeout(resolve, 5600));
@@ -30,12 +39,17 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'POST') {
     let body = ''; for await (const chunk of req) body += chunk;
-    posts.push(JSON.parse(body)); res.writeHead(409, { 'content-type': 'application/json' });
+    posts.push(JSON.parse(body)); if (stats) stats.post++;
+    const gate = actionGates.get(fixtureTag); if (gate) { actionGates.delete(fixtureTag); await gate.hold(); }
+    res.writeHead(409, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: false, code: 'FIXTURE_LIMIT', error: '本轮额度已用完', hint: '查看已有日记，不会自动重试。' })); return;
   }
   getRequests++;
   // Intentionally slower than the fixture's poll interval: refresh must not starve itself.
-  await new Promise(resolve => setTimeout(resolve, 120));
+  if (stats) stats.get++;
+  const statusGate = statusGates.get(fixtureTag);
+  if (statusGate) { statusGates.delete(fixtureTag); await statusGate.hold(); }
+  else await new Promise(resolve => setTimeout(resolve, 120));
   if (!character) {
     res.writeHead(409, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: false, code: 'COMPANION_CHARACTER_REQUIRED', error: '当前没有活动角色。', hint: '在角色页载入伙伴。' })); return;
@@ -55,6 +69,23 @@ let browser;
 try {
   const executablePath = findBrowser()?.executable; assert.ok(executablePath);
   browser = await chromium.launch({ headless: true, executablePath });
+  async function prepareTaggedPage(tag) {
+    const taggedPage = await browser.newPage();
+    await taggedPage.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
+    await taggedPage.addInitScript(({ fixtureTag: tagValue }) => {
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = (input, init = {}) => {
+        const url = typeof input === 'string' ? input : input.url;
+        if (url.includes('/dsh-surfcore/api/douyin/companion')) {
+          const headers = new Headers(init.headers || {}); headers.set('x-companion-fixture', tagValue); init = { ...init, headers };
+        }
+        return nativeFetch(input, init);
+      };
+    }, { fixtureTag: tag });
+    await taggedPage.addInitScript(() => { const interval = window.setInterval; window.setInterval = (fn, ms) => interval(fn, Math.min(ms, 60)); });
+    taggedPage.on('pageerror', error => failures.push(error.message));
+    return taggedPage;
+  }
   const page = await browser.newPage();
   await page.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
   await page.addInitScript(() => { const interval = window.setInterval; window.setInterval = (fn, ms) => interval(fn, Math.min(ms, 60)); });
@@ -97,5 +128,34 @@ try {
   assert.equal(failures.length, 0, failures.join('\n'));
   assert.ok(getRequests < (Date.now() - testStartedAt) / 100 + 2, 'slow polling must remain serialized against the 120ms fixture response');
   await page.screenshot({ path: path.join(dir, 'companion-ui.png') });
-  console.log(JSON.stringify({ ok: true, checks: ['slow-poll', 'escaped-diary', 'sticky-action-failure', 'portrait-role-stamp', 'portrait-timeout-visible-and-refresh-retry', 'late-retired-role-response-ignored', 'partial-success-happy-state', 'manual-gate-next-step', 'role-clear'], screenshot: path.join(dir, 'companion-ui.png') }));
+  const statusTag = 'pagehide-status-retry', statusGate = makeGate(), statusPage = await prepareTaggedPage(statusTag);
+  fixtureStats.set(statusTag, { get: 0, portrait: 0, post: 0 }); statusGates.set(statusTag, statusGate);
+  await statusPage.goto(`http://127.0.0.1:${server.address().port}`); await statusGate.started;
+  await statusPage.getByRole('button', { name: '刷新' }).click();
+  await statusPage.evaluate(() => dispatchEvent(new Event('pagehide')));
+  const statusCountsAtHide = { ...fixtureStats.get(statusTag) };
+  statusGate.release(); await statusPage.waitForTimeout(300);
+  assert.deepEqual(fixtureStats.get(statusTag), statusCountsAtHide, 'a settled status request after pagehide cannot launch queued retry or portrait fetch');
+  assert.equal(await statusPage.locator('#portrait-status').textContent(), '日记页已关闭。');
+  assert.equal(await statusPage.locator('#portrait').isHidden(), true);
+  assert.equal(await statusPage.locator('#portrait').getAttribute('src'), null);
+  await statusPage.close();
+
+  character = { id: 'alpha', epoch: 1, name: '小白鲸' };
+  const actionTag = 'pagehide-action-finally', actionGate = makeGate(), actionPage = await prepareTaggedPage(actionTag);
+  fixtureStats.set(actionTag, { get: 0, portrait: 0, post: 0 }); actionGates.set(actionTag, actionGate);
+  await actionPage.goto(`http://127.0.0.1:${server.address().port}`);
+  await actionPage.getByText('当前伙伴：小白鲸').waitFor();
+  await actionPage.waitForFunction(() => { const image = document.getElementById('portrait'); return !image.hidden && image.complete && image.naturalWidth > 0; });
+  await actionPage.getByRole('button', { name: '一起发现一轮' }).click(); await actionGate.started;
+  await actionPage.evaluate(() => dispatchEvent(new Event('pagehide')));
+  await actionPage.waitForTimeout(180);
+  const actionCountsAtHide = { ...fixtureStats.get(actionTag) };
+  actionGate.release(); await actionPage.waitForTimeout(300);
+  assert.deepEqual(fixtureStats.get(actionTag), actionCountsAtHide, 'a settled action after pagehide cannot trigger its finally refresh');
+  assert.equal(await actionPage.locator('#error').textContent(), '', 'a late action failure after pagehide is not written to the retired page');
+  assert.equal(await actionPage.locator('#portrait-status').textContent(), '日记页已关闭。');
+  await actionPage.close();
+  assert.equal(failures.length, 0, failures.join('\n'));
+  console.log(JSON.stringify({ ok: true, checks: ['slow-poll', 'escaped-diary', 'sticky-action-failure', 'portrait-role-stamp', 'portrait-timeout-visible-and-refresh-retry', 'late-retired-role-response-ignored', 'partial-success-happy-state', 'manual-gate-next-step', 'role-clear', 'pagehide-pending-status-retry-retired', 'pagehide-pending-action-no-refresh-or-sticky-failure'], screenshot: path.join(dir, 'companion-ui.png') }));
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }
