@@ -44,3 +44,5 @@
 状态收敛补充：独立UI V2继续实证迟到ACK POST、迟到主GET复活角色和POST后停poll三处P2。比较两路线：纯客户端动作开始序号成本低，但网络开始顺序不等于持久提交顺序，容易丢较新的真实状态；采用追加日志revision（当前epoch事件条数）给所有GET/POST快照统一排序，成本仅一项派生API字段，无存储迁移，旧程序可忽略。客户端只应用不小于已应用revision的同角色快照，缺版本显式SHARING_RESPONSE_INVALID/error/hint；POST不再清GET轮询，因此去掉两项临时状态旗标。角色失效seq++退休主GET，refresh(true)沿用已有队列等待发起真正新请求。ACK/cancel只清自己开始时仍同一对象的错误，不能吞掉稍后回复失败。真实browser→controller→store反例旧ACK可把2条盖成0，新版保留2条，并在5秒后继续只读poll；修复仍需冻结V3独立复核及最终组合/原生验收。
 
 最终离线门禁：df1b159生产修复经V3独立7夹具通过，三处剩余P2同revision合同旧红新绿；源码4hash首尾一致。1018162 Git对象清单858/858、官方Node24 audit174/174、严格隐私0、同源348文件包构建通过。原browser fixture补齐单调revision（只在模拟状态变化时推进、读取不推进），30项亦通过；真实事件条数计数另由生产service专项验证，不能把fake状态计数冒充生产日志。完整plugin与原生App尚待后续实证。
+
+组合测试补充：首轮完整plugin在旧日记fixture失败：其generic GET把sharing误回成companion结构，新增格式保护正确显示第二个alert，原日记断言因两个alert严格匹配失败。为该fixture补revision0/空分享专用路由，保留原断言，旧UI11项重新通过；未修改产品代码规避错误。首轮plugin.log失败原件保留，完整plugin待第二轮结果。

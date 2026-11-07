@@ -37,6 +37,12 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(200, { 'content-type': 'image/webp', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(webp); return;
   }
+  if (url.pathname === '/dsh-surfcore/api/douyin/companion-sharing') {
+    res.writeHead(character ? 200 : 409, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(character
+      ? { ok: true, character, value: { revision: 0, openings: [], messages: [], active: null, unread: 0, lastError: null } }
+      : { ok: false, code: 'DOUYIN_CHAT_CHARACTER_REQUIRED', error: '当前没有活动角色。', hint: '在角色页载入伙伴。' })); return;
+  }
   if (req.method === 'POST') {
     let body = ''; for await (const chunk of req) body += chunk;
     posts.push(JSON.parse(body)); if (stats) stats.post++;
