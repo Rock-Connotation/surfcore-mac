@@ -7052,6 +7052,51 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           ),
         "surfcore: settings section",
       );
+      ctx.effect(() => {
+        let disposed = false, loading = false, disposeClient = null, disposeFailure = null, unregisterFailure = null;
+        const clearFailureRegistration = () => {
+          const cleanup = unregisterFailure;
+          unregisterFailure = null;
+          cleanup?.();
+        };
+        const clearFailure = () => {
+          disposeFailure?.(); disposeFailure = null;
+          clearFailureRegistration();
+        };
+        const showFailure = () => {
+          if (disposed) return;
+          const SharingClientLoadFailure = () => h("div", { role: "status", "aria-live": "polite", style: { fontSize: "11px", color: "var(--dsw-alias-state-error-primary, #b42318)" } },
+            h("span", null, "伙伴入口加载失败 · COMPANION_SHARING_CLIENT_LOAD_FAILED · 请重载入口后再试。"),
+            h("button", { type: "button", onClick: loadSharingClient, style: { marginLeft: "6px", color: "inherit", cursor: "pointer" } }, "重载入口"));
+          clearFailure();
+          disposeFailure = ctx.slots.inject("sidebar.footer.action", () => {
+            if (disposed) return;
+            unregisterFailure = ctx.slots.register({ name: "sidebar.footer.action", id: "surfcore-companion-sharing-load-error", order: 7 }, SharingClientLoadFailure);
+            return clearFailureRegistration;
+          }, "surfcore: companion sharing load error");
+        };
+        const loadSharingClient = async () => {
+          if (disposed || loading) return;
+          loading = true;
+          try {
+            const module = await import("/dsh-surfcore/api/douyin/companion-sharing-client");
+            if (disposed) return;
+            if (typeof module.mountSharingEntry !== "function") throw new Error("invalid companion sharing module");
+            clearFailure();
+            disposeClient = module.mountSharingEntry(ctx, React);
+          } catch {
+            showFailure();
+          } finally {
+            loading = false;
+          }
+        };
+        void loadSharingClient();
+        return () => {
+          disposed = true;
+          disposeClient?.();
+          clearFailure();
+        };
+      }, "surfcore: companion sharing entry");
     }
 
     exports.apply = apply;

@@ -4174,3 +4174,7 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 ## 2026-11-07：角色迁入须保留水位，只重绑最终收件箱身份
 
 复制app角色会改变inbox的dev/ino/birthtimeMs。源/目标整组hash相同、无pendingAppend、水位不越界且落完整JSONL边界后，只更新目标full-stats的experienceInboxIdentity，不能清水位/删归档键绕过保护；current最后发布，不调用增加epoch的switchCharacter。原插件/账户与common旧全局数据分开保留，ASR只复制models/runtimes并重定位，不带旧host secret/锁/任务。官方离线安装缺元数据可在保留13原插件版本的断言下改官方在线安装，不能手工覆盖整profile。实证见[迁入case](cases/2026-11-07-companion-common-migration.md)。
+
+## 2026-11-07：分享轮询不能替用户确认已读
+
+聊天页与侧栏都读同源 sharing 状态；这类 GET 只能更新展示，不能 ACK。日记页的主 companion 状态是当前角色/epoch 权威，sharing GET 可能晚到：提交结果前同时核对本次序号和主页面 stamp；换角/清角时递增序号、abort旧请求并清开场/消息/草稿。否则旧角色的分享会挂在新立绘下面。只在用户显式点“我看到了”或“回一句”时 ACK；隐藏 iframe、后台轮询和页面下方未看的开场不算已读。pagehide 要清轮询并 abort 在途请求，迟到 finally 不得再发最终 GET。active 聊天期间禁用新一轮发现；跨实例取消失败要保留 active 并展示原 code/error/hint，不可假报取消。回复失败保留输入、不自动重发。动态文案只用 textContent/React 文本节点。回归见 plugins/surfcore/scripts/test-companion-sharing-ui.mjs（换角迟到、role清除、pagehide、显式ack、跨实例取消、XSS和无自动重试）。
