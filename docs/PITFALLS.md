@@ -4188,3 +4188,7 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 
 - 对自然分享的固定词黑名单会把“我立刻笑了”“批评催人下单的推销”误判成催促命令，甚至阻止合法点评记忆写入。安全结构、长度、隐私及单问句继续严格；语气判断以提示词为主，deterministic拦截只识别完整独立句中的明确强制回复/外发命令，并保留其反例。
 - 模型流的 `iterator.next()` 已返回 usage chunk 时，必须先快照usage再做epoch/取消guard。guard仍阻止迟到正文和后续读取，但已确认的消耗要在finally中durable入账；不能为了记账恢复旧角色回复或再次调用next。
+
+## 2026-11-07：分享轮询不能替用户确认已读
+
+聊天页与侧栏都读同源 sharing 状态；这类 GET 只能更新展示，不能 ACK。日记页的主 companion 状态是当前角色/epoch 权威，sharing GET 可能晚到：提交结果前同时核对本次序号和主页面 stamp；换角/清角时递增序号、abort旧请求并清开场/消息/草稿。否则旧角色的分享会挂在新立绘下面。只在用户显式点“我看到了”或“回一句”时 ACK；隐藏 iframe、后台轮询和页面下方未看的开场不算已读。pagehide 要清轮询并 abort 在途请求，迟到 finally 不得再发最终 GET。active 聊天期间禁用新一轮发现；跨实例取消失败要保留 active 并展示原 code/error/hint，不可假报取消。回复失败保留输入、不自动重发。动态文案只用 textContent/React 文本节点。回归见 plugins/surfcore/scripts/test-companion-sharing-ui.mjs（换角迟到、role清除、pagehide、显式ack、跨实例取消、XSS和无自动重试）。

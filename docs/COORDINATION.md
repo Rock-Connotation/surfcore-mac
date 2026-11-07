@@ -18,6 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
+| **伙伴自然分享与聊天 UI 2026-11-07** | ../surfcore-sharing-ui | feat/sharing-ui @ 3ab73bd | 日记分享、DSH 侧栏未读入口、本机回复浮层与角色/退出护栏 | 代码与本机验收完成（audit 174/174、专项 23/23、旧 UI 11 checks）；待父会话原生验收；未触碰真实 DSH/profile、模型或平台外发；无版本/manifest 改动 |
 | **自然分享组合 2026-11-07** | `../surfcore-companion-sharing`；UI/开场各独立树 | `feat/companion-sharing`，基线3ab73bd | DSH本机自然分享/可回复/共享额度与实机组合 | 实施中，用户已确认同页回复；旧8/12保留、日常配置保留、无平台外发/发布 |
 | **抖音陪伴升级 2026-11-07** | `../surfcore-companion`；媒体/引擎/外观/召回各独立树 | `feat/douyin-companion`，基线244eba1 | 已确认prompt的人格/媒体理解/日记/有界调度与组合验收 | ✅ 已交付常用DSH；少女原生显示/完整音轨/新进程真实回忆通过，8/12请求、8上游200，原13插件保留；上海12:30/20:30日常开，QQ/B站关；stage退休，无发布；长期观察未验 |
 | **经历后自然分享引擎 2026-11-07** | `../surfcore-sharing-engine` | `feat/sharing-engine`，基线3ab73bd | opt-in开场生成与纯文本HY3 reply adapter | ✅ V1复审两项P2已修：自然/usage原反例与Node24三专项通过；audit173/174，唯一冻结manifest 9项待主线合并后重生；本地提交、无真实DSH/模型/外部动作、未push |
