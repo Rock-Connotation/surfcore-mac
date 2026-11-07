@@ -3,7 +3,7 @@
 ## 现象
 
 - 用户反馈：装好 SnowLuma2 后，点概览页「检测已安装的 SnowLuma」→ 提示「没找到 SnowLuma：请先下载并解压 SnowLuma2，然后在 QQ → SnowLuma 里填安装目录」。
-- 复现：把 SnowLuma2 解压到非标准位置（例如 `D:\软件\SnowLuma2`），不填任何配置，点检测。
+- 复现：把 SnowLuma2 解压到非标准位置（例如 `<CUSTOM_INSTALL_ROOT>`），不填任何配置，点检测。
 - 影响面：只是「检测 / 自动打开 / 读 WebUI 端口」失败；手填对路径后 QQ 仍能正常用。
   不丢数据、不改会话，可随时回滚。
 
@@ -14,7 +14,7 @@
 | 系统 / DSH 版本 | Windows / DSH 0.2.1-rc.2 |
 | SurfCore 版本 | 0.6.22（本机），本次修复未发版 |
 | 安装方式 | git 工作区（插件跑在 DSH 宿主进程里） |
-| 其它相关版本 | SnowLuma2 v2.0.3；本机装在 `D:\deepseekwork\SnowLuma2`（标准 `app\launcher.bat` 布局） |
+| 其它相关版本 | SnowLuma2 v2.0.3；本机装在 `<SNOWLUMA_INSTALL_ROOT>`（标准 `app\launcher.bat` 布局） |
 
 ## 根因
 
@@ -72,7 +72,7 @@
   手选目录失败 → 弹窗「这个路径里没有 SnowLuma」+ 要能找 `app\launcher.bat` 的说明；均为 `ok:false` 驱动，不吞。
 - `cd plugins/surfcore && npm test` → 全绿。
 - `npm run test:audit` → 78/78（本改动在插件侧，数量不变）。
-- 本机实跑：配置里是 `D:\deepseekwork\SnowLuma2`（有 `app\launcher.bat`），检测命中。
+- 本机实跑：配置里是 `<SNOWLUMA_INSTALL_ROOT>`（有 `app\launcher.bat`），检测命中。
 - 没验证：真机点「浏览…」弹原生框（需要桌面会话，自动化点不了）；没在 0.6.22 的 GUI 里手点一遍。
 
 ## 遗留 / 后续

@@ -2,7 +2,7 @@
 
 ## 现象
 
-同一天有三个会话在 `D:\deepseekwork\surfcore` 的同一个 `dev` 工作区里工作：
+同一天有三个会话在 `<REPOSITORY_ROOT>` 的同一个 `dev` 工作区里工作：
 
 - 语音修复会话提交 `4d2d7c3 fix(voice): make local pack install resumable and honest`；
 - 该提交的 `plugins/surfcore/lib/client.js` 却包含 **Minecraft 的 UI**（`/mc/card`、`MINECRAFT` 卡片，+45 行）；

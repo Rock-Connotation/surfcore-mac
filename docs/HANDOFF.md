@@ -173,7 +173,7 @@
 
 - **稳定版**：`0.8.7`（Release `SurfCore v0.8.7`；tag `v0.8.7` → 远端 `90872a7`）。
 - **远端 main**：`90872a7`（tree `2f4bae0`）；**本地 main**：`3a3100e`（release commit）；
-  **公开镜像**：`D:\deepseekwork\opensource\surfcore` @ `f849cc4`（tree 与远端一致）。
+  **公开镜像**：`<PUBLIC_MIRROR_ROOT>` @ `f849cc4`（tree 与远端一致）。
 - **本地 dev**：`7ed599c`（已把 main 合回 dev），版本 `0.8.7`。
 - **归档核对**：下载 tag zip → `release-manifest --verify` **678 / 不符 0 / 缺失 0**。
 - **测试**：`npm run test:audit` **142/142**；插件测试 0 失败；本地清单 `678 / 0`。
@@ -188,7 +188,7 @@
 
 - 本地源码仓库含 `video/`，公开镜像不含；**不要直接把本地 main 树推到 GitHub**；
 - 正确流程：本地 `main` 出 release commit → 按 `git diff 42ec20d..HEAD` 同步变更到
-  `D:\deepseekwork\opensource\surfcore` → 镜像生成自己的 manifest → tag → 用 API 发布镜像；
+  `<PUBLIC_MIRROR_ROOT>` → 镜像生成自己的 manifest → tag → 用 API 发布镜像；
 - 镜像 commit 与远端 API commit 的 hash 不同，但 **tree 必须一致**（本次 `2f4bae0`）。
 
 ### 下一版
@@ -407,7 +407,7 @@
 - **一键启动/停止、插件体检、L2-L3 弹窗、SnowLuma 断线提示还没有在真实设置页点过**；
   真实进程启停、真实回合 cancel、SnowLuma 断线零 token 增长需重启 DSH 后手测。
 - **语音离线包导入 UI 仍没在真实设置页点过**（确认框/错误弹窗/删源/删备份）；真实 7.9G 导入已跑通。
-- 语音包许可仍未定：piper GPL、huayan 数据集、age12 微调权重；候选包在 `D:\surfcore-poc\release\`，
+- 语音包许可仍未定：piper GPL、huayan 数据集、age12 微调权重；候选包在 `<LOCAL_MODEL_STAGING_ROOT>`，
   **不要当公开包直接上传**。
 - 0.7.18 的 `PERMISSIONS.md` 里仍有若干权限项标记“待补程序断言”（上一快照遗留）。
 - `docs/RELEASE-QUEUE.md` 顶部仍留着 0.7.4 之前的历史批次，**没有逐条改成“已发布”**；
@@ -443,7 +443,7 @@
 
 ### 候选离线包（POC）
 
-- 本地：`D:\surfcore-poc\release\voice-local-offline-v1.0.0-win-x64.zip`（4.7G）
+- 本地：`<LOCAL_PATH>`（4.7G）
   - 微调 age12 权重 `models/age12/`，`logs/gsv/tts_infer.yaml` 相对路径；
   - `.venv/.venv-gsv + runtime` 预装；GPL 合规目录在 `licenses/piper/`；
   - 无 `config.toml`，`config.example.toml` 凭据为空。
@@ -526,8 +526,8 @@
 ### 核实（先分析再动手）
 
 - 按钮**触发链路正常**：概览 `client.js` → `POST /dsh-surfcore/api/bridge {action:"detect-snowluma"}`
-  → 插件 `handleBridge` → `findSnowLumaInstall()`；本机 `D:\deepseekwork\SnowLuma2`（标准 `app\launcher.bat`）实测能命中。
-- 真正问题：候选是**封闭集合**（配置 + 2 个环境变量 + 7 个写死目录），装在 `D:\软件\SnowLuma2` 这类
+  → 插件 `handleBridge` → `findSnowLumaInstall()`；本机 `<LOCAL_PATH>`（标准 `app\launcher.bat`）实测能命中。
+- 真正问题：候选是**封闭集合**（配置 + 2 个环境变量 + 7 个写死目录），装在 `<LOCAL_PATH>` 这类
   自定义目录就永远失败；而手动填路径的入口在 QQ 页高级设置，概览卡片没有。
 - 结论：**目录浏览比选 launcher.bat 合理**（`launcherPath` 本来存根目录；选文件要反推两层，容易选错 exe/zip）。
   归一函数同时兼容 `app` 目录 / `app\launcher.bat` / `SnowLuma.exe`。
@@ -551,7 +551,7 @@
 - `node scripts/test-voice-cloud-credentials.mjs` → 通过；临时目录读取加了 EBUSY/ENOENT 重试
   （Windows Defender/索引器会短暂占住刚写的 `config.toml`，之前偶发 1/78 假红）；
 - `cd plugins/surfcore && npm test` → 全绿；`npm run test:audit` → **78/78**；
-- 本机配置 `launcherPath=D:\deepseekwork\SnowLuma2`，检测命中。
+- 本机配置 `launcherPath=<LOCAL_PATH>`，检测命中。
 
 ### 没验证 / 交接
 

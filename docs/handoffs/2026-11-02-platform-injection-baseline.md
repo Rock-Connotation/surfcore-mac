@@ -124,7 +124,7 @@ export default async function createAdapter({ manifest }) {
 
 ## 8. 协作方式（与 Minecraft/向量记忆一致）
 
-- 工作树：`D:\deepseekwork\surfcore-<id>`；
+- 工作树：`<WORKTREE_PARENT>/surfcore-<id>`；
 - 分支：`feat/platform-<id>`，从最新 `dev` 切出；
 - **禁止 `git add -A`**，只 add 自己的路径；
 - 不直接改 `dev` / `main`、不 bump 版本、不打 tag、不发 Release；

@@ -16,7 +16,7 @@
 | 系统 | Windows 11 |
 | DSH | Desktop 0.2.1-rc.2（Electron 44） |
 | SurfCore | 0.6.7（安装目录 `D:\surfcore`） |
-| 挂载 | `~/.dsh/plugins/surfcore` → junction → `D:\surfcore\plugins\surfcore` |
+| 挂载 | `~/.dsh/plugins/surfcore` → junction → `<PLUGIN_CHECKOUT_ROOT>` |
 | 插件进程 | **在 DSH 宿主进程内**（非独立子进程） |
 
 ## 根因

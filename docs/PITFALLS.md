@@ -2658,7 +2658,7 @@ node scripts/test-voice-cloud-credentials.mjs
 ## #80（2026-10-29）「装好了却检测不到 SnowLuma」—— 检测候选是封闭集合，手动入口藏在别的页
 
 **现象**
-- 用户把 SnowLuma2 解压到自定义目录（如 `D:\软件\SnowLuma2`），概览点「检测已安装的 SnowLuma」→ 一直「没找到」。
+- 用户把 SnowLuma2 解压到自定义目录（如 `<SNOWLUMA_INSTALL_ROOT>`），概览点「检测已安装的 SnowLuma」→ 一直「没找到」。
 - 错误文案还让用户「在 QQ → SnowLuma 里填安装目录」，但用户正在看的概览卡片上并没有这个入口。
 
 **根因**
@@ -2681,7 +2681,7 @@ cd plugins/surfcore && node scripts/test-snowluma-install.mjs   # 22 项
 cd plugins/surfcore && npm test                                  # 全绿
 npm run test:audit                                               # 78/78
 ```
-真机：装在 `D:\软件\SnowLuma2` → 点「浏览…」选这个目录（里面有 `app`）→ 提示已找到并保存。
+真机：装在 `<SNOWLUMA_INSTALL_ROOT>` → 点「浏览…」选这个目录（里面有 `app`）→ 提示已找到并保存。
 
 **预防 / 下次注意**
 - 凡是「自动探测」，都要回答：**探测失败时用户的下一步是什么？** 如果答案是「去另一个页面手填」，
@@ -2813,7 +2813,7 @@ npm run test:regressions
 
 ## #86（2026-10-29）原生「浏览…」选中文目录后路径变乱码，导入报不存在
 
-**现象**：用户选 `D:\...\中文目录\voice-local`，导入弹 `IMPORT_PATH_NOT_FOUND`，
+**现象**：用户选 `<SELECTED_DIRECTORY>`，导入弹 `IMPORT_PATH_NOT_FOUND`，
 弹窗路径里是 `�` / `◆`；实际目录存在。
 
 **根因**：`handleBrowse` 从 PowerShell stdout 读路径。Windows PowerShell 5.1 重定向
@@ -3216,10 +3216,10 @@ et.fetch 跟随 303，**303 新铸的 Set-Cookie 没有回传**，
 - 崩溃点在 bundle 加载完成之后的 Welcome 握手，与插件业务无数据依赖；
   surfcore 的桥接是独立进程、不写 Electron cookie jar。
 
-**处置**（2026-11-01，豆包执行的 asar 修复，报告与 diff 在 C:\Users\Mieksido\Doubao\chats\2026-11-01\new-chat\）
+**处置**（2026-11-01，豆包执行的 asar 修复，报告与 diff 在 `<LOCAL_ASAR_REPAIR_EVIDENCE>`）
 - P1：握手/跟随改用 undici，手动携带 303 的 Set-Cookie；
 - P2：种本次 token 前先清空同源旧 dsh-auth-*，只清认证 token；
-- 备份：D:\deepseek\resources\app.asar.doubao-backup-20261101；修复后连续两次启动零新增崩溃。
+- 备份：`<LOCAL_PATH>`；修复后连续两次启动零新增崩溃。
 
 **教训 / 下次注意**
 1. DSH 升级会覆盖 pp.asar，这两个补丁和本项目自己的会话护栏补丁**都会消失**；升级后先看崩溃日志签名，

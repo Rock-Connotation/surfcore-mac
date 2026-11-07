@@ -66,7 +66,7 @@ export function checkAppDir(target, { protectedPaths = [], allowNonEmpty = false
     return {
       ok: false, abs, code: 'pet.path-no-drive',
       reason: `「${raw}」缺少盘符（会装到当前盘 ${abs}）`,
-      hint: 'Windows 请填 D:\dshwork\pet 这种带盘符的完整路径',
+      hint: 'Windows 请填写带盘符的完整安装路径，也可点「浏览」选择目录',
     };
   }
   if (path.parse(abs).root === abs) return { ok: false, abs, reason: '不能是磁盘根目录' };
@@ -611,7 +611,7 @@ export function createPetService({ stateDir, pluginLog = () => {}, subprocess = 
       return {
         ok: false, code: 'pet.path-no-drive', field: 'appDir',
         error: `安装目录「${cfgNow.appDir}」缺少盘符（会被装到当前盘）`,
-        hint: 'Windows 请填 D:\dshwork\pet 这种带盘符的完整路径',
+        hint: 'Windows 请填写带盘符的完整安装路径，也可点「浏览」选择目录',
       };
     }
     setJob({ phase: '准备中', progress: 0, error: null });

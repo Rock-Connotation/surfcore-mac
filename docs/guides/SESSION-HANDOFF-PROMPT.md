@@ -17,8 +17,8 @@
 7. 最后再看代码
 
 【环境事实】
-- 开发仓库：D:\deepseekwork\surfcore（本机，无 remote）
-- 公开镜像：D:\deepseekwork\opensource\surfcore（发布会话负责同步）
+- 开发仓库：`<DEV_REPOSITORY_ROOT>`（本机，无 remote）
+- 公开镜像：`<PUBLIC_MIRROR_ROOT>`（发布会话负责同步）
 - 本机 DSH：0.2.1-rc.2；插件跑在 DSH 宿主进程里，插件目录就是仓库根
 - 桥接控制台：http://127.0.0.1:3100（需要 consoleToken）
 - 硬规则：不碰 config.json / state/ / ~/.dsh 里的密钥；删除前先备份或 rename 到 ~/.dsh/_quarantine/
@@ -45,7 +45,7 @@
    - 真机验证 jieba_fast 替身能否让 api_v2.py 通过 import、imageio-ffmpeg 路径 voxd 能否读到；
    - MCP 工具列表是进程启动快照，改语音/工具开关后必须重启 DSH（目前只有 UI 提示，没做热重载）。
 5. 【文档】README 的 macOS 支持 FAQ 目前只有一句，可以分模块写清「哪些能跑、哪些不能」。
-6. piper 本地轻量音色：已决定收手，结论在 D:\deepseekwork\voice\piper-distill\RESULT.md，
+6. piper 本地轻量音色：已决定收手，结论在 `<LOCAL_RESEARCH_EVIDENCE>`，
    除非我明确要求，不要再碰。
 
 【工作方式】

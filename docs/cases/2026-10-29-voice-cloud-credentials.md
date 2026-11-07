@@ -6,10 +6,10 @@
   > 「voice-cloud 的 config.toml 里硬编码了火山 app_id / access_key。公开发布会让别人用我们的额度计费 →
   > 改成让用户自己填 + 安装引导 + 文档说明。」
 - 核实步骤（只读，先查再动手）：
-  1. dev 仓库全历史：`git log --all -S "0f74ZU"` → 0 命中；`git grep "0f74ZU" $(git rev-list --all)` → 0 命中；
+  1. 对当前源码与 Git 历史做本机受控检索，未发现真实 AccessKey；检索片段仅留私有证据，不写入公开文档。
   2. 公开镜像 `surfvoicecloud` / `surfvoicelocal` / `surfcore`：worktree 与全历史 `-S` 搜索 AccessKey → 0 命中；
   3. GitHub Releases（三个仓库）资产清单 → 只有 models 压缩包，没有代码包；
-  4. 真正带 AccessKey 的文件只有本机 `D:\deepseekwork\voice\packages\{voice-cloud,voice-local}\config.toml`
+  4. 真正带 AccessKey 的文件只有本机 `<LOCAL_CREDENTIAL_FILE>`
      —— 不在任何 git 仓库里（这两个目录没有 `.git`）；
   5. 但公开的 `surfvoicecloud/config.example.toml:23` 与 `surfvoicelocal/config.example.toml:27`
      里写着**真实 AppID**，而安装流程会把它复制成用户的 `config.toml`。
@@ -26,7 +26,7 @@
 | --- | --- |
 | 系统 / DSH 版本 | Windows / DSH 0.2.1-rc.2 |
 | SurfCore 版本 | 0.6.22（本次改动未发版） |
-| 安装方式 | git 工作区 `D:\deepseekwork\surfcore`（无 remote） |
+| 安装方式 | git 工作区 `<PRIVATE_REPOSITORY_ROOT>`（无 remote） |
 | 其它 | 火山「豆包声音复刻 2.0」凭据只存在于本机语音包源目录 |
 
 ## 根因
