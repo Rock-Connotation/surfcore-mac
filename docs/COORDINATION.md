@@ -12,7 +12,7 @@
 - 发 dev 构建 / 稳定版（**必须用户明确说“发”**）；
 - 维护本表与多会话规则。
 
-工作区：`D:\deepseekwork\surfcore`（主工作区，**只用于协调、文档、发布；不接功能开发**）。
+工作区：`<REPOSITORY_ROOT>`（主工作区，**只用于协调、文档、发布；不接功能开发**）。
 
 ## 1. 活跃会话
 
@@ -24,15 +24,15 @@
 | **B站自主单轮补验 2026-11-07** | `../surfcore-macos-implementation`；worker独立round/receipts/partial-review保留 | `feat/macos-implementation`，程序744d64a，文档后续 | Host受控单轮、评分/动态失败可见、显式部分续评与真实App | 本轮收口：Hy4真实自主选题及范围临时点评通过、仅一条测试动态匿名读回通过；正式评分/主观记忆/其它外发未验。audit164/164、回归/插件0；3次Hy4，实例/端口关闭，常用App不动；未发布 |
 | **macOS 工具与文档整理** | `../surfcore-tooling-docs` | `docs/tooling-macos`（基线 `0deb826`） | 开发工具路由、macOS 设计归档、开发提示词；仅文档 | 文档及提示词完成，按功能分三批本地提交、未推送；audit 首轮 136/143，安装修正后 1 项复测通过、余 6 项；插件更新器基线失败；本地设计另行交接 |
 | **macOS 首期实施 2026-11-06** | `../surfcore-macos-implementation` | `feat/macos-implementation`（交接0c51bf2，本克隆无dev） | WP0–WP5，独立数据根，本地提交 | b9已真实官方App/只读扫码/96秒无字幕ASR/人工记忆闭环/角色护栏/退出恢复/包回滚；原App与常用profile不动，无外发或付费模型。新数字全零幻觉补修通过局部与独立审阅，最终47e7e73：audit163/163、回归/插件通过；原生零PCM/241秒/96秒B站复验、Finder隔离启动/关窗与退出完成；实例和端口已关闭、数据保留；设备/质量矩阵未全验，未发布；收工关闭测试调试端口 |
-| **协调/发布**（本对话） | `D:\deepseekwork\surfcore` | `dev` | 规则、登记表、合并、发版 | 进行中 |
-| **bug 修复** | `D:\deepseekwork\surfcore-bugfix` | `fix/release-0.8.7` @ `e20a464` | 3c99c54..e20a464 的修复 | ✅ 已在 dev 历史内；等新交接 |
-| **Minecraft 拓展** | `D:\deepseekwork\surfcore-mc` | `feat/minecraft` @ `f3bd46f` | MC 平台适配器/工具集/卡片/记忆 scope | ⏸ 已从 dev 撤回，分支保留；等完成 |
-| **向量记忆** | `D:\deepseekwork\surfcore-memory` | `feat/vector-memory` @ `9e7e737` | 向量记忆交接书 + docs 索引 | ⏸ 已从 dev 撤回，分支保留；等完成 |
-| **更新本地改动修复**（协调代做） | `D:\deepseekwork\surfcore-updatefix` | `fix/update-local-modifications` @ `3a7aaa9` | 本地改动「备份并覆盖」出口 + deterministic + 诊断 | ✅ 已合并 `d75dea8`；**未发布**，等 bug 修复交接 |
-| **小红书平台**（待启动） | 计划 `D:\deepseekwork\surfcore-xhs` | 计划 `feat/platform-xiaohongshu` | 只读 adapter/身份/记忆/prompt/卡片 | 🕒 交接已写，待启动 |
-| **贴吧平台**（待启动） | 计划 `D:\deepseekwork\surfcore-tieba` | 计划 `feat/platform-tieba` | 先解决内置 `tieba` 占位；只读 adapter | 🕒 交接已写，待启动 |
+| **协调/发布**（本对话） | `<REPOSITORY_ROOT>` | `dev` | 规则、登记表、合并、发版 | 进行中 |
+| **bug 修复** | `<WORKTREE_ROOT>` | `fix/release-0.8.7` @ `e20a464` | 3c99c54..e20a464 的修复 | ✅ 已在 dev 历史内；等新交接 |
+| **Minecraft 拓展** | `<WORKTREE_ROOT>` | `feat/minecraft` @ `f3bd46f` | MC 平台适配器/工具集/卡片/记忆 scope | ⏸ 已从 dev 撤回，分支保留；等完成 |
+| **向量记忆** | `<WORKTREE_ROOT>` | `feat/vector-memory` @ `9e7e737` | 向量记忆交接书 + docs 索引 | ⏸ 已从 dev 撤回，分支保留；等完成 |
+| **更新本地改动修复**（协调代做） | `<WORKTREE_ROOT>` | `fix/update-local-modifications` @ `3a7aaa9` | 本地改动「备份并覆盖」出口 + deterministic + 诊断 | ✅ 已合并 `d75dea8`；**未发布**，等 bug 修复交接 |
+| **小红书平台**（待启动） | 计划 `<WORKTREE_ROOT>` | 计划 `feat/platform-xiaohongshu` | 只读 adapter/身份/记忆/prompt/卡片 | 🕒 交接已写，待启动 |
+| **贴吧平台**（待启动） | 计划 `<WORKTREE_ROOT>` | 计划 `feat/platform-tieba` | 先解决内置 `tieba` 占位；只读 adapter | 🕒 交接已写，待启动 |
 | **抖音账号/推荐流 2026-11-07** | `../surfcore-douyin`；browser worker独立树 `../surfcore-douyin-browser` | `feat/douyin-channel`，基线320b2d7 | Context7/GitHub调研、独立浏览器扫码、身份核验和真实推荐流只读 | 已启动：用户优先账号登录与推荐流；F2低层feed可参考但无扫码，Download API v5非个人推荐方案。选择独立profile浏览器路径验证；QQ既有受控常驻不动，不沿用其剩余模型预算，无发布 |
-| **微信平台**（待启动） | 计划 `D:\deepseekwork\surfcore-wechat` | 计划 `feat/platform-wechat` | 先确认公众号/个人微信；个人微信不做自动化 | 🕒 交接已写，待启动 |
+| **微信平台**（待启动） | 计划 `<WORKTREE_ROOT>` | 计划 `feat/platform-wechat` | 先确认公众号/个人微信；个人微信不做自动化 | 🕒 交接已写，待启动 |
 
 ### 本轮“合并后又撤回”记录（用户要求：未完成，不进下一版）
 

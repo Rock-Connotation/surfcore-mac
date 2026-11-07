@@ -988,7 +988,7 @@
 
 ### 修复（原生「浏览…」选中文目录后路径乱码）
 
-- **现象**：设置页「导入离线包」选中文目录（如 `D:\...\中文oice-local`），弹窗报
+- **现象**：设置页「导入离线包」选中文目录（如 `<SELECTED_DIRECTORY>`），弹窗报
   `IMPORT_PATH_NOT_FOUND`，路径里出现 `�`/`◆`；实际目录存在。
 - **根因**：Windows PowerShell 5.1 重定向 stdout 用 GBK，Node 按 UTF-8 解码 → 中文路径损坏。
 - **修法**：PowerShell 把选中的路径写进 UTF-8 临时文件，Node 读文件后删除，不再解析 stdout；
@@ -1115,7 +1115,7 @@
 ### 修复（SnowLuma 装在自定义目录时「检测已安装」找不到）
 
 - **检测不再只猜固定目录**：候选顺序改为「用户手选 > `snowluma.launcherPath`/`homeDir` >
-  环境变量 > 常见位置」，装在 `D:\软件\SnowLuma2` 这类地方的也能被手选路径救回来。
+  环境变量 > 常见位置」，装在 `<SNOWLUMA_INSTALL_ROOT>` 这类地方的也能被手选路径救回来。
 - **概览卡片新增「浏览…」**：选 SnowLuma2 解压出来的根目录（里面有 `app`）即可，选 `app` 目录、
   `app\launcher.bat` 或 `SnowLuma.exe` 也能自动归一到根目录；选完立刻验证并保存。
 - **显式选的路径只验证它**：不会"检测成功"却悄悄保存了另一份安装。
@@ -1329,7 +1329,7 @@
 
 ### 修复
 
-- **SnowLuma「装好了但检测不到」**：用户填 `D:\Tools\SnowLuma2` 时，代码只取 `dirname` → 算成 `D:\Tools`，
+- **SnowLuma「装好了但检测不到」**：用户填 `<SNOWLUMA_INSTALL_ROOT>` 时，代码只取 `dirname` → 算成 `<SNOWLUMA_PARENT>`，
   而配置在 `SnowLuma2` 下的 `app/config` 里，于是永远检测不到。现在候选目录展开为
   `填写路径 / 填写路径pp / 上一级 / 上一级pp`；`SnowLuma home（app 目录）` 也加了「浏览…」和更清楚的说明。
 
