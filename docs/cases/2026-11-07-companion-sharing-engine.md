@@ -77,3 +77,11 @@
 - 绿灯证据：原独立断言不变，两个命令分别输出 `PASS natural sharing` 与 `PASS received usage on stale epoch`；本地reflection/Host/engine专项分别输出 `Companion sharing reflection schema fixtures passed`、`PASS companion Host...`、`Douyin companion engine offline fixtures passed`。
 - 增量后完整audit为 `173/174 scripts passed`。唯一失败 `test-release-manifest.mjs`：既有8项manifest自检通过后，`verify-ref HEAD`报告6个已跟踪文件哈希变化和本功能3个新增路径缺失，共9项。此工单明确禁止改manifest；主线合并后按Git对象统一生成manifest并重跑组合门禁。没有隐藏该限制，也没有把173/174报告成全绿。
 - 复测均使用官方Node 24离线fixture。没有真实模型、网络或DSH动作；额度账本和真实8/12用量未更改。
+
+## V2独立复审增量：命令短语可组合宾语和语气后缀
+
+- V2发现上一版虽拒绝“请你转发这条视频”“你必须立刻回复我”，却漏掉“请你转发这条视频吧”“你必须立刻回复我的问题”。原因是拒绝分支将动作、宾语和语气结尾写成互斥尾项。
+- 只扩展已有完整命令句的宾语和结束语组合：转发/关注/点击/私信/下单等明确动作可跟“这条视频/我的问题”等具体宾语，再跟“吧/一下/好吗”等短结尾。仍要求命令式前缀和整句匹配；普通描述中的“立刻”“下单”不会单独触发拦截，提示词继续负责语气要求。
+- 红灯证据：未改的 `pressure-regression.mjs <tree>` 在V1拒绝“无吧/无宾语”两个版本，却放过“吧”和“我的问题”两个版本，退出1。
+- 绿灯证据：同一脚本、同一候选树重跑，四种输入全部 `rejected:true` 并带 `DOUYIN_SHARING_OUTPUT_INVALID`，退出0。V1 `natural` 与 `usage` 回归分别输出 `PASS natural sharing`、`PASS received usage on stale epoch`；本地reflection/Host/engine三专项全绿。
+- 此增量只涉及反思校验、对应离线测试和文档；父级负责合并后重新生成manifest并跑完整组合门禁。本轮不调用真实模型/DSH/网络，实际额度保持8/12。

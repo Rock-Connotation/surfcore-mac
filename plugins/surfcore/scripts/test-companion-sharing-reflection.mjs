@@ -28,6 +28,8 @@ for (const bad of [
   { ...sharing, question: '务必回答我一下？' },
   { ...sharing, share: '你必须立刻回复我。' },
   { ...sharing, share: '请你转发这条视频。' },
+  { ...sharing, share: '请你转发这条视频吧。' },
+  { ...sharing, share: '你必须立刻回复我的问题。' },
 ]) {
   assert.throws(() => parseDouyinReflection(json(bad), { sharingEnabled: true }), error => /^(?:DOUYIN_MODEL_JSON_INVALID|DOUYIN_MODEL_OUTPUT_[A-Z_]+|DOUYIN_SHARING_OUTPUT_INVALID)$/.test(error.code) && !!error.hint);
 }
