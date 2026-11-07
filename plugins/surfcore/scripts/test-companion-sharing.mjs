@@ -29,13 +29,17 @@ try {
   const recorded = await service.record(context, { jobId, id: item.id, share: '那只猫把纸箱当成家，认真得有点可爱。', question: '你也喜欢这种小动物吗？' });
   assert.equal(recorded.ok, true, JSON.stringify(recorded));
   let state = await service.status(context);
+  const openingRevision = state.revision;
+  assert.equal(openingRevision, 1, 'revision counts committed current-epoch events');
   assert.equal(state.unread, 1); assert.equal(state.openings[0].question, '你也喜欢这种小动物吗？');
   const openingId = state.openings[0].id;
   assert.equal((await service.ack(context, { openingId })).ok, true);
+  assert.equal((await service.status(context)).revision, openingRevision + 1);
   assert.equal((await service.status(context)).unread, 0);
   const request = { openingId, requestId: '22222222-2222-4222-8222-222222222222', text: '是的，我也喜欢纸箱里的猫。' };
   const result = await service.reply(context, request);
   assert.equal(result.ok, true); assert.equal(modelCalls, 1);
+  assert.equal(result.value.revision, openingRevision + 3, 'request and answer advance the same durable revision');
   assert.equal(ledgerStore.readLedger().acceptanceCalls, 9);
   assert.equal((await service.reply(context, request)).ok, true); assert.equal(modelCalls, 1, 'same request must return the saved reply');
   assert.equal((await service.reply(context, { ...request, text: '不同的内容' })).code, 'DOUYIN_CHAT_REQUEST_CONFLICT');

@@ -38,7 +38,7 @@ button{font:inherit;cursor:pointer;border:1px solid var(--line);background:Canva
 <script>
 const endpoint='/dsh-surfcore/api/douyin/companion',portraitEndpoint='/dsh-surfcore/api/douyin/companion-portrait',sharingEndpoint='/dsh-surfcore/api/douyin/companion-sharing',$=id=>document.getElementById(id);
 let context=null,stamp='',portraitStamp='',portraitRequest=0,portraitObjectUrl='',portraitController=null,portraitTimer=null,busy=false,refreshing=false,portraitRetryPending=false,seq=0,active=false,actionFailure=null,retired=false;
-let sharingSeq=0,sharingPollTimer=null,sharingRefreshing=false,sharingReadController=null,sharingValue=null,sharingStamp='',sharingPending=null,sharingCancelBusy=false,sharingControllers=new Set(),sharingAcking=new Set(),sharingActionFailure=null,preserveSharingErrorOnRoleChange=false,sharingRoleRefreshPending=false,selectedOpeningId='',startReady=false;
+let sharingSeq=0,sharingPollTimer=null,sharingRefreshing=false,sharingRevision=-1,sharingValue=null,sharingStamp='',sharingPending=null,sharingCancelBusy=false,sharingControllers=new Set(),sharingAcking=new Set(),sharingActionFailure=null,preserveSharingErrorOnRoleChange=false,selectedOpeningId='',startReady=false;
 const sayError=e=>{$('error').textContent=[e.code,e.error||e.message,e.hint].filter(Boolean).join(' · ')};
 async function request(body){const response=await fetch(endpoint,body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...body,...context})}:{});const data=await response.json();if(!response.ok||data.ok===false)throw data;return data}
 function text(tag,value,cls){const el=document.createElement(tag);el.textContent=value;if(cls)el.className=cls;return el}
@@ -63,11 +63,11 @@ function sharingCharacterRequired(code){return code==='COMPANION_CHARACTER_REQUI
 function sharingCharacterStale(code){return code==='COMPANION_CHARACTER_STALE'||code==='DOUYIN_STALE_CHARACTER'}
 function showSharingError(error){const e=sharingError(error),node=$('sharing-error');node.textContent=[e.code,e.error,e.hint].filter(Boolean).join(' · ');node.hidden=false}
 function clearSharingError(){const node=$('sharing-error');node.textContent='';node.hidden=true}
-function retireSharingRead(){sharingSeq++;if(sharingPollTimer){clearTimeout(sharingPollTimer);sharingPollTimer=null}const controller=sharingReadController;sharingReadController=null;if(controller)controller.abort()}
-function retireSharingForStale(error){retireSharingRead();for(const controller of sharingControllers)controller.abort();sharingControllers.clear();sharingReadController=null;sharingValue=null;sharingStamp='';sharingPending=null;sharingCancelBusy=false;sharingAcking.clear();selectedOpeningId='';$('conversation-input').value='';$('conversation-openings').replaceChildren();$('conversation-message-list').replaceChildren();sharingActionFailure=sharingError(error);preserveSharingErrorOnRoleChange=true;sharingRoleRefreshPending=true;showSharingError(sharingActionFailure);$('conversation-status').textContent='正在重新核对当前伙伴；旧分享和草稿已收起。';renderSharingControls();void refresh()}
+function sharingSnapshotFailure(data){return !Number.isSafeInteger(data?.value?.revision)||data.value.revision<0||!Array.isArray(data.value.openings)||!Array.isArray(data.value.messages)?{code:'SHARING_RESPONSE_INVALID',error:'本机伙伴状态不完整，无法确认记录的先后顺序。',hint:'重新加载SurfCore插件后点刷新；原记录不会被覆盖。'}:null}
+function retireSharingRole(error){seq++;clearRole('角色已变化，正在重新核对当前伙伴。',error);preserveSharingErrorOnRoleChange=true;void refresh(true)}
 function renderSharingControls(){
  const openings=Array.isArray(sharingValue?.openings)?sharingValue.openings:[],hasOpening=openings.some(item=>item.id===selectedOpeningId),working=!!sharingPending||!!sharingValue?.active;
- $('conversation-input').disabled=!context||!hasOpening||working||sharingCancelBusy||sharingRoleRefreshPending;$('conversation-send').disabled=!context||!hasOpening||working||sharingCancelBusy||sharingRoleRefreshPending;$('start').disabled=busy||active||!startReady||!context||working||sharingRoleRefreshPending;
+ $('conversation-input').disabled=!context||!hasOpening||working||sharingCancelBusy;$('conversation-send').disabled=!context||!hasOpening||working||sharingCancelBusy;$('start').disabled=busy||active||!startReady||!context||working;
  const canCancel=!!(sharingPending?.requestId||sharingValue?.active?.requestId);$('conversation-cancel').hidden=!canCancel;$('conversation-cancel').disabled=!canCancel||sharingCancelBusy;
 }
 function renderSharingOpenings(){
@@ -94,45 +94,47 @@ function renderSharingMessages(){
  }
 }
 function renderSharing(data){
- if(retired||!data?.character||data.character.id!==context?.characterId||data.character.epoch!==context?.characterEpoch)return;
- const next=data.character.id+':'+data.character.epoch;if(sharingStamp&&sharingStamp!==next){sharingValue=null;sharingPending=null;sharingActionFailure=null;selectedOpeningId='';$('conversation-input').value='';}
- sharingStamp=next;sharingValue=data.value||{openings:[],messages:[],active:null,unread:0,lastError:null};
+ if(retired||!data?.character||data.character.id!==context?.characterId||data.character.epoch!==context?.characterEpoch)return false;
+ const invalid=sharingSnapshotFailure(data);if(invalid){sharingActionFailure=invalid;showSharingError(invalid);renderSharingControls();return false}
+ const next=data.character.id+':'+data.character.epoch;if(sharingStamp&&sharingStamp!==next){sharingRevision=-1;sharingValue=null;sharingPending=null;sharingActionFailure=null;selectedOpeningId='';$('conversation-input').value='';}
+ if(data.value.revision<sharingRevision){renderSharingOpenings();renderSharingControls();return false}
+ sharingStamp=next;sharingRevision=data.value.revision;sharingValue=data.value;
  const openings=Array.isArray(sharingValue.openings)?sharingValue.openings:[];if(!openings.some(item=>item.id===selectedOpeningId))selectedOpeningId=openings[0]?.id||'';
  $('conversation-title').textContent='和'+(data.character.name||'伙伴')+'聊聊';renderSharingOpenings();renderSharingMessages();
  $('conversation-status').textContent=sharingPending?'正在整理这条回复…':sharingValue.active?'这条对话正在继续，可以取消等待。':openings.length?'我看完啦，想听听你的想法。':'还没有新的小发现，等下一次发现日记再聊。';
- const failure=sharingActionFailure||sharingValue.lastError;if(failure)showSharingError(failure);else clearSharingError();renderSharingControls();
+ const failure=sharingActionFailure||sharingValue.lastError;if(failure)showSharingError(failure);else clearSharingError();renderSharingControls();return true;
 }
 function resetSharing(message){
- sharingSeq++;if(sharingPollTimer){clearTimeout(sharingPollTimer);sharingPollTimer=null}for(const controller of sharingControllers)controller.abort();sharingControllers.clear();sharingReadController=null;sharingValue=null;sharingStamp='';sharingPending=null;sharingCancelBusy=false;sharingAcking.clear();if(preserveSharingErrorOnRoleChange)preserveSharingErrorOnRoleChange=false;else sharingActionFailure=null;selectedOpeningId='';$('conversation-input').value='';$('conversation-openings').replaceChildren();$('conversation-message-list').replaceChildren();if(!sharingActionFailure)clearSharingError();$('conversation-status').textContent=message||'先在角色页载入伙伴。';renderSharingControls();
+ sharingSeq++;if(sharingPollTimer){clearTimeout(sharingPollTimer);sharingPollTimer=null}for(const controller of sharingControllers)controller.abort();sharingControllers.clear();sharingRevision=-1;sharingValue=null;sharingStamp='';sharingPending=null;sharingCancelBusy=false;sharingAcking.clear();if(preserveSharingErrorOnRoleChange)preserveSharingErrorOnRoleChange=false;else sharingActionFailure=null;selectedOpeningId='';$('conversation-input').value='';$('conversation-openings').replaceChildren();$('conversation-message-list').replaceChildren();if(!sharingActionFailure)clearSharingError();$('conversation-status').textContent=message||'先在角色页载入伙伴。';renderSharingControls();
 }
-function scheduleSharingPoll(delay=5000){if(retired||!context||sharingRoleRefreshPending||sharingPollTimer)return;sharingPollTimer=setTimeout(()=>{sharingPollTimer=null;void refreshSharing()},delay)}
+function scheduleSharingPoll(delay=5000){if(retired||!context||sharingPollTimer)return;sharingPollTimer=setTimeout(()=>{sharingPollTimer=null;void refreshSharing()},delay)}
 async function refreshSharing(){
- if(retired||!context||sharingRoleRefreshPending)return;if(sharingRefreshing){scheduleSharingPoll(100);return}if(sharingPollTimer){clearTimeout(sharingPollTimer);sharingPollTimer=null}sharingRefreshing=true;
- const token=++sharingSeq,expectedStamp=stamp,expectedContext={...context},controller=new AbortController();sharingReadController=controller;sharingControllers.add(controller);const timeout=setTimeout(()=>controller.abort(),5000);
+ if(retired||!context)return;if(sharingRefreshing){scheduleSharingPoll(100);return}if(sharingPollTimer){clearTimeout(sharingPollTimer);sharingPollTimer=null}sharingRefreshing=true;
+ const token=++sharingSeq,expectedStamp=stamp,expectedContext={...context},controller=new AbortController();sharingControllers.add(controller);const timeout=setTimeout(()=>controller.abort(),5000);
  try{
   const response=await fetch(sharingEndpoint,{cache:'no-store',headers:{accept:'application/json'},signal:controller.signal});let data={};try{data=await response.json()}catch{}
   if(retired||token!==sharingSeq||stamp!==expectedStamp)return;
-  if(!response.ok||data.ok===false){const failure=sharingError(data);if(sharingCharacterRequired(failure.code)){clearRole('当前角色已清除，未显示旧立绘。',failure);}else if(sharingCharacterStale(failure.code))retireSharingForStale(failure);else{sharingActionFailure=failure;showSharingError(failure);$('conversation-status').textContent='分享状态暂时无法读取；可以点刷新后再试。'}return}
-  if(data.character?.id!==expectedContext.characterId||data.character?.epoch!==expectedContext.characterEpoch){retireSharingForStale({code:'DOUYIN_STALE_CHARACTER',error:'分享返回的角色已经变化。',hint:'正在重新核对角色状态；请稍后再操作。'});return}
+  if(!response.ok||data.ok===false){const failure=sharingError(data);if(sharingCharacterRequired(failure.code)){retireSharingRole(failure);}else if(sharingCharacterStale(failure.code))retireSharingRole(failure);else{sharingActionFailure=failure;showSharingError(failure);$('conversation-status').textContent='分享状态暂时无法读取；可以点刷新后再试。'}return}
+  if(data.character?.id!==expectedContext.characterId||data.character?.epoch!==expectedContext.characterEpoch){retireSharingRole({code:'DOUYIN_STALE_CHARACTER',error:'分享返回的角色已经变化。',hint:'正在重新核对角色状态；请稍后再操作。'});return}
   renderSharing(data);
  }catch(error){if(!retired&&token===sharingSeq&&stamp===expectedStamp){sharingActionFailure=controller.signal.aborted?{code:'SHARING_READ_TIMEOUT',error:'读取本机分享超过 5 秒，已停止等待。',hint:'点刷新重试；系统不会自动重复发送回复。'}:sharingError(error);showSharingError(sharingActionFailure);$('conversation-status').textContent='分享状态暂时无法读取；可以点刷新后再试。'}}
- finally{clearTimeout(timeout);sharingControllers.delete(controller);if(sharingReadController===controller)sharingReadController=null;sharingRefreshing=false;if(!retired&&stamp===expectedStamp&&!sharingRoleRefreshPending)scheduleSharingPoll()}
+ finally{clearTimeout(timeout);sharingControllers.delete(controller);sharingRefreshing=false;if(!retired&&stamp===expectedStamp)scheduleSharingPoll()}
 }
 async function postSharing(body,controller=new AbortController()){
  if(retired||!context)return{stale:true};const expectedStamp=stamp,expectedContext={...context};sharingControllers.add(controller);const timeout=setTimeout(()=>controller.abort(),185000);
  try{
   const response=await fetch(sharingEndpoint,{method:'POST',headers:{'content-type':'application/json',accept:'application/json'},body:JSON.stringify({...body,...expectedContext}),signal:controller.signal});let data={};try{data=await response.json()}catch{}
   if(retired||stamp!==expectedStamp||context?.characterId!==expectedContext.characterId||context?.characterEpoch!==expectedContext.characterEpoch)return{stale:true};
-  if(!response.ok||data.ok===false){const failure=sharingError(data);if(sharingCharacterRequired(failure.code)){clearRole('当前角色已清除，未显示旧立绘。',failure);return{stale:true}}if(sharingCharacterStale(failure.code)){retireSharingForStale(failure);return{stale:true}}return{ok:false,error:failure}}
-  if(data.character?.id!==expectedContext.characterId||data.character?.epoch!==expectedContext.characterEpoch){const failure={code:'DOUYIN_STALE_CHARACTER',error:'回复结果属于已经变化的角色。',hint:'正在重新核对角色状态；请确认后再继续。'};retireSharingForStale(failure);return{stale:true}}
-  retireSharingRead();
+  if(!response.ok||data.ok===false){const failure=sharingError(data);if(sharingCharacterRequired(failure.code)){retireSharingRole(failure);return{stale:true}}if(sharingCharacterStale(failure.code)){retireSharingRole(failure);return{stale:true}}return{ok:false,error:failure}}
+  if(data.character?.id!==expectedContext.characterId||data.character?.epoch!==expectedContext.characterEpoch){const failure={code:'DOUYIN_STALE_CHARACTER',error:'回复结果属于已经变化的角色。',hint:'正在重新核对角色状态；请确认后再继续。'};retireSharingRole(failure);return{stale:true}}
+  const invalid=sharingSnapshotFailure(data);if(invalid)return{ok:false,error:invalid};
   return{ok:true,data};
  }catch(error){if(retired||stamp!==expectedStamp)return{stale:true};return{ok:false,error:controller.signal.aborted?{code:'SHARING_REQUEST_TIMEOUT',error:'等待本机伙伴操作超过 185 秒，已停止等待。',hint:'点刷新核对已有结果；若仍在处理中，不要重发同一条消息。'}:sharingError(error)}}
  finally{clearTimeout(timeout);sharingControllers.delete(controller)}
 }
 async function ackSharingOpening(openingId){
- if(retired||!context||sharingAcking.has(openingId))return;const opening=sharingValue?.openings?.find(item=>item.id===openingId);if(!opening?.unread)return;const expectedStamp=sharingStamp;sharingAcking.add(openingId);renderSharingOpenings();
- const result=await postSharing({action:'ack',openingId});sharingAcking.delete(openingId);if(retired||expectedStamp!==sharingStamp||result.stale)return;if(result.ok){sharingActionFailure=null;renderSharing(result.data)}else{sharingActionFailure=result.error;showSharingError(result.error);renderSharingOpenings()}
+ if(retired||!context||sharingAcking.has(openingId))return;const opening=sharingValue?.openings?.find(item=>item.id===openingId);if(!opening?.unread)return;const expectedStamp=sharingStamp,priorError=sharingActionFailure;sharingAcking.add(openingId);renderSharingOpenings();
+ const result=await postSharing({action:'ack',openingId});sharingAcking.delete(openingId);if(retired||expectedStamp!==sharingStamp||result.stale)return;if(result.ok){if(sharingActionFailure===priorError)sharingActionFailure=null;renderSharing(result.data)}else{sharingActionFailure=result.error;showSharingError(result.error);renderSharingOpenings()}
 }
 function sharingUuid(){if(crypto.randomUUID)return crypto.randomUUID();const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const hex=Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('');return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20)}
 async function sendSharingReply(){
@@ -143,20 +145,20 @@ async function sendSharingReply(){
  const requestId=sharingUuid(),controller=new AbortController(),pending={requestId,openingId,controller,stamp:sharingStamp};sharingPending=pending;sharingActionFailure=null;clearSharingError();renderSharingControls();$('conversation-status').textContent='正在整理这条回复…';
  const result=await postSharing({action:'reply',openingId,requestId,text},controller);if(retired||pending.stamp!==sharingStamp||sharingPending?.requestId!==requestId)return;sharingPending=null;
  if(result.stale)return;if(!result.ok){sharingActionFailure=result.error;showSharingError(result.error);$('conversation-status').textContent='回复没有完成；输入仍保留，可以检查后手动再试。';renderSharingControls();return}
- if($('conversation-input').value===textValue)$('conversation-input').value='';sharingActionFailure=null;renderSharing(result.data);
+ if($('conversation-input').value===textValue)$('conversation-input').value='';renderSharing(result.data);
 }
 async function cancelSharingReply(){
- if(retired||sharingCancelBusy)return;const pending=sharingPending,requestId=pending?.requestId||sharingValue?.active?.requestId;if(!requestId)return;const expectedStamp=sharingStamp;sharingCancelBusy=true;renderSharingControls();
+ if(retired||sharingCancelBusy)return;const pending=sharingPending,requestId=pending?.requestId||sharingValue?.active?.requestId;if(!requestId)return;const expectedStamp=sharingStamp,priorError=sharingActionFailure;sharingCancelBusy=true;renderSharingControls();
  const result=await postSharing({action:'cancel',requestId});if(retired||expectedStamp!==sharingStamp||result.stale)return;sharingCancelBusy=false;
  if(!result.ok){sharingActionFailure=result.error;showSharingError(result.error);renderSharingControls();return}
  if(sharingPending?.requestId===requestId){const controller=sharingPending.controller;sharingPending=null;controller.abort()}
- sharingActionFailure=null;renderSharing(result.data);$('conversation-status').textContent='这次回复已取消，原输入仍保留。';renderSharingControls();
+ if(sharingActionFailure===priorError)sharingActionFailure=null;if(renderSharing(result.data))$('conversation-status').textContent='这次回复已取消，原输入仍保留。';renderSharingControls();
 }
-function clearRole(message,sharingFailure=null){const priorFailure=!context?sharingActionFailure:null;stamp='';portraitStamp='';context=null;active=false;actionFailure=null;sharingRoleRefreshPending=false;resetSharing('先在角色页载入伙伴。');const visibleFailure=sharingFailure||priorFailure;if(visibleFailure){sharingActionFailure=sharingError(visibleFailure);showSharingError(sharingActionFailure)}clearPortrait(message||'当前没有已载入角色，未显示旧立绘。');$('role').textContent='当前没有已载入角色';$('title').textContent='小白鲸的发现日记';$('diary').replaceChildren();$('details').textContent='';$('notice').textContent='先在角色页载入伙伴。';}
+function clearRole(message,sharingFailure=null){const priorFailure=!context?sharingActionFailure:null;stamp='';portraitStamp='';context=null;active=false;actionFailure=null;resetSharing('先在角色页载入伙伴。');const visibleFailure=sharingFailure||priorFailure;if(visibleFailure){sharingActionFailure=sharingError(visibleFailure);showSharingError(sharingActionFailure)}clearPortrait(message||'当前没有已载入角色，未显示旧立绘。');$('role').textContent='当前没有已载入角色';$('title').textContent='小白鲸的发现日记';$('diary').replaceChildren();$('details').textContent='';$('notice').textContent='先在角色页载入伙伴。';}
 function render(data,retryPortrait=false){
  if(retired)return;
  const role=data.character,next=role.id+':'+role.epoch;
- const roleChanged=stamp!==next;if(stamp&&roleChanged){$('diary').replaceChildren();$('error').textContent='';actionFailure=null;}if(roleChanged){clearPortrait('正在读取本机伙伴立绘…');portraitStamp='';resetSharing('角色已变化，正在读取新伙伴的分享…');}else if(preserveSharingErrorOnRoleChange)preserveSharingErrorOnRoleChange=false;const verifySharingRole=sharingRoleRefreshPending;sharingRoleRefreshPending=false;stamp=next;context={characterId:role.id,characterEpoch:role.epoch};if(roleChanged||verifySharingRole)scheduleSharingPoll(0);if(roleChanged||retryPortrait||portraitStamp!==next){portraitStamp=next;void loadPortrait({...context},next)}
+ const roleChanged=stamp!==next;if(stamp&&roleChanged){$('diary').replaceChildren();$('error').textContent='';actionFailure=null;}if(roleChanged){clearPortrait('正在读取本机伙伴立绘…');portraitStamp='';resetSharing('角色已变化，正在读取新伙伴的分享…');}else if(preserveSharingErrorOnRoleChange)preserveSharingErrorOnRoleChange=false;stamp=next;context={characterId:role.id,characterEpoch:role.epoch};if(roleChanged)scheduleSharingPoll(0);if(roleChanged||retryPortrait||portraitStamp!==next){portraitStamp=next;void loadPortrait({...context},next)}
  $('role').textContent='当前伙伴：'+(role.name||role.id);$('title').textContent=(role.name||'伙伴')+'的发现日记';const value=data.value;const daily=value.daily||{},accept=value.acceptance||{};
  $('acceptance').textContent=(accept.callsUsed??accept.calls??0)+' / 12';$('daily').textContent=(daily.rounds??daily.roundsUsed??0)+' / 2 轮';$('calls').textContent=(daily.calls??daily.callsUsed??0)+' / 8';
  const job=value.activeJob||(value.recentJobs||[])[0];active=!!value.activeJob&&['queued','running'].includes(value.activeJob.state);
@@ -166,7 +168,7 @@ function render(data,retryPortrait=false){
  document.body.dataset.state=active?'running':paused?'paused':finishedWithMemory?'completed':'idle';
  const phases={feed:'正在看看今天的推荐',media:'正在听音轨、看几张关键画面',perceive:'正在听音轨、看几张关键画面',model:'正在整理自己的感受',memory:'正在记进日记',finished:'已经记好啦'};
  $('mood').textContent=active?(phases[job?.phase]||'正在认真看这一轮的小发现…'):paused?'先休息一下，准备好了再继续。':manualNeedsRetry?(audioIncomplete?'部分观看经历已写入日记；本轮音轨未覆盖完整，首次手动验收还没通过。请再手动体验一轮音轨完整的视频。':'观看经历已写入日记；首次手动验收还没通过。请再手动体验一轮符合条件的视频。'):finishedWithMemory?'今天的小发现，已经记进日记了。':'今天也想看看，有什么值得记住的小事。';
- startReady=!!data.readiness?.ok&&accept.remaining!==0;$('start').disabled=busy||active||!startReady||!!sharingPending||!!sharingValue?.active||sharingRoleRefreshPending;$('cancel').disabled=busy||!active;$('enable').disabled=busy||active||!data.readiness?.ok||accept.manualAccepted!==true;
+ startReady=!!data.readiness?.ok&&accept.remaining!==0;$('start').disabled=busy||active||!startReady||!!sharingPending||!!sharingValue?.active;$('cancel').disabled=busy||!active;$('enable').disabled=busy||active||!data.readiness?.ok||accept.manualAccepted!==true;
  $('enable').textContent=daily.enabled&&!paused?'日常活动已开启':'启用每天两轮';$('pause').disabled=busy;
  $('notice').textContent=active?'本轮进行中 · 请求 '+(job.calls||0)+'/4':paused?'日常活动已暂停，可先手动体验一轮。':manualNeedsRetry?(partialSaved?(audioIncomplete?'部分观看经历已保存；本轮音轨尾部不完整，首次手动验收尚未通过。请再手动体验一轮音轨完整的视频，然后启用日常活动。':'部分观看经历已保存；首次手动验收尚未通过。请再手动体验一轮符合条件的视频，然后启用日常活动。'):'观看经历已保存；首次手动验收尚未通过。请再手动体验一轮符合条件的视频，然后启用日常活动。'):daily.enabled?'每天两轮已开启；错过时段不补跑。':'日常活动已暂停，可先手动体验一轮。';
  $('enable').title=manualNeedsRetry?'首次手动验收尚未通过；请按上方提示再手动体验一轮。':'';
@@ -190,5 +192,5 @@ async function refresh(retryPortrait=false){if(retired)return;if(busy||refreshin
 async function action(body){if(retired||busy||!context)return;busy=true;seq++;actionFailure=null;for(const id of ['start','cancel','enable','pause'])$(id).disabled=true;$('error').textContent='';try{await request(body)}catch(e){if(!retired)actionFailure=e}finally{busy=false;if(retired)return;await refresh();if(!retired&&actionFailure)sayError(actionFailure)}}
 $('start').onclick=()=>action({action:'start'});$('cancel').onclick=()=>action({action:'cancel'});$('enable').onclick=()=>action({action:'configure',enabled:true});$('pause').onclick=()=>action({action:'configure',enabled:false});$('refresh').onclick=()=>{void refresh(true);void refreshSharing()};
 $('conversation-form').addEventListener('submit',event=>{event.preventDefault();void sendSharingReply()});$('conversation-cancel').onclick=()=>void cancelSharingReply();
-const timer=setInterval(refresh,2000);addEventListener('pagehide',()=>{if(retired)return;retired=true;portraitRetryPending=false;seq++;clearInterval(timer);if(sharingPollTimer){clearTimeout(sharingPollTimer);sharingPollTimer=null}sharingSeq++;for(const controller of sharingControllers)controller.abort();sharingControllers.clear();sharingReadController=null;sharingAcking.clear();sharingPending=null;$('conversation-status').textContent='日记页已关闭。';$('conversation-input').disabled=true;$('conversation-send').disabled=true;$('conversation-cancel').hidden=true;clearPortrait('日记页已关闭。')});refresh();
+const timer=setInterval(refresh,2000);addEventListener('pagehide',()=>{if(retired)return;retired=true;portraitRetryPending=false;seq++;clearInterval(timer);if(sharingPollTimer){clearTimeout(sharingPollTimer);sharingPollTimer=null}sharingSeq++;for(const controller of sharingControllers)controller.abort();sharingControllers.clear();sharingAcking.clear();sharingPending=null;$('conversation-status').textContent='日记页已关闭。';$('conversation-input').disabled=true;$('conversation-send').disabled=true;$('conversation-cancel').hidden=true;clearPortrait('日记页已关闭。')});refresh();
 </script></body></html>`;

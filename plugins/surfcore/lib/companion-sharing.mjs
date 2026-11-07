@@ -65,7 +65,7 @@ export function createCompanionSharing({ stateDir, getCharacter, buildContext, m
       if (latest && !terminal && active?.requestId !== latest.requestId && !foreignPending) lastError = { code: 'DOUYIN_CHAT_INTERRUPTED', error: '进程重启打断了上次回复。', hint: '已预留请求不会返还；查看记录后再决定是否发送新消息。', requestId: latest.requestId, openingId: latest.openingId };
       const pending = active && active.role.id === role.id && active.role.epoch === role.epoch &&
         !rows.some(r => ['answer', 'failure'].includes(r.kind) && r.requestId === active.requestId);
-      return { ok: true, openings, messages, unread: openings.filter(r => r.unread).length,
+        return { ok: true, revision: rows.length, openings, messages, unread: openings.filter(r => r.unread).length,
         active: pending ? { requestId: active.requestId, openingId: active.openingId } : foreignPending ? { requestId: latest.requestId, openingId: latest.openingId } : null, lastError };
     } catch (error) { return failure(error); }
   }
