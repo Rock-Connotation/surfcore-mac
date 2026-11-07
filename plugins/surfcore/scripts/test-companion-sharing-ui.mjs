@@ -8,7 +8,7 @@ import { douyinCompanionPage } from '../lib/douyin-companion-page.mjs';
 let role = { id: 'alpha', epoch: 4, name: '小白鲸' }, activeOpening;
 const webp = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA==', 'base64');
 const clientSource = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
-const posts = [], errors = [], cancelledRequests = new Set();
+const posts = [], postWaiters = [], errors = [], cancelledRequests = new Set();
 let unread = true, replyGate = null, replyFailure = null, replyWrongCharacter = false, remoteActive = null, nextSharingGate = null, sharingGetCount = 0, failSharingModule = false, sharingModuleGate = null;
 const opening = activeOpening = {
   id: 'opening-1', jobId: 'job-1', sourceId: 'BV1fixture', sourceTitle: '海边的小鱼',
@@ -24,6 +24,11 @@ function send(res, status, data, type = 'application/json') {
   res.end(type === 'application/json' ? JSON.stringify(data) : data);
 }
 function responseValue() { return { ok: true, character: role, value: value() }; }
+function waitForPost(predicate) {
+  const existing = posts.find(predicate);
+  if (existing) return Promise.resolve(existing);
+  return new Promise(resolve => postWaiters.push({ predicate, resolve }));
+}
 function makeGate() {
   let markStarted, release;
   const started = new Promise(resolve => { markStarted = resolve; });
@@ -74,17 +79,23 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/dsh-surfcore/api/douyin/companion-sharing' && req.method === 'POST') {
     let body = ''; for await (const chunk of req) body += chunk;
     const data = JSON.parse(body); posts.push(data);
+    for (let index = postWaiters.length - 1; index >= 0; index--) {
+      if (postWaiters[index].predicate(data)) postWaiters.splice(index, 1)[0].resolve(data);
+    }
+    if (!['reply', 'ack', 'cancel'].includes(data.action)) {
+      send(res, 409, { ok: false, code: 'DOUYIN_CHAT_ACTION', error: '不支持这项伙伴操作。', hint: '使用发送、停止或打开分享按钮。' }); return;
+    }
     if (!role || data.characterId !== role.id || data.characterEpoch !== role.epoch) {
       send(res, 409, { ok: false, code: 'COMPANION_CHARACTER_STALE', error: '角色已变化。', hint: '刷新伙伴状态后再继续。' }); return;
     }
-    if (data.openingId && !Object.hasOwn(data, 'text')) {
+    if (data.action === 'ack') {
       unread = false; send(res, 200, responseValue()); return;
     }
-    if (data.requestId && !Object.hasOwn(data, 'text')) {
+    if (data.action === 'cancel') {
       if (remoteActive?.requestId === data.requestId) { send(res, 409, { ok: false, code: 'DOUYIN_CHAT_OTHER_INSTANCE', error: '这条回复由另一个实例发起。', hint: '回到原实例取消，或等待它结束。' }); return; }
       cancelledRequests.add(data.requestId); send(res, 200, responseValue()); return;
     }
-    if (data.requestId && Object.hasOwn(data, 'text')) {
+    if (data.action === 'reply') {
       if (replyGate) { const gate = replyGate; replyGate = null; await gate.wait; }
       if (cancelledRequests.has(data.requestId)) return;
       if (replyFailure) { const failure = replyFailure; replyFailure = null; send(res, 503, { ok: false, ...failure }); return; }
@@ -96,7 +107,7 @@ const server = http.createServer(async (req, res) => {
       remoteActive = null;
       send(res, 200, responseValue()); return;
     }
-    send(res, 400, { ok: false, code: 'FIXTURE_UNKNOWN_ACTION', error: '未知操作。', hint: '检查请求体。' }); return;
+    send(res, 400, { ok: false, code: 'FIXTURE_BAD_ACTION', error: '伙伴操作与请求字段不匹配。', hint: '检查 action 与操作字段。' }); return;
   }
   send(res, 404, { ok: false, code: 'FIXTURE_NOT_FOUND', error: 'fixture route missing', hint: 'update the test fixture' });
 });
@@ -146,7 +157,9 @@ try {
   assert.equal(await page.locator('#portrait').isHidden(), false, 'the existing private portrait remains visible');
   assert.match(await page.locator('#diary').textContent(), /记录在本机的日记/, 'the original diary remains available');
   assert.equal(posts.some(post => post.openingId === opening.id), false, 'background reads do not mark an unseen opening as read');
+  const ackPost = waitForPost(post => post.openingId === opening.id);
   await page.getByRole('button', { name: '我看到了' }).click();
+  assert.equal((await ackPost).action, 'ack', 'ack requests use the production controller action contract');
   await page.waitForFunction(() => document.querySelector('#conversation-openings button[disabled][aria-label="已读"]'));
   assert.ok(posts.some(post => post.openingId === opening.id && post.characterId === role.id && post.characterEpoch === role.epoch), 'explicitly acknowledging the opening carries the active role stamp');
 
@@ -158,17 +171,21 @@ try {
   const gate = (() => { let release; return { wait: new Promise(resolve => { release = resolve; }), release: () => release() }; })();
   replyGate = gate;
   await page.locator('#conversation-input').fill('我喜欢它们靠在一起的样子。');
+  const replyPost = waitForPost(post => Object.hasOwn(post, 'text'));
   await page.getByRole('button', { name: '发送回复' }).click();
   await page.getByRole('button', { name: '取消回复' }).waitFor({ state: 'visible' });
-  const reply = posts.find(post => Object.hasOwn(post, 'text'));
+  const reply = await replyPost;
   assert.ok(reply, 'reply POST reaches the same-origin fixture');
+  assert.equal(reply.action, 'reply', 'reply requests use the production controller action contract');
   assert.match(reply.requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i, 'reply carries a UUID request stamp');
   assert.equal(reply.openingId, opening.id);
   assert.equal(reply.characterId, role.id); assert.equal(reply.characterEpoch, role.epoch);
   assert.equal(await page.getByRole('button', { name: '发送回复' }).isDisabled(), true, 'a pending reply cannot be sent twice');
   await page.getByRole('button', { name: '发送回复' }).evaluate(button => button.dispatchEvent(new Event('click', { bubbles: true })));
   assert.equal(posts.filter(post => Object.hasOwn(post, 'text')).length, 1, 'replayed click events do not duplicate the request');
+  const cancelPost = waitForPost(post => post.requestId === reply.requestId && !Object.hasOwn(post, 'text'));
   await page.getByRole('button', { name: '取消回复' }).click();
+  assert.equal((await cancelPost).action, 'cancel', 'cancel requests use the production controller action contract');
   await page.waitForFunction(() => document.getElementById('conversation-status').textContent.includes('已取消'));
   assert.ok(posts.some(post => post.requestId === reply.requestId && !Object.hasOwn(post, 'text') && !post.openingId), 'cancel uses the same request id without creating another reply');
   assert.equal(await page.locator('#conversation-input').inputValue(), '我喜欢它们靠在一起的样子。', 'cancel preserves the draft');
