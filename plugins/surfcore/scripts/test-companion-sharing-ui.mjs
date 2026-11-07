@@ -9,7 +9,7 @@ let role = { id: 'alpha', epoch: 4, name: '小白鲸' }, activeOpening;
 const webp = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA==', 'base64');
 const clientSource = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
 const posts = [], postWaiters = [], errors = [], cancelledRequests = new Set();
-let unread = true, replyGate = null, replyFailure = null, replyWrongCharacter = false, remoteActive = null, nextSharingGate = null, sharingGetCount = 0, failSharingModule = false, sharingModuleGate = null;
+let unread = true, replyGate = null, replyFailure = null, replyWrongCharacter = false, remoteActive = null, nextSharingGate = null, nextSharingFailure = null, nextCompanionGate = null, sharingGetCount = 0, companionGetCount = 0, failSharingModule = false, sharingModuleGate = null;
 const opening = activeOpening = {
   id: 'opening-1', jobId: 'job-1', sourceId: 'BV1fixture', sourceTitle: '海边的小鱼',
   occurredAt: '2026-11-07T06:00:00.000Z',
@@ -30,10 +30,11 @@ function waitForPost(predicate) {
   return new Promise(resolve => postWaiters.push({ predicate, resolve }));
 }
 function makeGate() {
-  let markStarted, release;
+  let markStarted, release, markSettled;
   const started = new Promise(resolve => { markStarted = resolve; });
   const wait = new Promise(resolve => { release = resolve; });
-  return { started, wait, markStarted: () => markStarted(), release: () => release() };
+  const settled = new Promise(resolve => { markSettled = resolve; });
+  return { started, wait, settled, markStarted: () => markStarted(), markSettled: () => markSettled(), release: () => release() };
 }
 const sharingHostPage = `<!doctype html><html><body><div id="root"></div><script type="module">
 const root=document.getElementById('root'),states=[],effects=[],refs=[];let Component=null,stateIndex=0,effectIndex=0,refIndex=0,nextEffects=[],rendering=false,rerender=false,destroyed=false;
@@ -62,6 +63,8 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/dsh-surfcore/api/douyin/companion-portrait') { send(res, 200, webp, 'image/webp'); return; }
   if (url.pathname === '/dsh-surfcore/api/douyin/companion') {
+    companionGetCount++;
+    if (nextCompanionGate) { const gate = nextCompanionGate; nextCompanionGate = null; gate.markStarted(); await gate.wait; gate.markSettled(); if (req.destroyed || res.destroyed) return; }
     if (!role) { send(res, 409, { ok: false, code: 'COMPANION_CHARACTER_REQUIRED', error: '当前没有活动角色。', hint: '在角色页载入伙伴。' }); return; }
     send(res, 200, { ok: true, character: role, readiness: { ok: true }, value: {
       acceptance: { callsUsed: 1, remaining: 11, manualAccepted: true },
@@ -71,9 +74,10 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/dsh-surfcore/api/douyin/companion-sharing' && req.method === 'GET') {
     sharingGetCount++;
+    if (nextSharingFailure) { const failure = nextSharingFailure; nextSharingFailure = null; send(res, 409, { ok: false, ...failure }); return; }
     const snapshot = role ? responseValue() : null;
-    if (nextSharingGate) { const gate = nextSharingGate; nextSharingGate = null; gate.markStarted(); await gate.wait; if (req.destroyed || res.destroyed) return; }
-    if (!role) { send(res, 409, { ok: false, code: 'COMPANION_CHARACTER_REQUIRED', error: '当前没有活动角色。', hint: '在角色页载入伙伴。' }); return; }
+    if (nextSharingGate) { const gate = nextSharingGate; nextSharingGate = null; gate.markStarted(); await gate.wait; gate.markSettled(); if (req.destroyed || res.destroyed) return; }
+    if (!role) { send(res, 409, { ok: false, code: 'DOUYIN_CHAT_CHARACTER_REQUIRED', error: '当前没有已载入的伙伴。', hint: '先在角色页载入伙伴，再打开分享。' }); return; }
     send(res, 200, snapshot || responseValue()); return;
   }
   if (url.pathname === '/dsh-surfcore/api/douyin/companion-sharing' && req.method === 'POST') {
@@ -96,7 +100,7 @@ const server = http.createServer(async (req, res) => {
       cancelledRequests.add(data.requestId); send(res, 200, responseValue()); return;
     }
     if (data.action === 'reply') {
-      if (replyGate) { const gate = replyGate; replyGate = null; await gate.wait; }
+      if (replyGate) { const gate = replyGate; replyGate = null; gate.markStarted(); await gate.wait; gate.markSettled(); if (req.destroyed || res.destroyed) return; }
       if (cancelledRequests.has(data.requestId)) return;
       if (replyFailure) { const failure = replyFailure; replyFailure = null; send(res, 503, { ok: false, ...failure }); return; }
       if (replyWrongCharacter) { replyWrongCharacter = false; send(res, 200, { ok: true, character: { id: 'other', epoch: role.epoch + 1, name: '旧角色' }, value: value() }); return; }
@@ -146,6 +150,18 @@ try {
   browser = await chromium.launch({ headless: true, executablePath });
   page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
+  await page.addInitScript(() => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.__sharingTimeoutDelays = [];
+    window.__shortenSharingTimeout = false;
+    window.setTimeout = (callback, delay, ...args) => {
+      if (window.__shortenSharingTimeout && delay === 185000) {
+        window.__sharingTimeoutDelays.push(delay);
+        return nativeSetTimeout(callback, 30, ...args);
+      }
+      return nativeSetTimeout(callback, delay, ...args);
+    };
+  });
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/#conversation`);
 
@@ -157,23 +173,28 @@ try {
   assert.equal(await page.locator('#portrait').isHidden(), false, 'the existing private portrait remains visible');
   assert.match(await page.locator('#diary').textContent(), /记录在本机的日记/, 'the original diary remains available');
   assert.equal(posts.some(post => post.openingId === opening.id), false, 'background reads do not mark an unseen opening as read');
+  const staleAckGate = makeGate(); nextSharingGate = staleAckGate;
+  await page.getByRole('button', { name: '刷新' }).click(); await staleAckGate.started;
   const ackPost = waitForPost(post => post.openingId === opening.id);
   await page.getByRole('button', { name: '我看到了' }).click();
   assert.equal((await ackPost).action, 'ack', 'ack requests use the production controller action contract');
   await page.waitForFunction(() => document.querySelector('#conversation-openings button[disabled][aria-label="已读"]'));
   assert.ok(posts.some(post => post.openingId === opening.id && post.characterId === role.id && post.characterEpoch === role.epoch), 'explicitly acknowledging the opening carries the active role stamp');
+  staleAckGate.release(); await staleAckGate.settled; await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  assert.ok(await page.locator('#conversation-openings button[disabled][aria-label="已读"]').count(), 'an older unread GET cannot undo a confirmed ACK');
 
   await page.setViewportSize({ width: 375, height: 760 });
   const composer = await page.locator('#conversation-form').boundingBox();
   assert.ok(composer && composer.x >= 0 && composer.x + composer.width <= 375, 'conversation composer fits a 375px viewport');
   assert.equal(await page.locator('#conversation-input').getAttribute('maxlength'), '1000');
 
-  const gate = (() => { let release; return { wait: new Promise(resolve => { release = resolve; }), release: () => release() }; })();
+  const gate = makeGate();
   replyGate = gate;
   await page.locator('#conversation-input').fill('我喜欢它们靠在一起的样子。');
   const replyPost = waitForPost(post => Object.hasOwn(post, 'text'));
   await page.getByRole('button', { name: '发送回复' }).click();
   await page.getByRole('button', { name: '取消回复' }).waitFor({ state: 'visible' });
+  await gate.started;
   const reply = await replyPost;
   assert.ok(reply, 'reply POST reaches the same-origin fixture');
   assert.equal(reply.action, 'reply', 'reply requests use the production controller action contract');
@@ -189,8 +210,7 @@ try {
   await page.waitForFunction(() => document.getElementById('conversation-status').textContent.includes('已取消'));
   assert.ok(posts.some(post => post.requestId === reply.requestId && !Object.hasOwn(post, 'text') && !post.openingId), 'cancel uses the same request id without creating another reply');
   assert.equal(await page.locator('#conversation-input').inputValue(), '我喜欢它们靠在一起的样子。', 'cancel preserves the draft');
-  gate.release();
-  await page.waitForTimeout(100);
+  gate.release(); await gate.settled; await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
   assert.doesNotMatch(await page.locator('#conversation').textContent(), /也许它们在找一处安静的地方/, 'a late cancelled response cannot enter the conversation');
 
   replyFailure = { code: 'SHARING_TEMPORARY_FAILURE', error: '这条回复暂时没有完成。', hint: '检查后可以手动再试；系统不会自动重发。' };
@@ -206,12 +226,23 @@ try {
   assert.equal(await page.locator('#conversation-message-list [data-role="user"] .message-text').textContent(), '我喜欢它们靠在一起的样子。');
   assert.equal(await page.locator('#conversation-message-list [data-role="assistant"] .message-text').textContent(), '也许它们在找一处安静的地方。');
 
+  const staleReplyGate = makeGate(); nextSharingGate = staleReplyGate;
+  await page.getByRole('button', { name: '刷新' }).click(); await staleReplyGate.started;
+  const newerReplyText = '我想把这阵潮汐也记下来。';
+  const newerReplyPost = waitForPost(post => post.text === newerReplyText);
+  await page.locator('#conversation-input').fill(newerReplyText);
+  await page.getByRole('button', { name: '发送回复' }).click();
+  assert.equal((await newerReplyPost).action, 'reply');
+  await page.locator('#conversation-message-list [data-role="user"] .message-text').filter({ hasText: newerReplyText }).waitFor();
+  assert.equal(await page.locator('#conversation-input').inputValue(), '', 'confirmed reply clears the draft before the old GET settles');
+  staleReplyGate.release(); await staleReplyGate.settled; await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  assert.equal(await page.locator('#conversation-message-list [data-role="user"] .message-text').textContent(), newerReplyText, 'an older same-role GET cannot erase a confirmed reply');
+
   replyWrongCharacter = true;
   await page.locator('#conversation-input').fill('我只想把这句话留给当前伙伴。');
   await page.getByRole('button', { name: '发送回复' }).click();
-  await page.getByRole('alert').filter({ hasText: 'COMPANION_CHARACTER_STALE' }).waitFor();
-  assert.equal(await page.locator('#conversation-input').inputValue(), '我只想把这句话留给当前伙伴。', 'a success envelope for a different role is rejected and preserves the draft');
-  assert.equal(await page.getByRole('button', { name: '发送回复' }).isDisabled(), false, 'a rejected role stamp does not leave the composer stuck');
+  await page.getByRole('alert').filter({ hasText: 'DOUYIN_STALE_CHARACTER' }).waitFor();
+  assert.equal(await page.locator('#conversation-input').inputValue(), '', 'a response for a different role retires the old draft');
 
   remoteActive = { requestId: 'other-instance-request', openingId: opening.id };
   await page.getByRole('button', { name: '刷新' }).click();
@@ -225,15 +256,71 @@ try {
   await page.getByRole('button', { name: '刷新' }).click();
   await page.locator('#conversation-cancel').waitFor({ state: 'hidden' });
 
-  const staleGate = makeGate(); nextSharingGate = staleGate;
-  await page.getByRole('button', { name: '刷新' }).click(); await staleGate.started;
+  const slowReplyText = '这条回复会比通常更慢一些。', postsBeforeSlowReply = posts.filter(post => Object.hasOwn(post, 'text')).length;
+  const slowReplyGate = makeGate(); replyGate = slowReplyGate;
+  const slowReplyPost = waitForPost(post => post.text === slowReplyText);
+  await page.locator('#conversation-input').fill(slowReplyText);
+  await page.evaluate(() => { window.__shortenSharingTimeout = true; });
+  await page.getByRole('button', { name: '发送回复' }).click();
+  const timedOutReply = await slowReplyPost; await slowReplyGate.started;
+  await page.getByRole('alert').filter({ hasText: 'SHARING_REQUEST_TIMEOUT' }).waitFor({ timeout: 3000 });
+  assert.equal(await page.evaluate(() => window.__sharingTimeoutDelays.includes(185000)), true, 'the UI timeout covers the production 180-second reply budget plus response time');
+  assert.match(await page.locator('#sharing-error').textContent(), /刷新核对已有结果.*不要重发同一条消息/);
+  assert.equal(await page.locator('#conversation-input').inputValue(), slowReplyText, 'reply timeout preserves the user draft');
+  assert.equal(posts.filter(post => Object.hasOwn(post, 'text')).length, postsBeforeSlowReply + 1, 'a timed-out reply is not automatically resent');
+  slowReplyGate.release(); await slowReplyGate.settled; await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  await page.evaluate(() => { window.__shortenSharingTimeout = false; });
+  assert.equal(posts.filter(post => Object.hasOwn(post, 'text')).length, postsBeforeSlowReply + 1, 'releasing the delayed fixture does not cause a retry');
+  assert.equal(timedOutReply.action, 'reply');
+
+  role = null; activeOpening = null; messages = []; unread = false;
+  const requiredMainGate = makeGate(); nextCompanionGate = requiredMainGate;
+  nextSharingFailure = { code: 'DOUYIN_CHAT_CHARACTER_REQUIRED', error: '当前没有已载入的伙伴。', hint: '先在角色页载入伙伴。' };
+  await page.getByRole('button', { name: '刷新' }).click(); await requiredMainGate.started;
+  await page.getByRole('alert').filter({ hasText: 'DOUYIN_CHAT_CHARACTER_REQUIRED' }).waitFor();
+  assert.equal(await page.locator('#role').textContent(), '当前没有已载入角色');
+  assert.equal(await page.locator('#conversation-openings').textContent(), '', 'the canonical no-character code clears old openings');
+  assert.equal(await page.locator('#conversation-message-list').textContent(), '', 'the canonical no-character code clears old messages');
+  assert.equal(await page.locator('#conversation-input').inputValue(), '', 'the canonical no-character code clears the old draft');
+  assert.equal(await page.locator('#conversation-input').isDisabled(), true, 'the canonical no-character code disables the composer');
+  assert.match(await page.locator('#sharing-error').textContent(), /先在角色页载入伙伴/);
+  requiredMainGate.release(); await requiredMainGate.settled; await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  assert.match(await page.locator('#sharing-error').textContent(), /DOUYIN_CHAT_CHARACTER_REQUIRED/, 'a later main status response does not erase the original sharing error');
+
   role = { id: 'beta', epoch: 5, name: '海蓝' };
   activeOpening = { id: 'opening-beta', jobId: 'job-beta', sourceId: 'BV2fixture', sourceTitle: '礁石边的新发现', occurredAt: '2026-11-07T06:02:00.000Z', text: '海浪退去后，留下了一小片湿润的沙。', question: '你会把它留在日记里吗？', coverage: { transcriptComplete: true, frameSamples: 2 } };
   unread = true; messages = [];
-  await page.getByText('当前伙伴：海蓝').waitFor();
+  await page.getByRole('button', { name: '刷新' }).click();
+  await page.getByText('当前伙伴：海蓝').waitFor(); await page.getByText('礁石边的新发现').waitFor();
+
+  role = { id: 'gamma', epoch: 6, name: '小浪花' };
+  activeOpening = { id: 'opening-gamma', jobId: 'job-gamma', sourceId: 'BV3fixture', sourceTitle: '新的潮汐', occurredAt: '2026-11-07T06:03:00.000Z', text: '一阵微风把海面吹出细细的波纹。', question: '你听见了什么？', coverage: { transcriptComplete: true, frameSamples: 1 } };
+  unread = true; messages = [];
+  const staleMainGate = makeGate(); nextCompanionGate = staleMainGate;
+  nextSharingFailure = { code: 'DOUYIN_STALE_CHARACTER', error: '角色已变化，本次对话请求停止。', hint: '刷新当前伙伴后再操作；不会续接到新角色。' };
+  const postCountBeforeStaleGet = posts.length;
+  await page.getByRole('button', { name: '刷新' }).click(); await staleMainGate.started;
+  await page.getByRole('alert').filter({ hasText: 'DOUYIN_STALE_CHARACTER' }).waitFor();
+  assert.equal(await page.locator('#conversation-openings').textContent(), '', 'stale status retires old openings while main role refresh is held');
+  assert.equal(await page.locator('#conversation-message-list').textContent(), '', 'stale status retires old messages while main role refresh is held');
+  assert.equal(await page.locator('#conversation-input').inputValue(), '', 'stale status clears the old draft while main role refresh is held');
+  assert.equal(await page.locator('#conversation-input').isDisabled(), true, 'stale status disables the composer until main role refresh completes');
+  assert.equal(await page.locator('#start').isDisabled(), true, 'stale status disables starting another round until main role refresh completes');
+  assert.equal(posts.length, postCountBeforeStaleGet, 'a stale GET never replays a sharing POST');
+  staleMainGate.release(); await staleMainGate.settled;
+  await page.getByText('当前伙伴：小浪花').waitFor(); await page.getByText('新的潮汐').waitFor();
+  await page.getByRole('alert').filter({ hasText: 'DOUYIN_STALE_CHARACTER' }).waitFor();
+  assert.equal(posts.length, postCountBeforeStaleGet, 'authoritative role reload does not replay the stale operation');
+
+  const staleGate = makeGate(); nextSharingGate = staleGate;
+  await page.getByRole('button', { name: '刷新' }).click(); await staleGate.started;
+  role = { id: 'delta', epoch: 7, name: '海星' };
+  activeOpening = { id: 'opening-delta', jobId: 'job-delta', sourceId: 'BV4fixture', sourceTitle: '礁石边的新发现', occurredAt: '2026-11-07T06:04:00.000Z', text: '海浪退去后，留下了一小片湿润的沙。', question: '你会把它留在日记里吗？', coverage: { transcriptComplete: true, frameSamples: 2 } };
+  unread = true; messages = [];
+  await page.getByText('当前伙伴：海星').waitFor();
   staleGate.release();
   await page.getByText('礁石边的新发现').waitFor();
-  assert.doesNotMatch(await page.locator('#conversation-openings').textContent(), /海边的小鱼|我刚看到一群小鱼/, 'a delayed old-role snapshot cannot enter the new role conversation');
+  assert.doesNotMatch(await page.locator('#conversation-openings').textContent(), /新的潮汐|一阵微风吹出细细的波纹/, 'a delayed old-role snapshot cannot enter the new role conversation');
   assert.equal(await page.locator('#conversation-message-list').textContent(), '', 'role change clears prior messages');
   assert.equal(await page.locator('#conversation-input').inputValue(), '', 'role change clears the prior character draft');
 
@@ -244,10 +331,10 @@ try {
   assert.equal(await page.locator('#conversation-input').isDisabled(), true);
   assert.equal(await page.locator('#portrait').isHidden(), true);
 
-  role = { id: 'gamma', epoch: 6, name: '小浪花' };
-  activeOpening = { id: 'opening-gamma', jobId: 'job-gamma', sourceId: 'BV3fixture', sourceTitle: '新的潮汐', occurredAt: '2026-11-07T06:03:00.000Z', text: '一阵微风把海面吹出细细的波纹。', question: '你听见了什么？', coverage: { transcriptComplete: true, frameSamples: 1 } };
+  role = { id: 'epsilon', epoch: 8, name: '小海星' };
+  activeOpening = { id: 'opening-epsilon', jobId: 'job-epsilon', sourceId: 'BV5fixture', sourceTitle: '新的潮汐', occurredAt: '2026-11-07T06:05:00.000Z', text: '一阵微风把海面吹出细细的波纹。', question: '你听见了什么？', coverage: { transcriptComplete: true, frameSamples: 1 } };
   unread = true; messages = [];
-  await page.getByText('当前伙伴：小浪花').waitFor(); await page.getByText('新的潮汐').waitFor();
+  await page.getByText('当前伙伴：小海星').waitFor(); await page.getByText('新的潮汐').waitFor();
   const hideGate = makeGate(); nextSharingGate = hideGate;
   await page.getByRole('button', { name: '刷新' }).click(); await hideGate.started;
   const requestsAtHide = sharingGetCount;
@@ -255,6 +342,71 @@ try {
   hideGate.release(); await page.waitForTimeout(180);
   assert.equal(sharingGetCount, requestsAtHide, 'pagehide aborts in-flight sharing reads and prevents queued polls');
   assert.equal(await page.locator('#conversation-status').textContent(), '日记页已关闭。');
+
+  role = { id: 'zeta', epoch: 9, name: '小贝壳' };
+  activeOpening = { id: 'opening-zeta', jobId: 'job-zeta', sourceId: 'BV6fixture', sourceTitle: '海风里的细沙', occurredAt: '2026-11-07T06:06:00.000Z', text: '海风把一小片细沙吹到了石头旁。', question: '你会记住这阵风吗？', coverage: { transcriptComplete: true, frameSamples: 1 } };
+  unread = true; messages = [];
+  const latePostPage = await browser.newPage({ viewport: { width: 375, height: 760 } });
+  await latePostPage.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
+  await latePostPage.addInitScript(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.__lateSharingPostGate = null;
+    window.__prepareLateSharingPost = () => {
+      let markStarted, release;
+      const started = new Promise(resolve => { markStarted = resolve; });
+      const released = new Promise(resolve => { release = resolve; });
+      window.__lateSharingPostStarted = started;
+      window.__releaseLateSharingPost = release;
+      window.__lateSharingPostGate = { markStarted, released };
+    };
+    window.fetch = (input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const gate = window.__lateSharingPostGate;
+      if (!gate || init.method !== 'POST' || !String(url).includes('/companion-sharing')) return nativeFetch(input, init);
+      window.__lateSharingPostGate = null;
+      return nativeFetch(input, { ...init, signal: undefined }).then(async response => {
+        const body = await response.text(), status = response.status, statusText = response.statusText, headers = Array.from(response.headers.entries());
+        gate.markStarted();
+        await gate.released;
+        return new Response(body, { status, statusText, headers });
+      });
+    };
+  });
+  await latePostPage.goto(`http://127.0.0.1:${server.address().port}/#conversation`);
+  await latePostPage.getByText('当前伙伴：小贝壳').waitFor(); await latePostPage.getByText('海风里的细沙').waitFor();
+  replyFailure = { code: 'DOUYIN_CHAT_CHARACTER_REQUIRED', error: '当前没有已载入的伙伴。', hint: '先在角色页载入伙伴。' };
+  const switchedPostText = '这句回复属于刚才的伙伴。', switchedPost = waitForPost(post => post.text === switchedPostText);
+  await latePostPage.evaluate(() => window.__prepareLateSharingPost());
+  await latePostPage.locator('#conversation-input').fill(switchedPostText);
+  await latePostPage.getByRole('button', { name: '发送回复' }).click();
+  await switchedPost; await latePostPage.evaluate(() => window.__lateSharingPostStarted);
+  role = { id: 'eta', epoch: 10, name: '潮汐' };
+  activeOpening = { id: 'opening-eta', jobId: 'job-eta', sourceId: 'BV7fixture', sourceTitle: '潮汐留下的纹路', occurredAt: '2026-11-07T06:07:00.000Z', text: '退去的潮水在沙地上留下了细细的纹路。', question: '哪一道纹路最像你今天的心情？', coverage: { transcriptComplete: true, frameSamples: 2 } };
+  unread = true; messages = [];
+  await latePostPage.getByRole('button', { name: '刷新' }).click();
+  await latePostPage.getByText('当前伙伴：潮汐').waitFor(); await latePostPage.getByText('潮汐留下的纹路').waitFor();
+  const readsBeforeLateError = companionGetCount;
+  await latePostPage.evaluate(() => window.__releaseLateSharingPost());
+  await latePostPage.waitForTimeout(80);
+  assert.equal(await latePostPage.locator('#role').textContent(), '当前伙伴：潮汐', 'a late old-role canonical error cannot clear the new role');
+  assert.match(await latePostPage.locator('#conversation-openings').textContent(), /潮汐留下的纹路/, 'a late old-role error cannot remove the new opening');
+  assert.doesNotMatch(await latePostPage.locator('#sharing-error').textContent(), /DOUYIN_CHAT_CHARACTER_REQUIRED/, 'a late old-role error is ignored after the epoch changes');
+  assert.equal(companionGetCount, readsBeforeLateError, 'a retired old-role POST error does not trigger another main refresh');
+
+  replyFailure = { code: 'DOUYIN_CHAT_CHARACTER_REQUIRED', error: '当前没有已载入的伙伴。', hint: '先在角色页载入伙伴。' };
+  const pagehidePostText = '这条迟到回复也不应复活页面。', pagehidePost = waitForPost(post => post.text === pagehidePostText);
+  await latePostPage.evaluate(() => window.__prepareLateSharingPost());
+  await latePostPage.locator('#conversation-input').fill(pagehidePostText);
+  await latePostPage.getByRole('button', { name: '发送回复' }).click();
+  await pagehidePost; await latePostPage.evaluate(() => window.__lateSharingPostStarted);
+  await latePostPage.evaluate(() => dispatchEvent(new Event('pagehide')));
+  assert.equal(await latePostPage.locator('#conversation-status').textContent(), '日记页已关闭。');
+  await latePostPage.evaluate(() => window.__releaseLateSharingPost());
+  await latePostPage.waitForTimeout(80);
+  assert.equal(await latePostPage.locator('#conversation-status').textContent(), '日记页已关闭。', 'a late canonical POST error cannot replace the retired-page status');
+  assert.equal(await latePostPage.locator('#sharing-error').textContent(), '', 'a late canonical POST error cannot surface after pagehide');
+  assert.equal(await latePostPage.locator('#role').textContent(), '当前伙伴：潮汐', 'a late canonical POST error cannot clear the retired page role');
+  await latePostPage.close();
 
   role = { id: 'host', epoch: 7, name: '小海星' };
   activeOpening = { id: 'opening-host', jobId: 'job-host', sourceId: 'BV4fixture', sourceTitle: '晚风里的浪', occurredAt: '2026-11-07T06:04:00.000Z', text: '晚风把海边变得安静。', question: '你想在这样的海边待一会儿吗？', coverage: { transcriptComplete: true, frameSamples: 2 } };
@@ -317,7 +469,7 @@ try {
   assert.equal(await applySuccessPage.evaluate(() => window.__applyState.registrations.has('surfcore-companion-sharing')), false, 'successful mount cleanup unregisters the entry');
   await applySuccessPage.close();
   assert.equal(errors.length, 0, errors.join('\n'));
-  console.log(JSON.stringify({ ok: true, checks: ['opening-text-xss', 'opening-ack-role-stamp', 'existing-portrait-and-diary', 'reply-uuid-and-role-stamp', 'duplicate-send-guard', 'cancel-late-reply', 'failure-visible-and-draft-retained', 'no-automatic-retry', 'confirmed-reply', 'late-post-role-stamp-rejected', 'cross-instance-cancel-visible', 'chat-blocks-concurrent-discovery', 'role-switch-late-response', 'role-clear', 'pagehide-poll-cleanup', '375px-composer', 'sidebar-slot-and-unread', 'no-auto-popup-or-hidden-ack', 'dialog-close-cleanup', 'slot-dispose-poll-cleanup', 'dynamic-import-failure-visible', 'late-import-after-dispose-ignored', 'apply-cleanup-unregisters-slot'] }));
+  console.log(JSON.stringify({ ok: true, checks: ['opening-text-xss', 'opening-ack-role-stamp', 'ack-old-get-no-unread-revival', 'existing-portrait-and-diary', 'reply-uuid-and-role-stamp', 'duplicate-send-guard', 'cancel-late-reply', 'failure-visible-and-draft-retained', 'no-automatic-retry', 'confirmed-reply', 'reply-old-get-no-message-erasure', 'late-post-role-stamp-rejected', 'cross-instance-cancel-visible', 'chat-blocks-concurrent-discovery', '185s-timeout-preserves-draft', 'canonical-required-clears-role', 'canonical-stale-retires-state', 'role-switch-late-response', 'role-clear', 'pagehide-poll-cleanup', 'late-post-role-switch-ignored', 'late-post-pagehide-ignored', '375px-composer', 'sidebar-slot-and-unread', 'no-auto-popup-or-hidden-ack', 'dialog-close-cleanup', 'slot-dispose-poll-cleanup', 'dynamic-import-failure-visible', 'late-import-after-dispose-ignored', 'apply-cleanup-unregisters-slot'] }));
 } finally {
   if (replyGate) replyGate.release();
   await page?.close();

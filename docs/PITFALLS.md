@@ -4191,7 +4191,7 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 
 ## 2026-11-07：分享轮询不能替用户确认已读
 
-聊天页与侧栏都读同源 sharing 状态；这类 GET 只能更新展示，不能 ACK。日记页的主 companion 状态是当前角色/epoch 权威，sharing GET 可能晚到：提交结果前同时核对本次序号和主页面 stamp；换角/清角时递增序号、abort旧请求并清开场/消息/草稿。否则旧角色的分享会挂在新立绘下面。只在用户显式点“我看到了”或“回一句”时 ACK；隐藏 iframe、后台轮询和页面下方未看的开场不算已读。pagehide 要清轮询并 abort 在途请求，迟到 finally 不得再发最终 GET。POST 必须显式带 action：ack、reply 或 cancel；字段齐全但 action 缺失时 controller 返回 DOUYIN_CHAT_ACTION，fixture 不能按字段形状猜操作。active 聊天期间禁用新一轮发现；跨实例取消失败要保留 active 并展示原 code/error/hint，不可假报取消。回复失败保留输入、不自动重发。动态文案只用 textContent/React 文本节点。回归见 plugins/surfcore/scripts/test-companion-sharing-ui.mjs（换角迟到、role清除、pagehide、显式ack、action分派、跨实例取消、XSS和无自动重试）。
+聊天页与侧栏都读同源 sharing 状态；这类 GET 只能更新展示，不能 ACK。日记页的主 companion 状态是当前角色/epoch 权威，sharing GET 可能晚到：提交结果前同时核对本次序号和主页面 stamp；换角/清角时递增序号、abort旧请求并清开场/消息/草稿。成功 POST 也必须递增序号并 abort 它开始前的 GET，否则旧同角色快照会撤销 ACK 或清掉刚确认的回复。只在用户显式点“我看到了”或“回一句”时 ACK；隐藏 iframe、后台轮询和页面下方未看的开场不算已读。pagehide 要清轮询并 abort 在途请求，迟到 finally 不得再发最终 GET。POST 必须显式带 action：ack、reply 或 cancel；字段齐全但 action 缺失时 controller 返回 DOUYIN_CHAT_ACTION，fixture 不能按字段形状猜操作。后端 canonical 错误码是 DOUYIN_CHAT_CHARACTER_REQUIRED 和 DOUYIN_STALE_CHARACTER：前者要清旧角色状态与草稿，后者马上收起旧分享/消息/草稿、禁用操作并刷新主角色；处理任何 POST 成功/失败前先检查 pagehide 与 role/epoch，迟到旧角色错误不得清新角色。180 秒 service 等待必须留回包空间，UI 超时至少覆盖 180 秒并提示刷新核对、不要自动或盲目重发。active 聊天期间禁用新一轮发现；跨实例取消失败要保留 active 并展示原 code/error/hint，不可假报取消。普通回复失败保留输入。动态文案只用 textContent/React 文本节点。回归见 plugins/surfcore/scripts/test-companion-sharing-ui.mjs（旧 GET 竞态、canonical错误、pagehide、超时、显式ack、action分派、跨实例取消、XSS和无自动重试）。
 
 
 ## 2026-11-07：命令语气需按整句组合判断
