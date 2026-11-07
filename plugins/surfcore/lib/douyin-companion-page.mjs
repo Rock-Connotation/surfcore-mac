@@ -127,7 +127,7 @@ async function postSharing(body,controller=new AbortController()){
 }
 async function ackSharingOpening(openingId){
  if(retired||!context||sharingAcking.has(openingId))return;const opening=sharingValue?.openings?.find(item=>item.id===openingId);if(!opening?.unread)return;const expectedStamp=sharingStamp;sharingAcking.add(openingId);renderSharingOpenings();
- const result=await postSharing({openingId});sharingAcking.delete(openingId);if(retired||expectedStamp!==sharingStamp||result.stale)return;if(result.ok){sharingActionFailure=null;renderSharing(result.data)}else{sharingActionFailure=result.error;showSharingError(result.error);renderSharingOpenings()}
+ const result=await postSharing({action:'ack',openingId});sharingAcking.delete(openingId);if(retired||expectedStamp!==sharingStamp||result.stale)return;if(result.ok){sharingActionFailure=null;renderSharing(result.data)}else{sharingActionFailure=result.error;showSharingError(result.error);renderSharingOpenings()}
 }
 function sharingUuid(){if(crypto.randomUUID)return crypto.randomUUID();const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const hex=Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('');return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20)}
 async function sendSharingReply(){
@@ -136,13 +136,13 @@ async function sendSharingReply(){
  if(!text){sharingActionFailure={code:'SHARING_TEXT_REQUIRED',error:'先写一句想说的话。',hint:'输入最多 1000 字后再发送。'};showSharingError(sharingActionFailure);return}
  if(text.length>1000){sharingActionFailure={code:'SHARING_TEXT_TOO_LONG',error:'回复超过 1000 字。',hint:'缩短内容后再发送。'};showSharingError(sharingActionFailure);return}
  const requestId=sharingUuid(),controller=new AbortController(),pending={requestId,openingId,controller,stamp:sharingStamp};sharingPending=pending;sharingActionFailure=null;clearSharingError();renderSharingControls();$('conversation-status').textContent='正在整理这条回复…';
- const result=await postSharing({openingId,requestId,text},controller);if(retired||pending.stamp!==sharingStamp||sharingPending?.requestId!==requestId)return;sharingPending=null;
+ const result=await postSharing({action:'reply',openingId,requestId,text},controller);if(retired||pending.stamp!==sharingStamp||sharingPending?.requestId!==requestId)return;sharingPending=null;
  if(result.stale)return;if(!result.ok){sharingActionFailure=result.error;showSharingError(result.error);$('conversation-status').textContent='回复没有完成；输入仍保留，可以检查后手动再试。';renderSharingControls();return}
  if($('conversation-input').value===textValue)$('conversation-input').value='';sharingActionFailure=null;renderSharing(result.data);
 }
 async function cancelSharingReply(){
  if(retired||sharingCancelBusy)return;const pending=sharingPending,requestId=pending?.requestId||sharingValue?.active?.requestId;if(!requestId)return;const expectedStamp=sharingStamp;sharingCancelBusy=true;renderSharingControls();
- const result=await postSharing({requestId});if(retired||expectedStamp!==sharingStamp||result.stale)return;sharingCancelBusy=false;
+ const result=await postSharing({action:'cancel',requestId});if(retired||expectedStamp!==sharingStamp||result.stale)return;sharingCancelBusy=false;
  if(!result.ok){sharingActionFailure=result.error;showSharingError(result.error);renderSharingControls();return}
  if(sharingPending?.requestId===requestId){const controller=sharingPending.controller;sharingPending=null;controller.abort()}
  sharingActionFailure=null;renderSharing(result.data);$('conversation-status').textContent='这次回复已取消，原输入仍保留。';renderSharingControls();

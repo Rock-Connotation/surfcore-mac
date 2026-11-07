@@ -24,7 +24,7 @@
 ## 完整逻辑（给用户看的那一遍）
 
 - **链路**：DSH 插件 `client.js` 的 `apply` 通过同源 `import('/dsh-surfcore/api/douyin/companion-sharing-client')` 挂载 `sidebar.footer.action`。轻量入口只轮询本机 `GET /dsh-surfcore/api/douyin/companion-sharing` 并显示未读数；用户点入口后才创建指向 `/dsh-surfcore/api/douyin/companion-page#conversation` 的 iframe。日记页先从原 `/companion` 状态取得当前角色，再读取 sharing 状态；确认已读、回复和取消都只写回同一个本机 sharing endpoint。控制器/service 负责持久状态与实际回复，不由 UI 拼造开场或调模型。其它旧日记读者仍使用原 `/companion` 接口。
-- **机制**：sharing GET 是只读状态；GET 不触发模型。开场、提问、历史和角色名用 `textContent` 或 React 文本节点显示。未读只在用户点击“我看到了”或“回一句”后 ACK，后台轮询和隐藏 iframe 不会清掉未读。回复先生成 UUID `requestId`，连同 `openingId`、`characterId`、`characterEpoch` 与最多 1000 字正文提交；发送中禁止重复点击，不会自动重发。POST 失败保留输入并显示 `code / error / hint`。取消收到其它实例拒绝时继续显示 active 并保留错误，不假报已取消。sharing 响应只有在 id/epoch 仍匹配主日记页面当前角色时才可显示；切角/清角会清开场、历史和草稿、增加序号并 abort 旧请求。pagehide 会终止轮询和请求，迟到结果不能恢复页面或发起最终刷新。active 聊天同时禁用“再发现一轮”，避免两个作业互相争用。
+- **机制**：sharing GET 是只读状态；GET 不触发模型。开场、提问、历史和角色名用 `textContent` 或 React 文本节点显示。未读只在用户点击“我看到了”或“回一句”后 ACK，后台轮询和隐藏 iframe 不会清掉未读。每个 POST 显式带 `action:'ack'|'reply'|'cancel'`，由 controller 按 action 分派；仅有 `openingId` / `requestId` / `text` 字段不会执行操作。回复先生成 UUID `requestId`，连同 `openingId`、`characterId`、`characterEpoch` 与最多 1000 字正文提交；发送中禁止重复点击，不会自动重发。POST 失败保留输入并显示 `code / error / hint`。取消收到其它实例拒绝时继续显示 active 并保留错误，不假报已取消。sharing 响应只有在 id/epoch 仍匹配主日记页面当前角色时才可显示；切角/清角会清开场、历史和草稿、增加序号并 abort 旧请求。pagehide 会终止轮询和请求，迟到结果不能恢复页面或发起最终刷新。active 聊天同时禁用“再发现一轮”，避免两个作业互相争用。
 - **爆炸半径**：1 个 DSH renderer 进程 × 2 个本地 UI 读者（侧栏入口与日记/聊天页）× 1（失败在用户界面报告）= **2 分**。UI 只访问新约定的本机 HTTP 端点；本实现和本次测试不访问真实 profile、凭据、模型或外部平台，也不读写平台账号。用户显式发送回复时由本机 service 按其服务契约处理；fixture 不执行这一步的模型调用。
 - **取舍**：路线 A 重写现有日记为一套新前端，会同时触碰立绘、日记、操作错误和现有角色/关页时序，收益不足以抵消兼容风险。路线 B 在既有页面追加独立聊天区，只在 `apply` 增加一个动态模块挂载，聊天状态和原观看状态各自保留，回滚只需回退 UI 提交。本次采用 B。只添加日记内链接会缺少用户要求的 DSH 侧栏未读入口，因此没有采用。
 - **生效与重启**：DSH 插件 `client.js` 读取 `apply` 并通过宿主 `sidebar.footer.action` slot 注册入口；同源模块由分享 service 以 JavaScript MIME 提供。更新插件后需重新加载插件或重启 DSH，再刷新日记页。真实 `0.2.2-rc.1` footer slot 的挂载验收由父会话执行，本 worker 仅用本机 fixture 验证注册与清理。
@@ -38,7 +38,7 @@
 
 ## 验证
 
-- 官方 Node 24 运行 `plugins/surfcore/scripts/test-companion-sharing-ui.mjs`：本机 loopback HTTP + Chromium，23 项通过，覆盖：XSS 文本、显式 ACK、UUID/角色戳、重复发送闸、失败后保留输入、无自动重发、取消与迟到结果、成功响应错角色戳拒绝、其它实例取消拒绝、active 禁用新一轮、跨 endpoint 换角、清角、pagehide、375px、侧栏 slot、未读标记、关闭/卸载 iframe、动态 import 错误和 apply dispose。
+- 官方 Node 24 运行 `plugins/surfcore/scripts/test-companion-sharing-ui.mjs`：本机 loopback HTTP + Chromium，23 项通过；fixture 仿照 production controller 严格分派 `action`，缺失/未知值返回 `DOUYIN_CHAT_ACTION`。旧 UI 下 ACK 请求曾以 `action:undefined` 被拒，绿版断言 ACK/reply/cancel 分别发送正确 action。覆盖：XSS 文本、显式 ACK、UUID/角色戳、重复发送闸、失败后保留输入、无自动重发、取消与迟到结果、成功响应错角色戳拒绝、其它实例取消拒绝、active 禁用新一轮、跨 endpoint 换角、清角、pagehide、375px、侧栏 slot、未读标记、关闭/卸载 iframe、动态 import 错误和 apply dispose。
 - 官方 Node 24 运行 `plugins/surfcore/scripts/test-douyin-companion-ui.mjs`：既有日记/立绘/操作错误与角色/关页用例保持通过。
 - 官方 Node 24 运行 `scripts/test-audit.mjs`：**174/174** 通过；新增 UI fixture 直接运行，未改 `package.json`、audit 注册、版本或 manifest。
 - 失败路径断言：`SHARING_TEMPORARY_FAILURE` 显示 code/error/hint、输入保持；`DOUYIN_CHAT_OTHER_INSTANCE` 不清 active；sharing 409/timeout 显示可行动提示；模块 import 失败显示 `COMPANION_SHARING_CLIENT_LOAD_FAILED` 与重载按钮。
