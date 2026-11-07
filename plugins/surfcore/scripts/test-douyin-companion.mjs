@@ -10,6 +10,7 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const mediaSource = 'https://cdn.private.invalid/video.mp4?signature=PRIVATE_MEDIA_SECRET';
 const frame = { atMs: 500, dataUrl: 'data:image/png;base64,YWJj' };
 const output = (overrides = {}) => JSON.stringify({ feeling: 'like', reason: '节奏清楚，表达有意思。', summary: '一段轻松的经验分享。', draft: '这段讲法挺有意思。', ...overrides });
+const sharingOutput = (overrides = {}) => output({ share: '这段把复杂的想法讲得很轻巧，我喜欢这个节奏。', question: '你觉得这种讲法适合什么场景？', ...overrides });
 const recommendation = (id = 'video-1', durationMs = 1000) => ({
   id,
   url: `https://www.douyin.com/video/${id}?tracking=PRIVATE_MEDIA_SECRET`,
@@ -24,7 +25,7 @@ function fixture(options = {}) {
   const context = { characterId: 'role-a', characterEpoch: 1 };
   const role = options.role ?? { id: 'role-a', epoch: 1 };
   const time = options.time ?? { value: new Date('2026-11-07T03:00:00.000Z') };
-  const calls = { models: [], memory: [], memoryWrites: [], perceived: [], ready: 0, feeds: 0 };
+  const calls = { models: [], memory: [], memoryWrites: [], shares: [], perceived: [], ready: 0, feeds: 0 };
   const api = createDouyinCompanion({
     stateDir,
     getCharacter: () => role,
@@ -53,7 +54,7 @@ function fixture(options = {}) {
         frames: [frame], visualCoverage: 'sparse', warnings: [],
       };
     },
-    buildContext: async ctx => ({ ok: true, text: `角色${ctx.characterId}的记忆。` }),
+    buildContext: async ctx => options.buildContext ? options.buildContext(ctx) : ({ ok: true, text: `角色${ctx.characterId}的记忆。` }),
     modelCall: async args => {
       calls.models.push(args);
       assert.equal(args.maxTokens, 8192);
@@ -72,6 +73,10 @@ function fixture(options = {}) {
       calls.memoryWrites.push(value);
       return { ok: true };
     },
+    recordSharing: options.recordSharing ? async (ctx, value, { signal }) => {
+      calls.shares.push({ ctx, value, signal });
+      return options.recordSharing(ctx, value, { signal }, calls);
+    } : undefined,
   });
   return { api, stateDir, context, role, time, calls, options };
 }
@@ -123,6 +128,8 @@ async function startAndFinish(f, options) {
   assert.equal(manual.items[0].occurredAt, '2026-11-07T03:01:02.000Z');
   assert.equal(manual.items[0].coverage.visualCoverage, 'sparse');
   assert.equal(manual.items[0].memorySaved, true);
+  assert.match(f.calls.models[0].system, /仅有 feeling、reason、summary、draft 四个字段/);
+  assert.doesNotMatch(f.calls.models[0].system, /share、question/);
   assert.equal(f.calls.memory[0].value.id, 'video-1');
   assert.equal(Object.hasOwn(f.calls.memory[0].value, 'url'), false);
   assert.equal(f.calls.memory[0].value.occurredAt, manual.items[0].occurredAt);
@@ -552,6 +559,160 @@ async function startAndFinish(f, options) {
   assert.ok(limit.hint.includes('主线明确授权'));
   assert.equal(f.calls.models.length, 0);
   assert.equal((await f.api.status(f.context)).acceptance.remaining, 0);
+  await f.api.dispose();
+}
+
+// Sharing is opt-in, uses the same review request, and is recorded only after memorySaved is durable.
+{
+  const f = fixture({ feedItems: [recommendation('video-share')], modelCall: async () => ({ text: sharingOutput(), usage: {}, finishReason: 'stop' }),
+    recordSharing: async (_ctx, payload, { signal }) => {
+      assert.ok(signal instanceof AbortSignal);
+      const ledger = JSON.parse(fs.readFileSync(path.join(f.stateDir, 'douyin-companion', 'ledger.json'), 'utf8'));
+      const item = ledger.jobs[payload.jobId].items.find(value => value.id === payload.id);
+      assert.equal(item.memorySaved, true, 'sharing append starts after the durable memorySaved marker');
+      assert.equal(Object.hasOwn(item, 'share'), false);
+      assert.equal(Object.hasOwn(item, 'question'), false);
+      assert.equal(payload.mode, 'acceptance');
+      assert.equal(payload.title, '推荐 video-share');
+      assert.equal(payload.occurredAt, '2026-11-07T03:01:02.000Z');
+      assert.equal(payload.coverage.transcriptComplete, true);
+      assert.equal(typeof payload.share, 'string');
+      assert.equal(typeof payload.question, 'string');
+      return { ok: true };
+    } });
+  const job = await startAndFinish(f);
+  assert.equal(job.state, 'partial');
+  assert.equal(job.items[0].memorySaved, true);
+  assert.equal(f.calls.models.length, 1, 'share and question use the existing image-review request');
+  assert.equal(f.calls.shares.length, 1);
+  assert.equal(f.calls.shares[0].value.jobId, job.jobId);
+  const status = await f.api.status(f.context);
+  assert.equal(Object.hasOwn(status.recentJobs[0].items[0], 'share'), false);
+  assert.equal(Object.hasOwn(status.recentJobs[0].items[0], 'question'), false);
+  await f.api.dispose();
+}
+
+// The current persona section is a trusted style input; other context remains external memory data.
+{
+  const f = fixture({ feedItems: [recommendation('video-persona-share')],
+    buildContext: async () => ({ ok: true, text: 'flattened text is not used when sections are available', sections: [
+      { kind: 'persona', text: '这是当前角色自己选择的冷静、简洁表达方式。' },
+      { kind: 'memory', text: '过去记忆：用户喜欢海洋纪录片。' },
+    ] }),
+    modelCall: async args => {
+      const payload = JSON.parse(args.prompt);
+      assert.equal(payload.persona, '这是当前角色自己选择的冷静、简洁表达方式。');
+      assert.equal(payload.context, '过去记忆：用户喜欢海洋纪录片。');
+      assert.match(args.system, /persona字段来自本机当前角色/);
+      assert.doesNotMatch(args.system, /少女鲸鱼娘伙伴/);
+      return { text: sharingOutput({ share: '海洋纪录片里那些慢慢游过的镜头确实挺舒服。', question: '你最喜欢哪类海洋生物？' }), usage: {}, finishReason: 'stop' };
+    },
+    recordSharing: async () => ({ ok: true }) });
+  const job = await startAndFinish(f);
+  assert.equal(job.items[0].memorySaved, true);
+  assert.equal(f.calls.shares.length, 1);
+  await f.api.dispose();
+}
+
+// Partial transcript coverage and sparse images stay explicit in the prompt and cannot qualify daily mode.
+{
+  const f = fixture({ feedItems: [recommendation('video-partial-share')],
+    perceive: async item => ({ ok: true, id: item.id, url: item.url, title: item.title, durationMs: 1000,
+      observedAt: '2026-11-07T03:01:02.000Z', source: 'homepage-recommendation',
+      transcript: { text: '我只听到前半段在讲整理步骤。', speechState: 'speech', coverage: { complete: false,
+        requestedRanges: [{ startMs: 0, endMs: 1000 }], processedRanges: [{ startMs: 0, endMs: 400 }], missingRanges: [{ startMs: 400, endMs: 1000 }] } },
+      frames: [frame], visualCoverage: 'sparse', warnings: [] }),
+    modelCall: async args => {
+      const material = JSON.parse(args.prompt);
+      assert.equal(material.transcriptCoverage.complete, false);
+      assert.deepEqual(material.transcriptCoverage.missingRanges, [{ startMs: 400, endMs: 1000 }]);
+      assert.equal(material.visualCoverage, 'sparse image samples only; full-video visual coverage is not available');
+      assert.match(args.system, /转写或画面覆盖不完整时/);
+      return { text: sharingOutput({ share: '我只听懂前半段提到整理步骤，后面的画面和内容还不完整。', question: '你会先整理哪一部分？' }), usage: {}, finishReason: 'stop' };
+    },
+    recordSharing: async (_ctx, payload) => { assert.equal(payload.coverage.transcriptComplete, false); return { ok: true }; } });
+  const job = await startAndFinish(f);
+  assert.equal(job.items[0].state, 'partial');
+  assert.equal(job.items[0].coverage.acceptanceQualified, false);
+  assert.equal((await f.api.configure(f.context, { enabled: true })).code, 'DOUYIN_ACCEPTANCE_REQUIRED');
+  await f.api.dispose();
+}
+
+// Memory failure prevents any opening from being appended.
+{
+  const f = fixture({ feedItems: [recommendation('video-no-memory')], modelCall: async () => ({ text: sharingOutput(), usage: {}, finishReason: 'stop' }),
+    recordMemory: async () => ({ ok: false, code: 'COMPANION_MEMORY_FAILED', error: 'memory unavailable', hint: 'restore memory' }),
+    recordSharing: async () => ({ ok: true }) });
+  const job = await startAndFinish(f);
+  assert.equal(job.items[0].memorySaved, false);
+  assert.equal(f.calls.shares.length, 0);
+  await f.api.dispose();
+}
+
+// A failed opening keeps the already-saved memory and produces an actionable error; daily mode pauses.
+{
+  const f = fixture({ feedItems: [recommendation('video-sharing-error')], modelCall: async () => ({ text: sharingOutput(), usage: {}, finishReason: 'stop' }),
+    recordSharing: async (_ctx, payload) => payload.mode === 'daily' ? { ok: false } : { ok: true } });
+  const acceptance = await startAndFinish(f);
+  assert.equal(acceptance.acceptanceQualified, true);
+  assert.equal((await f.api.configure(f.context, { enabled: true })).ok, true);
+  f.time.value = new Date('2026-11-07T04:30:00.000Z');
+  const started = await f.api.tick();
+  const daily = await finish(f.api, f.context, started.jobId);
+  assert.equal(daily.code, 'DOUYIN_SHARING_SAVE_FAILED');
+  assert.ok(daily.error && daily.hint);
+  assert.equal(daily.items[0].memorySaved, true);
+  assert.equal(daily.items[0].code, 'DOUYIN_SHARING_SAVE_FAILED');
+  const status = await f.api.status(f.context);
+  assert.equal(status.daily.enabled, false);
+  assert.equal(status.daily.paused, true);
+  assert.equal(status.daily.lastError.code, 'DOUYIN_SHARING_SAVE_FAILED');
+  assert.ok(status.daily.lastError.hint);
+  await f.api.dispose();
+}
+
+// Cancellation while the append callback is pending aborts it and cannot start a late follow-up.
+{
+  let entered;
+  const sharingEntered = new Promise(resolve => { entered = resolve; });
+  let appended = 0;
+  const f = fixture({ feedItems: [recommendation('video-cancel-share')], modelCall: async () => ({ text: sharingOutput(), usage: {}, finishReason: 'stop' }),
+    recordSharing: async (_ctx, _payload, { signal }) => new Promise((resolve, reject) => {
+      entered();
+      signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { code: 'DOUYIN_CANCELLED' })), { once: true });
+      setTimeout(() => { if (!signal.aborted) { appended++; resolve({ ok: true }); } }, 25);
+    }) });
+  const started = await f.api.start(f.context);
+  await sharingEntered;
+  assert.equal((await f.api.cancel(f.context)).ok, true);
+  await finishStored(f.stateDir, started.jobId);
+  await wait(35);
+  assert.equal(appended, 0);
+  const status = await f.api.status(f.context);
+  assert.equal(status.recentJobs[0].items[0].memorySaved, true);
+  assert.equal(status.recentJobs[0].items[0].code, 'DOUYIN_CANCELLED');
+  await f.api.dispose();
+}
+
+// A role epoch change during the append callback aborts the opening and keeps the original memory marker.
+{
+  let entered;
+  const sharingEntered = new Promise(resolve => { entered = resolve; });
+  let appended = 0;
+  const f = fixture({ feedItems: [recommendation('video-role-share')], modelCall: async () => ({ text: sharingOutput(), usage: {}, finishReason: 'stop' }),
+    recordSharing: async (_ctx, _payload, { signal }) => new Promise((resolve, reject) => {
+      entered();
+      signal.addEventListener('abort', () => reject(Object.assign(new Error('role changed'), { code: 'DOUYIN_STALE_CHARACTER' })), { once: true });
+      setTimeout(() => { if (!signal.aborted) { appended++; resolve({ ok: true }); } }, 250);
+    }) });
+  const started = await f.api.start(f.context);
+  await sharingEntered;
+  f.role.epoch = 2;
+  const stored = await finishStored(f.stateDir, started.jobId);
+  await wait(260);
+  assert.equal(appended, 0);
+  assert.equal(stored.items[0].memorySaved, true);
+  assert.equal(stored.code, 'DOUYIN_STALE_CHARACTER');
   await f.api.dispose();
 }
 

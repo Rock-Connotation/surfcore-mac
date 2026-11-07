@@ -4174,3 +4174,11 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 ## 2026-11-07：角色迁入须保留水位，只重绑最终收件箱身份
 
 复制app角色会改变inbox的dev/ino/birthtimeMs。源/目标整组hash相同、无pendingAppend、水位不越界且落完整JSONL边界后，只更新目标full-stats的experienceInboxIdentity，不能清水位/删归档键绕过保护；current最后发布，不调用增加epoch的switchCharacter。原插件/账户与common旧全局数据分开保留，ASR只复制models/runtimes并重定位，不带旧host secret/锁/任务。官方离线安装缺元数据可在保留13原插件版本的断言下改官方在线安装，不能手工覆盖整profile。实证见[迁入case](cases/2026-11-07-companion-common-migration.md)。
+
+
+## 2026-11-07：分享开场需在记忆落盘后写入独立存储
+
+- 旧 Douyin ledger v1 严格校验 job/item 字段；把 share/question 塞进 item 会破坏已有作业兼容。 opt-in 同一HY3图像点评生成开场，只在 memorySaved 已持久化后调用独立追加存储；开关关闭仍严格四字段，旧作业不迁移。
+- 分享记录失败时保留已成功的经历记忆，给出 DOUYIN_SHARING_SAVE_FAILED/error/hint 并沿用 daily 暂停；不自动再次调用或撤销记忆。回调必须遵守 AbortSignal 与当前角色epoch，防止取消/切角后追加。
+- 同页文字回复沿用固定HY3 route和用量记录，但必须是独立 text-only reply；不能给原图像call增加无图flag。目录、额度等await完成后及实际stream读取微任务前都同步复核角色，避免watch轮询间隙把旧角色请求发出。
+- 进程可能在追加成功、作业收尾前退出；独立分享store应按 jobId+source id 幂等。
