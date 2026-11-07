@@ -4134,3 +4134,10 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 - `experienceArchiveOffset`与`experienceInboxIdentity`共同保护追加式收件箱。复制独立profile即使字节未变，也会改变文件身份；本轮实际因此返回`EXPERIENCE_ARCHIVE_INBOX_MISMATCH`，不得删除归档游标或放宽产品保护来“修绿”。
 - 本轮仅在用户明确批准、原6930字节前缀/归档字节/统计一致、App已停且完整备份后重绑独立副本身份；原profile和保护代码不改。原失败单轮保留，手动维护与新Node上下文另记通过，不宣称自动迁移或无人干预整轮通过。
 - 模型HTTP200只代表响应头/流开始；QQ真实180秒截断的官方turn仍是TRANSPORT错误。按实际请求累计，失败不退款、不重置。原生question-only诊断避开QQ入站工具指令被聊天防护拒绝；实际回答必须断言官方selected，不能仅看模型“验收通过”文字。见[组合case](cases/2026-11-07-macos-readiness.md)。
+
+## 2026-11-07 记忆渲染、路由计数与适配器窗口
+
+- 记忆持久记录的正确BV与事件时刻若在渲染层丢掉，模型仍会把同日旧视频当最近。由记忆renderer保留已获准清晰B站记录的受限BV来源和ISO发生时刻；restricted不等于private，受众过滤不变。真实Hy3修复后BV与评分理由逐字匹配，原生下一会话自动注入仍未验，见[记忆case](cases/2026-11-07-memory-source-recall.md)。
+- 单次客户端请求可能在Magpie内部尝试多次；旧B站4客户端/5上游，QQ6客户端/9上游。保留旧账、披露差异；新一轮内部重试经用户明确允许后单列核账。Hy4输出全耗在思考时HTTP200也可能没有答案；不能盲增预算或自动重试。
+- 本轮独立Hy3适配器误写64000上下文，DSH既有65536压缩预留加8192输出已超过窗口，实际MODEL_SWITCH_COMPACTION_FAILED发生在上游调用之前。目录可选/会话selectModel成功不代表prompt可投递；按已安装WorkBuddy插件声明纠正为192000，不用虚构大窗口绕过校验。压力预算恢复118272，但仍需真实补验，不能由算术宣称回复通过。
+- 严格隐私扫描每文件每规则最多显示三条，清理一轮可能暴露后续旧路径；反复逐项核清至零，不能只处理第一批46条或放宽allowlist。源头仅静态材料脱敏，保留操作路径与根/父目录含义；不称Git历史已清洗。详见[隐私case](cases/2026-11-07-privacy-path-sanitization.md)。
