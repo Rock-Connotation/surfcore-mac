@@ -4212,3 +4212,8 @@ sharing与module两个精确Douyin路径曾误置于仅/bili/*进入的handleBil
 ### 2026-11-07 自然分享组合：真实Host总路由与异步定位必须单独证明
 
 controller专项通过不等于Host总路由可达：sharing/module误置Bili子handler，实装才404（0新增模型）。精确分派必须放总prefix，测试实际apply(ctx)注册入口，并保证无关POST不被提前await吞掉body监听。所有分享快照用当前epoch追加事件revision排序，不能用网络开始序号代表提交顺序；主GET/POST/pagehide与canonical角色失效都需退休旧请求，成功POST仍保留只读poll。长日记异步填充后再一次定位#conversation，等待当前分享/立绘就绪并复查stamp，避免轮询反复抢滚动。反例、真实2观看1接话/常用重启和完整门禁见自然分享组合case；累计11/12保留，备份回滚也不能抹消费。Windows目录fsync仅模拟接口通过，不冒充实机。
+
+
+## 2026-11-08：worktree收口同时核对未提交中间态、ignored大夹具与运行cwd
+
+分支引用本身很小；本轮空间主要来自重复ASR音频。git ancestry不识别摘取提交，先比patch-id，集成时混入文档改动者再逐blob核对源码/测试，确认等价后才收拢历史，不能拿ours策略掩盖未知改动。脏中间态与ignored设计/账号/验收资料须独立保全；大夹具压缩后逐文件SHA及源稳定性复核，不能以“已合并”直接丢目录。App若从临时树启动，先正常Quit并从保留主目录启动、读回cwd再删旧树。离线npm ci --ignore-scripts会跳过仓库已有SnowLuma ESM补丁，需备份后单独执行patch-snowluma-sdk并复测；仅修改依赖，不把SDK解析失败当作业务合并缺陷。详见2026-11-08本地主线case，当前唯一目录/main，私有资料另存，不发布。
