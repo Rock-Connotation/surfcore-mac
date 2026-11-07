@@ -3,13 +3,15 @@ import { whaleCompanionTone, whaleCompanionDouyinScene } from './whale-companion
 
 const LEGACY_FIELDS = ['draft', 'feeling', 'reason', 'summary'];
 const SHARING_FIELDS = [...LEGACY_FIELDS, 'question', 'share'];
+const IMPERATIVE_OBJECT = '(?:(?:的)?(?:(?:这个|那个|这|那|本|此|该|上面|刚才)?(?:个|条|段|件)?(?:问题|事情|内容|视频|链接|账号|动态|请求|商品|产品|东西|页面)))?';
+const IMPERATIVE_ENDING = '(?:一下|吧|好吗|好不好|可以吗)?';
 const PRESSURE_SENTENCES = [
-  /^(?:(?:请|请你)(?:务必|必须|一定要)?|(?:你)?(?:必须|务必|一定要|非得)(?:立刻|马上|立即)?)(?:回答|回复|告诉)(?:我|我们)(?:一下)?$/,
-  /^(?:(?:请|请你|你(?:必须|务必|一定要)|必须|务必|一定要|赶紧|马上|立刻)(?:马上|立刻|赶紧)?)(?:去)?(?:转发|关注|点击|私信|下单)(?:(?:这|此|本)?(?:条|个)?(?:视频|内容|链接)?|我|我们|一下|吧)?$/,
+  new RegExp(`^(?:(?:请|请你)(?:务必|必须|一定要)?|(?:你)?(?:必须|务必|一定要|非得)(?:立刻|马上|立即)?)(?:回答|回复|告诉)(?:我|我们)${IMPERATIVE_OBJECT}${IMPERATIVE_ENDING}$`),
+  new RegExp(`^(?:(?:请|请你|你(?:必须|务必|一定要)|必须|务必|一定要|赶紧|马上|立刻)(?:务必|必须|马上|立刻|赶紧|一定要)?)(?:去)?(?:转发|关注|点击|私信|下单)${IMPERATIVE_OBJECT}(?:我|我们)?${IMPERATIVE_ENDING}$`),
 ];
 
 function hasExplicitPressure(text) {
-  return text.split(/[，,。！？!?；;\n]+/).map(sentence => sentence.trim()).filter(Boolean)
+  return text.split(/[，,。！？!?；;\n]+/).map(sentence => sentence.trim().replace(/\s+/g, '')).filter(Boolean)
     .some(sentence => PRESSURE_SENTENCES.some(pattern => pattern.test(sentence)));
 }
 
