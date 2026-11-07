@@ -78,6 +78,8 @@ import { createDouyinCompanion } from './douyin-companion.mjs';
 import { createCompanionModel } from './douyin-companion-model.mjs';
 import { createCompanionMemory } from './douyin-companion-memory.mjs';
 import { createCompanionController } from './douyin-companion-controller.mjs';
+import { createCompanionSharing } from './companion-sharing.mjs';
+import { createSharingController } from './companion-sharing-controller.mjs';
 import { appendExperienceEvent } from '../../../src/core/experience.js';
 import { resolveMediaRuntime } from '../tools/lib/ffmpeg.mjs';
 import { readInstallationIdentity } from '../../../src/install-identity.js';
@@ -563,7 +565,7 @@ export function apply(ctx) {
   async function switchCharacterEverywhere(id) {
     const current = readCurrentCharacter();
     if (current?.id === id) return { ok: true, already: true, current };
-    return douyinCompanion.withTransition(() => douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id))));
+    return companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id)))));
   }
   async function switchCharacterImplementation(id) {
     const current = readCurrentCharacter();
@@ -653,15 +655,21 @@ export function apply(ctx) {
     if (!state.enabled || !state.account?.configured) return { ok: false, code: 'COMPANION_LOGIN_REQUIRED', error: '当前角色的抖音账号尚未就绪。', hint: '在下方开启抖音并完成专用浏览器登录与账号绑定。' };
     return companionModel.readiness();
   };
+  const companionSharing = createCompanionSharing({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
+    buildContext: context => companionMemory.buildContext(context),
+    modelReply: options => companionModel.reply(options), readiness: companionReadiness,
+  });
   const douyinCompanion = createDouyinCompanion({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
     readFeed: context => douyin.readFeedForCompanion(context),
     perceive: (item, context, options) => douyinPerception.perceive(item, context, options),
     modelCall: options => companionModel.call(options),
     buildContext: context => companionMemory.buildContext(context),
     recordMemory: (context, value, options) => companionMemory.recordMemory(context, value, options),
+    recordSharing: (context, value, options) => companionSharing.record(context, value, options),
     readiness: companionReadiness,
   });
   const companionController = createCompanionController({ engine: douyinCompanion, getCharacter: readCurrentCharacter, readiness: companionReadiness });
+  const sharingController = createSharingController({ service: companionSharing, getCharacter: readCurrentCharacter });
   const companionTimer = setInterval(() => { void douyinCompanion.tick().catch(() => pluginLog('[抖音陪伴] 定时状态检查失败，请打开日记页核对；不会补跑')); }, 30000);
   companionTimer.unref?.();
   const unregisterDouyin = platforms.register({
@@ -679,6 +687,7 @@ export function apply(ctx) {
     dispose: () => douyin.dispose(),
   });
   const douyinApi = createDouyinApi({ service: douyin, getCharacter: readCurrentCharacter,
+    withTransition: action => companionSharing.withTransition(action),
     cancelCompanion: context => douyinCompanion.configure(context, { enabled: false }),
     observeFeed: context => platforms.observe('douyin', { operation: 'homepage-feed' }, { ...context, activityId: `douyin-${randomUUID()}` }),
   });
@@ -1209,7 +1218,7 @@ export function apply(ctx) {
         if (!id) throw new Error('缺少角色 id');
         const current = readCurrentCharacter();
         if (!current || current.id !== id) throw new Error('只能回档当前角色；先加载这个角色再回档');
-        return await douyinCompanion.withTransition(() => douyin.withTransition(async () => {
+        return await companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(async () => {
         const transition = biliRoundController.beginTransition();
         try {
         await transition.ready;
@@ -1236,7 +1245,7 @@ export function apply(ctx) {
         json(res, 200, { ...restored, bridgeRestarted: wasRunning, scheduler: schedulerStatus });
         return;
         } finally { transition.finish(); }
-        }));
+        })));
       }
       if (action === 'migrate') {
         json(res, 200, ensureCharacterSystem());
@@ -3158,6 +3167,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   async function handleBili(req, res, url) {
     if (await biliRoundController.handle(req, res, url)) return;
     const pathname = url.pathname;
+    if (pathname === `${API_PREFIX}/douyin/companion-sharing` || pathname === `${API_PREFIX}/douyin/companion-sharing-client`) {
+      await sharingController.handle(req, res, url); return;
+    }
     if (req.method === 'GET' && pathname.endsWith('/fish-guard')) {
       const dir = activePlatformStateDir(BILI_DIR);
       const stateFile = path.join(dir, 'fish-guard.json');
@@ -3940,6 +3952,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
     clearInterval(companionTimer);
+    void companionSharing.dispose().catch(() => pluginLog('[伙伴对话] 停止回复失败，请打开对话核对已有记录'));
     void douyinCompanion.dispose().catch(() => pluginLog('[抖音陪伴] 停止活动失败，请检查中断状态'));
     void douyin.dispose().then(result => { if (!result?.ok) pluginLog('[抖音] 专用浏览器退出未确认，请手动关闭该窗口；资料保留'); }).catch(() => pluginLog('[抖音] 专用浏览器退出未确认，请手动关闭该窗口；资料保留'));
     if (typeof unregisterDouyinRuntime === 'function') unregisterDouyinRuntime();

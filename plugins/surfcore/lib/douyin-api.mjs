@@ -3,7 +3,7 @@ import { sameOrigin, readBody, json } from './http-guard.js';
 const fail = (code, error, hint) => ({ ok: false, code, error, hint });
 
 /** Mounted only beneath the DSH-authenticated settings API; no public CLI token. */
-export function createDouyinApi({ service, getCharacter, observeFeed = context => service.readFeed(context), cancelCompanion = async () => ({ ok: true }) }) {
+export function createDouyinApi({ service, getCharacter, observeFeed = context => service.readFeed(context), cancelCompanion = async () => ({ ok: true }), withTransition = action => action() }) {
   return async function handle(req, res) {
     if (!sameOrigin(req)) return json(res, 403, fail('ORIGIN_REJECTED', '跨站抖音请求被拒绝。', '从 SurfCore 抖音设置页重新操作。'));
     if (!['GET', 'POST'].includes(req.method)) return json(res, 405, fail('METHOD_NOT_ALLOWED', '不支持此请求方法。', '使用设置页查询或操作。'));
@@ -25,11 +25,15 @@ export function createDouyinApi({ service, getCharacter, observeFeed = context =
       let result;
       if (body.action === 'enable' && typeof body.enabled === 'boolean') {
         if (!body.enabled) {
-          result = await cancelCompanion(context);
-          if (!matches()) return json(res, 409, fail('CHARACTER_STALE', '角色已切换，本次操作已停止。', '刷新当前角色后重新操作。'));
-          if (!result?.ok) return json(res, 409, result || fail('COMPANION_CANCEL_FAILED', '陪伴活动未确认停止。', '先在日记页暂停活动，再关闭渠道。'));
-        }
-        result = await service.setEnabled(body.enabled, context);
+          let rejected = false;
+          result = await withTransition(async () => {
+            const stopped = await cancelCompanion(context);
+            if (!matches()) { rejected = true; return fail('CHARACTER_STALE', '角色已切换，本次操作已停止。', '刷新当前角色后重新操作。'); }
+            if (!stopped?.ok) { rejected = true; return stopped || fail('COMPANION_CANCEL_FAILED', '陪伴活动未确认停止。', '先在日记页暂停活动，再关闭渠道。'); }
+            return service.setEnabled(false, context);
+          });
+          if (rejected) return json(res, 409, result);
+        } else result = await service.setEnabled(true, context);
       }
       else if (body.action === 'login') result = await service.beginLogin(context);
       else if (body.action === 'confirm' && typeof body.candidateId === 'string') result = await service.confirmAccount({ ...context, candidateId: body.candidateId });

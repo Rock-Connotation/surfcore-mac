@@ -157,5 +157,13 @@ export function createDouyinCompanionStore(stateDir, nowIso) {
       return Number.isSafeInteger(lock.pid) && lock.pid > 0 && typeof lock.owner === 'string' && processAlive(lock.pid);
     } catch (error) { return error?.code === 'ENOENT' ? false : null; }
   }
-  return { readLedger, writeLedger, acquireLock, releaseLock, get locked() { return lockFd !== null; }, get lockOwnerActive() { return lockOwnerActive(); } };
+  function lockIdentity() {
+    if (lockFd !== null) return { pid: process.pid, owner: lockOwner, active: true };
+    try {
+      const lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+      if (!Number.isSafeInteger(lock.pid) || lock.pid <= 0 || typeof lock.owner !== 'string' || !/^\d+:[0-9a-f-]{36}$/.test(lock.owner)) return null;
+      return { pid: lock.pid, owner: lock.owner, active: processAlive(lock.pid) };
+    } catch { return null; }
+  }
+  return { readLedger, writeLedger, acquireLock, releaseLock, get locked() { return lockFd !== null; }, get lockOwnerActive() { return lockOwnerActive(); }, get lockIdentity() { return lockIdentity(); } };
 }
