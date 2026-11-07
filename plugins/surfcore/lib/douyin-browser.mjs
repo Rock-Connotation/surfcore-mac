@@ -53,7 +53,9 @@ function stableHomepagePlayer(state) {
     const box = video.getBoundingClientRect(), style = getComputedStyle(video);
     const area = Math.max(0, Math.min(innerWidth, box.right) - Math.max(0, box.x))
       * Math.max(0, Math.min(innerHeight, box.bottom) - Math.max(0, box.y));
-    return { video, box, area, visible: style.display !== 'none' && style.visibility === 'visible' };
+    // The server-rendered quickPlayer can already play while the interactive
+    // recommendation application (and its navigation handlers) is not mounted.
+    return { video, box, area, visible: !video.closest?.('#quickPlayer') && style.display !== 'none' && style.visibility === 'visible' };
   }).filter(x => x.visible && x.box.width > 120 && x.box.height > 120 && x.area > 0)
     .sort((a, b) => b.area - a.area);
   const item = candidates[0], source = item?.video.currentSrc;
@@ -199,8 +201,8 @@ export function createDouyinBrowser({ profileDir, browserPath, headless = false,
         return value;
       };
       const readyPlayer = async timeout => {
-        let value = await waitPlayer(undefined, 'DOUYIN_PAGE_NOT_READY', '抖音首页视频尚未就绪', '等待独立浏览器的首页视频正常显示后重试。', timeout);
-        if (value.blocked === 'guide') { await clearGuide(); value = await waitPlayer(undefined, 'DOUYIN_PAGE_NOT_READY', '抖音首页视频尚未就绪', '等待独立浏览器的首页视频正常显示后重试。', timeout); }
+        let value = await waitPlayer(undefined, 'DOUYIN_PAGE_NOT_READY', '抖音首页推荐页面尚未就绪', '等待首页推荐完成加载、上下翻页可用后重试。', timeout);
+        if (value.blocked === 'guide') { await clearGuide(); value = await waitPlayer(undefined, 'DOUYIN_PAGE_NOT_READY', '抖音首页推荐页面尚未就绪', '等待首页推荐完成加载、上下翻页可用后重试。', timeout); }
         return rejectBlock(value);
       };
       assertActive(); const initial = await snapshot(); assertActive();

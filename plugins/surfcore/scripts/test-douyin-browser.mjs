@@ -19,7 +19,7 @@ class FakePage {
     if (this.waitGate) await this.waitGate;
     let clock = 0;
     const box = () => ({ x: 0, y: 0, width: 1000, height: 700, right: 1000, bottom: 700 });
-    const v = { getBoundingClientRect: box, get currentSrc() { return page.source; }, get readyState() { return page.playerReady ? 4 : 0; } };
+    const v = { getBoundingClientRect: box, closest: selector => selector === '#quickPlayer' && page.quickPlayer ? {} : null, get currentSrc() { return page.source; }, get readyState() { return page.playerReady ? 4 : 0; } };
     const page = this;
     const offscreen = { currentSrc:'fixture:preloaded', readyState:4, getBoundingClientRect:()=>({x:0,y:801,width:1000,height:700,right:1000,bottom:1501}) };
     const sandbox = { document: { querySelectorAll: () => [offscreen,v], body:{get innerText(){return page.text;}} }, innerWidth:1280, innerHeight:800, getComputedStyle: () => ({display:'block',visibility:'visible'}), performance: {now:()=>clock}, requestAnimationFrame: cb => setImmediate(()=>{clock+=100;cb(clock);}) };
@@ -70,6 +70,9 @@ assert.equal((await browser.loadRecommendations()).keyStepsSent,4); assert(ctx.p
 ctx.page.hydrationText = '滚动“鼠标”或点按“键盘上下键”查看更多推荐视频'; ctx.page.tutorialClicked = false;
 const hydrated = await browser.loadRecommendations();
 assert.equal(hydrated.ok,true); assert(ctx.page.tutorialClicked,'late guide must be dismissed after hydration'); assert.equal(ctx.page.keyBeforeHydration,false,'never send keys before the player is ready');
+ctx.page.hydrationText = ''; ctx.page.text = ''; ctx.page.quickPlayer = true;
+const beforePreviewKeys = ctx.page.keys.length, previewOnly = await browser.loadRecommendations();
+assert.equal(previewOnly.code, 'DOUYIN_PAGE_NOT_READY'); assert(previewOnly.hint); assert.equal(ctx.page.keys.length, beforePreviewKeys, 'SSR quickPlayer cannot prove interactive recommendation readiness'); ctx.page.quickPlayer = false;
 ctx.page.hydrationText = ''; ctx.page.text = '滚动“鼠标”或点按“键盘上下键”查看更多推荐视频'; ctx.page.keepGuide = true;
 const beforeGuideKeys = ctx.page.keys.length, guideFailure = await browser.loadRecommendations();
 assert.equal(guideFailure.code,'DOUYIN_TUTORIAL_NOT_DISMISSED'); assert(guideFailure.error && guideFailure.hint); assert.equal(ctx.page.keys.length,beforeGuideKeys); ctx.page.keepGuide = false;
