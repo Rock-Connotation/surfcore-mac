@@ -4202,3 +4202,8 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 ## 2026-11-07：控制器单测不等于插件总路由可达
 
 sharing与module两个精确Douyin路径曾误置于仅/bili/*进入的handleBili，孤立controller与UI fixture全绿，原生却404。新增apply(ctx)注册总prefix的Host冒烟断言，按实际路径读取模块和角色缺失code/hint；路由应在总prefix按精确pathname分派。不要为绕过遗漏而在所有POST前无条件await控制器，否则可能丢早到body。原生模型0的失败保留，改后重新同源打包安装验证。
+
+
+## 2026-11-07：hash锚点须等异步日记布局完成
+
+初始#conversation会在远端状态前定位；填入已有长日记后聊天被推到屏外。一次性等分享已载入、立绘请求settle，再在RAF按当前角色stamp滚到聊天；每次poll重复滚动会抢用户阅读位置，禁止。用首主GET受控gate+长日记/窄弹层几何反例验证，不能靠Playwright.click自动滚动掩盖。

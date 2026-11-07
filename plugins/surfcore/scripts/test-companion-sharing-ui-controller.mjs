@@ -28,7 +28,8 @@ function gate() {
   const started = new Promise(resolve => { enter = resolve; });
   return { enter, started, wait: new Promise(resolve => { release = resolve; }), release: () => release() };
 }
-let nextReadGate = null, statusReads = 0, omitRevision = false;
+let nextReadGate = null, statusReads = 0, omitRevision = false, firstMainStatus = true;
+const initialMainGate = gate();
 const controller = createSharingController({ service: { ...service, status: async stamp => {
   statusReads++;
   const value = await service.status(stamp);
@@ -44,9 +45,11 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.endsWith('/companion-portrait')) { res.writeHead(200, { 'content-type': 'image/webp' }); res.end(webp); return; }
   if (url.pathname.endsWith('/companion')) {
     if (holdMainStatus) return; // The other poll cannot rescue a stale sharing UI.
+    if (firstMainStatus) { firstMainStatus = false; initialMainGate.enter(); await initialMainGate.wait; }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, character: role, readiness: { ok: true }, value: {
-      acceptance: { callsUsed: 8, remaining: 4, manualAccepted: true }, daily: { enabled: false, calls: 0, rounds: 0 }, recentJobs: [], activeJob: null,
+      acceptance: { callsUsed: 8, remaining: 4, manualAccepted: true }, daily: { enabled: false, calls: 0, rounds: 0 }, activeJob: null,
+      recentJobs: [{ jobId: 'prior-diary', state: 'partial', items: [{ id: '765432', url: 'https://www.douyin.com/video/765432', title: '已有的长日记', state: 'partial', memorySaved: true, summary: '以前保存的日记。'.repeat(600), coverage: { transcriptComplete: true, frameSamples: 3 } }] }],
     } })); return;
   }
   res.writeHead(404); res.end();
@@ -55,11 +58,19 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 let browser;
 try {
   browser = await chromium.launch({ headless: true, executablePath: findBrowser().executable });
-  const page = await browser.newPage();
+  const page = await browser.newPage({ viewport: { width: 430, height: 660 } });
   page.setDefaultTimeout(5000);
   await page.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
   await page.goto(`http://127.0.0.1:${server.address().port}/#conversation`);
+  await initialMainGate.started;
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  initialMainGate.release();
   await page.getByRole('button', { name: '我看到了', exact: true }).waitFor();
+  await page.waitForFunction(() => document.getElementById('portrait').complete && document.getElementById('portrait').naturalWidth > 0);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  const conversationHeading = await page.locator('#conversation-title').boundingBox();
+  assert(conversationHeading.y >= 0 && conversationHeading.y + conversationHeading.height <= 660,
+    'initial conversation hash remains in view after the async long diary and portrait render');
   const oldAck = gate(); nextReadGate = oldAck;
   await page.getByRole('button', { name: '我看到了', exact: true }).click();
   await oldAck.started;
