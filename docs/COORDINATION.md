@@ -18,7 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
-| **伙伴自然分享与聊天 UI 2026-11-07** | ../surfcore-sharing-ui | feat/sharing-ui @ d512271 | 日记分享、DSH 侧栏未读入口、本机回复浮层与角色/退出护栏 | action 分派缺失已红绿修复；严格 fixture 23/23、旧 UI 11 checks、基线 audit 174/174；父会话真实 controller browser 验收待合入；真实 DSH/profile、模型与平台外发均未触碰；无版本/manifest 改动 |
+| **伙伴自然分享与聊天 UI 2026-11-07** | ../surfcore-sharing-ui | feat/sharing-ui @ b488db8 | 日记分享、DSH 侧栏未读入口、本机回复浮层与角色/退出护栏 | action、旧 GET 竞态、canonical 角色码、迟到 POST 和 185 秒期限已修；严格 fixture 30/30、旧 UI 11 checks；主线真实 controller/browser 已验绿，最终组合待父会话；真实 DSH/profile、模型与平台外发均未触碰；无版本/manifest 改动 |
 | **抖音陪伴升级 2026-11-07** | `../surfcore-companion`；媒体/引擎/外观/召回各独立树 | `feat/douyin-companion`，基线244eba1 | 已确认prompt的人格/媒体理解/日记/有界调度与组合验收 | ✅ 已交付常用DSH；少女原生显示/完整音轨/新进程真实回忆通过，8/12请求、8上游200，原13插件保留；上海12:30/20:30日常开，QQ/B站关；stage退休，无发布；长期观察未验 |
 | **抖音推荐失败定位 2026-11-07** | `../surfcore-readiness` | `fix/macos-readiness`，功能faa7976，实装6c88e72 | 首页初始化/确认翻页/最终身份刷新与取消边界 | 已收工：严格service与官方App原生按钮均获5条原固定feed；audit174/174、回归/插件、红绿和独立复审通过。330实装文件一致、670持久文件未变；本轮模型/互动0，旧账不增。新副本渠道关闭、8进程/2端口及锁全停；原profile/常用App保留，无发布 |
 | **macOS收口 2026-11-07** | `../surfcore-readiness` | `fix/macos-readiness`，基线eca92c1，已验程序d8fe7e1 | Hy4根因、Hy3补验、记忆来源、隐私核清、抖音来源 | 已收工：B站Hy3回忆逐字通过；QQ重启普通私聊官方/平台/手机一致；audit174/174、完整插件/构建、strict隐私0。最终4/4客户端、4上游、原QQ9/9文本，旧账保留；owned实例/代理/桥接/固定容器/8端口全停，常用App和其它5容器不动。抖音推荐在后续补修行已验；自动注入/迁移、睡眠24h等仍未验；无发布 |
