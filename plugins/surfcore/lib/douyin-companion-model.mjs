@@ -74,6 +74,7 @@ export function createCompanionModel({ ctx, tokenBudget, route = COMPANION_ROUTE
           local.signal.addEventListener('abort', stop, { once: true });
           Promise.resolve().then(() => { check(); guard(); return iterator.next(); }).then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
         });
+        if (!next.done && next.value?.type === 'usage') usage = next.value.usage;
         check(); guard(); if (next.done) break;
         const chunk = next.value;
         if (chunk?.type === 'text-delta') text += String(chunk.text ?? '');

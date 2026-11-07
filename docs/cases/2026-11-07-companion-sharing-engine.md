@@ -68,3 +68,12 @@
 失败：回调失败DOUYIN_SHARING_SAVE_FAILED，保留memorySaved、daily沿旧逻辑暂停；reply拒绝tool-call/无法落用量时返回结构化错误；切角色目录/额度等待fixture发送数为0。
 爆炸半径/回滚：仅本机插件实现与fixture，无真实外部动作、无模型调用；从提交回滚即可，不涉及数据恢复。
 ```
+
+## V1独立复审增量：自然表达与已收usage
+
+- V1确认P2之一：自然分享字段用词黑名单误拒“听到这个转折，我立刻笑了出来。”，导致分享之外的合法点评/记忆也失败。改为按完整独立句识别明确的强制回复或外发命令；一般描述、批评推销和普通“立刻/下单/不回复”词句通过。保留六字段精确schema、长度、链接/凭据安全及单问句检查；自然语气主要由system提示约束。
+- V1确认P2之二：`iterator.next()` 已返回usage chunk时，先运行epoch guard会阻断usage赋值，finally因无记录而漏账。现在先保存该块的usage，再执行同步取消/角色guard；guard仍以原 `DOUYIN_STALE_CHARACTER` 停止正文处理，不再调用下一次 `next()`，iterator return后durable用量记录仍执行一次。
+- 红灯证据：独立冻结回归 `regression.mjs natural <tree>` 曾以 `DOUYIN_SHARING_OUTPUT_INVALID` 拒绝正常第一人称感受；`regression.mjs usage <tree>` 曾断言 durable record 为1、实际0失败。
+- 绿灯证据：原独立断言不变，两个命令分别输出 `PASS natural sharing` 与 `PASS received usage on stale epoch`；本地reflection/Host/engine专项分别输出 `Companion sharing reflection schema fixtures passed`、`PASS companion Host...`、`Douyin companion engine offline fixtures passed`。
+- 增量后完整audit为 `173/174 scripts passed`。唯一失败 `test-release-manifest.mjs`：既有8项manifest自检通过后，`verify-ref HEAD`报告6个已跟踪文件哈希变化和本功能3个新增路径缺失，共9项。此工单明确禁止改manifest；主线合并后按Git对象统一生成manifest并重跑组合门禁。没有隐藏该限制，也没有把173/174报告成全绿。
+- 复测均使用官方Node 24离线fixture。没有真实模型、网络或DSH动作；额度账本和真实8/12用量未更改。

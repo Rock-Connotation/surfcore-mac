@@ -11,6 +11,13 @@ assert.throws(() => parseDouyinReflection(json(sharing)), error => error.code ==
 
 // Opt-in has exactly six fields, bounded natural copy, and one non-coercive question.
 assert.deepEqual(parseDouyinReflection(json(sharing), { sharingEnabled: true }), sharing);
+for (const share of [
+  '听到这个转折，我立刻笑了出来。',
+  '最后那句催着大家下单的推销让我有点出戏。',
+  '主播说“不回复”三个字时，我觉得有点紧张。',
+]) {
+  assert.equal(parseDouyinReflection(json({ ...sharing, share }), { sharingEnabled: true }).share, share);
+}
 for (const bad of [
   { ...sharing, extra: 'unknown' },
   { ...sharing, share: '感受'.repeat(241) },
@@ -19,6 +26,8 @@ for (const bad of [
   { ...sharing, summary: '图片 data:image/jpeg;base64,YWJj' },
   { ...sharing, question: '你怎么看？？' },
   { ...sharing, question: '务必回答我一下？' },
+  { ...sharing, share: '你必须立刻回复我。' },
+  { ...sharing, share: '请你转发这条视频。' },
 ]) {
   assert.throws(() => parseDouyinReflection(json(bad), { sharingEnabled: true }), error => /^(?:DOUYIN_MODEL_JSON_INVALID|DOUYIN_MODEL_OUTPUT_[A-Z_]+|DOUYIN_SHARING_OUTPUT_INVALID)$/.test(error.code) && !!error.hint);
 }
