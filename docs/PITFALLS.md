@@ -4169,3 +4169,8 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 用户明确选择社区较修长少女立绘，动物SVG不是最终外观。当前角色WebP作为本机appearance资料保存，认证同源接口校验id/epoch、固定文件、目录/FD身份与签名；界面5秒超时、刷新重试、转角/退出中止旧请求，失败不抹除原动作错误。图片来源/哈希保留于本机，不把用户缓存随代码发布；成功partial记忆也应呈开心状态，音轨完整手动门闸仍单独说明。参见[少女立绘case](cases/2026-11-07-companion-girl-portrait.md)。
 
 原生立绘验收还应检查容器比例：iframe中的24vw可能仅124px，固定260px高且底部对齐会让方形原画缩在底部。采用220px/内容42%的宽度上限、原图自然比例与最大高度；实际浏览器几何断言应对旧高空框红灯，并覆盖375px窄屏。素材原字节保持，修法与实机临时预览见少女立绘case。
+
+
+## 2026-11-07：角色迁入须保留水位，只重绑最终收件箱身份
+
+复制app角色会改变inbox的dev/ino/birthtimeMs。源/目标整组hash相同、无pendingAppend、水位不越界且落完整JSONL边界后，只更新目标full-stats的experienceInboxIdentity，不能清水位/删归档键绕过保护；current最后发布，不调用增加epoch的switchCharacter。原插件/账户与common旧全局数据分开保留，ASR只复制models/runtimes并重定位，不带旧host secret/锁/任务。官方离线安装缺元数据可在保留13原插件版本的断言下改官方在线安装，不能手工覆盖整profile。实证见[迁入case](cases/2026-11-07-companion-common-migration.md)。
