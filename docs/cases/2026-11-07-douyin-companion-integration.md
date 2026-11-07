@@ -64,3 +64,5 @@ case：docs/cases/2026-11-07-douyin-companion-integration.md
 用户观察界面后明确拒绝动物形态，选择已展示的更修长少女鲸鱼娘风格。外观改为Neko3000社区standard/01_gentle_wave.webp本机原文件；图片未纳入代码/制品，保存来源与hash，不推定整库MIT适用于图片。身份app/epoch4、昵称小白鲸不变，外观在独立树实施。
 
 后台已保存两次经历；生产新上下文干验ID存在，但完整reason不存在，根因为generic记忆行先截summary130/200字，reason位于后部。未付费重试，独立树修reason投影并要求长summary/长reason全链路红绿；旧经历不回写。独立App65984正常精确PID退出，engine锁释放，常用DSH尚未迁入。
+
+少女外观语气同步：表达层明确蓝色渐变长发、鲸鳍耳、鲸尾和蓝白女仆裙，技术来源依实际配置表述；已备份后仅更新本轮独立app/epoch4的tone，昵称小白鲸、关系和受众沿用。现象是视觉已改少女但旧tone仍只写动物白鲸；路线A只更新opt-in表达层/本机tone，成本小、恢复备份可退；路线B重写核心身份会破坏既有关系，未采用。Host按下一轮上下文重新读取tone，源人格分层专项通过；原有平台权限与记忆行为没有新写路径。发布交接补充：whale-companion-persona.mjs与本case，表达层调整随少女外观minor一起交接；最终组合与原生图像见外观case，版本仍0.8.8。
