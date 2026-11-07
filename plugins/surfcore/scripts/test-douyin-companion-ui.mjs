@@ -107,6 +107,13 @@ try {
   await page.waitForFunction(() => { const image = document.getElementById('portrait'); return !image.hidden && image.complete && image.naturalWidth > 0; });
   assert.equal(portraitRequests[1], portraitRequests[0], 'existing refresh control retries the failed role portrait');
   assert.match(await page.locator('#portrait-status').textContent(), /当前角色的本机立绘/);
+  const portraitBounds = await page.locator('#portrait').boundingBox();
+  assert.ok(portraitBounds.width >= 180, 'desktop portrait must remain legible');
+  assert.ok(Math.abs(portraitBounds.width - portraitBounds.height) < 1, 'square artwork must not have a tall empty display box');
+  await page.setViewportSize({ width: 375, height: 900 });
+  const mobilePortraitBounds = await page.locator('#portrait').boundingBox();
+  assert.ok(mobilePortraitBounds.width <= 130 && mobilePortraitBounds.height <= 130, 'mobile portrait keeps its natural proportions');
+  await page.setViewportSize({ width: 1280, height: 720 });
   assert.match(await page.locator('#diary').textContent(), /已跳过 · 未形成观看经历/);
   await page.getByRole('button', { name: '一起发现一轮' }).click();
   await page.waitForFunction(() => document.getElementById('error').textContent.includes('查看已有日记'));
