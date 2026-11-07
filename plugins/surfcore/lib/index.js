@@ -3772,7 +3772,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   route('prefix', API_PREFIX, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
-    if (pathname === `${API_PREFIX}/douyin/companion` || pathname === `${API_PREFIX}/douyin/companion-page`) {
+    if (pathname === `${API_PREFIX}/douyin/companion` || pathname === `${API_PREFIX}/douyin/companion-page` || pathname === `${API_PREFIX}/douyin/companion-portrait`) {
       await companionController.handle(req, res, url); return;
     }
     if (pathname === `${API_PREFIX}/douyin`) { await douyinApi(req, res); return; }
