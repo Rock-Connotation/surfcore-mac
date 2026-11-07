@@ -5,6 +5,18 @@
 
 ---
 
+## 快照：2026-11-07 08:37（macOS候选收口）
+
+- 主线 `../surfcore-readiness` / `fix/macos-readiness`，已验证程序0811aee、版本0.8.8不变。原抖音15脏文件哈希未变，原surfcore-mac仍0deb826。未改常用profile、版本号、tag、远端。最终文档提交见git log，不把文档SHA冒充已实装程序。
+- QQ提示修复534a4a8；B站精确时间线99aaa95/3d00f58/de7d21a及watch调用方f59f02f。最终官方Node24 audit174/174、媒体专项/构建0；d419f71完整回归/插件0，其后watch delta另有实际函数体红绿。同源0811aee包SHA256 bc856d0e7beed39924235fa67a9e337ef85e44dcef57e72409c5fda5f17d82b8，官方CLI实装330文件一致、1942持久文件未变，诊断移除后330文件再核验一致。
+- 抖音官方App已实测默认关闭、启用、扫码、重启绑定、错误可见；真实账号推荐仍DOUYIN_FEED_UNAVAILABLE。官方self有效，没有固定真实首页feed成功证据，禁止替换游客/SSR/作品来源冒充接通。渠道关闭、账号保留。
+- B站新原生轮自主选BV17qHc6pEA5/P1/cid43083434522，完整46058ms音轨9段转写、点评/草稿、正式15/20评分与理由读回通过。最后记忆因复制profile携带旧文件身份被保护拒绝，原轮保持failed/ROUND_MEMORY_FAILED。用户批准且原6930字节前缀/归档/统计一致后，仅备份重绑副本元数据，手动维护HTTP200、新Node上下文含本次BV及完整评分理由。额外一次上下文模型回忆超时502；不能称无人干预整轮或实际模型回忆通过。
+- QQ新有界轮两次普通入站工具指令触发聊天防护；改原生真实会话question-only诊断。第4次请求180秒TRANSPORT结束；用户批准仅一次300秒手动补验，第5次正式提问，用户实际编号+选项A，官方selectedCount=1/selectedA=true/customHasAnswerText=false，20秒自动cancel通过，第6次续接completed。临时entry/guard移除、原180秒提问超时恢复；重启bridge/dshReady/snowluma.connected均true，未再验普通消息。
+- 累计本轮B站4/4、QQ6/6、原唯一私聊6/8（含失败）；旧11/12、19/30账本保留。独立App/桥接/两代理/文本网关/扫码服务/固定NapCat及本轮端口均关闭，账号、新作业/评分/问答/用量保留。常用App仍在，5个其它容器状态不变，共享Colima VM和Magpie保留；浏览器控制未连接，扫码标签未关闭但本地服务已停。
+- 下一步：先只读查抖音真实首页来源、Hy4有界可用性；勿在额度耗尽后重试、勿开日常巡航。自动迁移、B站原生下一会话自动注入/实际回忆、QQ恢复普通消息、睡眠/24h和其它设备仍未验。完整逻辑、失败与可转发发布交接在[组合case](cases/2026-11-07-macos-readiness.md)，证据索引 `_backups/20261107-readiness/FINAL-RESULTS.json`；不发布。
+
+---
+
 ## 快照：2026-11-07 05:43（有界常驻与真实交互收口）
 
 - 程序/实装0502afa，版本0.8.8不变；第四包SHA256为9d6f1d0f02f1c203866ad915a455055f6a9108ff3406ae5d21dd0dd3fe64e556。官方CLI安装前后369持久文件不变，最终325包文件逐hash一致；checks-6-expired官方Node24 audit169/169、回归/完整插件0，HEAD冻结不变。清单791/791。常用profile和QQ.app不动、无发布。

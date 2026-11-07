@@ -18,7 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
-| **macOS收口 2026-11-07** | `../surfcore-readiness` | `fix/macos-readiness` @ fa64517起 | 接管冻结的抖音候选，继而B站/QQ残余验收 | 进行中：五专项/回归/插件通过；audit173/174旧清单失败；账号推荐与官方App待验；原树保留 |
+| **macOS收口 2026-11-07** | `../surfcore-readiness` | `fix/macos-readiness`，已验证程序0811aee | 冻结抖音候选、QQ编号提示/B站精确时间线补修与有界实机补验 | 08:37收工：audit174/174、同源实装330文件一致；QQ精确选项A/自动取消/清场重启ready通过；B站完整音轨点评/15分与副本修复后记忆/新Node上下文通过，原轮保留记忆失败；抖音推荐与实际模型回忆未过。B站4/4、QQ6/6、文本6/8；独立实例/服务/容器/端口全停，数据/原树保留；不发布，详见收口case |
 | **QQ 常驻/审批 2026-11-07** | `../surfcore-qq-resident`；全部独立worker保留 | `feat/qq-resident`，实装0502afa | 手动后台、审批/问答与安全恢复 | 本轮有界验收收口：注册/3MCP、后台私聊、允许/拒绝/文字问答/取消、过期零LLM、完整stop/扫码resume、无debug实际私聊双端及Quit9进程退出后恢复通过。audit169/169及回归/插件0，325文件一致；11/12模型、19/30文本，诊断和QR清场，独立受控实例留开。选项A/24h/睡眠未验，不续额、不发布 |
 | **QQ macOS 补齐 2026-11-07** | `../surfcore-macos-implementation`；worker独立qq-model/qq-host/qq-runtime/qq-gateway保留 | `feat/macos-implementation`，程序e013302，文档后续 | QQ传输、原生宿主与模型失败保护/真实私聊 | 受控私聊收口：扫码/包内SDK/官方App/Hy4/QQ回执及用户收到均通过；2/3模型含自动标题、1/6文本；audit164/164、回归/插件0、Astra R2无新增P1/P2；实例/代理/容器/端口全停，数据保留、默认选择恢复，常用App不动；群/问答审批/常驻未验，未发布 |
 | **B站自主单轮补验 2026-11-07** | `../surfcore-macos-implementation`；worker独立round/receipts/partial-review保留 | `feat/macos-implementation`，程序744d64a，文档后续 | Host受控单轮、评分/动态失败可见、显式部分续评与真实App | 本轮收口：Hy4真实自主选题及范围临时点评通过、仅一条测试动态匿名读回通过；正式评分/主观记忆/其它外发未验。audit164/164、回归/插件0；3次Hy4，实例/端口关闭，常用App不动；未发布 |

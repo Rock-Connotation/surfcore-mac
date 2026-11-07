@@ -4128,3 +4128,9 @@ WorkBuddy Hy4在首次选题以2000输出tokens触发length，真实路由HTTP20
 
 - view.pages.duration=175秒与playurl.timelength=174613ms不是同一精度。完整音轨FFprobe174613ms若按175000请求，会制造387ms假缺口。仅在同一选定BV/CID的精确播放时长与原整秒声明一致时使用精确值，并保留declaredDurationMs/durationSource；原始下载、字节、解码和真实缺口检查不放宽。
 - 在fetchPlayurl新增await后必须再次检查角色/取消，之后才允许媒体获取。--shallow不应新增播放接口前提。视频流比音轨短时仍分别记录缺口，不把完整音轨等同于完整画面。见[case](cases/2026-11-07-bili-precise-timeline.md)。
+
+## 2026-11-07 复制profile不等于追加式收件箱身份迁移
+
+- `experienceArchiveOffset`与`experienceInboxIdentity`共同保护追加式收件箱。复制独立profile即使字节未变，也会改变文件身份；本轮实际因此返回`EXPERIENCE_ARCHIVE_INBOX_MISMATCH`，不得删除归档游标或放宽产品保护来“修绿”。
+- 本轮仅在用户明确批准、原6930字节前缀/归档字节/统计一致、App已停且完整备份后重绑独立副本身份；原profile和保护代码不改。原失败单轮保留，手动维护与新Node上下文另记通过，不宣称自动迁移或无人干预整轮通过。
+- 模型HTTP200只代表响应头/流开始；QQ真实180秒截断的官方turn仍是TRANSPORT错误。按实际请求累计，失败不退款、不重置。原生question-only诊断避开QQ入站工具指令被聊天防护拒绝；实际回答必须断言官方selected，不能仅看模型“验收通过”文字。见[组合case](cases/2026-11-07-macos-readiness.md)。
