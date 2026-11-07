@@ -5,15 +5,16 @@
 
 ---
 
-## 进行中：2026-11-07 经历后的自然分享与本机接话
+## 已交付：2026-11-07 经历后的自然分享与本机接话
 
-- 用户明确选择DSH内分享并可直接回复，确认本机API/真实UI验收。主树../surfcore-companion-sharing，基线3ab73bd；当前UI已合入069d190，后续组合提交见git。常用仍旧程序c49721f，已确认空闲后按精确PID58378正常Quit，完整备份后为实机串行准备；当前DSH进程0，真实新额度仍8/12。
-- 分享服务V3通过跨进程幂等、实际分派epoch、异实例归属和平台fsync边界独立复核；engine V3已关闭正常自然语气误拒、已收usage漏记和明确命令尾缀回归，冻结SHA及原红绿保留。协议回归17项/exit0；真实浏览器→controller→sharing service的ACK/reply/cancel与持久额度旧红新绿。
-- UI V1独立发现P1缺action（已修并合入）、P2同角色旧GET覆盖新POST、P2真实角色失效码未识别；后两项、客户端60秒短于Host180秒及late-error guard顺序均已由3f64531修复，UI专项30项与旧UI11通过；主线真实controller/browser最新组合亦通过canonical码/挂起主GET/旧GET时序。V2再实证迟到ACK、迟到主GET及成功POST停止poll三P2，主线改为日志revision统一快照顺序、seq++退休主GET并队列新刷新，移除两项临时旗标。真实controller新时序与V3独立7夹具均绿；fake browser按状态变化推进revision（只读不推进），30项通过。1018162程序/清单858、audit174/174、strict隐私0和348文件同源包已通过；最终完整plugin/回归及原生验收在收口。
-- 独立native副本已复制当前app/epoch4/小白鲸的7623文件并逐hash相同，源资料不改；只重绑目标inbox身份（24254字节，水位保留）。沿用8/12账本，stage日常关闭，常用原日常开启设置保留；尚未launch或新增模型。
-- 下一步：UI最小增量与冻结复核→组合audit/完整插件/清单/同源包→独立App最多2观看+1接话、重启只读→原包官方CLI装入常用、仅追加新经历/分享和已消费额度，用生产服务合并新token增量，不整体覆盖记忆卡→常用原生读回及正常无debug恢复。原13插件版本现读一致，QQ/B站自启关闭；不外发、语音/外部桌宠或发布。
-- 原生首包1018162实装348一致/7648持久不变，但总路由误放Bili子handler导致sharing/module404，0新增模型；PID27931已正常Quit。已移至总API精确分派，并补真实apply(ctx)Host路由旧红新绿；新完整门禁与第二包/复验待做，常用仍退出、8/12。
-- 私有检查点_backups/20261107-sharing/WORKING-HANDOFF.json；组合case见cases/2026-11-07-companion-natural-sharing.md。无待用户确认项，按既定范围继续。
+- 主树 `../surfcore-companion-sharing`，基线3ab73bd；实际程序/常用安装 **f882468**，版本0.8.8未改。最终文档/清单提交另见git，不冒充新的实装程序。官方CLI同源包348文件一致，常用安装时7695持久文件不变。
+- 两条真实观看生成自然感受/轻问题；完整音轨那条原生“回一句”及真实HY3接话成功，2消息/未读1/revision5。两次重启读回保持，无旧GET覆盖、无自动ACK，首次入口直达聊天。常用已恢复无debug普通启动；stage退出、4临时调试端口关闭，保留共享Magpie/Colima。
+- 新3客户端/3路由/3上游，全部WorkBuddy HY3 low/200，一次一上游无重试；累计 **11/12**、11路由/11上游，手动剩1，不再额外验收调用。原日常上海12:30/20:30开启/未暂停，每轮2条≤120秒/4请求、每日8请求，失败暂停/停机不补跑；stage日常关闭。
+- 原13插件版本、provider/通用默认模型配置、凭据、app/epoch4/小白鲸人格与少女立绘保留。只追加2新经历/5sharing事件、推进消费账本、生产服务合并token增量；旧inbox24254字节、full归档49687字节前缀完整，没有整份替换记忆卡。生产维护新增2条，第一条来源/ISO/完整理由入新上下文，第二条按既有敏感过滤完整存档但不注入，未放宽受众策略。
+- 最终UI程序audit174/174、完整plugin exit0；后端/协议回归17项exit0，之后仅UI/测试/文档变化。service V3、engine/adapter V3、UI V3、Host总路由和初始定位独立复核无剩余P1/P2，关键反例旧红新绿。严格隐私0命中/不完整0，最终Git对象清单858项/问题0；收口命令与结果保留checks-combined及FINAL-RESULTS。
+- 实机最初404为总路由误置，0新增模型，已由真实apply(ctx)Host入口反例修复；首轮fixture契约失败与文档冲突标记均保留并已纠正，不隐藏失败。064ea1c付费验收后仅初始定位/CSS增量，f882468同源重装与常用原生读回已通过。
+- 无待用户确认；入口为常用DSH左下角“伙伴”。原始聊天追加保存，近期24消息/8分享展示、模型最近10消息+受众过滤记忆，不宣称全聊天入长期卡。定时实际触发/睡眠24h/其它设备仍未验，无QQ/B站/平台外发、语音/桌宠或发布。
+- 七步逻辑、可转发发布块及回滚见[组合case](cases/2026-11-07-companion-natural-sharing.md)；私有证据 `_backups/20261107-sharing/FINAL-RESULTS.json`、`common-normal-final-status.json`、`model-accounting-current.json`。正常主PID79367为本次收工瞬时事实，后续应重新发现。
 
 ---
 

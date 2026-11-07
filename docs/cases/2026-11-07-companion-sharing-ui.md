@@ -44,7 +44,7 @@
 - 失败路径断言：`SHARING_TEMPORARY_FAILURE` 显示 code/error/hint、输入保持；`DOUYIN_CHAT_OTHER_INSTANCE` 不清 active；canonical REQUIRED/STALE 码清理或退休角色分享状态并保留原文；185 秒超时提示刷新核对、禁止自动重发；模块 import 失败显示 `COMPANION_SHARING_CLIENT_LOAD_FAILED` 与重载按钮。
 - 本 worker 未使用真实 DSH/profile、真实网络、模型或平台账号；真实 sidebar slot、真实原生对话与重启后历史验证由父会话负责，不将 fixture 作为原生验收。
 
-## 遗留 / 后续
+## Worker交接时的遗留（后续组合结果见文末）
 
 - 父会话需组合本地分享 service 的 Host 路由，再在真实 DSH 0.2.2-rc.1 确认 footer slot、原生浮层、回复与重启历史。
 - 后端可能回 `DOUYIN_CHAT_INTERRUPTED` 或跨实例取消错误；UI 原样保留 code/error/hint，不自动重发。完整长期体验与其它 profile/设备矩阵不在本 worker 证据范围内。
@@ -63,3 +63,8 @@
 回滚：回退本地 UI 提交；不触碰服务持久数据。
 未验：真实 DSH 0.2.2-rc.1 slot 注册、原生 iframe 布局与跨重启 history，不宣称已原生验收或已发布。
 ```
+
+
+## 2026-11-07 主线最终组合结果
+
+本节更新父会话结果，前文“worker未触碰/待原生”是独立子任务的历史边界。主线f882468已装常用DSH，348文件一致；2真实视觉观看+1文本接话、侧栏入口/未读1/2消息及独立与常用重启保持通过。最终audit174/174、完整plugin、协议回归与独立复核通过；累计11/12，无重试/平台外发/发布。UI后续统一revision排序与异步长日记一次定位，原反例旧红新绿。具体七步逻辑/模型账本/当前未验边界/可转发发布块以[组合case](2026-11-07-companion-natural-sharing.md)为准。

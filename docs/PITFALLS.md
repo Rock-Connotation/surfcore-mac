@@ -4207,3 +4207,8 @@ sharing与module两个精确Douyin路径曾误置于仅/bili/*进入的handleBil
 ## 2026-11-07：hash锚点须等异步日记布局完成
 
 初始#conversation会在远端状态前定位；填入已有长日记后聊天被推到屏外。一次性等分享已载入、立绘请求settle，再在RAF按当前角色stamp滚到聊天；每次poll重复滚动会抢用户阅读位置，禁止。用首主GET受控gate+长日记/窄弹层几何反例验证，不能靠Playwright.click自动滚动掩盖。
+
+
+### 2026-11-07 自然分享组合：真实Host总路由与异步定位必须单独证明
+
+controller专项通过不等于Host总路由可达：sharing/module误置Bili子handler，实装才404（0新增模型）。精确分派必须放总prefix，测试实际apply(ctx)注册入口，并保证无关POST不被提前await吞掉body监听。所有分享快照用当前epoch追加事件revision排序，不能用网络开始序号代表提交顺序；主GET/POST/pagehide与canonical角色失效都需退休旧请求，成功POST仍保留只读poll。长日记异步填充后再一次定位#conversation，等待当前分享/立绘就绪并复查stamp，避免轮询反复抢滚动。反例、真实2观看1接话/常用重启和完整门禁见自然分享组合case；累计11/12保留，备份回滚也不能抹消费。Windows目录fsync仅模拟接口通过，不冒充实机。

@@ -53,7 +53,7 @@
 - 失败分支fixture覆盖：分享回调失败为`DOUYIN_SHARING_SAVE_FAILED`且daily暂停；记忆失败不产生开场；取消/切epoch不迟到追加；错误/隐私/长度/额外JSON字段被拒绝并带hint；模型tool-call拒绝、usage落盘失败可见；目录和额度await期间role变更零dispatch；预取消不发请求；reply不保存图片。
 - 没验证：真实HY3内容质量、宿主同页聊天UI、父service追加存储/reply预算账本和实际DSH重启体验；均不由此引擎fixture宣称通过。
 
-## 遗留 / 后续
+## Worker交接时的遗留（后续组合结果见文末）
 
 - 父service需将回调接入role-local追加式分享存储，落盘字段按job/source/发生时间存档；reply调用前依父契约原子reserve acceptance剩余4次、每日最多8次，并保留现有8/12旧账。
 - 宿主UI需展示开场/轻问题、允许用户在同页回复；模型调用由父service传同步`beforeSend`复核角色与signal。真实UI与重启验收由组合工作树负责。
@@ -85,3 +85,8 @@
 - 红灯证据：未改的 `pressure-regression.mjs <tree>` 在V1拒绝“无吧/无宾语”两个版本，却放过“吧”和“我的问题”两个版本，退出1。
 - 绿灯证据：同一脚本、同一候选树重跑，四种输入全部 `rejected:true` 并带 `DOUYIN_SHARING_OUTPUT_INVALID`，退出0。V1 `natural` 与 `usage` 回归分别输出 `PASS natural sharing`、`PASS received usage on stale epoch`；本地reflection/Host/engine三专项全绿。
 - 此增量只涉及反思校验、对应离线测试和文档；父级负责合并后重新生成manifest并跑完整组合门禁。本轮不调用真实模型/DSH/网络，实际额度保持8/12。
+
+
+## 2026-11-07 主线最终组合结果
+
+本节更新父会话结果，前文“worker未触碰/待原生”是独立子任务的历史边界。主线f882468已装常用DSH，348文件一致；2真实视觉观看+1文本接话、侧栏入口/未读1/2消息及独立与常用重启保持通过。最终audit174/174、完整plugin、协议回归与独立复核通过；累计11/12，无重试/平台外发/发布。UI后续统一revision排序与异步长日记一次定位，原反例旧红新绿。具体七步逻辑/模型账本/当前未验边界/可转发发布块以[组合case](2026-11-07-companion-natural-sharing.md)为准。
