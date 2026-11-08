@@ -32,8 +32,7 @@ import { SOURCE_DSH_DEFAULT, defaultSelectionOf, effectiveChatModel, writesGloba
 import { isSpamCommandText } from './command-spam.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
-import { createVoicePacks } from './voice-packs.js';
-import { ImportError } from './voice-pack-import.js';
+import { createVoiceManagement } from './voice-management.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { synthesizeToFile } from './voice-tts.js';
 import { classifyVoiceError, pickFallbackRoute } from './voice-diagnostics.js';
@@ -4443,23 +4442,8 @@ async function main() {
     };
     // 二代会话工具必须仍命中当前模式的白名单/准入；避免白名单移除后旧 agentToken 继续读状态。
     const v2SessionAllowed = isSessionAllowedInCurrentMode;
-    // 语音包服务实例：按 config.json 的 mtime 缓存（既热生效，又保住安装进度）。
-    // 必须放在请求回调**外面**：每次请求新建实例会把 activeInstalls（进度）随实例丢掉，
-    // 前端就只看到"开始安装…"、永远没有进度条（2026-10-28 用户反馈）。
-    let vpCache = { key: '', vp: null };
-    function getVoicePacksCached() {
-      let key = 'default';
-      try {
-        const st = fs.statSync(CONFIG_FILE);
-        key = `${st.mtimeMs}:${st.size}`;
-      } catch {}
-      if (!vpCache.vp || vpCache.key !== key) {
-        let freshCfg = cfg;
-        try { freshCfg = readConfigObject(CONFIG_FILE); } catch {}
-        vpCache = { key, vp: createVoicePacks(freshCfg) };
-      }
-      return vpCache.vp;
-    }
+    // Shared management API: legacy console retains its authenticated surface.
+    const voiceManagement = createVoiceManagement({configFile: CONFIG_FILE, programRoot: ROOT, label:'QQ控制台'});
 
     const server = http.createServer(async (req, res) => {
       let url;
@@ -7444,175 +7428,12 @@ async function main() {
           return;
         }
 
-        if (url.pathname === '/api/voice/rules') {
-          const cfgFile = CONFIG_FILE;
-          try {
-            if (req.method === 'GET') {
-              const c = readConfigObject(cfgFile);
-              const v = c.socialV2?.voice || {};
-              sendJson({
-                ok: true,
-                triggerWho: v.trigger?.who || 'owner',
-                maxPerMinute: v.maxPerMinute ?? 2,
-                maxPerHour: v.maxPerHour ?? 10,
-                aiEnabled: v.tts?.enabled === true,
-                route: ['local', 'cloud'].includes(String(v.tts?.route)) ? String(v.tts.route) : 'local',
-                pricePerKChar: Number(v.cloud?.pricePerKChar) || 0,
-                monthlyQuota: Number(v.cloud?.monthlyQuota) || 0
-              });
-              return;
-            }
-            if (req.method === 'POST') {
-              const body = await readBody();
-              const c = readConfigObject(cfgFile);
-              c.socialV2 = c.socialV2 || {};
-              c.socialV2.voice = c.socialV2.voice || {};
-              const v = c.socialV2.voice;
-              const who = ['owner', 'anyone', 'list'].includes(String(body.triggerWho)) ? String(body.triggerWho) : 'owner';
-              v.trigger = { ...(v.trigger || {}), who };
-              if (Number.isFinite(Number(body.maxPerMinute))) v.maxPerMinute = Math.max(1, Math.min(60, Number(body.maxPerMinute)));
-              if (Number.isFinite(Number(body.maxPerHour))) v.maxPerHour = Math.max(1, Math.min(600, Number(body.maxPerHour)));
-              v.tts = v.tts || {};
-              v.tts.enabled = body.aiEnabled === true;
-              if (['local', 'cloud'].includes(String(body.route))) v.tts.route = String(body.route);
-              v.cloud = v.cloud || {};
-              if (Number.isFinite(Number(body.pricePerKChar))) v.cloud.pricePerKChar = Math.max(0, Number(body.pricePerKChar));
-              if (Number.isFinite(Number(body.monthlyQuota))) v.cloud.monthlyQuota = Math.max(0, Number(body.monthlyQuota));
-              atomicWriteJson(cfgFile, c);
-              sendJson({ ok: true });
-              return;
-            }
-            sendJson({ ok: false, error: '方法不允许' }, 405);
-          } catch (e) {
-            sendJson({ ok: false, error: String(e?.message || e) }, 500);
-          }
+        if (url.pathname === '/api/voice/rules' || url.pathname === '/api/voice/packs' || url.pathname.startsWith('/api/voice/packs/')) {
+          const result = await voiceManagement.dispatch({method:req.method,pathname:url.pathname.slice('/api/voice'.length),
+            query:url.searchParams,body:req.method==='POST' ? await readBody() : {}});
+          if (result.buffer) { res.writeHead(result.status,{...SECURITY_HEADERS,...result.headers}); res.end(result.buffer); }
+          else sendJson(result.data,result.status);
           return;
-        }
-
-        // ── 语音包管理（安装/启停/配置/试听）────────────────────────────
-        // 语音引擎不随插件分发，用户在这里按需安装；不装也完全不影响聊天。
-        if (url.pathname === '/api/voice/packs' || url.pathname.startsWith('/api/voice/packs/')) {
-          // 配置热生效 + 实例复用都要：按 config.json 的 mtime 缓存实例。
-          // ⚠️ 每次请求都 createVoicePacks 会把 activeInstalls（安装进度）随实例丢掉 →
-          // 前端只能看到"开始安装…"、永远没有进度条（2026-10-28 用户反馈）。
-          const vp = getVoicePacksCached();
-          try {
-            if (req.method === 'GET' && url.pathname === '/api/voice/packs') {
-              sendJson(await vp.list());
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/install') {
-              const body = await readBody();
-              sendJson(await vp.install(String(body.id || ''), {
-                force: !!body.force,
-                mirror: String(body.mirror || ''),
-                jobs: Number(body.jobs) || 0,
-              }));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/import-inspect') {
-              const body = await readBody();
-              sendJson(await vp.inspectImport(String(body.id || ''), String(body.sourceDir || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/import') {
-              const body = await readBody();
-              sendJson(await vp.startImport(String(body.id || ''), {
-                sourceDir: String(body.sourceDir || ''),
-                allowUnverified: body.allowUnverified === true,
-              }));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/import-cancel') {
-              const body = await readBody();
-              sendJson(vp.cancelImport(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/import-delete-source') {
-              const body = await readBody();
-              sendJson(await vp.deleteImportSource(String(body.id || ''), String(body.sourceDir || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/import-delete-backup') {
-              const body = await readBody();
-              sendJson(await vp.deleteImportBackup(String(body.id || ''), String(body.backupDir || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/remove') {
-              const body = await readBody();
-              sendJson(await vp.remove(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/activate') {
-              const body = await readBody();
-              sendJson(await vp.activate(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/start') {
-              const body = await readBody();
-              sendJson(await vp.start(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/cancel') {
-              const body = await readBody();
-              sendJson(await vp.cancelInstall(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/clean') {
-              const body = await readBody();
-              sendJson(await vp.cleanPartial(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/stop') {
-              const body = await readBody();
-              sendJson(await vp.stop(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'GET' && url.pathname === '/api/voice/packs/cloud-stats') {
-              sendJson(await vp.cloudStats(String(url.searchParams.get('id') || 'voice-cloud')));
-              return;
-            }
-            if (req.method === 'GET' && url.pathname === '/api/voice/packs/cloud-config') {
-              sendJson(await vp.readCloudConfig(String(url.searchParams.get('id') || 'voice-cloud')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/cloud-config') {
-              const body = await readBody();
-              sendJson(await vp.cloudConfig(String(body.id || ''), body));
-              return;
-            }
-            if (req.method === 'GET' && url.pathname === '/api/voice/packs/sample') {
-              const id = String(url.searchParams.get('id') || 'voice-cloud');
-              const s = await vp.sampleFile(id);
-              res.writeHead(200, {
-                'content-type': 'audio/wav',
-                'content-length': s.buffer.length,
-                'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(s.name)}`,
-                ...SECURITY_HEADERS,
-              });
-              res.end(s.buffer);
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/enable') {
-              const body = await readBody();
-              sendJson(await vp.setEnabled(String(body.id || ''), body.enabled !== false));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/test') {
-              const body = await readBody();
-              sendJson(await vp.test(String(body.id || ''), { text: body.text }));
-              return;
-            }
-            sendJson({ ok: false, error: '未知的语音包操作' }, 404);
-            return;
-          } catch (e) {
-            if (e instanceof ImportError) {
-              sendJson(e.toJSON(), e.status || 400);
-              return;
-            }
-            sendJson({ ok: false, error: String(e?.message || e) }, 400);
-            return;
-          }
         }
 
         if (req.method === 'POST' && (url.pathname === '/api/voice/send' || url.pathname === '/api/send/voice')) {
@@ -9486,6 +9307,7 @@ async function main() {
         sendJson({ ok: false, error: error?.message ?? String(error) }, status);
       }
     });
+    server.once('close', () => { void voiceManagement.dispose().catch(() => {}); });
     server.listen(port, '127.0.0.1', () => {
       log(`本地控制台已启动：http://127.0.0.1:${port}`);
     });

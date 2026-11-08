@@ -25,6 +25,7 @@
 
 | 文档 | 一句话说明 | 状态 |
 | --- | --- | --- |
+| [guides/VOICE-MANAGEMENT.md](guides/VOICE-MANAGEMENT.md) | 语音管理独立于QQ；云端/本地官方API资料、适配边界与后续选择 | ✅ 管理修复，引擎配置待选 |
 | ~~guides/PROJECT_GUIDE.md~~ | **（已不在工作区）** 旧的「权威项目说明书」（113 KB / 1450+ 行）。2026-10-26 逐行梳理后由 `ARCHITECTURE.md` + `MODULE-*.md` + `SUBSYSTEM-*.md` 这套**带 `文件:行号`** 的新文档取代 | 🗄️ 已被取代；本机文件已不存在（`.gitignore` 排除的那批历史文档之一），链接点不开属预期 |
 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | DSH 端安装说明：`qq-chat` / `qq-chat-v2` preset 与三个 MCP server 怎么挂到目标设备的 DSH 上 | ✅ |
 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md) | 控制台「令牌与花费」看板：数据来源、计价口径（峰谷分时）、API、配置 | ✅ |

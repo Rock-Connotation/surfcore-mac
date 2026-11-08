@@ -10,13 +10,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
+// Bind module-level paths before importing the service; never read the user's profile.
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pet-chat-test-'));
+process.env.DSH_HOME = tmp;
+process.env.USERPROFILE = tmp;
+process.env.SURFCORE_DISABLE_CHARACTER_MIGRATION = '1';
+fs.mkdirSync(path.join(tmp, 'surfcore'), {recursive:true});
+fs.writeFileSync(path.join(tmp,'surfcore','config.json'),JSON.stringify({pet:{chat:{enabled:true}}}));
+const {
   clipForVoice,
   cleanReply,
   stripStageDirections,
   buildPetMemoryEvents,
   createPetChatService,
-} from '../lib/pet-chat.js';
+} = await import('../lib/pet-chat.js');
 
 // ── 语音文本 ────────────────────────────────────────────────────────────────
 assert.equal(clipForVoice('你好呀', 120), '你好呀');
@@ -51,7 +58,7 @@ assert.equal(cleanReply('```\n在呢\n```'), '在呢');
 }
 
 // ── 令牌 + 事件水位 ─────────────────────────────────────────────────────────
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pet-chat-test-'));
+
 try {
   const service = createPetChatService({
     ctx: { get: () => undefined },

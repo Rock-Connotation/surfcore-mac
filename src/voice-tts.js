@@ -51,7 +51,8 @@ export async function synthesizeToFile({
   timeoutMs = 60000,
   cacheVersion = null,
   outDir,
-  fetchImpl = fetch
+  fetchImpl = fetch,
+  signal
 } = {}) {
   const say = String(text ?? '').trim();
   if (!say) throw new Error('要合成的内容是空的');
@@ -77,7 +78,7 @@ export async function synthesizeToFile({
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs)
     });
   } catch (error) {
     const hint =

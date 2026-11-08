@@ -340,10 +340,10 @@ export async function ensurePackConfig(dir, { hadOwnConfig = false } = {}) {
   return { created, sanitized: cleaned !== raw, file };
 }
 
-export function createVoicePacks(cfg, { programRoot = REPO_ROOT } = {}) {
+export function createVoicePacks(cfg, { programRoot = REPO_ROOT, configFile: explicitConfigFile } = {}) {
   const dataPaths = resolveQqDataPaths({ programRoot });
-  const configFile = dataPaths.installationKind === 'package' || dataPaths.kind === 'package' || dataPaths.kind === 'explicit-legacy'
-    ? dataPaths.config : path.join(process.cwd(), 'config.json');
+  const configFile = explicitConfigFile || (dataPaths.installationKind === 'package' || dataPaths.kind === 'package' || dataPaths.kind === 'explicit-legacy'
+    ? dataPaths.config : path.join(process.cwd(), 'config.json'));
   const activeInstalls = new Map(); // id → {progress, phase, startedAt, error}
   const activeImports = new Map(); // id → 导入进度/错误（离线包复制与切换）
 

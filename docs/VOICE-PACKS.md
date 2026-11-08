@@ -207,3 +207,10 @@ cloud_resource = "seed-icl-2.0"   # 不能改，换别的会 403
 - 实测（2026-10-28）：4 分卷 637KB×4 并发下载 → 合并 → sha256 通过 → 解压成功。
 - 镜像可用性会变：`ghfast.top` 本机探测 000（不可用），`gh-proxy.com` / `ghproxy.net` 返回 200 ——
   所以界面上给了多个，让用户自己试。
+
+
+## 2026-11-08：DSH语音管理独立于QQ
+
+语音页、概览和单独启停由Host共享控制器提供；QQ关闭不再阻断语音包/规则/状态管理。QQ语音发送、语音库及自动回读仍由原桥接守卫。自检仅检测所选引擎与合成，未开启时给VOICE_TTS_DISABLED及配置建议，不会启动QQ或自动换路。
+
+云端/本地引擎稍后选择，当前没有新增Mac引擎支持；旧Windows启动包在Mac被明确拒绝。官方API差异与后续配置见[语音管理资料](guides/VOICE-MANAGEMENT.md)，验证/回滚见[本次case](cases/2026-11-08-voice-management-independence.md)。

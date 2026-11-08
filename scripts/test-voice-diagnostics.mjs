@@ -47,8 +47,8 @@ for (const [msg, code, stage] of cases) {
   ok(bridge.includes('/api/voice/tts-check'), '桥接提供语音自检端点');
   ok(/pickFallbackRoute\(/.test(bridge), '桥接调用换路策略');
 
-  const host = fs.readFileSync(path.resolve('plugins/surfcore/lib/index.js'), 'utf8');
-  ok(/voice\/tts-check/.test(host), '插件代理自检接口');
+  // Host不再代理QQ自检；test-voice-management-host.mjs验证真实路由，
+  // test-voice-management.mjs验证关闭时零请求、健康失败零合成及固定路由。
 
   const client = fs.readFileSync(path.resolve('plugins/surfcore/lib/client.js'), 'utf8');
   ok(client.includes('语音自检'), '语音页有自检卡片');

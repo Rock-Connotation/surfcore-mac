@@ -24,6 +24,7 @@ import * as allowlist from '../src/allowlist.js';
 import * as callname from '../src/callname.js';
 import * as personaIdentity from '../src/persona-identity.js';
 import { synthesizeToFile } from '../src/voice-tts.js';
+import { createVoiceManagement } from '../src/voice-management.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as fishGuard from '../src/fish-guard.js';
 import * as tokenGuard from '../src/token-guard.js';
@@ -274,7 +275,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...callname,
     ...personaIdentity,
     ...dshHealth,
-    synthesizeToFile,
+    synthesizeToFile, createVoiceManagement,
     ...tokenBudget,
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
