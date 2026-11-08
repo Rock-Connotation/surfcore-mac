@@ -5,6 +5,15 @@
 
 ---
 
+## 已交付：2026-11-08 语音管理解除QQ桥接依赖
+
+- 修复497598a、冻结候选/常用实装00f5c45，普通合并main 6da9b6d；后续仅文档/清单，版本0.8.8不变，无tag/push/Release。临时语音树/分支已清，仍只有main/主目录；原.serena保留。
+- 根因为管理路由、概览/单独启停和试听元数据都代理QQ3100。Host与旧控制台共享voice-management，显式配置路径/写归属、后台进度与取消/句柄退休、缓存刷新并发均有保护；QQ对外语音/库仍由桥接负责。
+- 官方Node24 audit176/176、协议回归17、完整plugin、服务12/实际Host红绿及独立V3/JSON/UI窄增量复核通过；strict privacy零命中，Git对象清单865/问题0。首轮两条过时源码断言失败已由实际Host/服务行为覆盖替代并完整重跑，未改回桥接依赖。
+- 常用官方CLI实装349程序一致/6074持久文件安装前后不变；QQ关闭时实际原生语音列表/规则200，两包未安装/未运行，旧fetch failed消失；实际点击自检显示VOICE_TTS_DISABLED和配置建议。无真实合成/引擎下载安装/平台任务或消息/新增付费模型；消费账本11/12保留，QQ/B站仍关闭、抖音日常仍disabled/paused。
+- 其它profile依赖声明、cordis/patch字节、304既有依赖版本、凭据/人格/立绘/分享保留。首次备份至退出的旧记忆维护只改明确时间戳，正文相同；不覆盖回旧备份。常用已恢复无debug普通启动，cwd主目录，临时调试端口关闭。
+- 用户稍后选择云端/本地；旧Windows/NVIDIA包不等于Mac引擎支持。真实TTS、音质/费用、mic、QQ语音与设备/长期矩阵未验。入口设置→SurfCore→语音；[资料](guides/VOICE-MANAGEMENT.md)、[七步逻辑/回滚/发布交接case](cases/2026-11-08-voice-management-independence.md)。私有证据/备份在仓库外`<GITHUB_PARENT>/_surfcore-voice-host-20261108/`。
+
 ## 已收口：2026-11-08 本地主线合并与worktree清理
 
 - 用户明确要求合并本地主分支并清理。42个worktree/42条本地分支已收敛为原主目录+main各1个，清理41/41；本克隆原无dev，未额外新建。main是本地未发布集成结果，版本0.8.8/远端/tag/Release均未改。
