@@ -12,6 +12,8 @@ const tests = [
   '../plugins/surfcore/scripts/test-perception-api.mjs',
   '../plugins/surfcore/scripts/test-persona-api-epoch.mjs',
   '../plugins/surfcore/scripts/test-channel-contract.mjs',
+  '../plugins/surfcore/scripts/test-voice-management.mjs',
+  '../plugins/surfcore/scripts/test-voice-management-host.mjs',
   '../plugins/surfcore/scripts/test-douyin-browser.mjs',
   '../plugins/surfcore/scripts/test-douyin-data.mjs',
   '../plugins/surfcore/scripts/test-douyin-service.mjs',

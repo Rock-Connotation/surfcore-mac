@@ -75,6 +75,7 @@ import { createDouyinService } from './douyin-service.mjs';
 import { createDouyinApi } from './douyin-api.mjs';
 import { createDouyinPerception } from './douyin-perception.mjs';
 import { createDouyinCompanion } from './douyin-companion.mjs';
+import { createVoiceManagement } from '../../../src/voice-management.js';
 import { createCompanionModel } from './douyin-companion-model.mjs';
 import { createCompanionMemory } from './douyin-companion-memory.mjs';
 import { createCompanionController } from './douyin-companion-controller.mjs';
@@ -198,6 +199,7 @@ export const inject = ['webServer', 'connection', 'sessionController'];
 
 export function apply(ctx) {
   ensureDirs();
+  const voiceManagement = createVoiceManagement({ configFile: QQ_CONFIG, programRoot: QQBOT_ROOT, label: 'DSH设置' });
 
   // 上次的"退出后应用"可能没跑起来（Electron 宿主没带 ELECTRON_RUN_AS_NODE）：
   // 这里重新排队，用户下次退出 DSH 就会应用（2026-10-28 反馈：点几次都还是旧版本）。
@@ -2357,15 +2359,6 @@ ${body}`;
   // 语音：把面板请求原样转发给桥接的 /api/voice/*（语音包安装、启停、规则）。
   // 插件自己不做业务，只负责带控制台令牌转发，桥接那边怎么改这里都不用动。
   async function handleVoice(req, res, url) {
-    // 语音自检：三步（服务/合成/发送前置）分别给结论，避免"语音坏了"只能靠猜。
-    if (url.pathname === `${API_PREFIX}/voice/tts-check`) {
-      if (String(req.method || 'GET').toUpperCase() !== 'POST') { json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', error: '只支持 POST' }); return; }
-      const result = await callBridge('/api/voice/tts-check', { method: 'POST', body: '{}', timeoutMs: 90_000 });
-      const data = result.data ?? { ok: false, code: 'BRIDGE_UNAVAILABLE', error: result.error || '桥接不可用', hint: '确认 QQ 桥接在运行（设置 → 状态）' };
-      json(res, result.status || 200, data);
-      return;
-    }
-
     const suffix = url.pathname.slice(`${API_PREFIX}/voice`.length) || '';
     const method = String(req.method || 'GET').toUpperCase();
     // 网盘离线包入口：Electron 里 target=_blank 会被拦，统一由宿主打开浏览器。
@@ -2393,7 +2386,7 @@ ${body}`;
       try {
         const body = await readBody(req);
         const id = String(body.id || 'voice-cloud');
-        const listed = await callBridge('/api/voice/packs', { timeoutMs: 8000 });
+        const listed = await voiceManagement.dispatch({ pathname: '/packs' });
         const pack = (listed.data?.packs || []).find((p) => p.id === id);
         if (!pack?.dir) {
           json(res, 404, { ok: false, code: 'SAMPLE_PACK_NOT_FOUND', error: '语音包还没安装，找不到参考音频', hint: '先安装/导入云端语音包，再点「打开所在目录」。' });
@@ -2418,25 +2411,23 @@ ${body}`;
       }
       return;
     }
-    const target = `${consoleBase()}/api/voice${suffix}${url.search || ''}`;
-    const headers = { 'x-console-token': consoleToken() };
-    const init = { method: req.method };
-    if (method !== 'GET' && method !== 'HEAD') {
-      init.body = await readBody(req);
-      headers['content-type'] = 'application/json';
+    let body = {};
+    if (!['GET','HEAD'].includes(method)) {
+      try { body = JSON.parse(await readBody(req) || '{}'); }
+      catch { json(res,400,{ok:false,code:'VOICE_BODY_INVALID',error:'语音请求格式无效。',hint:'刷新语音页面后重试。'}); return; }
     }
-    init.headers = headers;
-    try {
-      const r = await fetch(target, init);
-      const buf = Buffer.from(await r.arrayBuffer());
-      res.writeHead(r.status, {
-        'content-type': r.headers.get('content-type') || 'application/json; charset=utf-8',
-        ...(r.headers.get('content-disposition') ? { 'content-disposition': r.headers.get('content-disposition') } : {}),
+    // Only external QQ delivery/library operations retain the bridge boundary.
+    if (['/send', '/list', '/auto-readback'].includes(suffix)) {
+      const result = await callBridge(`/api/voice${suffix}${url.search || ''}`, {
+        method, ...(method !== 'GET' ? {body} : {}),
       });
-      res.end(buf);
-    } catch (e) {
-      json(res, 502, { ok: false, error: `语音服务不可达（桥接是否在运行？）：${e?.message ?? e}` });
+      json(res, result.status || 409, result.data || {ok:false, code:'VOICE_QQ_BRIDGE_REQUIRED',
+        error:'QQ语音发送需要QQ桥接运行。', hint:'管理语音包无需QQ；只有对外发送时才启用QQ并确认收件人。'});
+      return;
     }
+    const result = await voiceManagement.dispatch({method,pathname:suffix,body,query:url.searchParams});
+    if (result.buffer) { res.writeHead(result.status,{...result.headers,'cache-control':'no-store'}); res.end(result.buffer); }
+    else json(res,result.status,result.data);
   }
 
   // 桌宠：安装 / 卸载 / 启动 / 停止 / 状态（本机文件，不经过桥接）
@@ -2728,22 +2719,16 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   }
 
   async function voicePacksSnapshot() {
-    const bridge = await bridgeStatus().catch(() => ({ running: false }));
-    if (!bridge.running) return { ok: false, running: false, packs: [], error: 'QQ 桥接未运行，无法读取语音包状态', code: 'VOICE_BRIDGE_DOWN' };
-    try {
-      const r = await callBridge('/api/voice/packs', { timeoutMs: 8000 });
-      const packs = Array.isArray(r?.data?.packs) ? r.data.packs : [];
-      const running = packs.find((p) => p.running) || null;
-      return { ok: true, running: Boolean(running), id: running?.id || '', packs, bridge };
-    } catch (error) {
-      return { ok: false, running: false, packs: [], bridge, error: `读取语音包状态失败：${String(error?.message ?? error).slice(0, 160)}`, code: 'VOICE_STATUS_FAILED' };
-    }
+    const result = await voiceManagement.dispatch({pathname:'/packs'});
+    const data = result.data || {};
+    const packs = Array.isArray(data.packs) ? data.packs : [];
+    const running = packs.find(p => p.running);
+    return {...data, ok: data.ok === true, running:Boolean(running), id:running?.id || '', packs};
   }
 
   async function launchStatus() {
     const bridge = await bridgeStatus().catch((error) => ({ running: false, error: String(error?.message ?? error) }));
-    let voice = { ok: false, running: false, packs: [], id: '', error: bridge.running ? '' : 'QQ 桥接未运行' };
-    if (bridge.running) voice = await voicePacksSnapshot();
+    const voice = await voicePacksSnapshot();
     const pet = petService.status();
     return {
       qq: {
@@ -2822,19 +2807,16 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         });
       }
       if (id === 'voice') {
-        const bridge = await bridgeStatus().catch(() => ({ running: false }));
-        if (!bridge.running) {
-          return launchItem(id, false, { code: 'VOICE_BRIDGE_DOWN', error: '语音包由 QQ 桥接托管，桥接未运行', hint: '同时勾选「QQ（含 SnowLuma）」或先启动 QQ' });
-        }
         const packs = await voicePacksSnapshot();
+        if (!packs.ok) return launchItem(id, false, {code:packs.code || 'VOICE_STATUS_FAILED', error:packs.error || '无法读取语音包状态', hint:packs.hint || '先恢复语音管理状态再启动'});
         const wanted = String(opts.voicePack === 'voice-cloud' ? 'voice-cloud' : 'voice-local');
         const pack = (packs.packs ?? []).find((p) => p.id === wanted);
         if (!pack) return launchItem(id, false, { code: 'VOICE_PACK_UNKNOWN', error: `未知语音包：${wanted}`, hint: '在「语音」页确认包 ID' });
         if (!pack.installed) return launchItem(id, false, { code: 'VOICE_PACK_NOT_INSTALLED', error: `${pack.name || wanted} 还没安装`, hint: '先在「语音」页导入离线包或安装语音包' });
-        const r = await callBridge('/api/voice/packs/activate', { method: 'POST', body: { id: wanted }, timeoutMs: 90_000 });
+        const r = await voiceManagement.dispatch({method:'POST',pathname:'/packs/activate',body:{id:wanted}});
         const data = r?.data ?? {};
         return launchItem(id, r?.ok !== false && data.ok !== false, {
-          code: data.ok === false ? 'VOICE_START_FAILED' : '',
+          code: data.ok === false ? (data.code || 'VOICE_START_FAILED') : '',
           error: data.ok === false ? (data.error || '语音包启动失败') : '',
           hint: data.ok === false ? (data.hint || '检查语音包是否装好、端口 8765/8767 是否被占用') : '',
           detail: { packId: wanted, ...data },
@@ -2878,14 +2860,13 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         });
       }
       if (id === 'voice') {
-        const bridge = await bridgeStatus().catch(() => ({ running: false }));
-        if (!bridge.running) return launchItem(id, true, { message: 'QQ 桥接未运行，语音包无需单独停止' });
         const packs = await voicePacksSnapshot();
+        if (!packs.ok) return launchItem(id, false, {code:packs.code || 'VOICE_STATUS_FAILED', error:packs.error || '无法读取语音包状态', hint:packs.hint || '先恢复语音管理状态再停止，不能确认引擎已经退出'});
         const running = (packs.packs ?? []).filter((p) => p.running);
         if (!running.length) return launchItem(id, true, { message: '语音包本来就没在跑' });
         const results = [];
         for (const p of running) {
-          const r = await callBridge('/api/voice/packs/stop', { method: 'POST', body: { id: p.id }, timeoutMs: 30_000 });
+          const r = await voiceManagement.dispatch({method:'POST',pathname:'/packs/stop',body:{id:p.id}});
           results.push({ id: p.id, ok: r?.ok !== false && r?.data?.ok !== false, error: r?.data?.error || r?.error || '' });
         }
         const failed = results.find((x) => !x.ok);
@@ -3952,6 +3933,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
     clearInterval(companionTimer);
+    void voiceManagement.dispose().catch(() => pluginLog('[语音管理] 后台任务尚未结束，请回原管理界面核对进度'));
     void companionSharing.dispose().catch(() => pluginLog('[伙伴对话] 停止回复失败，请打开对话核对已有记录'));
     void douyinCompanion.dispose().catch(() => pluginLog('[抖音陪伴] 停止活动失败，请检查中断状态'));
     void douyin.dispose().then(result => { if (!result?.ok) pluginLog('[抖音] 专用浏览器退出未确认，请手动关闭该窗口；资料保留'); }).catch(() => pluginLog('[抖音] 专用浏览器退出未确认，请手动关闭该窗口；资料保留'));

@@ -4950,7 +4950,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [packsDir, setPacksDir] = useState("");
       const [dirInput, setDirInput] = useState("");
       const [mirror, setMirror] = useState("");
-      // 语音自检：三步（服务/合成/发送前置）各给结论，避免"语音坏了"只能靠猜。
+      // 语音管理由Host提供；自检只检查引擎与合成，不触发QQ发送。
       const [ttsCheck, setTtsCheck] = useState(null);
       const [ttsChecking, setTtsChecking] = useState(false);
       const [rules, setRules] = useState(null);
@@ -4963,6 +4963,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [importErr, setImportErr] = useState(null);
       const [importDone, setImportDone] = useState(null);
 
+      const voiceError = (e) => [e.code, e.message, e.hint].filter(Boolean).join(" · ");
+
       const load = useCallback(async () => {
         try {
           const r = await api("/voice/packs");
@@ -4973,7 +4975,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           setRules(await api("/voice/rules"));
           const run = (r.packs || []).find((p) => p.running);
           if (run) setPick(run.id);
-        } catch (e) { setErr(e.message); }
+        } catch (e) { setErr(voiceError(e)); }
       }, []);
       useEffect(() => { load(); }, [load]);
       // 页面刷新/切回来时，导入仍在后台跑：自动轮询，不能只靠发起导入的那个调用栈。
@@ -5033,7 +5035,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         try {
           picked = await browseNative("dir", `选择解压后的 ${id === "voice-local" ? "voice-local" : "voice-cloud"} 文件夹`);
         } catch (e) {
-          setImportErr({ id, error: `选择框打不开：${e.message || e}`, hint: "可以手动把包放到设置页显示的安装目录后重启桥接；或检查是否在本机桌面运行。" });
+          setImportErr({ id, error: `选择框打不开：${e.message || e}`, hint: "可以手动把包放到设置页显示的安装目录后刷新语音页；或检查是否在本机桌面运行。" });
           return;
         }
         if (!picked?.ok) {
@@ -5110,7 +5112,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             setSwitchMsg(r.ok ? "已启动：" + (pick === "voice-cloud" ? "云端" : "本地") : ("启动失败：" + (r.error || "") + (r.hint ? ` — ${r.hint}` : "")));
           }
           await load();
-        } catch (e) { setSwitchMsg("失败：" + e.message); }
+        } catch (e) { setSwitchMsg("失败：" + voiceError(e)); }
         finally { setBusyId(""); }
       };
 
@@ -5118,7 +5120,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const NETDISK_URL = "https://pan.quark.cn/s/ec6cf2b123de?pwd=sxUZ";
       const copyNetdisk = async () => {
         try { await navigator.clipboard.writeText(NETDISK_URL); if (toast) toast("✓ 网盘链接已复制（提取码 sxUZ）"); }
-        catch (e) { if (toast) toast(`复制失败：${e.message}；链接：${NETDISK_URL}`); }
+        catch (e) { if (toast) toast(`复制失败：${voiceError(e)}；链接：${NETDISK_URL}`); }
       };
       const openNetdisk = async () => {
         try {
@@ -5126,7 +5128,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           if (r.ok) { if (toast) toast("✓ 已用浏览器打开网盘（提取码 sxUZ）"); return; }
           if (toast) toast(`✗ ${r.error || "打不开浏览器"}${r.hint ? `；${r.hint}` : ""}`);
         } catch (e) {
-          if (toast) toast(`✗ ${e.message}`);
+          if (toast) toast(`✗ ${voiceError(e)}`);
         }
         await copyNetdisk();
       };
@@ -5138,8 +5140,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           setTtsCheck(r);
           if (toast) toast(r.ok ? "✓ 语音自检通过" : `✗ 自检发现问题：${(r.stages || []).find((x) => !x.ok)?.name || "未知"}`);
         } catch (e) {
-          setTtsCheck({ ok: false, error: e.message, stages: [] });
-          if (toast) toast(`✗ 自检失败：${e.message}`);
+          setTtsCheck(e.data || { ok: false, code:e.code, error:voiceError(e), hint:e.hint, stages: [] });
+          if (toast) toast(`✗ 自检失败：${voiceError(e)}`);
         } finally { setTtsChecking(false); }
       };
 
@@ -5148,7 +5150,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         style: { marginTop: "6px", padding: "6px 8px", borderRadius: "6px", background: st.ok ? "rgba(103,194,58,.10)" : "rgba(192,57,43,.12)" },
       },
         h("div", { style: { fontWeight: 600 } },
-          `${st.ok ? "✅" : "❌"} ${st.name === "service" ? "服务" : st.name === "synth" ? "合成" : "发送前置"}`,
+          `${st.ok ? "✅" : "❌"} ${st.name === "service" ? "服务" : st.name === "synth" ? "合成" : st.name === "scope" ? "检查范围" : "发送前置"}`,
           st.ms ? h("span", { style: { fontWeight: 400, opacity: 0.7, marginLeft: "6px" } }, `${st.ms}ms`) : null),
         st.detail ? h("div", { className: "qbw-hint", style: { marginTop: "2px" } }, st.detail) : null,
         st.hint ? h("div", { className: "qbw-hint", style: { marginTop: "2px" } }, `建议：${st.hint}`) : null);
@@ -5179,14 +5181,14 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             }, 300);
           }
         } catch (e) {
-          setMsg((m) => ({ ...m, [id]: e.message }));
+          setMsg((m) => ({ ...m, [id]: voiceError(e) }));
         } finally { setBusyId(""); }
       };
 
       const fmt = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round(b / 1e6) + " MB");
       const saveRules = async () => {
         try { await api("/voice/rules", { method: "POST", body: rules }); toast("✓ 触发规则已保存"); }
-        catch (e) { toast("✗ " + e.message); }
+        catch (e) { toast("✗ " + voiceError(e)); }
       };
 
       const card = (p) => h("div", {
@@ -5232,7 +5234,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                     await api("/voice/packs/cancel", { method: "POST", body: { id: p.id } });
                     if (toast) toast("已取消安装（已下载的模型会保留）");
                     await load();
-                  } catch (e) { if (toast) toast(`✗ ${e.message}`); }
+                  } catch (e) { if (toast) toast(`✗ ${voiceError(e)}`); }
                 } }, "取消安装"))
               : null)
           : null,
@@ -5242,7 +5244,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("div", { style: { marginTop: "6px" } },
               h(Btn, { kind: "qbw-btn2", onClick: async () => {
                 try { await api("/voice/packs/import-cancel", { method: "POST", body: { id: p.id } }); if (toast) toast("正在取消导入…"); await load(); }
-                catch (e) { if (toast) toast(`✗ ${e.message}`); }
+                catch (e) { if (toast) toast(`✗ ${voiceError(e)}`); }
               } }, "取消导入")))
           : null,
         p.import && p.import.phase === "失败" && p.import.error
@@ -5270,7 +5272,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                 await api("/config", { method: "POST", body: { qq: { voicePacks: { dir: parent.split("\\").join("/") } } } });
                 if (toast) toast(`✓ 安装目录已指向 ${parent}`);
                 await load();
-              } catch (e) { if (toast) toast(`✗ ${e.message}`); }
+              } catch (e) { if (toast) toast(`✗ ${voiceError(e)}`); }
             } }, "把安装目录设为这里")
             : null,
           p.installed ? h(Btn, { kind: "qbw-btn2", disabled: busyId === p.id, onClick: () => act(p.id, "remove") }, "卸载") : null,
@@ -5280,7 +5282,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               const mb = ((r.freedBytes || 0) / 1024 / 1024).toFixed(1);
               toast(`✓ 已清理未完成的下载（${mb} MB）`);
               await load();
-            } catch (e) { toast(`✗ ${e.message}`); }
+            } catch (e) { toast(`✗ ${voiceError(e)}`); }
           } }, "清理下载残留") : null,
           msg[p.id] ? h("span", { style: { fontSize: "12px", opacity: 0.8 } }, msg[p.id]) : null));
 
@@ -5301,7 +5303,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
           h("h4", null, "语音开关"),
           h("div", { className: "qbw-hint" },
-            "两个都要开：总闸控制 AI 能不能发语音，「发语音」工具控制 qq_send_voice 是否出现在工具面。"),
+            "语音包管理、配置和自检由 DSH 独立提供，无需启动 QQ。下方两个开关仅控制 QQ 对外语音发送。"),
           h("div", { className: "qbw-admin-grid", style: { marginTop: "8px" } },
             h("label", { className: "qbw-admin-field" },
               h("span", null, "启用语音发送（总闸）"),
@@ -5326,7 +5328,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("div", { className: "qbw-actions", style: { marginTop: "8px" } },
             h(Btn, { onClick: () => onSave?.(false), disabled: !!busy }, "保存语音开关"))),
         h("div", { style: { fontSize: "13px", opacity: 0.85, marginBottom: "10px" } },
-          "语音引擎不随插件分发。不装也能正常聊天，只是不能发语音。两个包互相独立，可只装一个。"),
+          "语音管理已就绪，无需 QQ 桥接。语音引擎可稍后选择本地或云端；旧离线包以 Windows 运行时为主，Mac 需先确认引擎兼容性。"),
         err ? h("div", { className: "qbw-err" }, err) : null,
         h("div", { style: { marginTop: "14px", padding: "12px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px" } },
           h("div", { style: { display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap", fontSize: "13px" } },
@@ -5348,12 +5350,12 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         h("div", { className: "qbw-card", style: { marginTop: "10px" } },
           h("h4", null, "语音自检"),
           h("div", { className: "qbw-hint", style: { marginTop: "2px" } },
-            "三步分开看：服务是否在跑 → 能不能合成 → 能不能发（不真的发消息）。出问题时把结果发给开发者。"),
+            "检查所选语音服务和合成结果，不发送 QQ 消息。未配置或未启动引擎时会给出具体原因；服务不可达时不尝试合成。"),
           h("div", { className: "qbw-actions", style: { marginTop: "8px" } },
             h(Btn, { onClick: runTtsCheck, disabled: ttsChecking }, ttsChecking ? "检测中…（合成可能要几秒）" : "开始自检")),
           ttsCheck ? h("div", { style: { marginTop: "8px" } },
             (ttsCheck.stages || []).map(stageRow),
-            ttsCheck.ok ? null : h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, `route=${ttsCheck.route || "?"} · ${ttsCheck.error || ""}`)
+            ttsCheck.ok ? null : h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, [ttsCheck.code,ttsCheck.error,ttsCheck.hint].filter(Boolean).join(" · "))
           ) : null),
         h("div", { style: { marginTop: "10px", padding: "10px 12px", borderRadius: "10px", border: "1px solid rgba(230,162,60,.45)", background: "rgba(230,162,60,.08)" } },
           h("div", { style: { fontSize: "13px", fontWeight: 600 } }, "网络不稳定装不上？用网盘下载离线包（本地包 / 云端包都适用）"),
@@ -5386,7 +5388,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         h("div", { style: { marginTop: "10px", padding: "10px 12px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px" } },
           h("div", { style: { fontSize: "13px", fontWeight: 600 } }, "安装目录"),
           h("div", { style: { fontSize: "12px", opacity: 0.75, marginTop: "2px" } },
-            "默认在 ~/.dsh/surfcore/state/voice-packs；磁盘紧张或用户目录只读时改到这里。改完要重启桥接，已装的包请手动移动过去。安装依赖默认走清华源（可用 SURFCORE_PIP_INDEX 覆盖）。"),
+            "当前生效目录见下方。保存路径后管理界面重新读取；安装或导入进行中时继续使用原目录，结束后才切换。已装语音包不会自动搬迁。"),
           h("div", { style: { display: "flex", gap: "8px", marginTop: "8px", flexWrap: "wrap" } },
             h("input", { className: "qbw-input", value: dirInput, placeholder: packsDir || "D:/voice-packs", style: { flex: "1 1 320px" }, onChange: (e) => setDirInput(e.target.value) }),
             h(Browse, { mode: "dir", title: "选择语音包安装目录", onPick: (v) => setDirInput(v) }),
@@ -5396,9 +5398,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               if (!/^[A-Za-z]:/.test(next) && !next.startsWith("/")) { toast("✗ 请填绝对路径，例如 D:/voice-packs"); return; }
               try {
                 await api("/config", { method: "POST", body: { qq: { voicePacks: { dir: next.split(String.fromCharCode(92)).join("/") } } } });
-                toast("✓ 已保存；重启桥接后生效（已装的包请先移动到新目录）");
+                toast("✓ 路径已保存；当前操作结束后生效，已装的包请自行迁移");
                 await load();
-              } catch (e) { toast(`✗ ${e.message}`); }
+              } catch (e) { toast(`✗ ${voiceError(e)}`); }
             } }, "保存路径")),
           h("div", { style: { fontSize: "12px", opacity: 0.65, marginTop: "6px" } }, "当前生效：", h("code", null, packsDir || "（读不到）"))),
         h("div", { className: "qbw-hint", style: { marginTop: "10px" } },
@@ -5445,7 +5447,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                 try {
                   await api("/voice/packs/stop", { method: "POST", body: { id: importErr.id } });
                   const id = importErr.id; setImportErr(null); startImportFlow(id);
-                } catch (e) { if (toast) toast(`✗ ${e.message}`); }
+                } catch (e) { if (toast) toast(`✗ ${voiceError(e)}`); }
               },
             } : null,
           ].filter(Boolean),
