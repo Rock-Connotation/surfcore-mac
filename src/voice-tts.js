@@ -8,6 +8,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { synthesizeVolc } from './voice-volc-tts.js';
 
 export const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
 
@@ -52,11 +53,23 @@ export async function synthesizeToFile({
   cacheVersion = null,
   outDir,
   fetchImpl = fetch,
-  signal
+  signal,
+  provider = 'voxd',
+  apiKey,
+  budget
 } = {}) {
   const say = String(text ?? '').trim();
   if (!say) throw new Error('要合成的内容是空的');
   if (!outDir) throw new Error('缺少 outDir（TTS 缓存目录）');
+  if (provider !== 'voxd' && provider !== 'volc') throw new Error('未知语音合成服务');
+  if (provider === 'volc') {
+    const audio = await synthesizeVolc({ text: say, apiKey, budget, timeoutMs, fetchImpl, signal });
+    fs.mkdirSync(outDir, { recursive: true });
+    const file = path.join(outDir, `${crypto.randomUUID()}.wav`);
+    fs.writeFileSync(file, audio, { flag: 'wx', mode: 0o600 });
+    pruneCache(outDir);
+    return { path: file, durationMs: wavDurationMs(audio), cached: false };
+  }
   fs.mkdirSync(outDir, { recursive: true });
 
   const url = String(baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');

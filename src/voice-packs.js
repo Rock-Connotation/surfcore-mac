@@ -15,6 +15,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { wavDurationMs } from './voice-tts.js';
 import { stripCloudCredentials } from './voice-pack-secrets.js';
+import { advanceVoiceSelectionRevision, startVoxdCloud, withVolcBudgetLock } from './voice-volc-budget.js';
 import {
   IMPORT_CODES,
   ImportError,
@@ -1156,19 +1157,44 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
       const r = await start(id);
       if (r.ok === false) return r;
     }
-    // 顺手把路由切过去（写 config.json，宿主热读）
     try {
-      const cfgPath = configFile;
-      const disk = JSON.parse(await fsp.readFile(cfgPath, 'utf8'));
-      disk.socialV2 = disk.socialV2 || {};
-      disk.socialV2.voice = disk.socialV2.voice || {};
-      disk.socialV2.voice.tts = disk.socialV2.voice.tts || {};
-      disk.socialV2.voice.tts.route = id === 'voice-cloud' ? 'cloud' : 'local';
-      // 只要切路由，不能顺手把开关关掉（曾经因此出现“语音合成还没开启”）
-      disk.socialV2.voice.tts.enabled = true;
-      await fsp.writeFile(cfgPath, JSON.stringify(disk, null, 2) + '\n', 'utf8');
-    } catch {}
-    return { ok: true, route: id === 'voice-cloud' ? 'cloud' : 'local', port: m.port };
+      return withVolcBudgetLock(configFile, state => {
+        const stat = fs.lstatSync(configFile);
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('invalid config file');
+        const raw = fs.readFileSync(configFile);
+        const disk = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw).replace(/^﻿/, ''));
+        if (!disk || Array.isArray(disk) || typeof disk !== 'object') throw new Error('invalid config');
+        disk.socialV2 ||= {}; disk.socialV2.voice ||= {}; disk.socialV2.voice.tts ||= {};
+        const tts = disk.socialV2.voice.tts, previous = { ...tts };
+        tts.route = id === 'voice-cloud' ? 'cloud' : 'local';
+        if (id === 'voice-cloud') tts.cloudProvider = 'voxd';
+        tts.enabled = true;
+        advanceVoiceSelectionRevision(tts, previous);
+        const backups = path.join(state, 'voice-activation-backups');
+        fs.mkdirSync(backups, { recursive: true, mode: 0o700 });
+        const backupStat = fs.lstatSync(backups);
+        if (!backupStat.isDirectory() || backupStat.isSymbolicLink() || (process.platform !== 'win32' && (backupStat.mode & 0o077))) throw new Error('invalid backup directory');
+        const backup = path.join(backups, `${crypto.randomUUID()}.json`);
+        const backupFd = fs.openSync(backup, 'wx', 0o600);
+        try { fs.writeFileSync(backupFd, raw); fs.fsyncSync(backupFd); } finally { fs.closeSync(backupFd); }
+        if (process.platform !== 'win32') {
+          const dir = fs.openSync(backups, 'r'); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+        }
+        const temp = `${configFile}.${crypto.randomUUID()}.tmp`;
+        try {
+          const fd = fs.openSync(temp, 'wx', 0o600);
+          try { fs.writeFileSync(fd, JSON.stringify(disk, null, 2) + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+          fs.renameSync(temp, configFile);
+          if (process.platform !== 'win32') {
+            const dir = fs.openSync(path.dirname(configFile), 'r'); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+          }
+        } finally { try { fs.unlinkSync(temp); } catch {} }
+        return { ok: true, route: tts.route, port: m.port, restartRequired: true };
+      });
+    } catch (error) {
+      return { ok: false, code: typeof error?.code === 'string' && error.code.startsWith('VOICE_VOLC_') ? error.code : 'VOICE_PROVIDER_SWITCH_FAILED',
+        error: '语音服务切换未完成。', hint: '检查配置和额度锁；旧服务可能已启动，请核对配置并重启QQ桥接后再试。' };
+    }
   }
 
   /** 启用/停用（不影响安装状态，只影响宿主是否把它当作可用语音源）。 */
@@ -1270,17 +1296,22 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
   }
 
   /** 试听：走包自己的 /v1/speak/file，返回耗时和音频大小。 */
-  async function test(id, { text = '你好呀，语音包已经装好了。' } = {}) {
+  async function test(id, { text = '你好呀，语音包已经装好了。', selection = cfg.socialV2?.voice?.tts || {} } = {}) {
     const m = manifests(cfg).find((x) => x.id === id);
     if (!m) throw new Error(`未知语音包：${id}`);
     if (!(await probePort(m.port))) throw new Error('服务没在运行，先点「启动」');
     const t0 = Date.now();
-    const res = await fetch(`http://127.0.0.1:${m.port}/v1/speak/file`, {
+    const request = () => fetch(`http://127.0.0.1:${m.port}/v1/speak/file`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text }),
       signal: AbortSignal.timeout(120000),
     });
+    const res = await (id === 'voice-cloud' ? startVoxdCloud(configFile, {
+      route: selection.route === 'cloud' ? 'cloud' : 'local', enabled: selection.enabled === true,
+      endpoint: String(selection.endpoints?.cloud || 'http://127.0.0.1:8767').replace(/\/+$/, ''),
+      selectionRevision: selection.selectionRevision ?? 0,
+    }, request) : request());
     if (!res.ok) throw new Error(`合成失败：HTTP ${res.status}`);
     const buf = Buffer.from(await res.arrayBuffer());
     // 用真实 WAV 头算时长：以前 bytes/2/24000 是按 16bit/24k 猜的，遇到 22050/32bit 就报 0 或错值。

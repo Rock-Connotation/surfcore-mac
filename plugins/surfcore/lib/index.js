@@ -112,6 +112,8 @@ import { fishGuardStateSummary } from '../tools/lib/fish-guard.mjs';
 import { summarizeQqFishGuard } from './qq-fish-guard.js';
 import { applySessionPermission } from './scheduler.js';
 import { fileStamp, isStale } from '../../../src/config-stamps.js';
+import { commitQqConfigPatch } from '../../../src/qq-config-transaction.js';
+import { withVolcBudgetLock } from '../../../src/voice-volc-budget.js';
 import { createContextTelemetry } from '../../../src/context-telemetry.js';
 import { createBillingService } from './billing.js';
 import { createPersonaClassifier } from './persona-classify.js';
@@ -461,8 +463,10 @@ export function apply(ctx) {
   // 管理员称呼的存量修复：v0.7.2 及以前只把 ownerQQ 投影到 QQ config.json，
   // displayName/biliName/gentle 留在 unified，桥接独立进程读不到 → 叫“管理员”。
   // 启动时补一次投影（有变化才写），桥接在跑就重启让它重新读配置。
+  let adminProjectionFailure = null;
   function ensureAdminProjection() {
     try {
+      const qqStamp = fileStamp(QQ_CONFIG);
       const qqState = readQqConfig();
       const unifiedState = readUnified();
       const biliState = readBiliConfig();
@@ -479,7 +483,7 @@ export function apply(ctx) {
       if (JSON.stringify(prev) === JSON.stringify(next)) return;
       const planned = projectAdminSave({ current: next, qq: qqState.config });
       if (!planned.qq) return;
-      saveQqConfig(planned.qq);
+      saveQqConfig({ ownerQQ: planned.qq.ownerQQ, admin: planned.qq.admin }, { expectedStamp: qqStamp });
       pluginLog('管理员称呼已补齐到 QQ config.json（桥接重启后生效）');
       setTimeout(() => {
         void bridgeStatus().then((st) => {
@@ -488,7 +492,8 @@ export function apply(ctx) {
         }).catch(() => {});
       }, 1500).unref?.();
     } catch (error) {
-      pluginLog('管理员称呼投影失败（继续使用现有配置）：', error?.message ?? error);
+      adminProjectionFailure = { ok: false, code: error?.code || 'QQ_CONFIG_WRITE_FAILED', error: '管理员配置未能同步。', hint: '等待并发操作结束，检查配置权限后完全退出并重新打开 DSH。' };
+      pluginLog('管理员称呼投影失败（保留现有配置）：', adminProjectionFailure.code);
     }
   }
 
@@ -861,8 +866,9 @@ export function apply(ctx) {
           }
           await handler(req, res);
         } catch (error) {
-          pluginLog('API 失败：', error?.message ?? error);
-          try { json(res, 500, { ok: false, error: String(error?.message ?? error) }); } catch {}
+          const structured = typeof error?.code === 'string' && Boolean(error?.hint);
+          pluginLog('API 失败：', structured ? error.code : error?.message ?? error);
+          try { json(res, structured ? 409 : 500, { ok: false, error: String(error?.message ?? error), ...(structured ? { code: error.code, hint: error.hint } : {}) }); } catch {}
         }
       },
     }));
@@ -899,6 +905,7 @@ export function apply(ctx) {
       memory,
       memoryCard: memoryCardStatusNow(),
       admin: adminSummary(all.unified?.admin),
+      adminProjectionFailure,
       alignment: alignStats(),
       platforms: platforms.list(),
       extensions: extensionHost.describe(),
@@ -949,11 +956,12 @@ export function apply(ctx) {
   // ── 配置读写 ────────────────────────────────────────────────────────────
   async function handleConfig(req, res) {
     if (req.method === 'GET') {
+      const snapshot = withVolcBudgetLock(QQ_CONFIG, () => ({ all: readAll(), stamp: fileStamp(QQ_CONFIG) }));
       json(res, 200, {
-        ok: true, ...readAll(), paths: pathSummary(), backups: listBackups(20),
+        ok: true, ...snapshot.all, paths: pathSummary(), backups: listBackups(20),
         // 保存时回传这些戳：服务端据此判断"加载之后配置有没有被别处改过"
         stamps: {
-          qq: fileStamp(QQ_CONFIG),
+          qq: snapshot.stamp,
           bili: fileStamp(BILI_CONFIG),
           unified: fileStamp(path.join(STATE_DIR, 'config.json')),
         },
@@ -974,7 +982,9 @@ export function apply(ctx) {
       unified: fileStamp(path.join(STATE_DIR, 'config.json')),
     };
     if (baseStamp) {
-      const stale = ['qq', 'bili', 'unified'].filter((k) => isStale(baseStamp[k], currentStamps[k]));
+      const stale = ['qq', 'bili', 'unified'].filter(k => baseStamp.strict === true
+        ? String(baseStamp[k] ?? '') !== String(currentStamps[k] ?? '')
+        : isStale(baseStamp[k], currentStamps[k]));
       if (stale.length) {
         json(res, 409, {
           ok: false, code: 'CONFIG_STALE',
@@ -1025,7 +1035,12 @@ export function apply(ctx) {
         body.qq.allow = allow;
         for (const w of warnings) result.warnings.push(`白名单：${w.message}`);
       }
-      const saved = saveQqConfig(body.qq);
+      let saved;
+      try { saved = saveQqConfig(body.qq, { expectedStamp: currentStamps.qq }); }
+      catch (error) {
+        if (error?.code && error?.hint) { json(res, 409, { ok: false, code: error.code, error: error.message, hint: error.hint }); return; }
+        throw error;
+      }
       result.saved.qq = true;
       result.qq = saved.config;
       result.qqBackup = saved.backup;
@@ -1666,11 +1681,7 @@ ${body}`;
         pluginLog('写 DSH qq-mode 设置失败（本地 mode.json 已写）：', error?.message ?? error);
       }
     }
-    if (ownerQQ !== undefined) {
-      const qq = readQqConfig().config;
-      qq.ownerQQ = ownerQQ;
-      saveQqConfig(qq);
-    }
+    if (ownerQQ !== undefined) saveQqConfig({ ownerQQ });
     if (mode) {
       try { await callBridge('/api/mode', { method: 'POST', body: { mode } }); } catch {}
     }
@@ -1821,12 +1832,13 @@ ${body}`;
       // 4) SnowLuma 端点 / token
       const snowStep = installStep('snowluma', '发现并写入 SnowLuma 连接');
       try {
+        const snowStamp = fileStamp(QQ_CONFIG);
         const found = await discoverSnowLumaConnection({ cfg: readQqConfig().config ?? {}, timeoutMs: 4000 });
         if (found.ok) {
           const snow = { httpUrl: found.baseUrl };
           if (found.wsUrl) snow.wsUrl = found.wsUrl;
           if (found.token) snow.accessToken = found.token;
-          saveQqConfig({ snowluma: snow });
+          saveQqConfig({ snowluma: snow }, { expectedStamp: snowStamp });
           done(snowStep, true, `已连上 ${found.self?.nickname ?? ''}（${found.self?.user_id ?? ''}）`);
         } else {
           done(snowStep, false, String(found.error ?? '没连上：先启动 SnowLuma 并扫码登录'));
@@ -1837,11 +1849,12 @@ ${body}`;
       const idStep = installStep('identity', '写入主人 QQ 与白名单');
       if (opts.groups.length) {
         // 保留用户已有私聊白名单，只追加主人（2026-10-31：以前 [owner] 整体替换会冲掉用户加的人）
+        const allowStamp = fileStamp(QQ_CONFIG);
         const { allow, warnings } = normalizeAllowlist({
           allow: { ...(readQqConfig().config?.allow ?? {}), groups: opts.groups },
           ownerQQ: opts.ownerQQ,
         });
-        saveQqConfig({ allow });
+        saveQqConfig({ allow }, { expectedStamp: allowStamp });
         for (const w of warnings) pluginLog(`[安装] 白名单：${w.code} ${w.message}`);
         done(idStep, true, `${opts.groups.length} 个群${opts.ownerQQ ? ' + 主人私聊' : ''}${warnings.length ? `（${warnings.length} 条修正）` : ''}`);
       } else {
@@ -2002,6 +2015,7 @@ ${body}`;
     }
     if (body.action === 'install-apply') {
       const changed = [];
+      let qqStamp = fileStamp(QQ_CONFIG);
       const cfg = readQqConfig().config ?? {};
       // 1) 端点 / token：服务端再发现一次（不把 token 交给浏览器）
       if (body.discoverSnow !== false) {
@@ -2011,10 +2025,13 @@ ${body}`;
             const snow = { httpUrl: found.baseUrl };
             if (found.wsUrl) snow.wsUrl = found.wsUrl;
             if (found.token) snow.accessToken = found.token;
-            saveQqConfig({ snowluma: snow });
+            saveQqConfig({ snowluma: snow }, { expectedStamp: qqStamp });
+            qqStamp = fileStamp(QQ_CONFIG);
             changed.push('写入 SnowLuma 地址与 token');
           }
-        } catch {}
+        } catch (error) {
+          if (error?.code && error?.hint) { json(res, 409, { ok: false, code: error.code, error: error.message, hint: error.hint }); return; }
+        }
       }
       // 2) 主人 QQ（用户确认过的才写）
       const owner = String(body.ownerQQ ?? '').trim();
@@ -2032,7 +2049,7 @@ ${body}`;
           allow: { ...(cfg.allow ?? {}), groups },
           ownerQQ: owner || cfg.ownerQQ || '',
         });
-        saveQqConfig({ allow });
+        saveQqConfig({ allow }, { expectedStamp: qqStamp });
         for (const w of warnings) pluginLog(`[install-apply] 白名单：${w.code} ${w.message}`);
         changed.push(`写入白名单（${groups.length} 个群${owner ? ' + 主人私聊' : ''}${warnings.length ? `，${warnings.length} 条修正` : ''}）`);
       }
@@ -2072,8 +2089,21 @@ ${body}`;
       ];
       const hit = map.find(([prefix]) => name.startsWith(prefix));
       if (!hit) { json(res, 400, { ok: false, error: '这个备份不支持一键恢复（请手动复制）' }); return; }
-      backupFile(hit[1], 'before-restore');
-      fs.copyFileSync(source, hit[1]);
+      if (hit[1] === QQ_CONFIG) {
+        try {
+          const parse = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
+          let base = {};
+          try { base = parse(QQ_CONFIG); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+          commitQqConfigPatch(QQ_CONFIG, base, parse(source), { requireExactBase: true });
+        } catch (error) {
+          const known = typeof error.code === 'string' && Boolean(error.hint);
+          json(res, 409, { ok: false, code: known ? error.code : 'QQ_RESTORE_FAILED', error: known ? error.message : 'QQ 配置恢复失败。', hint: known ? error.hint : '检查配置和备份后重试；保留现有文件。' });
+          return;
+        }
+      } else {
+        backupFile(hit[1], 'before-restore');
+        fs.copyFileSync(source, hit[1]);
+      }
       json(res, 200, { ok: true, restored: name, target: maskPath(hit[1]) });
       return;
     }

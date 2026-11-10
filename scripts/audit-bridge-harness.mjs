@@ -24,6 +24,11 @@ import * as allowlist from '../src/allowlist.js';
 import * as callname from '../src/callname.js';
 import * as personaIdentity from '../src/persona-identity.js';
 import { synthesizeToFile } from '../src/voice-tts.js';
+import { encodeVoiceRecord } from '../src/voice-record.js';
+import { readVolcKey } from '../src/voice-volc-key.js';
+import { startVoxdCloud } from '../src/voice-volc-budget.js';
+import { commitQqConfigPatch, transactQqConfig } from '../src/qq-config-transaction.js';
+import { persistSnowLumaEndpoint, persistToken } from '../src/snowluma-conn.js';
 import { createVoiceManagement } from '../src/voice-management.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as fishGuard from '../src/fish-guard.js';
@@ -83,7 +88,7 @@ function wavFixture() {
   return Buffer.concat([h, data]);
 }
 
-export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, history = {} } = {}) {
+export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, history = {}, synthesizeImpl = synthesizeToFile, voiceManagementImpl = createVoiceManagement } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
   const fixtureEnv = { DSH_HOME: path.join(temp, 'dsh'), HOME: temp };
   fs.mkdirSync(path.join(temp, 'src'));
@@ -231,8 +236,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     runPurpose, purposeState, notePurposeTurnEnded, notePurposeOutbound, startPurposeLoop, warmPurposeState,
     // 对话收尾判断：测试可直接调内部函数（不连真 QQ）。
     closeConversationV2, assessClosureV2, closureConfigV2, closureSuppressesWake, noteClosureReopenV2,
-    voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText,
-    voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk,
+    voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText, readConfigObject, atomicWriteJson,
+    voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
     setMode(value) { currentMode = value; },
     getModelStatus() { return modelStatusState; },
     setReady(value) { dshReady = value; },
@@ -242,7 +247,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   bot.onPrivateMessage(async (event) => {`);
   const timers = new Set();
   const context = vm.createContext({
-    fs, os, path, http, crypto, fileURLToPath, URL, Buffer, AbortSignal, console: { log() {}, error() {} },
+    fs, os, path, http, crypto, fileURLToPath, URL, Buffer, AbortSignal, structuredClone, console: { log() {}, error() {} },
     fetch: fakeFetch,
     // 锁文件探测用（bridge.js 顶层的 consolePortInUse）；
     // 固定桩掉：测试不应该真去 netstat 宿主机。
@@ -275,7 +280,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...callname,
     ...personaIdentity,
     ...dshHealth,
-    synthesizeToFile, createVoiceManagement,
+    synthesizeToFile: synthesizeImpl, createVoiceManagement: voiceManagementImpl, encodeVoiceRecord, readVolcKey, startVoxdCloud, commitQqConfigPatch, transactQqConfig, persistSnowLumaEndpoint, persistToken,
     ...tokenBudget,
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,

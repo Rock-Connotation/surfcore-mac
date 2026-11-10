@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { discoverDshBaseUrl } from '../src/dsh-port.js';
+import { transactQqConfig } from '../src/qq-config-transaction.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG = path.join(ROOT, 'config.json');
@@ -47,12 +48,17 @@ async function main() {
     console.log(`[sync-dsh-port] 探测到 ${next}（config.json 当前是 ${current || '空'}）`);
     return;
   }
-  config.dsh.baseUrl = next;
-  fs.writeFileSync(CONFIG, `${JSON.stringify(config, null, 2)}\n`);
-  console.log(`[sync-dsh-port] 已更新 dsh.baseUrl：${current || '空'} -> ${next}`);
+  const tx = transactQqConfig(CONFIG, draft => {
+    if (draft.dsh != null && (typeof draft.dsh !== 'object' || Array.isArray(draft.dsh))) throw new Error('dsh 配置不是对象，已拒绝覆盖。');
+    const previous = String(draft.dsh?.baseUrl ?? '');
+    draft.dsh = { ...(draft.dsh || {}), baseUrl: next };
+    return previous;
+  }, { requireExisting: true });
+  console.log(`[sync-dsh-port] 已更新 dsh.baseUrl：${tx.result || '空'} -> ${next}`);
 }
 
 main().catch((error) => {
-  console.error('[sync-dsh-port] 失败:', error?.message ?? error);
+  const known = typeof error?.code === 'string' && Boolean(error.hint);
+  console.error(`[sync-dsh-port] ${known ? error.code : 'QQ_CONFIG_SYNC_FAILED'}：${known ? error.message : '端口配置同步失败。'} ${known ? error.hint : '检查配置后重试。'}`);
   process.exit(1);
 });
