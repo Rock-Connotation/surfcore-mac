@@ -2598,6 +2598,7 @@ button:active:not(:disabled) {
         <button id="stateDirReharden" class="small">重新检测</button>
         <span class="meta" id="stateDirMsg"></span>
       </div>
+      <div id="qqConfigWriteWarn" role="alert" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)"></div>
       <div id="snowlumaWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
         <b>⚠️ QQ 网关连着，但收不到 QQ 的数据</b>
         <div class="meta" style="margin:4px 0" id="snowlumaWarnHint"></div>
@@ -2794,6 +2795,12 @@ function renderSnowlumaHealth(sl) {
   const el = document.getElementById('snowlumaWarn');
   const strong = document.getElementById('metricSnowluma');
   const hint = document.getElementById('metricSnowlumaHint');
+  const configWarn = document.getElementById('qqConfigWriteWarn');
+  if (configWarn) {
+    const failure = sl?.configWriteFailure;
+    configWarn.textContent = failure ? [failure.error, failure.hint].filter(Boolean).join(' ') : '';
+    configWarn.style.display = failure ? '' : 'none';
+  }
   if (!el || !strong || !hint) return;
   if (!sl || typeof sl !== 'object') {
     el.style.display = 'none';
@@ -3589,7 +3596,7 @@ async function saveV2Config() {
   };
   const r = await api('/api/socialV2/config', 'POST', body);
   const msg = document.getElementById('v2ConfigMsg');
-  msg.textContent = r.ok ? '✅ 已保存' : ('❌ ' + (r.error || '失败'));
+  msg.textContent = r.ok ? '✅ 已保存' : ('❌ ' + (r.error || '失败') + (r.hint ? '；' + r.hint : ''));
   msg.className = r.ok ? 'meta ok' : 'meta err';
   if (r.ok) loadV2Config();
 }

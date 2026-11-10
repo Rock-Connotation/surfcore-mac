@@ -8,6 +8,7 @@ const tests = [
   'test-update-archive.mjs',
   'test-self-test-target.mjs',
   'test-package-data-paths.mjs', 'test-package-data-consumers.mjs',
+  'test-qq-config-transaction.mjs', 'test-qq-config-store.mjs', 'test-qq-bridge-transaction.mjs', 'test-qq-config-scripts.mjs', 'test-qq-draft-rebase.mjs', 'test-qq-projection-failure.mjs',
   'test-install-identity.mjs', 'test-runtime-media.mjs', 'test-macos-shared-core.mjs',
   '../plugins/surfcore/scripts/test-perception-api.mjs',
   '../plugins/surfcore/scripts/test-persona-api-epoch.mjs',
@@ -181,6 +182,11 @@ const tests = [
   'test-voice-system.mjs',
   // 本地 TTS 客户端（落盘复用 / 502 detail / 服务未启动 / wav 头算时长）
   'test-voice-tts.mjs',
+  'test-volc-tts.mjs',
+  'test-volc-management.mjs',
+  'test-volc-form.mjs',
+  'test-volc-budget.mjs',
+  'test-volc-bridge.mjs',
   // 真实 bridge.js 的 text→TTS→record 链路（假网关 + 本地假 TTS，不发 QQ）
   'test-voice-route.mjs',
   // SnowLuma 账号/token 自发现（换 QQ 账号后 token 会变，写死的工具会 401）

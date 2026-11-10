@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline/promises';
@@ -28,6 +29,29 @@ const say = (msg = '') => process.stdout.write(`${msg}\n`);
 const ok = (msg) => say(`  [OK]   ${msg}`);
 const bad = (msg) => say(`  [!!]   ${msg}`);
 const step = (n, msg) => say(`\n=== ${n}. ${msg} ===`);
+
+function initializeConfig(root) {
+  const state = path.join(root, 'state'), file = path.join(root, 'config.json');
+  const lock = path.join(state, 'volc-voice-budget.lock');
+  if (fs.existsSync(file)) return false;
+  fs.mkdirSync(state, { recursive: true });
+  const stat = fs.lstatSync(state);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('配置状态目录无效');
+  fs.mkdirSync(lock);
+  try {
+    if (fs.existsSync(file)) return false;
+    const bytes = fs.readFileSync(path.join(root, 'config.example.json'));
+    const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^﻿/, ''));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('配置模板无效');
+    const temp = `${file}.${crypto.randomUUID()}.tmp`;
+    try {
+      const fd = fs.openSync(temp, 'wx', 0o600);
+      try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      try { fs.linkSync(temp, file); } catch (error) { if (error.code === 'EEXIST') return false; throw error; }
+      return true;
+    } finally { try { fs.unlinkSync(temp); } catch {} }
+  } finally { try { fs.rmdirSync(lock); } catch {} }
+}
 
 function run(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', windowsHide: true, shell: process.platform === 'win32', ...opts });
@@ -147,11 +171,12 @@ async function main() {
   else { bad(`注册失败（可手动重跑：node scripts\\setup-dsh.mjs ${profile}）\n${setup.out.slice(-600)}`); }
 
   step(5, '生成本地配置');
-  const cfg = path.join(TARGET, 'config.json');
-  if (fs.existsSync(cfg)) ok('config.json 已存在（不覆盖）');
-  else {
-    fs.copyFileSync(path.join(TARGET, 'config.example.json'), cfg);
-    ok('已生成 config.json（里面的白名单先留空，稍后在一键安装里勾）');
+  try {
+    if (initializeConfig(TARGET)) ok('已生成 config.json（里面的白名单先留空，稍后在一键安装里勾）');
+    else ok('config.json 已存在（不覆盖）');
+  } catch {
+    bad('配置初始化失败；保留现有文件，检查状态目录及并发操作后重试。');
+    return;
   }
 
   step(6, '完成');

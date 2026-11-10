@@ -24,6 +24,8 @@ const ok = (cond, label, extra = '') => {
   fs.writeFileSync(file, '{"a":2}');
   const s2 = fileStamp(file);
   ok(s1 !== s2, '文件改动后戳变化');
+  const stat = fs.statSync(file); fs.writeFileSync(file, '{"a":3}'); fs.utimesSync(file, stat.atime, stat.mtime);
+  ok(fileStamp(file) !== s2, '同尺寸同时间戳修改仍改变内容戳');
   ok(isStale(s1, s2) === true, '旧戳对不上新戳 → 过期');
   ok(isStale(s2, s2) === false, '同戳 → 未过期');
   ok(isStale('', s2) === false, '没带戳（旧客户端）→ 不过期');
@@ -56,7 +58,7 @@ const ok = (cond, label, extra = '') => {
   const src = fs.readFileSync(path.resolve('plugins/surfcore/lib/index.js'), 'utf8');
   ok(src.includes('CONFIG_STALE'), '保存冲突返回 CONFIG_STALE');
   ok(src.includes('baseStamp'), '保存读取客户端带来的戳');
-  ok(/stamps: \{[\s\S]{0,200}qq: fileStamp\(QQ_CONFIG\)/.test(src), 'GET /config 返回 qq 戳');
+  ok(/withVolcBudgetLock\(QQ_CONFIG, \(\) => \(\{ all: readAll\(\), stamp: fileStamp\(QQ_CONFIG\) \}\)\)/.test(src) && /qq: snapshot\.stamp/.test(src), 'GET /config 在共享锁内读取配置与内容戳');
 }
 
 // 5) 客户端：保存带戳、409 不盲目覆盖

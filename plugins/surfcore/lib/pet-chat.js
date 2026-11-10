@@ -30,6 +30,8 @@ import { buildCharacterContext } from '../../../src/core/context.js';
 import { adminFromSources } from '../../../src/admin-identity.js';
 import { appendMemoryInboxEvent } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
 import { synthesizeToFile, wavDurationMs } from '../../../src/voice-tts.js';
+import { startVoxdCloud } from '../../../src/voice-volc-budget.js';
+import { QQ_CONFIG } from './paths.js';
 
 const ONE_SECOND = 1000;
 const MAX_INPUT_CHARS = 1200;
@@ -223,6 +225,8 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       enabled: t.enabled === true,
       maxChars: clampInt(t.maxChars, 120, 20, 300),
       route,
+      cloudProvider: t.cloudProvider === 'volc' ? 'volc' : 'voxd',
+      selectionRevision: t.selectionRevision ?? 0,
       baseUrl: endpoints[route] || String(t.baseUrl || 'http://127.0.0.1:8765'),
       timeoutMs: clampInt(t.timeoutMs, 60000, 3000, 180000),
       character: String(t.character || ''),
@@ -519,6 +523,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     if (typeof event.enabled === 'boolean') out.enabled = event.enabled;
     if (event.text) out.text = event.text;
     if (event.modality) out.modality = event.modality;
+    if (event.voice && event.voice.ok === false) out.voice = event.voice;
     if (event.audioKey) {
       const file = path.join(voiceDir, `${event.audioKey}.wav`);
       try {
@@ -556,12 +561,17 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
   // ── 语音 ────────────────────────────────────────────────────────────────
   async function synthesize(text) {
     const v = voiceSettings();
-    if (!v.enabled) return { ok: false, error: '语音合成未开启（设置 → 语音 → TTS）' };
+    if (!v.enabled) return { ok: false, code: 'VOICE_TTS_DISABLED', error: '语音合成未开启。', hint: '在语音设置中启用所选服务。' };
     const spoken = clipForVoice(stripStageDirections(text), v.maxChars);
-    if (!spoken) return { ok: false, error: '没有可念的内容' };
+    if (!spoken) return { ok: false, code: 'VOICE_TEXT_EMPTY', error: '没有可念的内容。', hint: '输入非空文字后重试。' };
+    if (v.route === 'cloud' && v.cloudProvider === 'volc') {
+      const failure = { ok: false, code: 'VOICE_PET_VOLC_UNSUPPORTED', error: '桌宠暂不支持火山语音，已用文字回复。', hint: '如需桌宠语音，请选择本地或旧云端服务；选择火山时可继续使用文字。' };
+      lastError = `${failure.error} ${failure.hint}`;
+      return failure;
+    }
     ensureDirs();
     try {
-      const result = await synthesizeToFile({
+      const request = () => synthesizeToFile({
         text: spoken,
         character: v.character,
         baseUrl: v.baseUrl,
@@ -569,14 +579,20 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
         cacheVersion: v.cacheVersion,
         outDir: voiceDir,
       });
+      const result = await (v.route === 'cloud' ? startVoxdCloud(QQ_CONFIG, {
+        route: v.route, endpoint: v.baseUrl.replace(/\/+$/, ''), selectionRevision: v.selectionRevision,
+      }, request) : request());
       const key = path.basename(result.path, '.wav');
       audioFiles.set(key, result.path);
       return { ok: true, key, durationMs: result.durationMs, text: spoken };
     } catch (error) {
-      const message = String(error?.message ?? error).slice(0, 200);
-      lastError = `语音合成失败：${message}`;
-      pluginLog('[pet-chat] 语音合成失败：', message);
-      return { ok: false, error: message };
+      const isChanged = error?.code === 'VOICE_TTS_CONFIG_CHANGED';
+      const failure = { ok: false, code: isChanged ? error.code : 'VOICE_PET_SYNTH_FAILED',
+        error: isChanged ? '语音服务配置已变更，已用文字回复。' : '语音合成失败，已用文字回复。',
+        hint: isChanged ? '确认所选服务，重新打开桌宠后再试。' : '检查所选语音服务和设置后重试。' };
+      lastError = `${failure.error} ${failure.hint}`;
+      pluginLog('[pet-chat] 语音合成失败：', failure.code);
+      return failure;
     }
   }
 
@@ -777,8 +793,10 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       const now = Date.now();
       const userMessage = { id: `u-${now}-${tokenHash(say).slice(0, 6)}`, role: 'user', text: say, modality: mode, at: now };
       const aiMessage = { id: `a-${now}-${tokenHash(reply).slice(0, 6)}`, role: 'assistant', text: reply, modality: mode, at: now };
+      let voiceFailure = null;
       if (mode === 'voice') {
         const tts = await synthesize(reply);
+        if (!tts.ok) voiceFailure = tts;
         if (tts.ok) {
           aiMessage.audioKey = tts.key;
           aiMessage.spokenText = tts.text;
@@ -796,14 +814,14 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
         roleName: role.name,
       }));
       lastChatAt = now;
-      lastError = '';
+      lastError = voiceFailure ? [voiceFailure.error, voiceFailure.hint].filter(Boolean).join(' ') : '';
       return {
         ok: true,
         reply: publicMessage(aiMessage),
         userMessage,
         latencyMs: Date.now() - startedAt,
         remembered,
-        voice: aiMessage.audioKey ? { ok: true, key: aiMessage.audioKey } : (mode === 'voice' ? { ok: false, error: lastError || '语音合成失败，已用文字回复' } : null),
+        voice: aiMessage.audioKey ? { ok: true, key: aiMessage.audioKey } : (mode === 'voice' ? voiceFailure || { ok: false, error: '语音合成失败，已用文字回复' } : null),
       };
     } catch (error) {
       lastError = String(error?.message ?? error).slice(0, 200);
@@ -825,8 +843,10 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     const now = Date.now();
     const history = readHistory();
     const message = { id: `p-${now}-${tokenHash(body).slice(0, 6)}`, role: 'assistant', text: body, modality: mode, at: now, proactive: true };
+    let voiceFailure = null;
     if (mode === 'voice') {
       const tts = await synthesize(body);
+      if (!tts.ok) voiceFailure = tts;
       if (tts.ok) {
         message.audioKey = tts.key;
         message.spokenText = tts.text;
@@ -842,11 +862,13 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       roleName: roleInfo().name,
     }));
     lastProactiveAt = now;
+    if (mode === 'voice') lastError = voiceFailure ? [voiceFailure.error, voiceFailure.hint].filter(Boolean).join(' ') : '';
     emit({
       type: 'proactive',
       text: body,
       modality: mode,
       audioKey: message.audioKey || '',
+      voice: voiceFailure,
       messageId: message.id,
       purpose: purpose ? { kind: purpose.kind || '', need: purpose.need || '', text: sliceHead(purpose.text || '', 120) } : null,
     });
@@ -854,7 +876,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       ok: true,
       message: publicMessage(message),
       remembered,
-      voice: message.audioKey ? { ok: true } : (mode === 'voice' ? { ok: false, error: lastError || '语音合成失败' } : null),
+      voice: message.audioKey ? { ok: true } : (mode === 'voice' ? voiceFailure || { ok: false, error: '语音合成失败' } : null),
     };
   }
 

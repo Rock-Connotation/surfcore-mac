@@ -35,6 +35,10 @@ import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, p
 import { createVoiceManagement } from './voice-management.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { synthesizeToFile } from './voice-tts.js';
+import { encodeVoiceRecord } from './voice-record.js';
+import { readVolcKey } from './voice-volc-key.js';
+import { startVoxdCloud } from './voice-volc-budget.js';
+import { commitQqConfigPatch, transactQqConfig } from './qq-config-transaction.js';
 import { classifyVoiceError, pickFallbackRoute } from './voice-diagnostics.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
@@ -260,12 +264,14 @@ function readJsonSafe(file, fallback, required = false) {
  * 所以：不是普通对象就抛错，让调用方的 try/catch 返回 500（与各端点注释里
  * "配置文件损坏时直接 500，绝不回写" 的既有约定一致）。
  */
+const qqConfigSnapshots = new WeakMap();
 function readConfigObject(file) {
   const parsed = readJsonSafe(file, null, true);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     const kind = parsed === null ? 'null' : Array.isArray(parsed) ? '数组' : typeof parsed;
     throw new Error(`config.json 顶层不是对象（实际是 ${kind}），已拒绝改写以免覆盖整份配置：${file}`);
   }
+  if (path.resolve(file) === path.resolve(CONFIG_FILE)) qqConfigSnapshots.set(parsed, structuredClone(parsed));
   return parsed;
 }
 
@@ -292,6 +298,12 @@ function renameWithRetry(from, to, attempts = 4) {
 
 // 原子写 JSON 文件：先写唯一临时文件再 rename，避免进程中断写坏配置，也避免固定临时名被并发/符号链接攻击利用。
 function atomicWriteJson(file, obj) {
+  if (path.resolve(file) === path.resolve(CONFIG_FILE)) {
+    const base = qqConfigSnapshots.get(obj);
+    if (!base) throw Object.assign(new Error('QQ 配置缺少安全快照。'), { code: 'QQ_CONFIG_SNAPSHOT_MISSING', hint: '重新读取配置后重试。' });
+    commitQqConfigPatch(file, base, obj);
+    return;
+  }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {
@@ -2136,6 +2148,7 @@ async function main() {
       loudness: v.loudness || 'normal',
       ffmpegPath: process.env.FFMPEG_PATH || v.ffmpegPath || null,
       autoReadback: v.autoReadback !== false,
+      recordTransport: v.recordTransport === 'base64' ? 'base64' : 'path',
       // 谁能触发 AI 发语音：owner（默认）/ anyone / list
       trigger: {
         who: ['owner', 'anyone', 'list'].includes(String(v.trigger?.who)) ? String(v.trigger.who) : 'owner',
@@ -2147,6 +2160,9 @@ async function main() {
       // 默认关闭：没装 voxd 时打开只会得到一串 502。
       tts: {
         enabled: v.tts?.enabled === true,
+        cloudProvider: v.tts?.cloudProvider === 'volc' ? 'volc' : 'voxd',
+        volcKeyId: v.tts?.volcKeyId,
+        selectionRevision: v.tts?.selectionRevision ?? 0,
         baseUrl: String(v.tts?.baseUrl || 'http://127.0.0.1:8765'),
         timeoutMs: Number(v.tts?.timeoutMs) > 0 ? Number(v.tts.timeoutMs) : 60000,
         maxChars: Number(v.tts?.maxChars) > 0 ? Number(v.tts.maxChars) : 120,
@@ -2170,6 +2186,11 @@ async function main() {
       const file = path.join(STATE_DIR, 'voice-errors.log');
       fs.appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...record }) + String.fromCharCode(10));
     } catch {}
+  }
+
+  function logVolcFailure(code, route = 'cloud') {
+    const allowed = new Set(['VOICE_VOLC_KEY_INVALID', 'VOICE_VOLC_TEXT_INVALID', 'VOICE_VOLC_TIMEOUT', 'VOICE_VOLC_FAILED', 'VOICE_VOLC_CONFIG_CHANGED', 'VOICE_TTS_CONFIG_CHANGED', 'VOICE_TTS_DISABLED', 'VOICE_CONFIG_INVALID', 'VOICE_VOLC_BUDGET_BUSY', 'VOICE_VOLC_BUDGET_UNAVAILABLE', 'VOICE_VOLC_BUDGET_EXHAUSTED']);
+    logVoiceError({ scope: 'synth', route, code: allowed.has(code) ? code : 'VOICE_VOLC_FAILED', stage: 'provider', message: '语音服务合成失败或配置变更', hint: '请查看语音设置与当前界面提示。', fallback: '' });
   }
 
   /** 给错误补上 code/hint/stage，让上层接口能把「谁的锅」写清楚（AGENTS 1.7）。 */
@@ -2201,7 +2222,16 @@ async function main() {
     const primary = ['local', 'cloud'].includes(String(route)) ? String(route) : vc.tts.route;
     const endpointOf = (r) => String(vc.tts.endpoints?.[r] || vc.tts.baseUrl || '').replace(/\/+$/, '');
 
-    const attempt = (r) => synthesizeToFile({
+    const attempt = (r) => {
+      const isVolc = r === 'cloud' && vc.tts.cloudProvider === 'volc';
+      let apiKey;
+      if (isVolc) {
+        try { apiKey = readVolcKey(CONFIG_FILE, vc.tts.volcKeyId); }
+        catch { apiKey = ''; }
+      }
+      const synthesize = () => synthesizeToFile({
+      provider: isVolc ? 'volc' : 'voxd', apiKey,
+      budget: isVolc ? { configFile: CONFIG_FILE, keyId: vc.tts.volcKeyId, selectionRevision: vc.tts.selectionRevision, maxPerMinute: vc.maxPerMinute, maxPerHour: vc.maxPerHour } : undefined,
       text: say,
       character: voice ? '' : character || vc.tts.character,
       voice: voice || '',
@@ -2209,14 +2239,22 @@ async function main() {
       timeoutMs: vc.tts.timeoutMs,
       cacheVersion: vc.tts.cacheVersion ?? null,
       outDir: vc.tts.dir
-    });
+      });
+      if (r === 'cloud' && !isVolc) return startVoxdCloud(CONFIG_FILE, { route: vc.tts.route, endpoint: endpointOf('cloud'), selectionRevision: vc.tts.selectionRevision }, synthesize);
+      return synthesize();
+    };
 
     let first = null;
     try {
       first = await attempt(primary);
     } catch (error) {
+      if ((primary === 'cloud' && vc.tts.cloudProvider === 'volc' && error?.code && error?.hint) ||
+          (typeof error?.code === 'string' && ['VOICE_TTS_CONFIG_CHANGED', 'VOICE_VOLC_BUDGET_BUSY', 'VOICE_VOLC_BUDGET_UNAVAILABLE'].includes(error.code))) {
+        logVolcFailure(error.code, primary);
+        throw error;
+      }
       const info = classifyVoiceError(error?.message ?? error);
-      const fallback = pickFallbackRoute(primary, vc.tts.endpoints, info.code);
+      const fallback = vc.tts.cloudProvider === 'volc' ? null : pickFallbackRoute(primary, vc.tts.endpoints, info.code);
       logVoiceError({
         scope: 'synth', route: primary, code: info.code, stage: info.stage,
         message: String(error?.message ?? error).slice(0, 400), fallback: fallback || '',
@@ -2228,6 +2266,10 @@ async function main() {
           logVoiceError({ scope: 'synth', route: fallback, code: 'voice.recovered', stage: 'fallback', message: `主路 ${primary} 失败后已用 ${fallback} 合成成功` });
           return { path: second.path, via: 'tts', ttsCached: second.cached, ttsDurationMs: second.durationMs, degraded: true, degradedFrom: primary, route: fallback };
         } catch (error2) {
+          if (['VOICE_TTS_CONFIG_CHANGED', 'VOICE_VOLC_BUDGET_BUSY', 'VOICE_VOLC_BUDGET_UNAVAILABLE'].includes(error2?.code)) {
+            logVoiceError({ scope: 'synth', route: fallback, code: error2.code, stage: 'provider', message: '语音服务配置变更或锁不可用', fallback: '' });
+            throw error2;
+          }
           const info2 = classifyVoiceError(error2?.message ?? error2);
           logVoiceError({ scope: 'synth', route: fallback, code: info2.code, stage: info2.stage, message: String(error2?.message ?? error2).slice(0, 400), fallback: '' });
           const err = codedVoiceError(error2, info2);
@@ -2426,7 +2468,23 @@ async function main() {
 
     const assertSendAllowed = guard ? captureSendGuard(key) : null;
     const [kind, id] = key.split(':');
-    const recordSegment = { type: 'record', data: { file: sendPath } };
+    let recordFile = sendPath;
+    if (vc.recordTransport === 'base64') {
+      try {
+        const before = fs.lstatSync(sendPath);
+        if (!before.isFile() || before.isSymbolicLink()) throw new Error('音频不是普通文件');
+        const checked = await inspectAudio(sendPath, { maxBytes: vc.maxBytes, maxSeconds: vc.maxSeconds });
+        if (!checked.ok) throw new Error(checked.error);
+        recordFile = encodeVoiceRecord(sendPath, vc.maxBytes, before);
+      } catch (error) {
+        cleanupTemp(processed.path, processed.converted);
+        const err = new Error('音频无法安全传给容器网关。');
+        err.code = 'VOICE_RECORD_INVALID';
+        err.hint = '检查音频文件和大小限制后重试。';
+        throw err;
+      }
+    }
+    const recordSegment = { type: 'record', data: { file: recordFile } };
     let resolveSend;
     let rejectSend;
     const sendPromise = new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; });
@@ -3207,9 +3265,7 @@ async function main() {
         log(`DSH 端口探测：${cfg.dsh.baseUrl || '（未配置）'} 连不上，实际在运行的是 ${found}，本次改用它（并写回 config.json）`);
         cfg.dsh.baseUrl = found;
         try {
-          const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-          raw.dsh = { ...(raw.dsh ?? {}), baseUrl: found };
-          fs.writeFileSync(CONFIG_FILE, `${JSON.stringify(raw, null, 2)}\n`);
+          transactQqConfig(CONFIG_FILE, raw => { raw.dsh = { ...(raw.dsh ?? {}), baseUrl: found }; }, { requireExisting: true });
         } catch (error) {
           log(`写回 dsh.baseUrl 失败（不影响本次运行）：${error?.message ?? error}`);
         }
@@ -3949,6 +4005,7 @@ async function main() {
     goodSource: '',       // 'heartbeat' | 'get_status' —— 便于诊断"这条判断从哪来"
     goodError: '',
     goodCheckedAt: 0,
+    configWriteFailure: null,
     degraded: false,      // 当前是否处于"已告警"状态（边沿触发，避免刷屏）
     reason: '',
     lastSendOkAt: 0,      // 最近一次真实 QQ 发送成功
@@ -4078,6 +4135,7 @@ async function main() {
   }
 
   function reconcileAllowlist(reason = 'boot') {
+    const previousAllow = cfg.allow;
     try {
       const { allow, changed, warnings } = normalizeAllowlist({
         allow: cfg.allow,
@@ -4115,7 +4173,12 @@ async function main() {
       });
       return true;
     } catch (error) {
-      log(`[allow] 自愈失败（${reason}）：${error?.message ?? error}`);
+      cfg.allow = previousAllow;
+      log(`[allow] 自愈失败（${reason}）：${error?.code || 'QQ_CONFIG_WRITE_FAILED'}`);
+      try { gateEvents.record({ gate: 'allowlist', kind: 'config', event: 'config-write-failed', action: 'blocked',
+        reason: { code: error?.code || 'QQ_CONFIG_WRITE_FAILED', message: '白名单配置未保存。' },
+        impact: '白名单保持原状。', recommendation: '等待并发操作结束，核对配置后重试。', confidence: 'confirmed', dedupeKey: 'allowlist:write-failed' }); }
+      catch { log('[allow] 无法记录配置失败告警'); }
       return false;
     }
   }
@@ -4321,6 +4384,7 @@ async function main() {
       good: snowlumaHealth.good,
       goodSource: snowlumaHealth.goodSource || null,
       goodError: snowlumaHealth.goodError || null,
+      configWriteFailure: snowlumaHealth.configWriteFailure,
       lastPacketAgoMs: agoMs,
       lastPacketKind: snowlumaHealth.lastPacketKind || null,
       silent,
@@ -7382,6 +7446,21 @@ async function main() {
         if (url.pathname === '/api/voice/tts-check' && req.method === 'POST') {
           const vc = voiceCfg();
           const route = ['local', 'cloud'].includes(String(vc.tts.route)) ? vc.tts.route : 'local';
+          if (route === 'cloud' && vc.tts.cloudProvider === 'volc') {
+            const result = await voiceManagement.dispatch({ method: 'POST', pathname: '/tts-check' });
+            const toolOn = v2ToolEnabled('sendVoice'), ready = vc.enabled && toolOn;
+            const code = !vc.enabled ? 'VOICE_DISABLED' : 'VOICE_TOOL_DISABLED';
+            const hint = '设置 → SurfCore → 语音：打开并保存发送总闸与「发语音」工具，按提示重启。';
+            const stage = { name: 'send', ok: ready, detail: `发送总闸${vc.enabled ? '开' : '关'} · 工具${toolOn ? '开' : '关'}；目标授权、频率与网关状态需发送时另行检查。`,
+              ...(ready ? {} : { code, hint }) };
+            const data = result.data || {};
+            if (data.ok !== true) logVolcFailure(data.code);
+            const stages = Array.isArray(data.stages) ? [...data.stages, stage] : [stage];
+            const preconditionFailure = data.ok === true && !ready;
+            sendJson({ ...data, ok: data.ok === true && ready, stages,
+              ...(preconditionFailure ? { code, error: '合成成功，但语音发送前置开关未开启。', hint } : {}) }, result.status);
+            return;
+          }
           const endpoint = String(vc.tts.endpoints?.[route] || vc.tts.baseUrl || '').replace(/\/+$/, '');
           const stages = [];
           // 1) 服务可达
@@ -7428,7 +7507,7 @@ async function main() {
           return;
         }
 
-        if (url.pathname === '/api/voice/rules' || url.pathname === '/api/voice/packs' || url.pathname.startsWith('/api/voice/packs/')) {
+        if (url.pathname === '/api/voice/volc-config' || url.pathname === '/api/voice/rules' || url.pathname === '/api/voice/packs' || url.pathname.startsWith('/api/voice/packs/')) {
           const result = await voiceManagement.dispatch({method:req.method,pathname:url.pathname.slice('/api/voice'.length),
             query:url.searchParams,body:req.method==='POST' ? await readBody() : {}});
           if (result.buffer) { res.writeHead(result.status,{...SECURITY_HEADERS,...result.headers}); res.end(result.buffer); }
@@ -7464,9 +7543,20 @@ async function main() {
             }, 403);
             return;
           }
+          try { resolveAudioProcessing({ volume: body.volume ?? voice.defaultVolume, normalize: body.normalize === true, loudness: body.loudness ?? voice.loudness }); }
+          catch { sendJson({ ok: false, code: 'VOICE_AUDIO_OPTIONS_INVALID', error: '音频选项无效。', hint: '检查音量和响度后重试。' }, 400); return; }
           const opText = String(body.text ?? '').trim();
+          const opRoute = ['local', 'cloud'].includes(String(body.route)) ? String(body.route) : voice.tts.route;
+          if (body.dryRun === true && opText) {
+            const maxChars = opRoute === 'cloud' && voice.tts.cloudProvider === 'volc' ? Math.min(voice.tts.maxChars, 120) : voice.tts.maxChars;
+            if (!voice.tts.enabled || opText.length > maxChars) {
+              sendJson({ ok: false, code: 'VOICE_TTS_TEXT_INVALID', error: '语音合成未启用或文字超长。', hint: `启用语音合成并输入不超过${maxChars}字的文字。` }, 400); return;
+            }
+            sendJson({ ok: true, dryRun: true, key, via: 'tts', detail: '仅检查参数，未合成音频。' }); return;
+          }
           let resolved;
           try {
+            if (opText && opRoute === 'cloud' && voice.tts.cloudProvider === 'volc') voiceBudgetCheck('operator:cli', voice);
             resolved = opText
               ? await synthesizeVoiceText(opText, {
                   character: body.character ? String(body.character) : '',
@@ -7477,17 +7567,6 @@ async function main() {
           } catch (error) {
             const msg = error?.message ?? String(error);
             sendJson({ ok: false, code: error?.code || '', hint: error?.hint || '', error: msg }, /语音合成|TTS|voice\./.test(msg) ? 502 : 400);
-            return;
-          }
-          // 音量参数先校验（写错了当场告诉你，不要等到发的时候才炸）
-          try {
-            resolveAudioProcessing({
-              volume: body.volume ?? voice.defaultVolume,
-              normalize: body.normalize === true,
-              loudness: body.loudness ?? voice.loudness
-            });
-          } catch (error) {
-            sendJson({ ok: false, error: error.message }, 400);
             return;
           }
           const probe = await inspectAudio(resolved.path, { maxBytes: voice.maxBytes, maxSeconds: voice.maxSeconds });
@@ -7614,6 +7693,18 @@ async function main() {
           const libRef = body.voice ?? body.file ?? '';
           if (sayText && libRef) { sendJson({ ok: false, error: 'text 和 voice 只能传一个' }, 400); return; }
           if (!sayText && !libRef) { sendJson({ ok: false, error: '缺少 text 或 voice（二选一）' }, 400); return; }
+          try { resolveAudioProcessing({ volume: body.volume ?? voice.defaultVolume, normalize: body.normalize === true, loudness: body.loudness ?? voice.loudness }); }
+          catch { sendJson({ ok: false, code: 'VOICE_AUDIO_OPTIONS_INVALID', error: '音频选项无效。', hint: '检查音量和响度后重试。' }, 400); return; }
+          const dryRoute = ['local', 'cloud'].includes(String(body.route)) ? String(body.route) : voice.tts.route;
+          if (body.dryRun === true && sayText) {
+            const maxChars = dryRoute === 'cloud' && voice.tts.cloudProvider === 'volc' ? Math.min(voice.tts.maxChars, 120) : voice.tts.maxChars;
+            if (!voice.tts.enabled || sayText.length > maxChars) {
+              sendJson({ ok: false, code: 'VOICE_TTS_TEXT_INVALID', error: '语音合成未启用或文字超长。', hint: `启用语音合成并输入不超过${maxChars}字的文字。` }, 400); return;
+            }
+            try { voiceBudgetCheck(key, voice); }
+            catch (error) { sendJson({ ok: false, code: error.code, error: error.message, hint: error.hint }, 429); return; }
+            sendJson({ ok: true, dryRun: true, key, detail: '仅检查参数，未合成音频。' }); return;
+          }
 
           let resolved = null;
           if (sayText) {
@@ -9303,8 +9394,9 @@ async function main() {
         }
         sendJson({ ok: false, error: 'not found' }, 404);
       } catch (error) {
-        const status = Number(error?.statusCode) || 500;
-        sendJson({ ok: false, error: error?.message ?? String(error) }, status);
+        const structured = typeof error?.code === 'string' && Boolean(error?.hint);
+        const status = Number(error?.statusCode) || (structured ? 409 : 500);
+        sendJson({ ok: false, error: error?.message ?? String(error), ...(structured ? { code: error.code, hint: error.hint } : {}) }, status);
       }
     });
     server.once('close', () => { void voiceManagement.dispose().catch(() => {}); });
@@ -17037,6 +17129,13 @@ async function main() {
    *   - bot.accessToken          → WebSocket 连接（桥接的主链路，端口 3001）
    * 只修其中一个的话，桥接仍会以 1006 反复重连（实测踩过）。
    */
+  function recordQqConfigWriteFailure(error) {
+    const allowed = new Set(['VOICE_VOLC_BUDGET_BUSY', 'VOICE_VOLC_BUDGET_UNAVAILABLE', 'CONFIG_STALE', 'QQ_CONFIG_INVALID', 'QQ_CONFIG_MISSING']);
+    const code = allowed.has(error?.code) ? error.code : 'QQ_CONFIG_WRITE_FAILED';
+    snowlumaHealth.configWriteFailure = { ok: false, code, error: '连接配置未能持久保存。', hint: '保留现有配置，等待并发操作结束并检查配置权限后重新连接。' };
+    log(`⚠️ 连接配置未能持久保存（${code}）`);
+  }
+
   async function applyHealedTokens(r) {
     const httpToken = r.token;
     const wsToken = r.wsToken || r.token;
@@ -17058,9 +17157,9 @@ async function main() {
     // 端口也是 per-account 的（实测：换账号后 WS 从 3001 之类变到别的端口），
     // 只换 token 不换 URL 会一直 1006 重连。
     bot.url = wsUrl;
-    if (wsChanged) log(`🔄 SnowLuma WS 连接已更新：${wsUrl}（token ${String(wsToken).slice(0, 4)}…）`);
+    if (wsChanged) log('🔄 SnowLuma WS 连接参数已更新');
     if (cfg.snowluma.accessToken !== httpToken) {
-      log(`🔄 SnowLuma HTTP token 已更新（来源 ${r.source}）：${String(cfg.snowluma.accessToken).slice(0, 4)}… → ${String(httpToken).slice(0, 4)}…`);
+      log('🔄 SnowLuma HTTP 连接凭据已更新');
       cfg.snowluma.accessToken = httpToken;
     }
     if (!followEndpoint && r.wsUrl && r.wsUrl !== cfg.snowluma.wsUrl) {
@@ -17077,11 +17176,12 @@ async function main() {
         accessToken: httpToken,
         ...(followEndpoint ? { wsUrl, httpUrl: r.baseUrl } : {})
       });
+      snowlumaHealth.configWriteFailure = null;
       if (w.updated) log(`   已写回 config.json：${Object.keys(w.changed).join(' / ')}`);
       else log('   config.json 端点已是最新，无需改写');
       if (!followEndpoint && previousWsUrl !== wsUrl) cfg.snowluma.wsUrl = previousWsUrl;
     } catch (error) {
-      log(`   ⚠️ 写回 config.json 失败：${error?.message ?? error}`);
+      recordQqConfigWriteFailure(error);
     }
     // 更新了就让 SDK 立刻用新参数重连（否则要等下一轮退避，最长要好几秒）
     if (wsChanged) {
@@ -17098,7 +17198,8 @@ async function main() {
       // 只记「已写回」，不打印 token 片段：日志会被贴进 issue / 截图，
       // 前 4 个字符同样是凭据的一部分（CWE-532，见 PR #13）。
       if (r.updated) log('🔄 已把当前 token 写回 config.json');
-    } catch {}
+      snowlumaHealth.configWriteFailure = null;
+    } catch (error) { recordQqConfigWriteFailure(error); }
   }
 
   let tokenHealAt = 0;

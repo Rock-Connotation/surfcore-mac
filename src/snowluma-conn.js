@@ -15,6 +15,7 @@
 // 这样换账号后无需手改任何配置，工具自动跟上。
 import fs from 'node:fs';
 import path from 'node:path';
+import { transactQqConfig } from './qq-config-transaction.js';
 
 /**
  * SnowLuma 主目录的常见位置。
@@ -193,11 +194,8 @@ export async function discoverSnowLumaConnection({
  * 既有调用方与测试按这个形状断言（重构时改成 changed 曾把测试打红）。
  */
 export function persistToken(cfgPath, newToken) {
-  let text = fs.readFileSync(cfgPath, 'utf8');
-  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-  const old = String(JSON.parse(text).snowluma?.accessToken ?? '');
-  const r = persistSnowLumaEndpoint(cfgPath, { accessToken: newToken });
-  return { updated: r.updated, from: old, to: newToken };
+  const result = persistEndpointTransaction(cfgPath, { accessToken: newToken });
+  return { updated: result.updated, from: result.previousToken, to: newToken };
 }
 
 /**
@@ -205,30 +203,24 @@ export function persistToken(cfgPath, newToken) {
  * 只写传进来的字段，其它配置一律不动；全部一致时不写文件（幂等）。
  * 返回 { updated, changed: {...} }。
  */
-export function persistSnowLumaEndpoint(cfgPath, { accessToken, wsUrl, httpUrl } = {}) {
-  let text = fs.readFileSync(cfgPath, 'utf8');
-  // 读的时候必须吃掉 BOM，否则 JSON.parse 会抛「Unexpected token」。
-  const hadBom = text.charCodeAt(0) === 0xFEFF;
-  if (hadBom) text = text.slice(1);
-  const cfg = JSON.parse(text);
-  const cur = cfg.snowluma ?? {};
-  const next = { ...cur };
-  const changed = {};
-  const consider = (key, value) => {
-    if (value === undefined || value === null || value === '') return;
-    if (String(cur[key] ?? '') === String(value)) return;
-    changed[key] = { from: cur[key] ?? null, to: value };
-    next[key] = value;
-  };
-  consider('accessToken', accessToken);
-  consider('wsUrl', wsUrl);
-  consider('httpUrl', httpUrl);
-  if (Object.keys(changed).length === 0) return { updated: false, changed: {} };
-  cfg.snowluma = next;
-  // 原来 hadBom 只用于读、没用回写：用户文件带 UTF-8 BOM 时，我们改一个 token 就把 BOM 吞掉了
-  // —— 那是对用户文件的**字节级**静默改动（Windows 编辑器/工具常写 BOM），会让文件在 git 里
-  // 显示成整文件重写，也可能影响按字节读它的其它程序。只改该改的字段，编码原样保留。
-  const serialized = JSON.stringify(cfg, null, 2) + '\n';
-  fs.writeFileSync(cfgPath, hadBom ? `\uFEFF${serialized}` : serialized, 'utf8');
-  return { updated: true, changed };
+function persistEndpointTransaction(cfgPath, { accessToken, wsUrl, httpUrl } = {}) {
+  return transactQqConfig(path.resolve(cfgPath), cfg => {
+    if (cfg.snowluma != null && (typeof cfg.snowluma !== 'object' || Array.isArray(cfg.snowluma)))
+      throw Object.assign(new Error('网关配置不是对象。'), { code: 'QQ_CONFIG_INVALID', hint: '检查并保留原配置，修复后重试。' });
+    const cur = cfg.snowluma ?? {};
+    const next = { ...cur }, changed = {};
+    const consider = (key, value) => {
+      if (value === undefined || value === null || value === '' || String(cur[key] ?? '') === String(value)) return;
+      changed[key] = { from: cur[key] ?? null, to: value };
+      next[key] = value;
+    };
+    consider('accessToken', accessToken); consider('wsUrl', wsUrl); consider('httpUrl', httpUrl);
+    if (Object.keys(changed).length) cfg.snowluma = next;
+    return { updated: Object.keys(changed).length > 0, changed, previousToken: String(cur.accessToken ?? '') };
+  }, { requireExisting: true }).result;
+}
+
+export function persistSnowLumaEndpoint(cfgPath, values = {}) {
+  const { updated, changed } = persistEndpointTransaction(cfgPath, values);
+  return { updated, changed };
 }

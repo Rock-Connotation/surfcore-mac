@@ -129,12 +129,9 @@ else { Ok '已注册' }
 
 # ── 5. 配置 ───────────────────────────────────────────────
 Step 5 '生成本地配置'
-$cfg = Join-Path $Dir 'config.json'
-if (Test-Path $cfg) { Ok 'config.json 已存在（不覆盖）' }
-else {
-  Copy-Item (Join-Path $Dir 'config.example.json') $cfg
-  Ok '已生成 config.json（白名单稍后在界面里勾）'
-}
+& $nodeExe (Join-Path $Dir 'scripts\init-qq-config.mjs') $Dir
+if ($LASTEXITCODE -ne 0) { Bad '配置初始化失败，已保留已有文件；检查目录与锁后重试'; return }
+Ok '配置初始化完成（已有文件不会覆盖）'
 
 # ── 6. 下一步 ─────────────────────────────────────────────
 Step 6 '完成'
