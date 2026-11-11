@@ -23,6 +23,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { syncBudgetFiles } from './token-budget-sync.mjs';
+import { acquireBudgetOwnership, createModelCallAdmission } from './token-budget-admission.mjs';
 import { usageOfEvent } from '../../../src/token-ledger.js';
 import {
   addBuckets,
@@ -136,6 +137,9 @@ export function createTokenBudgetService({
   const slangFile = path.join(qqStateDir, 'slang-session.json');
   const qqSessionsFile = path.join(qqStateDir, 'sessions.json');
 
+  const ownership = acquireBudgetOwnership(dir);
+  let canonicalError = null;
+  let projectionError = null;
   let limits = readBudget(dir, budgetFallbackFromQqConfig(getQqConfigSafe()));
   let state = loadState();
   let bootstrapping = false;
@@ -154,6 +158,13 @@ export function createTokenBudgetService({
   const lastSeq = new Map();
   const retryAxis = new Map();
   const samples = new Map();
+
+  const admission = createModelCallAdmission({
+    initial: state.modelCalls, owner: ownership, now,
+    getLimits: () => refreshLimits(true),
+    legacyUsage: () => normalizeUsage(state.categories),
+    persist: () => persist(true, { durable: true, admissionCommit: true }),
+  });
 
   // ── 配置 / 分类辅助 ────────────────────────────────────────────────────
   function getQqConfigSafe() {
@@ -228,15 +239,30 @@ export function createTokenBudgetService({
 
   // ── 状态 ────────────────────────────────────────────────────────────────
   function loadState() {
-    const parsed = readJson(stateFile, null);
+    let parsed = null;
+    try {
+      parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      if (parsed === null) throw new Error('null budget state');
+    }
+    catch (error) {
+      if (error.code !== 'ENOENT') canonicalError = { ok: false, code: 'BUDGET_STATE_INVALID', error: 'The canonical budget state cannot be read.', hint: 'Restore a verified budget state before admitting calls.' };
+    }
     const out = {
       version: 1,
       day: null,
       updatedAt: 0,
       categories: emptyCategories(),
       sessions: {},
+      modelCalls: undefined,
     };
+    if (parsed !== null && !isPlainObject(parsed)) canonicalError = { ok: false, code: 'BUDGET_STATE_INVALID', error: 'The canonical budget state is invalid.', hint: 'Restore a verified budget state before admitting calls.' };
     if (!isPlainObject(parsed)) return out;
+    if (![1, 2].includes(parsed.version) || !/^\d{4}-\d{2}-\d{2}$/.test(parsed.day ?? '')
+      || !isPlainObject(parsed.categories) || !isPlainObject(parsed.sessions)
+      || Object.values(parsed.categories).some((bucket) => !isPlainObject(bucket)
+        || !Number.isFinite(bucket.cost) || bucket.cost < 0 || !Number.isSafeInteger(bucket.tokens) || bucket.tokens < 0)
+      || (parsed.version === 2 && !parsed.modelCalls)) canonicalError = { ok: false, code: 'BUDGET_STATE_INVALID', error: 'The canonical budget state is incomplete.', hint: 'Restore a verified budget state before admitting calls.' };
+    out.modelCalls = parsed.modelCalls;
     if (typeof parsed.day === 'string') out.day = parsed.day;
     out.updatedAt = num(parsed.updatedAt);
     out.categories = normalizeCategories(parsed.categories);
@@ -292,6 +318,7 @@ export function createTokenBudgetService({
         return;
       }
       let items = [];
+      let incomplete = false;
       try {
         const listed = await controller.list({});
         items = Array.isArray(listed?.items) ? listed.items : [];
@@ -345,7 +372,7 @@ export function createTokenBudgetService({
 
       for (const item of items) {
         const id = String(item?.sessionId ?? '');
-        if (!id) continue;
+        if (!id || admission.managesAgentSession(id)) continue;
         const category = sessionCategory.get(id) ?? classify(
           { id, agentPreset: item?.projections?.values?.agentPreset, parentSession: item?.parentSessionId },
           { sessionId: id, title: item?.projections?.values?.title, parentSessionId: item?.parentSessionId },
@@ -374,7 +401,7 @@ export function createTokenBudgetService({
 
         // 同一天热重载：只补上次落盘 seen 之后的增量，避免把已经算过的今天重复算一遍。
         // 跨天（或首次运行）不能用累计差——那样会把昨天的历史算进今天，必须回填事件日志。
-        if (!dayRolled && hadState && state.day === localDayKey(now())) {
+        if (!admission.hasRequests() && !dayRolled && hadState && state.day === localDayKey(now())) {
           if (totalTokensOf(entry.seen) <= totalTokensOf(cumulative)) {
             const delta = subBuckets(cumulative, entry.seen);
             if (totalTokensOf(delta) > 0) {
@@ -409,12 +436,13 @@ export function createTokenBudgetService({
             { id, agentPreset: meta.agentPreset ?? values.agentPreset, parentSession: meta.parentSession ?? item?.parentSessionId },
             { sessionId: id, title: values.title, parentSessionId: item?.parentSessionId },
           ) ?? category;
-          const summed = sumUsageEvents(events, {
+          const summed = sumUsageEvents(events.filter((event) => !admission.observes(event.data?.budgetRequestId)), {
             dayStart,
             fallbackModel: entry.model ?? model,
             priceTable,
             defaultModel,
           });
+          if (admission.hasRequests() && !dayRolled && hadState) addUsage(entry.category ?? finalCategory, -entry.dayTokens, -entry.dayCost);
           addUsage(finalCategory, summed.tokens, summed.cost);
           entry.category = finalCategory;
           entry.createdAt = num(meta.createdAt, entry.createdAt);
@@ -430,14 +458,13 @@ export function createTokenBudgetService({
           }
         } catch (error) {
           // 读不到日志不能把已经花掉的钱算成 0：至少把累计当成 seen，今天从下一笔开始算。
+          incomplete = true;
           entry.seen = { ...cumulative };
-          entry.dayTokens = 0;
-          entry.dayCost = 0;
           log(`[token-budget] 回填 ${id} 失败：${String(error?.message ?? error).slice(0, 160)}`);
         }
       }
 
-      bootstrapped = true;
+      bootstrapped = !incomplete;
     })().catch((error) => {
       log(`[token-budget] 初始化异常：${String(error?.message ?? error).slice(0, 200)}`);
     }).finally(() => {
@@ -463,7 +490,7 @@ export function createTokenBudgetService({
 
   // ── 实时摄入 ────────────────────────────────────────────────────────────
   function ingestEvent(session, event) {
-    if (!session || !event) return false;
+    if (!session || !event || ownership.issue() || canonicalError || admission.problem()) return false;
     if (bootstrapping) {
       queue.push({ session, event });
       return false;
@@ -490,6 +517,17 @@ export function createTokenBudgetService({
     if (event.type !== 'assistant/message' && event.type !== 'assistant/attempt') return false;
     const usage = usageOfEvent(event);
     if (!usage) return false;
+    if (admission.managesAgentSession(id) || admission.observes(event.data?.budgetRequestId)) {
+      const entry = ensureSessionState(id);
+      const seq = Number(event.seq);
+      if (Number.isFinite(seq) && seq > entry.lastSeq) {
+        entry.lastSeq = seq;
+        lastSeq.set(id, seq);
+        entry.seen = normalizeBuckets(addBuckets(entry.seen, normalizeBuckets(usage)));
+        schedulePersist();
+      }
+      return false;
+    }
     const header = session.header ?? {};
     const category = sessionCategory.get(id) ?? classify(header, sessionMeta.get(id) ?? {});
     if (!category) return false;
@@ -564,7 +602,8 @@ export function createTokenBudgetService({
       };
     }
     return {
-      version: 1,
+      version: 2,
+      modelCalls: admission.snapshot(),
       day: state.day,
       updatedAt: now(),
       categories: state.categories,
@@ -572,8 +611,10 @@ export function createTokenBudgetService({
     };
   }
 
-  function persist(force = false, { durable = false } = {}) {
+  function persist(force = false, { durable = false, admissionCommit = false } = {}) {
+    if (ownership.issue() || canonicalError || (!admissionCommit && admission.problem())) return false;
     let committed = true;
+    let canonicalCommitted = false;
     if (persistTimer) {
       clearTimeout(persistTimer);
       persistTimer = null;
@@ -582,9 +623,15 @@ export function createTokenBudgetService({
       const snapshot = stateSnapshot();
       fs.mkdirSync(dir, { recursive: true });
       const tmp = `${stateFile}.${process.pid}.${Math.random().toString(16).slice(2, 8)}.tmp`;
-      fs.writeFileSync(tmp, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      const fd = fs.openSync(tmp, 'wx', 0o600);
+      try {
+        fs.writeFileSync(fd, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+        if (durable) fs.fsyncSync(fd);
+      } finally { fs.closeSync(fd); }
       fs.renameSync(tmp, stateFile);
+      if (durable) syncBudgetFiles([stateFile], dir);
       state.updatedAt = snapshot.updatedAt;
+      canonicalCommitted = true;
     } catch (error) {
       committed = false;
       log(`[token-budget] 写采集状态失败：${String(error?.message ?? error).slice(0, 160)}`);
@@ -592,12 +639,15 @@ export function createTokenBudgetService({
     try {
       const sessions = {};
       for (const [id, entry] of Object.entries(state.sessions)) sessions[id] = entry.category;
-      writeDailyUsage(dir, state.categories, { day: state.day, at: now(), source: 'surfcore-plugin', sessions });
+      writeDailyUsage(dir, usageSnapshot(), { day: state.day, at: now(), source: 'surfcore-plugin', sessions });
+      projectionError = null;
     } catch (error) {
       committed = false;
+      projectionError = { ok: false, code: 'BUDGET_PROJECTION_FAILED', error: 'The daily budget projection could not be written.', hint: 'Query Host status to rebuild it from the canonical budget state.' };
       log(`[token-budget] 写当日用量失败：${String(error?.message ?? error).slice(0, 160)}`);
     }
-    if (durable && committed) { try { syncBudgetFiles([stateFile, dailyFile], dir); } catch { committed = false; } }
+    if (durable && committed) { try { syncBudgetFiles([dailyFile], dir); } catch { projectionError = { ok: false, code: 'BUDGET_PROJECTION_FAILED', error: 'The daily budget projection could not be synced.', hint: 'Query Host status to rebuild it from the canonical budget state.' }; committed = false; } }
+    if (admissionCommit) return canonicalCommitted;
     return committed;
   }
 
@@ -619,14 +669,21 @@ export function createTokenBudgetService({
   }
 
   function usageSnapshot() {
-    return normalizeUsage(state.categories);
+    const ledger = admission.usage(state.day).usage;
+    return normalizeUsage(Object.fromEntries(CATEGORY_KEYS.map((cat) => [cat, {
+      tokens: state.categories[cat].tokens + ledger[cat].tokens,
+      cost: state.categories[cat].cost + ledger[cat].cost,
+    }])));
   }
 
   function blockedByScope() {
     const usage = usageSnapshot();
     const out = {};
+    const tally = admission.usage(state.day);
     for (const scope of SCOPES) {
-      out[scope] = evaluateBudget(usage, limits, { scopes: [scope, 'total'] }).blocked;
+      out[scope] = Boolean(ownership.issue() || canonicalError || admission.problem() || tally.overrun
+        || (limits[scope].cny && (scope === 'total' ? tally.unpriced.length : tally.unpriced.includes(scope)))
+        || (limits.total.cny && tally.unpriced.length)) || evaluateBudget(usage, limits, { scopes: [scope, 'total'] }).blocked;
     }
     return out;
   }
@@ -635,11 +692,13 @@ export function createTokenBudgetService({
     refreshLimits();
     const usage = usageSnapshot();
     const ratios = allRatios(usage, limits);
-    const alertResult = takeAlertFlag
+    const alertResult = takeAlertFlag && !(ownership.issue() || canonicalError || admission.problem())
       ? takeAlert(dir, usage, limits, now())
       : { alert: null, existing: readAlert(dir) };
     return {
-      ok: true,
+      ok: !(ownership.issue() || canonicalError || admission.problem()),
+      ...(ownership.issue() ?? canonicalError ?? admission.problem() ?? {}),
+      admission: { ...admission.usage(state.day), projectionError },
       day: state.day,
       generatedAt: now(),
       currency: 'CNY',
@@ -676,16 +735,22 @@ export function createTokenBudgetService({
   async function status({ takeAlertFlag = false, timeoutMs = 5000 } = {}) {
     await withTimeout(ensureReady(), timeoutMs);
     const rolled = ensureDay(now());
-    if (rolled || persistTimer) persist(false);
+    if (rolled || persistTimer || projectionError) persist(false);
     return buildStatus({ takeAlertFlag });
   }
 
   async function block(scope = 'bili', { timeoutMs = 4000 } = {}) {
     await withTimeout(ensureReady(), timeoutMs);
     const rolled = ensureDay(now());
-    if (rolled || persistTimer) persist(false);
+    if (rolled || persistTimer || projectionError) persist(false);
     refreshLimits();
     const usage = usageSnapshot();
+    const issue = ownership.issue() ?? canonicalError ?? admission.problem();
+    if (issue) return { ...issue, blocked: true, usage, message: issue.error };
+    const tally = admission.usage(state.day);
+    if ((limits[scope]?.cny && (scope === 'total' ? tally.unpriced.length : tally.unpriced.includes(scope)))
+      || (limits.total.cny && tally.unpriced.length)) return { ok: false, code: 'BUDGET_PRICE_REQUIRED', error: 'A monetary limit has unpriced model usage.', hint: 'Reconcile reliable pricing before authorizing further calls.', blocked: true, usage, message: 'A monetary limit has unpriced model usage.' };
+    if (tally.overrun) return { ok: false, code: 'BUDGET_ACTUAL_EXCEEDED', error: 'Actual model usage exceeded its reservation.', hint: 'Review the full recorded overrun before starting further calls.', blocked: true, usage, message: 'Actual model usage exceeded its reservation.' };
     const result = evaluateBudget(usage, limits, { scopes: [scope, 'total'] });
     return {
       ...result,
@@ -699,7 +764,9 @@ export function createTokenBudgetService({
    * 这些回合没有 session/event 可采，如果不补记，额度看板会漏掉桌宠的消耗。
    * 分类默认 other；事件时间归属当天，价格按当前价目表折算。
    */
-  function recordExternalUsage({ category = 'other', sessionId = 'pet-chat', model = '', usage = null, at = now(), label = '', durable = false } = {}) {
+  function recordExternalUsage({ category = 'other', sessionId = 'pet-chat', model = '', usage = null, at = now(), label = '', durable = false, budgetRequestId = null } = {}) {
+    // Admitted callers settle their receipt; a second external observation is never another charge.
+    if (ownership.issue() || canonicalError || admission.problem() || admission.observes(budgetRequestId)) return false;
     const cat = CATEGORY_KEYS.includes(category) ? category : 'other';
     const when = Number(at) || now();
     ensureDay(when);
@@ -725,6 +792,8 @@ export function createTokenBudgetService({
   }
 
   function saveLimits(input) {
+    const issue = ownership.issue() ?? canonicalError ?? admission.problem();
+    if (issue) throw Object.assign(new Error(issue.error), issue);
     validateLimitsInput(input);
     const next = writeBudget(dir, input);
     limits = next;
@@ -760,9 +829,58 @@ export function createTokenBudgetService({
       persistTimer = null;
     }
     persist(true);
+    ownership.close();
+  }
+
+  function readyForAdmission() {
+    if (ownership.issue() || canonicalError || admission.problem()) return ownership.issue() ?? canonicalError ?? admission.problem();
+    ensureDay(now());
+    if (state.day > localDayKey(now())) return { ok: false, code: 'BUDGET_CLOCK_ROLLBACK', error: 'The budget clock moved behind its committed quota day.', hint: 'Restore the configured budget clock before creating reservations.' };
+    if (!bootstrapped) return { ok: false, code: 'BUDGET_NOT_READY', error: 'Observed usage has not finished bootstrapping.', hint: 'Await ensureReady() before reserving a model call.' };
+    return null;
+  }
+
+  function reserveModelCall(request) {
+    return readyForAdmission() ?? admission.reserveModelCall(request);
+  }
+
+  function isManagedAgentSession(id) {
+    return ownership.issue() ?? canonicalError ?? admission.problem() ?? admission.managesAgentSession(id);
+  }
+
+  function nativeSessionIssue(request) {
+    const observed = state.sessions[request?.sessionId];
+    if (!admission.managesAgentSession(request?.sessionId) && observed
+      && (observed.lastSeq >= 0 || observed.dayTokens > 0 || totalTokensOf(observed.seen) > 0)) {
+      return { ok: false, code: 'BUDGET_NATIVE_SESSION_USED', error: 'This session already contains legacy observed usage.', hint: 'Create a fresh dedicated native session; do not transfer legacy sessions into native ownership.' };
+    }
+    return null;
+  }
+
+  function reserveNativeAgentModelCall(request) {
+    return readyForAdmission() ?? nativeSessionIssue(request) ?? admission.reserveNativeAgentModelCall(request);
+  }
+
+  function admitModelCall(id) {
+    const issue = readyForAdmission();
+    if (issue) return issue;
+    const result = admission.getModelCallReceipt(id);
+    const entry = result.receipt;
+    if (entry?.nativeAgentSession && entry.state === 'reserved') {
+      const freshness = nativeSessionIssue(entry);
+      if (freshness) return freshness;
+    }
+    return admission.admitModelCall(id);
   }
 
   return {
+    reserveModelCall,
+    reserveNativeAgentModelCall,
+    isManagedAgentSession,
+    admitModelCall,
+    settleModelCall: (id, result) => { ensureDay(now()); return canonicalError ?? admission.settleModelCall(id, result); },
+    reconcileModelCall: (id, result) => { ensureDay(now()); return canonicalError ?? admission.reconcileModelCall(id, result); },
+    getModelCallReceipt: (id) => canonicalError ?? admission.getModelCallReceipt(id),
     isTrackedSession,
     dir,
     stateFile,
