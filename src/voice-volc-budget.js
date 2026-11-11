@@ -4,9 +4,9 @@ import crypto from 'node:crypto';
 
 const error = (code, message, hint) => Object.assign(new Error(message), { code, hint });
 const unavailable = () => error('VOICE_VOLC_BUDGET_UNAVAILABLE', '火山语音额度账本不可用。', '停止重试，检查语音账本及锁文件；不要删除账本后重试。');
-const limited = () => error('VOICE_VOLC_BUDGET_EXHAUSTED', '火山语音合成额度已达到上限。', '等待频率窗口结束或核对本月额度后再手动重试。');
+const limited = (kind) => error('VOICE_VOLC_BUDGET_EXHAUSTED', `火山语音${kind}已达到上限。`, kind === '月字符额度' ? '核对已配置的月上限和本月用量，或等待 UTC 下月后再手动重试。' : '等待频率窗口结束后再手动重试，并检查语音频率配置。');
 const cap = (value, max) => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.min(max, Math.floor(Number(value))) : max;
-export const effectiveVolcMonthLimit = value => cap(value, 100000);
+export const effectiveVolcMonthLimit = value => cap(value, 900000);
 const changed = () => error('VOICE_TTS_CONFIG_CHANGED', '语音服务配置已变更，已停止合成。', '确认当前语音服务；若QQ桥接仍使用旧配置，请重启桥接后重试。');
 export function voiceSelectionRevision(tts) {
   const revision = tts?.selectionRevision ?? 0;
@@ -99,15 +99,15 @@ export function reserveVolcBudget({ configFile, text, maxPerMinute, maxPerHour, 
       data = { version: 1, month: new Date(now).toISOString().slice(0, 7), chars: 0, lastAt: 0, events: [] };
     }
     if (!data || data.version !== 1 || !/^\d{4}-\d{2}$/.test(data.month) || !Number.isSafeInteger(data.chars) || data.chars < 0 ||
-        !Number.isSafeInteger(data.lastAt) || data.lastAt < 0 || data.lastAt > now || !Array.isArray(data.events) || data.events.length > 100 ||
+        !Number.isSafeInteger(data.lastAt) || data.lastAt < 0 || data.lastAt > now || !Array.isArray(data.events) || data.events.length > 600 ||
         data.events.some(t => !Number.isSafeInteger(t) || t < 0 || t > now)) throw unavailable();
     const month = new Date(now).toISOString().slice(0, 7);
     if (month < data.month) throw unavailable();
     const chars = month === data.month ? data.chars : 0;
     const events = data.events.filter(t => now - t < 3600000);
-    if (events.filter(t => now - t < 60000).length >= Math.min(cap(maxPerMinute, 2), cap(voice.maxPerMinute, 2)) ||
-        events.length >= Math.min(cap(maxPerHour, 10), cap(voice.maxPerHour, 10)) ||
-        chars + text.length > Math.min(effectiveVolcMonthLimit(monthlyQuota), effectiveVolcMonthLimit(voice.cloud?.monthlyQuota), effectiveVolcMonthLimit(voice.tts?.volcMonthlyQuota))) throw limited();
+    if (events.filter(t => now - t < 60000).length >= Math.min(cap(maxPerMinute, 30), cap(voice.maxPerMinute, 30))) throw limited('每分钟合成频率');
+    if (events.length >= Math.min(cap(maxPerHour, 100), cap(voice.maxPerHour, 100))) throw limited('每小时合成频率');
+    if (chars + text.length > Math.min(effectiveVolcMonthLimit(monthlyQuota), effectiveVolcMonthLimit(voice.cloud?.monthlyQuota), effectiveVolcMonthLimit(voice.tts?.volcMonthlyQuota))) throw limited('月字符额度');
     const next = { version: 1, month, chars: chars + text.length, lastAt: now, events: [...events, now] };
     temp = path.join(state, `.volc-budget-${crypto.randomUUID()}.tmp`);
     const fd = fs.openSync(temp, 'wx', 0o600);

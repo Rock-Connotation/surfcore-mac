@@ -483,6 +483,18 @@ server.tool(
 );
 
 server.tool(
+  'qq_prepare_owner_transfer',
+  '仅在主人私聊中明确要求向白名单朋友转交时使用。目标 QQ 号不明确时先询问主人；此工具发送完整确认摘要，主人须在私聊中按摘要指示确认，确认后桥接才发送。不要声称已经送达。',
+  { key: z.string(), token: z.string(), target: z.string().describe('明确的好友 QQ 号，不确定时先询问'), kind: z.enum(['text', 'voice']), content: z.string().describe('单条文字或待合成语音内容') },
+  async ({ key, token, target, kind, content }) => {
+    try {
+      const data = await agentApi('/api/socialV2/owner-transfer', { method: 'POST', headers: { 'x-agent-token': token }, body: JSON.stringify({ key, target, kind, content }), timeoutMs: 60000 });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) { return { content: [{ type: 'text', text: `准备转交失败：${error?.message ?? error}` }], isError: true }; }
+  }
+);
+
+server.tool(
   'qq_send_group_message',
   '向指定 QQ 群发送一条纯文本消息；如需引用某条消息，可传 replyToMessageId（非零整数，可为负数），可先用 qq_get_recent_messages / qq_get_message_detail 查询。二代模式（reserved2）下这是可用的发送工具之一，但优先使用 qq_send_message；reserved2 下调用时必须携带会话令牌 token，否则会被拒绝。不要在发送后输出“已发送”类汇报。目标群必须命中系统白名单（config.json 的 allow.groups），否则拒绝。',
   {

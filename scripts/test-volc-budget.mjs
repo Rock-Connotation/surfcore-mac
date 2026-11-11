@@ -11,7 +11,7 @@ import { synthesizeToFile } from '../src/voice-tts.js';
 const modulePath = fileURLToPath(new URL('../src/voice-volc-budget.js', import.meta.url));
 const fixture = () => {
   const configFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'volc-limit-')), 'config.json');
-  fs.writeFileSync(configFile, JSON.stringify({ socialV2: { voice: { tts: { enabled: true, route: 'cloud', cloudProvider: 'volc', volcKeyId: 'fixture-id' } } } }));
+  fs.writeFileSync(configFile, JSON.stringify({ socialV2: { voice: { maxPerMinute: 2, maxPerHour: 10, tts: { enabled: true, route: 'cloud', cloudProvider: 'volc', volcKeyId: 'fixture-id' } } } }));
   return { configFile, keyId: 'fixture-id' };
 };
 const ledger = config => path.join(path.dirname(config.configFile), 'state', 'volc-voice-budget.json');

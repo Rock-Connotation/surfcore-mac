@@ -12,6 +12,14 @@ import { synthesizeVolc } from './voice-volc-tts.js';
 
 export const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
 
+const VOICE_CUE = /^(?:(?:语气|情绪|声音|动作)\s*[:：]\s*)?(?:温柔|轻声|柔声|小声|低声|微笑|轻笑|笑着|害羞|撒娇|开心|高兴|兴奋|认真|严肃|难过|悲伤|哽咽|安慰|调皮|停顿)(?:地|着)?(?:说|说道|说话)?$/u;
+
+function spokenText(text) {
+  // 仅剥离明确的表演提示；保留通知、书名和括号内的实际正文。
+  return String(text ?? '').replace(/【([^【】\r\n]{1,32})】|\[([^\[\]\r\n]{1,32})\]|（([^（）\r\n]{1,32})）|\(([^()\r\n]{1,32})\)/gu,
+    (tag, chinese, square, fullWidth, round) => VOICE_CUE.test((chinese ?? square ?? fullWidth ?? round).trim()) ? '' : tag).trim();
+}
+
 /** 按内容寻址：同一句话重复发不会在磁盘上堆文件（voxd 端也有缓存）。 */
 export function ttsKey({ baseUrl, text, character, voice, style, cacheVersion }) {
   return crypto
@@ -58,8 +66,10 @@ export async function synthesizeToFile({
   apiKey,
   budget
 } = {}) {
-  const say = String(text ?? '').trim();
-  if (!say) throw new Error('要合成的内容是空的');
+  const say = spokenText(text);
+  if (!say) throw Object.assign(new Error('要合成的内容是空的（请填写实际要说的话）'), {
+    code: 'VOICE_TTS_TEXT_INVALID', hint: '请输入实际要说的话，不能只有语气或动作提示。'
+  });
   if (!outDir) throw new Error('缺少 outDir（TTS 缓存目录）');
   if (provider !== 'voxd' && provider !== 'volc') throw new Error('未知语音合成服务');
   if (provider === 'volc') {

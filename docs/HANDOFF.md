@@ -58,6 +58,26 @@
 ## 2026-11-11 Harness session-4473 连续失败已修复
 
 HY4频率额度到10:14:14；Billion Context 0.1.213默认凭据级hold连带Sol。备份后仅将用户配置network.throttle429Scope改model，运行时读回与实际函数5项红绿通过；10:05原生App原会话turn23 completed约7秒、回复“原会话回复正常”、工具0，无重启。独立dev基线Node24 audit187/187及diff-check通过。HY4本身未复测。Memory V2实际停在Official公共读取适配，原prod/test未变、新测试/契约未写；Source39/Bagg44/集合41及2fakecalls/30tokens原生来源回归已验，后续Host联合/单轮/QQ/生命周期/迁移/总门禁/提交与desktop安装未完成。业务工作树未改；本记录在独立fix/harness-throttle，完整逻辑与发布块见[case](cases/2026-11-11-harness-shared-throttle.md)。
+---
+
+## 已恢复：2026-11-10 19:49 群 @ 不回复
+
+- 用户已重开App并成功保存设置；新的故障为群绑定会话`session-0f2fcefd-b85d-4abf-8fed-ca4898188726`被Host归档。官方基线确认archived，历史回合blocked；模型前置门阻止执行，桥接pendingWakeKey阻塞后续@。归档由谁/何时发生未证实。
+- 单目标备份后官方unarchiveSession恢复原会话，再走所有权检查重启桥接至PID43590；App仍原进程，Host动态端口61774。原群第23轮已进入模型执行，QQ网关读回19:47:01/04/13/22红豆的4条文本，链路已恢复。没有发送人工测试话术，没有新增付费语音；config和两份额度账本SHA256不变，聊天和原会话保留。
+- 无新增源代码/包版本变动，无提交发布。备份`~/.dsh/_backups/group-reply-recovery-2026-11-10T11-46-18-733Z`；回滚只用官方接口恢复该单会话归档状态。整理工作区时归档正在绑定的QQ会话会停止其模型执行。见[case 19:49段](cases/2026-11-10-voice-group-quota.md)。
+
+## 已实装补修：2026-11-10 19:17 语音规则 CONFIG_STALE
+
+- 原安装357制品一致；复现为同页价格/月额度独立保存后，规则页仍用旧整文件戳；父QQ草稿也直接拒绝旧版本。客户端复用三方合并，保留后端CAS和真正的同字段冲突、保存期间新编辑，不改账号/额度。
+- 程序tree `63fe0833a3a22a91b203035b588584714d1e11e1`已通过原生App官方插件管理装入desktop；357哈希一致、App提供的新版JS+真实Host同值保存成功，完整QQ配置不变。定向10/10、audit191/191、插件全通过、官方离线包导入通过。无新增付费合成/QQ发送，无提交发布。
+- 官方安装回执为`restart-required / unmanaged-plugin`；必须由用户先记下未保存规则，完整退出并重开App后再保存。本轮遵守不操作用户界面的要求，未重启App，也未宣称原生点击验收通过。备份及安装源`~/.dsh/_backups/voice-stale-save-2026-11-10T11-13-28-516Z`；不回退账号、聊天或账本。完整根因、证据和发布交接见[case补修段](cases/2026-11-10-voice-group-quota.md)。
+
+## 已实装，界面配置交用户：2026-11-10 QQ语音分群与持久额度
+
+- 独立树`../surfcore-voice-quota-integrated`，程序tree `f32823da2683e300e9c35cfc992fa12b77830837`；本地0.8.8未提交候选，原生App desktop已安装，357清单条目一致。audit191/191、协议17/17、全部插件通过。
+- 当前群1135502130为mention/0；其余群和私聊默认owner；全局500条/本地日，900000字/UTC月，30/min、100/hour。旧火山497字保留，查网关完整时间范围后有证据开账0，无新增合成或发送。
+- 新桥接PID65164，真实规则接口返回500和分群规则，OneBot账号在线、dshReady正常。Host规则接口也返回新版字段；没有因安装提示而重启整个App。
+- 已在DeepSeek Harness.app原生主窗口确认SurfCore 0.8.8、语音页和新增分群控件；用户要求自行配置，已停止界面操作。手动路径：左下角头像→设置→SurfCore→语音→分群语音规则；当前群选“群友 @ 可触发”/日额度0，点“保存触发规则”，无需重启。原生分群保存及同视口前后比较未完成，不宣称完整图形验收通过；证据及限制见[case](cases/2026-11-10-voice-group-quota.md)。完整备份`~/.dsh/_backups/voice-group-quota-2026-11-10T10-28-46-853Z`，只回退程序，不回退新聊天/密钥/用量。
 
 ## 已交付：2026-11-08 火山小何与原主人QQ实机闭环
 

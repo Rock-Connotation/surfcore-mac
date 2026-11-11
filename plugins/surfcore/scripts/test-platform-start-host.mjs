@@ -14,6 +14,14 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
+const originalConnect = net.connect, originalFetch = globalThis.fetch;
+net.connect = () => {
+  const socket = new EventEmitter(); socket.setTimeout = () => socket; socket.destroy = () => socket;
+  queueMicrotask(() => socket.emit('error', new Error('offline fixture'))); return socket;
+};
+globalThis.fetch = async () => { throw new Error('offline fixture'); };
+
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-platform-host-'));
 const stateDir = path.join(tmp, 'surfcore');
@@ -24,6 +32,11 @@ fs.writeFileSync(path.join(stateDir, 'config.json'), `${JSON.stringify({
   platforms: { start: { qq: false, bili: false } },
 }, null, 2)}\n`, 'utf8');
 
+const qqRoot = path.join(tmp, 'qq-fixture');
+fs.mkdirSync(path.join(qqRoot, 'src'), {recursive:true});
+fs.writeFileSync(path.join(qqRoot, 'src/bridge.js'), '');
+fs.writeFileSync(path.join(qqRoot, 'config.json'), '{}');
+process.env.SURFCORE_ROOT = qqRoot;
 process.env.DSH_HOME = tmp;
 process.env.USERPROFILE = tmp;
 process.env.SURFCORE_SKIP_AUTOSTART = '1';
@@ -181,6 +194,7 @@ try {
   assert.deepEqual(unexpectedNetwork, [], 'fixture must never reach real network services');
   console.log('platform-start host wiring OK (network isolated)');
 } finally {
+  net.connect = originalConnect; globalThis.fetch = originalFetch;
   for (const fn of effects) {
     try {
       const dispose = fn();

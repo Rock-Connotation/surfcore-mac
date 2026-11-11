@@ -1,3 +1,4 @@
+import { voiceGroupPolicies, voiceGroupPoliciesFromRows } from './voice-group-policy.js';
 // Shared control plane for DSH Host and the legacy bridge console. No QQ session,
 // message pump or model is imported. Engines remain explicit, optional providers.
 import fs from 'node:fs';
@@ -148,7 +149,7 @@ function createVoiceSession({ configFile, programRoot, label = 'DSH', onIdle = (
         return success({ ok: true, route, stages: [{ name: 'synth', ok: true, detail: `合成完成 · ${Math.round(result.durationMs || 0)}ms` }, { name: 'scope', ok: true, detail: '仅检查语音合成，没有发送QQ消息。' }] });
       } catch (error) {
         if (lifecycle.closed()) return closedError();
-        return failure(error.code || 'VOICE_VOLC_FAILED', '火山语音自检失败。', error.hint || '检查 API Key、资源授权和网络后手动重试。');
+        return failure(error.code || 'VOICE_VOLC_FAILED', error.code === 'VOICE_VOLC_BUDGET_EXHAUSTED' ? error.message : '火山语音自检失败。', error.hint || '检查 API Key、资源授权和网络后手动重试。');
       }
     }
     let endpoint;
@@ -207,8 +208,8 @@ function createVoiceSession({ configFile, programRoot, label = 'DSH', onIdle = (
         if ((body.provider !== undefined && !['volc', 'voxd'].includes(body.provider)) || (body.provider === undefined && !hasQuota) ||
             (body.activate !== undefined && typeof body.activate !== 'boolean') || (body.activate === true && body.provider !== 'volc'))
           return failure('VOICE_PROVIDER_INVALID', '语音服务选择无效。', '重新选择云端服务。', 400);
-        if (hasQuota && (!Number.isSafeInteger(body.monthlyQuota) || body.monthlyQuota < 1 || body.monthlyQuota > 100000))
-          return failure('VOICE_VOLC_QUOTA_INVALID', '火山月上限无效。', '输入1到100000之间的整数。', 400);
+        if (hasQuota && (!Number.isSafeInteger(body.monthlyQuota) || body.monthlyQuota < 1 || body.monthlyQuota > 900000))
+          return failure('VOICE_VOLC_QUOTA_INVALID', '火山月上限无效。', '输入1到900000之间的整数。', 400);
         if (body.apiKey !== undefined && body.apiKey !== '' && (typeof body.apiKey !== 'string' || !/^[\x21-\x7e]{1,4096}$/.test(body.apiKey))) return failure('VOICE_VOLC_KEY_INVALID', 'API Key 格式无效。', '请输入有效的火山 API Key。', 400);
         if (pending || !acquire()) return busyError();
         pending = true; revision++;
@@ -242,8 +243,8 @@ function createVoiceSession({ configFile, programRoot, label = 'DSH', onIdle = (
             const before = fileStamp(configFile), current = readConfig(), after = fileStamp(configFile);
             if (before !== after) continue;
             const v = current.socialV2?.voice || {};
-            return success({ ok: true, triggerWho: v.trigger?.who || 'owner', maxPerMinute: v.maxPerMinute ?? 2,
-              maxPerHour: v.maxPerHour ?? 10, aiEnabled: v.tts?.enabled === true, route: v.tts?.route === 'cloud' ? 'cloud' : 'local',
+            return success({ ok: true, triggerWho: v.trigger?.who || 'owner', groupRules: Object.entries(voiceGroupPolicies(v.groupPolicies)).map(([groupId, rule]) => ({ groupId, ...rule })), maxPerDay: 500, maxPerMinute: v.maxPerMinute ?? 30,
+              maxPerHour: v.maxPerHour ?? 100, aiEnabled: v.tts?.enabled === true, route: v.tts?.route === 'cloud' ? 'cloud' : 'local',
               pricePerKChar: Number(v.cloud?.pricePerKChar) || 0, monthlyQuota: Number(v.cloud?.monthlyQuota) || 0, configStamp: after });
           }
           return failure('CONFIG_STALE', '语音规则正在变化。', '保留草稿，稍后重新读取规则。');
@@ -261,8 +262,14 @@ function createVoiceSession({ configFile, programRoot, label = 'DSH', onIdle = (
             return failure('VOICE_RULES_INVALID', '语音合成开关无效。', '重新选择开关状态后保存。', 400);
           if (Object.hasOwn(body, 'route') && !['local', 'cloud'].includes(body.route))
             return failure('VOICE_RULES_INVALID', '语音路线无效。', '重新选择本地或云端路线。', 400);
+          let groupPolicies;
+          if (Object.hasOwn(body, 'groupRules')) {
+            try { groupPolicies = voiceGroupPoliciesFromRows(body.groupRules); }
+            catch (error) { return failure(error.code, error.message, error.hint, 400); }
+          }
           const current = readConfig();
           current.socialV2 ||= {}; current.socialV2.voice ||= {}; const next = current.socialV2.voice;
+          if (groupPolicies) next.groupPolicies = groupPolicies;
           if (Object.hasOwn(body, 'triggerWho')) next.trigger = { ...(next.trigger || {}), who: body.triggerWho };
           for (const [k, max] of [['maxPerMinute', 60], ['maxPerHour', 600]]) if (Object.hasOwn(body, k) && Number.isFinite(Number(body[k]))) next[k] = Math.max(1, Math.min(max, Number(body[k])));
           if (Object.hasOwn(body, 'aiEnabled') || Object.hasOwn(body, 'route')) {

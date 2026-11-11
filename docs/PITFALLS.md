@@ -4425,3 +4425,13 @@ Source runtime 原 finish 检查只要求 `kind` 为任意字符串，且 `compl
 ## 154. Harness session-4473 连续失败与 HY4 共享冷却（2026-11-11）
 
 同一Magpie origin+凭据被Billion Context默认credential粒度共同hold；先查Magpie原始429的模型与重置时间，不把bili_throttle_hold误当主模型额度耗尽。当前多供应商网关使用network.throttle429Scope=model保留各模型治理；旧credential hold仍须到期。实际函数复现旧红新绿，原生原会话Sol恢复，账号与代理保留。配置热读，无需重启公共Host。完整逻辑/回滚见[case](cases/2026-11-11-harness-shared-throttle.md)。
+
+
+## 155. QQ“不说话”要逐层验证，语音次数不等于合成字数（2026-11-10）
+
+OneBot容器运行不代表HTTP/WS已监听；账号在线不代表群白名单已授权；群消息已唤醒不代表语音触发允许群友。不能把模型说“额度耗尽”当成实际失败回执。500条/本地日按网关接受成功计数，900000字/UTC月按发起合成预留，失败合成仍可能消费额度。所有群在同一持久账本内同时检查群计数和总计数，0群限额只表示不另加群限制。未知回执必须凭证据对账，缺历史账不能清零。desktop profile由Electron专管时走App插件管理服务；不要用旧profile声明覆盖当前状态。安装器给重启提示后仍须读回运行接口，不能据提示假定新模块未生效。Node归属拒绝时核对实际二进制，使用任务范围的DSH_NODE指向该真实运行时后再走原归属检查，不能直接kill。详见11月10日语音case。
+
+
+## 156. QQ绑定的会话被归档会在模型调用前blocked（2026-11-10）
+
+App0.2.2-rc.1的ArchivedSessionGate会拒绝归档会话及其后代的agent/pre-step；旧代码注释“archiveSession只隐藏”不能用于该版本的运行判断。群@已到达、OneBot在线、dshReady和模型选择成功仍可能完全不回复。先用官方只读workspace/follow查目标是否归档，session/page看turn/end的blocked，session/list核对running；不要凭桥接pendingWakeKey认定模型仍在生成，也不要因此放宽语音/白名单。需要保留历史时，备份后用官方unarchiveSession恢复这个绑定会话，再通过所有权检查重连桥接订阅；不删聊天、不重置整个profile、不绕过Host归档门。原群网关读回发送回执后才称恢复；完整证据及回滚见11月10日语音case的19:49段。本轮只做运行时恢复，未实现自动归档修复策略。

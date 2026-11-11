@@ -1,3 +1,4 @@
+import { voiceGroupPolicies, voiceMentionBlock } from './voice-group-policy.js';
 import { resolveQqDataPaths } from './qq-data-paths.js';
 // QQ ↔ DeepSeek Harness 桥接主程序。
 //
@@ -38,6 +39,7 @@ import { synthesizeToFile } from './voice-tts.js';
 import { encodeVoiceRecord } from './voice-record.js';
 import { readVolcKey } from './voice-volc-key.js';
 import { startVoxdCloud } from './voice-volc-budget.js';
+import { voiceSendBudget } from './voice-send-budget.js';
 import { commitQqConfigPatch, transactQqConfig } from './qq-config-transaction.js';
 import { classifyVoiceError, pickFallbackRoute } from './voice-diagnostics.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
@@ -2151,6 +2153,118 @@ async function main() {
   //                  但仍强制白名单 + 语音限流 + 敏感词审计。
   // 语音发送时间戳（scopeKey → number[]）：与文本发送分开计数，语音额度独立。
   const voiceSendTimes = new Map();
+  // Privileged transfers are deliberately ephemeral and never enter the outbox.
+  const ownerTransfers = new Map();
+  let ownerTransferChain = Promise.resolve();
+  let ownerPrepareChain = Promise.resolve();
+  let ownerPrepareGeneration = 0;
+  function transferCheck(item) {
+    const source = `private:${String(cfg.ownerQQ ?? '')}`;
+    const token = socialV2.conversations.get(source)?.agentToken;
+    const a = Buffer.from(String(token || ''));
+    const b = Buffer.from(String(item.token || ''));
+    const whitelist = cfg.allow?.private;
+    if (currentMode !== 'reserved2' || socialV2.paused || item.source !== source || !a.length || a.length !== b.length || !crypto.timingSafeEqual(a, b)
+      || !isSessionAllowedInCurrentMode(source) || senderBlocked(cfg.ownerQQ, cfg.deny?.users)
+      || !Array.isArray(whitelist) || !whitelist.map(String).includes(item.target)
+      || !allowed('private', item.target, cfg) || senderBlocked(item.target, cfg.deny?.users)
+      || shouldBlockSilentReply(`private:${item.target}`) || Date.now() > item.expiresAt)
+      throw new Error('转交权限已失效');
+    if (item.kind === 'voice' && (!voiceCfg().enabled || !v2ToolEnabled('sendVoice'))) throw new Error('语音功能未启用');
+    if (item.kind === 'text' && !v2ToolEnabled('sendMessage')) throw new Error('文字发送功能未启用');
+  }
+  async function transferApi(action, body) {
+    const base = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+    const response = await fetch(`${base}/${action}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
+    const result = await response.json();
+    if (!response.ok || result.status !== 'ok' || result.retcode !== 0) throw new Error('网关请求失败');
+    return result.data || {};
+  }
+  async function transferPrepare(source, token, target, kind, content) {
+    const item = { source, token, target, kind, content, nonce: crypto.randomBytes(12).toString('hex'), expiresAt: Date.now() + 300000, active: false };
+    transferCheck(item);
+    if (!/^\d+$/.test(target) || !Number.isSafeInteger(Number(target)) || Number(target) <= 0 || target === String(cfg.ownerQQ)) throw new Error('目标必须是明确的白名单好友 QQ 号');
+    if (!['text','voice'].includes(kind) || !content || content.length > (kind === 'voice' ? voiceCfg().tts.maxChars : Math.max(1, Number(cfg.socialV2?.send?.maxMessageChars) || 500))) throw new Error('转交类型或内容无效');
+    assertOutboundAuditOk(`private:${target}`, content);
+    const generation = ++ownerPrepareGeneration;
+    ownerTransfers.delete(source);
+    const previous = ownerPrepareChain;
+    let unlock;
+    ownerPrepareChain = new Promise((resolve) => { unlock = resolve; });
+    await previous;
+    try {
+    if (generation !== ownerPrepareGeneration) throw new Error('转交请求已被更新的请求取代');
+    transferCheck(item);
+    const preview = `请确认转交给 QQ ${target}（${kind === 'voice' ? '语音' : '文字'}）：\n${content}\n仅最新转交请求有效。如确认，请回复：确认转交 ${item.nonce}`;
+    const ownerId = Number(cfg.ownerQQ);
+    const result = await transferApi('send_private_msg', { user_id: ownerId, message: [{ type: 'text', data: { text: preview } }] });
+    if (!Number.isSafeInteger(Number(result.message_id)) || !result.message_id) throw new Error('确认摘要回执无效');
+    const readback = await transferApi('get_msg', { message_id: Number(result.message_id) });
+    const segments = Array.isArray(readback.message) ? readback.message : [];
+    if (readback.group_id != null || String(readback.message_id ?? '') !== String(result.message_id) || segments.length !== 1 || segments[0]?.type !== 'text' || segments[0]?.data?.text !== preview) throw new Error('确认摘要回读不匹配');
+    const peer = readback.target_id ?? readback.peer_id;
+    if (peer != null) {
+      if (String(peer) !== String(ownerId)) throw new Error('确认摘要收件人不匹配');
+    } else {
+      const history = await transferApi('get_friend_msg_history', { user_id: ownerId, count: 100 });
+      const entry = Array.isArray(history.messages) && history.messages.find((m) => String(m.message_id ?? '') === String(result.message_id));
+      const message = Array.isArray(entry?.message) ? entry.message : [];
+      if (!entry || message.length !== 1 || message[0]?.type !== 'text' || message[0]?.data?.text !== preview) throw new Error('无法确认摘要属于主人私聊');
+    }
+    transferCheck(item);
+    if (generation !== ownerPrepareGeneration) throw new Error('转交请求已被更新的请求取代');
+    item.readyAt = Date.now();
+    item.active = true;
+    ownerTransfers.set(source, item);
+    return { ok: true, pending: true, expiresInSeconds: 300 };
+    } finally { unlock(); }
+  }
+  function transferConfirm(kind, id, event, receivedAt) {
+    const source = `private:${String(cfg.ownerQQ ?? '')}`;
+    const item = ownerTransfers.get(source);
+    if (!item || !item.active || kind !== 'private' || String(id) !== String(cfg.ownerQQ) || String(event.user_id) !== String(cfg.ownerQQ)) return false;
+    const parts = Array.isArray(event.message) ? event.message : [];
+    if (parts.length !== 1 || parts[0]?.type !== 'text' || String(parts[0]?.data?.text ?? '').trim() !== `确认转交 ${item.nonce}` || receivedAt < item.readyAt || !event.message_id) return false;
+    ownerTransfers.delete(source);
+    let attempted = false;
+    const notify = async (message) => {
+      const owner = String(cfg.ownerQQ ?? '');
+      const current = socialV2.conversations.get(source)?.agentToken;
+      if (currentMode !== 'reserved2' || source !== `private:${owner}` || !current || current !== item.token || !isSessionAllowedInCurrentMode(source) || senderBlocked(owner, cfg.deny?.users)) return;
+      try { await transferApi('send_private_msg', { user_id: Number(owner), message: [{ type: 'text', data: { text: message } }] }); }
+      catch { log('[转交] 无法通知主人转交结果'); }
+    };
+    ownerTransferChain = ownerTransferChain.then(async () => {
+      transferCheck(item);
+      const key = `private:${item.target}`;
+      const st = getSocialV2State(key);
+      const rate = sendRateLimitInfo(key, st, cfg.socialV2?.send ?? {}, 1);
+      if (rate || tokenGuardSendBlock(key, st, 1)) throw new Error('转交频率超限');
+      const now = Date.now();
+      st.sendTimes.push(now);
+      try {
+        if (item.kind === 'text') {
+          transferCheck(item);
+          attempted = true;
+          await transferApi('send_private_msg', { user_id: Number(item.target), message: [{ type: 'text', data: { text: item.content } }] });
+          recordSentMessagesV2(key, [item.content]);
+        } else {
+          voiceBudgetCheck(key, voiceCfg());
+          const resolved = await synthesizeVoiceText(item.content);
+          transferCheck(item);
+          await sendVoiceForV2(key, item.content, { resolved, extraGuard: () => { transferCheck(item); attempted = true; } });
+        }
+      } catch (error) {
+        if (!attempted) { const i = st.sendTimes.indexOf(now); if (i >= 0) st.sendTimes.splice(i, 1); }
+        throw error;
+      }
+    }).then(() => notify('转交请求已获网关接收；实际送达情况请向对方确认。')).catch(async (error) => {
+      log(`[转交] 失败：${error?.message ?? '未知错误'}`);
+      await notify(attempted ? '转交结果不明，请先向对方确认，避免重复发送。' : '转交未发送，请检查权限或语音服务后重新发起。');
+    });
+    return true;
+  }
+
 
   /**
    * 出站语音的内容审计：与文本一致，凡是「疑似敏感信息 / 含会话令牌」的**文件名**
@@ -2174,11 +2288,16 @@ async function main() {
   const voiceLastSentAt = new Map(); // key -> ts
   // 主人最近一次开口的时间。别人发表情/转发不该把主人的授权冲掉——
   // 之前用「最后一条消息必须是主人」判定，导致群里一有人说话主人就没法再让她发语音。
+  const voiceMentionAt = new Map();
   const voiceOwnerAt = new Map(); // key -> ts
 
   function voiceTriggerBlock(key, kind, id) {
     const cfgVoice = voiceCfg();
-    const who = cfgVoice.trigger.who;
+    const groupRule = kind === 'group' ? cfgVoice.groupPolicies[String(id)] : undefined;
+    const who = groupRule?.triggerWho || cfgVoice.trigger.who;
+    if (who === 'mention') return voiceMentionBlock({ownerAt:voiceOwnerAt.get(String(key)),mentionAt:voiceMentionAt.get(String(key)),lastSentAt:voiceLastSentAt.get(String(key)) || 0});
+    const last = voiceLastSpeaker.get(String(key)) || {};
+
     if (who === 'anyone') return null;
 
     const owner = String(cfg.ownerQQ ?? '');
@@ -2217,8 +2336,8 @@ async function main() {
       dir: path.resolve(ROOT, String(v.dir ?? 'audio')),
       maxSeconds: Number(v.maxSeconds) > 0 ? Number(v.maxSeconds) : 300,
       maxBytes: Number(v.maxBytes) > 0 ? Number(v.maxBytes) : 20 * 1024 * 1024,
-      maxPerMinute: Number(v.maxPerMinute) >= 0 ? Number(v.maxPerMinute) : 2,
-      maxPerHour: Number(v.maxPerHour) >= 0 ? Number(v.maxPerHour) : 10,
+      maxPerMinute: Number(v.maxPerMinute) >= 0 ? Number(v.maxPerMinute) : 30,
+      maxPerHour: Number(v.maxPerHour) >= 0 ? Number(v.maxPerHour) : 100,
       allowAbsolutePath: v.allowAbsolutePath === true,
       defaultVolume: Number(v.defaultVolume) > 0 ? Number(v.defaultVolume) : 1,
       loudness: v.loudness || 'normal',
@@ -2226,6 +2345,7 @@ async function main() {
       autoReadback: v.autoReadback !== false,
       recordTransport: v.recordTransport === 'base64' ? 'base64' : 'path',
       // 谁能触发 AI 发语音：owner（默认）/ anyone / list
+      groupPolicies: voiceGroupPolicies(v.groupPolicies),
       trigger: {
         who: ['owner', 'anyone', 'list'].includes(String(v.trigger?.who)) ? String(v.trigger.who) : 'owner',
         members: Array.isArray(v.trigger?.members) ? v.trigger.members.map(String) : [],
@@ -2325,7 +2445,7 @@ async function main() {
       first = await attempt(primary);
     } catch (error) {
       if ((primary === 'cloud' && vc.tts.cloudProvider === 'volc' && error?.code && error?.hint) ||
-          (typeof error?.code === 'string' && ['VOICE_TTS_CONFIG_CHANGED', 'VOICE_VOLC_BUDGET_BUSY', 'VOICE_VOLC_BUDGET_UNAVAILABLE'].includes(error.code))) {
+          (typeof error?.code === 'string' && ['VOICE_TTS_TEXT_INVALID', 'VOICE_TTS_CONFIG_CHANGED', 'VOICE_VOLC_BUDGET_BUSY', 'VOICE_VOLC_BUDGET_UNAVAILABLE'].includes(error.code))) {
         logVolcFailure(error.code, primary);
         throw error;
       }
@@ -2483,6 +2603,7 @@ async function main() {
    * 这样参数错、被审计拦截、网关失败都不会白白吃掉配额（否则连失败几次就被假 429 卡住）。
    */
   function voiceBudgetCheck(scopeKey, cfgV) {
+    try { voiceSendBudget(STATE_DIR, {type:'check',key:scopeKey,groupLimit:cfgV.groupPolicies?.[String(scopeKey).replace(/^group:/,'')]?.maxPerDay || 0}); } catch (error) { if (error?.code !== 'VOICE_SEND_BUDGET_BUSY') throw error; }
     const now = Date.now();
     const bucket = voiceSendTimes.get(scopeKey) ?? [];
     const inMinute = bucket.filter((t) => now - t < 60000);
@@ -2514,7 +2635,18 @@ async function main() {
    * audio 可传音量设置 { volume, normalize, loudness }：SnowLuma 的 record 段没有增益字段，
    * 所以音量必须在本地用 ffmpeg 调好再发（临时文件发完即删）。
    */
-  async function sendVoiceV2(key, filePath, { guard = false, audit = true, audio = null } = {}) {
+  async function updateVoiceBudget(action) {
+    const deadline = Date.now() + 65000;
+    for (;;) {
+      try { return voiceSendBudget(STATE_DIR, action); }
+      catch (error) {
+        if (error?.code !== 'VOICE_SEND_BUDGET_BUSY' || Date.now() >= deadline) throw error;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+  }
+
+  async function sendVoiceV2(key, filePath, { guard = false, audit = true, audio = null, extraGuard = null, budgetScope = key } = {}) {
     const vc = voiceCfg();
     // 注意：这里**不检查** vc.enabled —— 那是「AI 能不能发语音」的开关，判定放在
     // AI 路由（/api/socialV2/send-voice）与 sendVoiceForV2 里。底层只管发，
@@ -2568,6 +2700,18 @@ async function main() {
       let memorySendLease = null, memorySendRecorded = false;
       try {
         if (assertSendAllowed) assertSendAllowed();
+        if (guard) { const block = voiceTriggerBlock(key, kind, id); if (block) throw Object.assign(new Error(block), {code:'VOICE_TRIGGER_DENIED',hint:'检查分群触发规则，并由允许的成员重新请求语音。'}); }
+        if (extraGuard) extraGuard();
+        voiceBudgetCheck(budgetScope, vc);
+        const reservation = await updateVoiceBudget({ type: 'reserve', key, groupLimit: vc.groupPolicies?.[String(id)]?.maxPerDay || 0 });
+        try {
+          if (assertSendAllowed) assertSendAllowed();
+          if (guard) { const block = voiceTriggerBlock(key, kind, id); if (block) throw Object.assign(new Error(block), {code:'VOICE_TRIGGER_DENIED',hint:'检查分群触发规则，并由允许的成员重新请求语音。'}); }
+          if (extraGuard) extraGuard();
+        } catch (error) {
+          await updateVoiceBudget({ id: reservation, result: 'rejected' });
+          throw error;
+        }
         // 语音条比图片大、要过一次 SILK 转码，给 60s 预算（文本/图片共用同一 sendChain，
         // 所以这条语音发完之前后面的文本会自然排队，不会插队到语音前面）。
         const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
@@ -2576,7 +2720,8 @@ async function main() {
           ? { user_id: Number(id), message: [recordSegment] }
           : { group_id: Number(id), message: [recordSegment] };
         memorySendLease = await beginMemoryV2Send(key);
-        const res = await fetch(`${httpUrl}/${action}`, {
+        let res;
+        try { res = await fetch(`${httpUrl}/${action}`, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -2584,14 +2729,26 @@ async function main() {
           },
           body: JSON.stringify(params),
           signal: AbortSignal.timeout(60000)
-        });
+        }); } catch (cause) {
+          await updateVoiceBudget({ id: reservation, result: 'uncertain' });
+          throw Object.assign(new Error('语音发送结果未知，请先核对网关记录。'), { code: 'VOICE_SEND_UNCERTAIN', hint: '使用 voice-send-reconcile.mjs inspect 核对，再凭网关证据对账。', cause });
+        }
         const body = await res.json().catch(() => ({}));
         await finishMemoryV2Send(memorySendLease, key, '[QQ语音]', res.ok && body.status === 'ok' && body.retcode === 0 ? body.data : null);
         memorySendRecorded = true;
-        if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
+        if (!res.ok || body.status !== 'ok' || body.retcode !== 0 || !Number.isSafeInteger(Number(body.data?.message_id)) || Number(body.data?.message_id) === 0) {
           const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口）' : '';
+          if (body.status === 'failed' && Number.isFinite(body.retcode) && body.retcode !== 0) await updateVoiceBudget({ id: reservation, result: 'rejected' });
+          else { await updateVoiceBudget({ id: reservation, result: 'uncertain' }); throw Object.assign(new Error('语音发送结果未知，请先核对网关记录。'), { code: 'VOICE_SEND_UNCERTAIN', hint: '使用 voice-send-reconcile.mjs inspect 核对，再凭网关证据对账。' }); }
           throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}${hint}`);
         }
+        try { await updateVoiceBudget({ id: reservation, result: 'sent' }); }
+        catch (cause) {
+          try { await updateVoiceBudget({ id: reservation, result: 'uncertain' }); } catch {}
+          throw Object.assign(new Error('网关已接受语音，但额度记账未确认。'), {code:'VOICE_SEND_UNCERTAIN',hint:'请凭网关回执使用 voice-send-reconcile.mjs 对账；不要重复发送。',cause});
+        }
+        voiceBudgetCommit(budgetScope);
+        if (guard) voiceLastSentAt.set(String(key), Date.now());
         resolveSend(body.data);
       } catch (error) {
         if (memorySendLease && !memorySendRecorded) await finishMemoryV2Send(memorySendLease, key, '[QQ语音]', null, 'delivery_unknown');
@@ -2685,7 +2842,7 @@ async function main() {
    * AI 通道入口：解析引用 → 限流 → 发送 → 记账 → 回读校验。
    * 返回 { messageId, detail, verified, readback }。
    */
-  async function sendVoiceForV2(key, voiceRef, { label = '', verify = null, readback = false, audio = null, resolved = null } = {}) {
+  async function sendVoiceForV2(key, voiceRef, { label = '', verify = null, readback = false, audio = null, resolved = null, extraGuard = null } = {}) {
     const vc = voiceCfg();
     if (!vc.enabled) throw new Error('语音功能已关闭（socialV2.voice.enabled=false）');
     // resolved：调用方已经拿到文件（如 text→TTS），就跳过「语音库查找」这一步。
@@ -2693,8 +2850,7 @@ async function main() {
     // 音量参数校验前置（AI 传错时给出可读错误，而不是让 ffmpeg 报奇怪的错）
     if (audio) resolveAudioProcessing({ volume: audio.volume ?? vc.defaultVolume, normalize: audio.normalize === true, loudness: audio.loudness ?? vc.loudness });
     voiceBudgetCheck(key, vc);
-    const sent = await sendVoiceV2(key, target.path, { guard: true, audit: true, audio });
-    voiceBudgetCommit(key);
+    const sent = await sendVoiceV2(key, target.path, { guard: true, audit: true, audio, extraGuard });
     recordVoiceSentV2(key, sent, label);
     log(`[voice] ${key} 已发送语音 ${path.basename(target.path)} (${sent.detail}, messageId=${sent.messageId ?? '?'})`);
     appendActivity(`${key} [voice] 发送语音 ${path.basename(target.path)} (${sent.detail})`);
@@ -7655,7 +7811,7 @@ async function main() {
               });
             } catch (error) {
               const info = classifyVoiceError(error?.message ?? error);
-              stages.push({ name: 'synth', ok: false, ms: Date.now() - t0, code: info.code, hint: info.hint, detail: String(error?.message ?? error).slice(0, 220) });
+              stages.push({ name: 'synth', ok: false, ms: Date.now() - t0, code: error?.code || info.code, hint: error?.hint || info.hint, detail: String(error?.message ?? error).slice(0, 220) });
             }
           }
           // 3) 发送前置（不真的发消息）：总闸、工具、限流额度
@@ -7666,11 +7822,13 @@ async function main() {
             const now = Date.now();
             const perMin = bucket.filter((t) => now - t < 60000).length;
             const perHour = bucket.filter((t) => now - t < 3600000).length;
+            let budgetError = null;
+            try { voiceBudgetCheck('selftest', v); } catch (error) { budgetError = error; }
             stages.push({
-              name: 'send', ok: toolOn && v.enabled,
-              detail: `${v.enabled ? '语音可用' : '语音总闸已关'} · 工具${cfg.socialV2?.tools?.sendVoice === false ? '关' : '开'} · 本分钟已发 ${perMin}/${v.maxPerMinute} · 本小时 ${perHour}/${v.maxPerHour}`,
-              code: toolOn && v.enabled ? '' : 'voice.tool-disabled',
-              hint: toolOn && v.enabled ? '' : '设置 → SurfCore → 语音 → 页顶「语音开关」：打开总闸与「发语音」工具，保存后重启 DSH',
+              name: 'send', ok: toolOn && v.enabled && !budgetError,
+              detail: budgetError?.message || `${v.enabled ? '语音可用' : '语音总闸已关'} · 工具${cfg.socialV2?.tools?.sendVoice === false ? '关' : '开'} · 自检分钟 ${perMin}/${v.maxPerMinute} · 自检小时 ${perHour}/${v.maxPerHour}`,
+              code: budgetError?.code || (toolOn && v.enabled ? '' : 'voice.tool-disabled'),
+              hint: budgetError?.hint || (toolOn && v.enabled ? '' : '设置 → SurfCore → 语音 → 页顶「语音开关」：打开总闸与「发语音」工具，保存后重启 DSH'),
             });
           }
           sendJson({ ok: stages.every((x) => x.ok), route, endpoint, stages });
@@ -7750,22 +7908,21 @@ async function main() {
             codec: probe.codec,
             detail: describeAudio(probe),
             warnings: probe.warnings ?? [],
-            limits: { maxSeconds: voice.maxSeconds, maxBytes: voice.maxBytes, maxPerMinute: voice.maxPerMinute, maxPerHour: voice.maxPerHour }
+            limits: { maxSeconds: voice.maxSeconds, maxBytes: voice.maxBytes, maxPerMinute: voice.maxPerMinute, maxPerHour: voice.maxPerHour, maxPerDay: 500 }
           };
           if (body.dryRun === true) { sendJson({ ok: true, dryRun: true, ...preview }); return; }
-          const now = Date.now();
           try {
             voiceBudgetCheck('operator:cli', voice);
             const sent = await sendVoiceV2(key, resolved.path, {
               guard: false,
               audit: true,
+              budgetScope: 'operator:cli',
               audio: {
                 volume: body.volume ?? voice.defaultVolume,
                 normalize: body.normalize === true,
                 loudness: body.loudness ?? voice.loudness
               }
             });
-            voiceBudgetCommit('operator:cli', now);
             log(`[voice] (操作者) ${key} 已发送语音 ${path.basename(resolved.path)} (${sent.detail}${sent.audioMode === 'original' ? '' : '，' + sent.audioProcessing}, messageId=${sent.messageId ?? '?'})`);
             appendActivity(`${key} [voice] (操作者) 发送语音 ${path.basename(resolved.path)} (${sent.detail})`);
             // CLI 默认要落地校验（--verify 之外也能给出可信证据）；readback 仅在做"收到的语音"实验时用。
@@ -7800,12 +7957,21 @@ async function main() {
               loudness: sent.loudness
             });
           } catch (error) {
-            sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+            sendJson({ ok: false, code: error?.code || 'VOICE_SEND_FAILED', hint: error?.hint || '检查网关状态后重试。', error: error?.message ?? String(error) }, 500);
           }
           return;
         }
 
         // ── 语音发送（AI 通道：reserved2 + agent token，只能发自己那个会话） ────
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/owner-transfer') {
+          const body = await readBody();
+          const source = String(body.key ?? '').trim();
+          const token = String(req.headers['x-agent-token'] ?? '');
+          if (req.headers['x-agent-call'] === undefined || !token || !agentTokenOk(source, token) || source !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '仅主人私聊可发起转交' }, 403); return; }
+          try { sendJson(await transferPrepare(source, token, String(body.target ?? '').trim(), String(body.kind ?? ''), String(body.content ?? '').trim())); }
+          catch (error) { sendJson({ ok: false, error: String(error?.message ?? '无法准备转交') }, 403); }
+          return;
+        }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/send-voice') {
           const body = await readBody();
           const token = String(body.token ?? req.headers['x-agent-token'] ?? '').trim();
@@ -7836,10 +8002,10 @@ async function main() {
           {
             const m = /^(group|private):(\d+)$/.exec(key);
             const block = m ? voiceTriggerBlock(key, m[1], Number(m[2])) : 'key 格式不对';
-            if (block) { sendJson({ ok: false, error: block }, 403); return; }
+            if (block) { sendJson({ ok: false, code:'VOICE_TRIGGER_DENIED', error: block, hint:'检查分群触发规则，并由允许的成员重新请求语音。' }, 403); return; }
             // 语音触发是 owner 授权的特权操作：过闸即记审计（实际发送失败不影响这条授权记录）。
             auditOwner('voice.trigger', {
-              actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true },
+              actor: { id: voiceLastSpeaker.get(String(key))?.userId || '', isOwner: voiceLastSpeaker.get(String(key))?.isOwner === true },
               rule: 'voice.trigger',
               decision: 'allow',
               ref: { session: key },
@@ -7933,8 +8099,8 @@ async function main() {
               warnings: sent.warnings
             });
           } catch (error) {
-            // 额度只在真正发出后才记账（voiceBudgetCommit），所以失败路径无需回滚。
-            sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+            // 网关结果不明时保留预留，避免重复发送。
+            sendJson({ ok: false, code: error?.code || 'VOICE_SEND_FAILED', hint: error?.hint || '检查网关状态后重试。', error: error?.message ?? String(error) }, 500);
           }
           return;
         }
@@ -8153,7 +8319,7 @@ async function main() {
               dir: agentCall ? undefined : voice.dir,
               count: items.length,
               voices: items,
-              limits: { maxSeconds: voice.maxSeconds, maxBytes: voice.maxBytes, maxPerMinute: voice.maxPerMinute, maxPerHour: voice.maxPerHour },
+              limits: { maxSeconds: voice.maxSeconds, maxBytes: voice.maxBytes, maxPerMinute: voice.maxPerMinute, maxPerHour: voice.maxPerHour, maxPerDay: 500 },
               // ⚠️ 提示语里也不能出现绝对路径：AI 通道下同样要脱敏（dir 字段已经抑制了，
               // 但这里的模板字符串曾无条件插值 voice.dir —— 等于从旁边的字段又漏出去一次）。
               hint: items.length
@@ -15777,6 +15943,7 @@ async function main() {
   async function handleIncoming(kind, id, event, cfg) {
     const ingressCharacter = readCurrentCharacter();
     const key = convKey(kind, id);
+    const transferReceivedAt = Date.now();
     // 群画像：成员数缓存用于小群/大群分层；失败不影响消息处理。
     if (kind === 'group') void ensureGroupMeta(id);
     if (!modeAllowed(key, kind, id, cfg, currentMode)) {
@@ -15790,6 +15957,7 @@ async function main() {
       log(`[黑名单] 忽略 ${key} 来自 ${event.user_id} 的消息（deny.users）`);
       return;
     }
+    if (transferConfirm(kind, id, event, transferReceivedAt)) return;
     const resolveAtName = async (qq) => {
       // 只有群聊才需要把 @QQ号 解析成群名片/昵称；私聊没有群成员概念
       if (kind !== 'group') return null;
@@ -15842,6 +16010,7 @@ async function main() {
       const now = Date.now();
       voiceLastSpeaker.set(String(key), { userId: String(event.user_id ?? ''), isOwner: isOwnerMsg, at: now });
       if (isOwnerMsg) voiceOwnerAt.set(String(key), now);
+      if (kind === 'group' && atInfo(event.message, [event.self_id, selfUserId]).atSelf) voiceMentionAt.set(String(key), now);
     }
     if (!plainContent && !quoteTargetIsSelf) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');

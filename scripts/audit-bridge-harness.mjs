@@ -1,6 +1,7 @@
 import { deriveMemoryProviderRouteId } from '../src/core/memory-v2-routing.js';
 import { createQQMemoryBridge } from '../src/core/memory-v2-qq.js';
 import { buildCharacterContext } from '../src/core/context.js';
+import { voiceGroupPolicies, voiceMentionBlock } from '../src/voice-group-policy.js';
 // Execute the real bridge initialization/functions against temporary files and fake peers.
 // No production config, QQ connection, DSH process, or persistent home is accessed.
 import fs from 'node:fs';
@@ -30,6 +31,7 @@ import { synthesizeToFile } from '../src/voice-tts.js';
 import { encodeVoiceRecord } from '../src/voice-record.js';
 import { readVolcKey } from '../src/voice-volc-key.js';
 import { startVoxdCloud } from '../src/voice-volc-budget.js';
+import { voiceSendBudget } from '../src/voice-send-budget.js';
 import { commitQqConfigPatch, transactQqConfig } from '../src/qq-config-transaction.js';
 import { persistSnowLumaEndpoint, persistToken } from '../src/snowluma-conn.js';
 import { createVoiceManagement } from '../src/voice-management.js';
@@ -96,6 +98,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   const fixtureEnv = { DSH_HOME: path.join(temp, 'dsh'), HOME: temp };
   fs.mkdirSync(path.join(temp, 'src'));
   fs.mkdirSync(path.join(temp, 'state'));
+  const today = new Date();
+  const localDay = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+  fs.writeFileSync(path.join(temp, 'state/voice-send-budget.json'), JSON.stringify({version:2,day:localDay,count:0,lastAt:0,pending:null,reconciliations:[]}), {mode:0o600});
   const harnessConfig = {
     dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
     allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
@@ -240,7 +245,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     runPurpose, purposeState, notePurposeTurnEnded, notePurposeOutbound, startPurposeLoop, warmPurposeState,
     // 对话收尾判断：测试可直接调内部函数（不连真 QQ）。
     closeConversationV2, assessClosureV2, closureConfigV2, closureSuppressesWake, noteClosureReopenV2,
-    voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText, readConfigObject, atomicWriteJson,
+    voiceCfg, voiceTriggerBlock, voiceMentionAt, voiceOwnerAt, voiceLastSentAt, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText, readConfigObject, atomicWriteJson,
     voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
     setMode(value) { currentMode = value; },
     getModelStatus() { return modelStatusState; },
@@ -284,7 +289,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...callname,
     ...personaIdentity,
     ...dshHealth,
-    synthesizeToFile: synthesizeImpl, createVoiceManagement: voiceManagementImpl, encodeVoiceRecord, readVolcKey, startVoxdCloud, commitQqConfigPatch, transactQqConfig, persistSnowLumaEndpoint, persistToken,
+    synthesizeToFile: synthesizeImpl, createVoiceManagement: voiceManagementImpl, encodeVoiceRecord, readVolcKey, startVoxdCloud, voiceSendBudget, commitQqConfigPatch, transactQqConfig, persistSnowLumaEndpoint, persistToken, voiceGroupPolicies, voiceMentionBlock,
     ...tokenBudget,
     createQQMemoryBridge, buildCharacterContext, deriveMemoryProviderRouteId,
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,

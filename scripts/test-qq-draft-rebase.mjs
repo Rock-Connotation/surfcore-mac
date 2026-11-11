@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import os from 'node:os';
+import path from 'node:path';
+import { createVoiceManagement } from '../src/voice-management.js';
 
 const source = fs.readFileSync(new URL('../plugins/surfcore/lib/client.js', import.meta.url), 'utf8');
 const begin = source.indexOf('    function planVoiceRebase('), end = source.indexOf('    function VolcForm(', begin);
@@ -45,7 +48,7 @@ test('规则整表冲突显示提示且不修改草稿', async () => {
   assert(start >= 0 && end > start);
   const draft = { triggerWho: 'list', aiEnabled: true, route: 'cloud', configStamp: 'old' };
   let message = '', writes = 0;
-  const context3 = vm.createContext({ rules: draft, rulesBaseRef: { current: {} },
+  const context3 = vm.createContext({ rulesSaving:false, setRulesSaving:()=>{}, rules: draft, rulesBaseRef: { current: {} },
     api: async () => { throw Object.assign(new Error('规则已变化'), { code: 'CONFIG_STALE', hint: '保留草稿' }); },
     setRules: () => { writes++; }, onVoiceConfigSaved: async () => ({ ok: true }),
     voiceError: e => [e.code, e.message, e.hint].filter(Boolean).join(' · '), toast: value => { message = value; } });
@@ -57,12 +60,14 @@ test('规则整表冲突显示提示且不修改草稿', async () => {
 test('规则保存期间的新编辑不被成功回执覆盖', async () => {
   const start = source.indexOf('      const saveRules = async () => {'), end = source.indexOf('      const card =', start);
   const initial = { triggerWho: 'owner', aiEnabled: true, route: 'cloud', configStamp: 'old' };
-  let current = initial, release;
-  const context3 = vm.createContext({ rules: initial, rulesBaseRef: { current: initial },
-    api: () => new Promise(resolve => { release = resolve; }), setRules: fn => { current = fn(current); },
+  let current = initial, release, started;
+  const postStarted = new Promise(resolve => { started = resolve; });
+  const context3 = vm.createContext({ rulesSaving:false, setRulesSaving:()=>{}, rules: initial, rulesBaseRef: { current: initial },
+    api: (_url, options) => options?.method === 'POST' ? new Promise(resolve => { release = resolve; started(); }) : Promise.resolve(initial), setRules: fn => { current = fn(current); },
+    planVoiceRebase: plan,
     onVoiceConfigSaved: async () => ({ ok: true }), voiceError: e => e.message, toast: () => {} });
   vm.runInContext(source.slice(start, end) + '\nglobalThis.run = saveRules;', context3);
-  const pending = context3.run(); current = { ...current, triggerWho: 'list' };
+  const pending = context3.run(); await postStarted; current = { ...current, triggerWho: 'list' };
   release({ afterStamp: 'new', beforeStamp: 'old' }); await pending;
   assert.equal(current.triggerWho, 'list'); assert.equal(current.configStamp, 'new');
 });
@@ -83,4 +88,108 @@ test('同字段冲突或版本漂移时拒绝并保持原草稿', () => {
   assert.deepEqual(draft, { voice: { route: 'manual' }, note: 'draft' });
   assert.throws(() => plan({ ...stamps, baseStamp: 'other', base, draft, remote }), /版本/);
   assert.throws(() => plan({ ...stamps, remoteStamp: 'changed', base, draft, remote }), /版本/);
+});
+
+
+test('真实控制器：同页先保存价格再保存分群规则，不误报CONFIG_STALE', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-rules-rebase-'));
+  const configFile = path.join(root, 'config.json');
+  fs.writeFileSync(configFile, JSON.stringify({ socialV2: { voice: { trigger: { who: 'owner' }, cloud: { pricePerKChar: 1, monthlyQuota: 900000 } } } }));
+  const service = createVoiceManagement({ configFile, programRoot: root });
+  try {
+    const base = (await service.dispatch({ method: 'GET', pathname: '/rules' })).data;
+    const draft = { ...base, groupRules: [{ groupId: '12345', triggerWho: 'mention', maxPerDay: 20 }] };
+    const pricing = await service.dispatch({ method: 'POST', pathname: '/rules', body: { pricePerKChar: 2 } });
+    assert.equal(pricing.status, 200);
+    const start = source.indexOf('      const saveRules = async () => {'), end = source.indexOf('      const card =', start);
+    let message = '', current = draft;
+    const ctx = vm.createContext({ rulesSaving: false, setRulesSaving: () => {}, rules: draft,
+      rulesBaseRef: { current: base }, rulesDraftRef: { current: draft }, planVoiceRebase: plan,
+      api: async (_url, options) => {
+        const result = await service.dispatch({ method: options?.method || 'GET', pathname: '/rules', body: options?.body });
+        if (result.data.ok === false) throw Object.assign(new Error(result.data.error), { code: result.data.code, hint: result.data.hint });
+        return result.data;
+      }, setRules: update => { current = typeof update === 'function' ? update(current) : update; },
+      onVoiceConfigSaved: async () => ({ ok: true }), voiceError: e => [e.code, e.message, e.hint].filter(Boolean).join(' · '), toast: value => { message = value; } });
+    vm.runInContext(source.slice(start, end) + '\nglobalThis.run = saveRules;', ctx);
+    await ctx.run();
+    assert.match(message, /触发规则已保存/);
+    const saved = (await service.dispatch({ method: 'GET', pathname: '/rules' })).data;
+    assert.equal(saved.pricePerKChar, 2, 'cannot overwrite the pricing saved by the same page');
+    assert.equal(saved.groupRules[0].maxPerDay, 20);
+    assert.equal(current.pricePerKChar, 2);
+    assert.equal(current.configStamp, saved.configStamp);
+  } finally { await service.dispose(); }
+});
+
+
+test('真实控制器：同一分群规则被另一处修改时仍拒绝，草稿和远端均保留', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-rules-conflict-'));
+  const configFile = path.join(root, 'config.json');
+  fs.writeFileSync(configFile, JSON.stringify({ socialV2: { voice: { groupPolicies: { '12345': { triggerWho: 'mention', maxPerDay: 0 } } } } }));
+  const service = createVoiceManagement({ configFile, programRoot: root });
+  try {
+    const base = (await service.dispatch({ method: 'GET', pathname: '/rules' })).data;
+    const draft = { ...base, groupRules: [{ groupId: '12345', triggerWho: 'mention', maxPerDay: 20 }] };
+    await service.dispatch({ method: 'POST', pathname: '/rules', body: { groupRules: [{ groupId: '12345', triggerWho: 'mention', maxPerDay: 30 }], baseStamp: base.configStamp } });
+    const start = source.indexOf('      const saveRules = async () => {'), end = source.indexOf('      const card =', start);
+    let message = '', posts = 0, current = draft;
+    const ref = { current: base };
+    const ctx = vm.createContext({ rulesSaving: false, setRulesSaving: () => {}, rules: draft, rulesBaseRef: ref, planVoiceRebase: plan,
+      api: async (_url, options) => { if (options?.method === 'POST') posts++; return (await service.dispatch({ method: options?.method || 'GET', pathname: '/rules', body: options?.body })).data; },
+      setRules: update => { current = typeof update === 'function' ? update(current) : update; }, onVoiceConfigSaved: async () => ({ ok: true }),
+      voiceError: e => [e.code, e.message, e.hint].filter(Boolean).join(' · '), toast: value => { message = value; } });
+    vm.runInContext(source.slice(start, end) + '\nglobalThis.run = saveRules;', ctx);
+    await ctx.run();
+    assert.equal(posts, 0); assert.match(message, /CONFIG_STALE/); assert.match(message, /保留草稿/);
+    assert.equal(current.groupRules[0].maxPerDay, 20); assert.equal(ref.current.configStamp, base.configStamp);
+    assert.equal((await service.dispatch({ method: 'GET', pathname: '/rules' })).data.groupRules[0].maxPerDay, 30);
+  } finally { await service.dispose(); }
+});
+
+test('主草稿版本早于规则保存前版本时，安全合并其他设置变更', async () => {
+  const start = source.indexOf('      const onVoiceConfigSaved = async result => {');
+  const end = source.indexOf('      useEffect(() => { loadOverview()', start);
+  const base = { note: 'base', socialV2: { voice: { trigger: { who: 'owner' }, cloud: { pricePerKChar: 1 } } } };
+  const draft = structuredClone(base); draft.note = 'pending';
+  const remote = structuredClone(base); remote.socialV2.voice.trigger.who = 'mention'; remote.socialV2.voice.cloud.pricePerKChar = 2;
+  const ref = { current: { qq: draft, saved: JSON.stringify({ qq: base }), configStamps: { qq: 'initial' } } };
+  let saved, merged, stamp;
+  const ctx = vm.createContext({ voiceDraftRef: ref, api: async () => ({ qq: remote, stamps: { qq: 'after' } }),
+    planVoiceRebase: plan, setQq: x => { merged = x; }, setSaved: x => { saved = x; }, setConfigStamps: value => { stamp = value.qq; } });
+  vm.runInContext(source.slice(start, end) + '\nglobalThis.run = onVoiceConfigSaved;', ctx);
+  assert.equal((await ctx.run({ beforeStamp: 'pricing-written', afterStamp: 'after' })).ok, true);
+  assert.equal(merged.note, 'pending'); assert.equal(merged.socialV2.voice.cloud.pricePerKChar, 2);
+  assert.equal(JSON.parse(saved).qq.note, 'base'); assert.equal(stamp, 'after');
+});
+
+test('读取最新规则后又发生配置写入，后端CAS仍拒绝并保留草稿', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-rules-race-'));
+  const configFile = path.join(root, 'config.json');
+  fs.writeFileSync(configFile, JSON.stringify({ socialV2: { voice: { trigger: { who: 'owner' }, cloud: { monthlyQuota: 900000 } } } }));
+  const service = createVoiceManagement({ configFile, programRoot: root });
+  try {
+    const base = (await service.dispatch({ method: 'GET', pathname: '/rules' })).data;
+    const draft = { ...base, triggerWho: 'list' };
+    let current = draft, message = '';
+    const start = source.indexOf('      const saveRules = async () => {'), end = source.indexOf('      const card =', start);
+    const ctx = vm.createContext({ rulesSaving: false, setRulesSaving: () => {}, rules: draft, rulesBaseRef: { current: base }, planVoiceRebase: plan,
+      api: async (_url, options) => {
+        if (!options?.method) {
+          const latest = await service.dispatch({ method: 'GET', pathname: '/rules' });
+          await service.dispatch({ method: 'POST', pathname: '/rules', body: { monthlyQuota: 800000 } });
+          return latest.data;
+        }
+        const result = await service.dispatch({ method: 'POST', pathname: '/rules', body: options.body });
+        if (result.data.ok === false) throw Object.assign(new Error(result.data.error), { code: result.data.code, hint: result.data.hint });
+        return result.data;
+      }, setRules: update => { current = typeof update === 'function' ? update(current) : update; },
+      onVoiceConfigSaved: async () => ({ ok: true }), voiceError: e => [e.code, e.message, e.hint].filter(Boolean).join(' · '), toast: value => { message = value; } });
+    vm.runInContext(source.slice(start, end) + '\nglobalThis.run = saveRules;', ctx);
+    await ctx.run();
+    assert.match(message, /CONFIG_STALE/); assert.match(message, /保留未保存草稿/);
+    assert.equal(current.triggerWho, 'list'); assert.equal(current.configStamp, base.configStamp);
+    const saved = (await service.dispatch({ method: 'GET', pathname: '/rules' })).data;
+    assert.equal(saved.triggerWho, 'owner'); assert.equal(saved.monthlyQuota, 800000);
+  } finally { await service.dispose(); }
 });
