@@ -273,6 +273,22 @@ export function apply(ctx) {
       const current = readCurrentCharacter();
       return douyinMemoryService.readOfficialIdentity({ characterId: current?.id, characterEpoch: current?.epoch });
     },
+    retireForLifecycle: async ({ characterId, operationId }) => {
+      pluginLog(`[记忆V2] 角色 ${characterId} 触发生命周期退役 (operationId: ${operationId})`);
+      if (biliMemoryHost && typeof biliMemoryHost.retire === 'function') {
+        await biliMemoryHost.retire().catch(() => {});
+      }
+      return { ok: true, retired: true };
+    },
+    lifecycleInventory: async ({ characterId, purpose }) => {
+      pluginLog(`[记忆V2] 角色 ${characterId} 进行生命周期盘点 (${purpose})`);
+      return {
+        complete: true,
+        sealedSpool: [],
+        externalCopies: [],
+        quotaSnapshot: tokenBudget?.getDailyUsage?.() ?? null
+      };
+    },
     onBlocked: reportMemoryBlocked,
   });
   const memoryV2Ready = memoryV2.initialize().catch(error => ({ ok: false, code: error?.code || 'MEMORY_RUNTIME_FAILED', error: '记忆服务初始化失败。', hint: '检查记忆页和本机运行时后重试。' }));

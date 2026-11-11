@@ -2004,12 +2004,15 @@ function allowedGroupIdsFor(conversationKey, sharing) {
   return allowed;
 }
 
-function visibleFor(card, platform, cfg, conversationKey = '') {
+export function visibleFor(card, platform, cfg = {}, conversationKey = '') {
+  const records = Array.isArray(card) ? card : (Array.isArray(card?.records) ? card.records : []);
   const current = String(conversationKey ?? '').trim();
   const currentGroup = /^group:(\d+)$/.exec(current)?.[1] ?? '';
   const currentPrivate = current.startsWith('private:');
-  const allowedGroups = allowedGroupIdsFor(current, cfg.sharing);
-  return card.records.filter((record) => {
+  const allowedGroups = allowedGroupIdsFor(current, cfg?.sharing);
+  return records.filter((record) => {
+    if (!record || typeof record !== 'object') return false;
+    if (record.revoked === true || record.status === 'revoked' || record.corrected === true || record.clarity === 'forgotten') return false;
     // 完整卡（platform='all'）保留敏感条目供管理员查看；注入提示词的 QQ / B站 两版都排除。
     if (record.sensitive) return platform === 'all';
     if (platform === 'all') return true;
@@ -2018,11 +2021,16 @@ function visibleFor(card, platform, cfg, conversationKey = '') {
       const contexts = new Set([platform, current, current ? `${platform}:${current}` : ''].filter(Boolean));
       if (!record.allowedContexts.some((allowed) => contexts.has(allowed))) return false;
       if (record.visibilityClassification === 'private' && !recordIsPrivate(record)) return false;
+      if (currentGroup && (recordIsPrivate(record) || record.visibilityClassification === 'private')) return false;
+      if (currentPrivate) {
+        const key = String(record.conversationKey ?? '');
+        if (key && key !== current) return false;
+      }
       return true;
     }
     if (platform === 'bili') {
       if (record.scope === 'bili' || record.scope === 'shared') return true;
-      return cfg.includeQqInBili && record.scope === 'qq';
+      return cfg?.includeQqInBili && record.scope === 'qq';
     }
     if (platform === 'pet') {
       return record.scope === 'pet' || (record.scope === 'shared' && !recordIsPrivate(record));
@@ -2048,6 +2056,11 @@ function visibleFor(card, platform, cfg, conversationKey = '') {
     }
     return false;
   });
+}
+
+export function filterVisibleRecords(cardOrRecords, { platform = 'all', config = {}, conversationKey = '' } = {}) {
+  const cfg = normalizeMemoryCardConfig(config);
+  return visibleFor(cardOrRecords, platform, cfg, conversationKey);
 }
 
 function sectionize(card, { platform = 'all', now = Date.now(), config = {}, conversationKey = '' } = {}) {

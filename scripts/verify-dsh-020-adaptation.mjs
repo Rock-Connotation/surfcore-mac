@@ -32,11 +32,12 @@ import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { dshModulesDir } from './dsh-modules.mjs';
 import { discoverDshSessionCookie, NodeApiClient, unwrap } from '../src/dsh-client.js';
+import { discoverDshBaseUrl } from '../src/dsh-port.js';
 
 const ROOT = process.cwd();
 const DSH_MODULES = dshModulesDir();
 const DSH_HOME = path.join(os.homedir(), '.dsh');
-const BASE = process.env.DSH_BASE_URL || 'http://127.0.0.1:3080';
+const BASE = process.env.DSH_BASE_URL || await discoverDshBaseUrl() || 'http://127.0.0.1:3100';
 
 let pass = 0, fail = 0;
 const results = [];
@@ -66,7 +67,7 @@ for (const p of ['qq-chat', 'qq-chat-v2']) {
   let schemaOk = false;
   try { persona.Config(row.config); schemaOk = true; } catch {}
   check(`preset ${p}: persona.config 通过 DSH schema`, schemaOk);
-  check(`preset ${p}: 保留 {{model}} / {{cwd}} 变量`, /\{\{model\}\}/.test(row.config.prefix) && /\{\{cwd\}\}/.test(row.config.suffix ?? ''));
+  check(`preset ${p}: 保留 {{model}} 变量且无淘汰变量`, /\{\{model\}\}/.test(row.config.prefix) && !/\{\{cwd\}\}/.test(row.config.prefix) && !/\{\{cwd\}\}/.test(row.config.suffix ?? ''));
 }
 
 // ── 2. 部署侧：DSH 0.1.7 的 preset 机制 ──────────────────────────────────────
@@ -140,24 +141,49 @@ if (scanned.names.size === 0) {
   check('守卫名单无拼错的假名（restrict 不会静默失效）', fabricated.length === 0, fabricated.join(', ') || `扫过 ${scanned.packages.length} 个包`);
 }
 
-const patch = fs.readFileSync(path.join(DSH_HOME, 'profiles/web/cordis.patch.yml'), 'utf8');
-const patchDoc = yaml.load(patch);
-const mcpIds = patchDoc.filter((e) => e?.insert).flatMap((e) => e.insert.map((x) => x.id));
-check('profile patch 含 3 个 MCP 且无重复', mcpIds.length === 3 && new Set(mcpIds).size === 3, mcpIds.join(', '));
-const snowlumaEntry = patchDoc.filter((e) => e?.insert).flatMap((e) => e.insert).find((x) => x.id === 'mcp-snowluma');
-check('mcp-snowluma 带 toolCallTimeoutMs=725000', snowlumaEntry?.config?.toolCallTimeoutMs === 725000);
-check('mcp 路径指向本仓库', mcpIds.every((id) => {
-  const e = patchDoc.filter((x) => x?.insert).flatMap((x) => x.insert).find((y) => y.id === id);
-  return String(e.config.args[0]).includes('surfcore');
-}));
+const activeProfile = ['desktop', 'web'].find((p) => {
+  const pkgPath = path.join(DSH_HOME, 'profiles', p, 'package.json');
+  if (!fs.existsSync(pkgPath)) return false;
+  try {
+    const pData = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return pData?.dsh?.profile?.bundles?.includes('surfcore') || Object.keys(pData?.dependencies || {}).includes('surfcore');
+  } catch { return false; }
+}) || (fs.existsSync(path.join(DSH_HOME, 'profiles/desktop')) ? 'desktop' : 'web');
 
-const pkg = JSON.parse(fs.readFileSync(path.join(DSH_HOME, 'profiles/web/package.json'), 'utf8'));
-check('profile bundles 含 surfcore', pkg.dsh.profile.bundles.includes('surfcore'));
-check('surfcore link 依赖已注册', String(pkg.dependencies['surfcore'] ?? '').startsWith('link:'));
-check('surfcore 已 link 进 node_modules', fs.existsSync(path.join(DSH_HOME, 'profiles/web/node_modules/surfcore')));
+const profileDir = path.join(DSH_HOME, 'profiles', activeProfile);
+const patchPath = path.join(profileDir, 'cordis.patch.yml');
+if (fs.existsSync(patchPath)) {
+  const patch = fs.readFileSync(patchPath, 'utf8');
+  const patchDoc = yaml.load(patch);
+  const mcpIds = patchDoc.filter((e) => e?.insert).flatMap((e) => e.insert.map((x) => x.id));
+  check('profile patch 含 3 个 MCP 且无重复', mcpIds.length === 3 && new Set(mcpIds).size === 3, mcpIds.join(', '));
+  const snowlumaEntry = patchDoc.filter((e) => e?.insert).flatMap((e) => e.insert).find((x) => x.id === 'mcp-snowluma');
+  check('mcp-snowluma 带 toolCallTimeoutMs=725000', snowlumaEntry?.config?.toolCallTimeoutMs === 725000);
+  check('mcp 路径指向本仓库', mcpIds.every((id) => {
+    const e = patchDoc.filter((x) => x?.insert).flatMap((x) => x.insert).find((y) => y.id === id);
+    return String(e.config.args[0]).includes('surfcore');
+  }));
+} else {
+  skip('profile cordis.patch.yml 校验', `${patchPath} 不存在`);
+}
+
+const profilePkgPath = path.join(profileDir, 'package.json');
+if (fs.existsSync(profilePkgPath)) {
+  const pkg = JSON.parse(fs.readFileSync(profilePkgPath, 'utf8'));
+  check('profile bundles 含 surfcore', pkg.dsh?.profile?.bundles?.includes('surfcore'));
+  check('surfcore link 依赖已注册', String(pkg.dependencies?.['surfcore'] ?? '').startsWith('link:'));
+  check('surfcore 已 link 进 node_modules', fs.existsSync(path.join(profileDir, 'node_modules/surfcore')));
+} else {
+  skip('profile package.json 校验', `${profilePkgPath} 不存在`);
+}
 
 // ── 3. 仓库配置：模型 ───────────────────────────────────────────────────────
-const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+const cfgPath = fs.existsSync(path.join(ROOT, 'config.json'))
+  ? path.join(ROOT, 'config.json')
+  : (fs.existsSync(path.join(DSH_HOME, 'surfcore/config.json'))
+    ? path.join(DSH_HOME, 'surfcore/config.json')
+    : path.join(ROOT, 'config.example.json'));
+const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
 check('config.json dsh.model = deepseek-flash', cfg.dsh?.model === 'deepseek-flash', `当前 ${cfg.dsh?.model}`);
 const bridgeSrc = fs.readFileSync(path.join(ROOT, 'src/bridge.js'), 'utf8');
 // 只看可执行代码，忽略注释（注释里会提到旧名做历史说明）。
@@ -221,153 +247,161 @@ const SYNTAX_FILES = ['src/bridge.js', 'src/dsh-client.js', 'src/mcp-snowluma-sa
 //   · 进程启动 token 是现生成的 32 字节随机数，只存在内存 WeakMap 里，不落盘；
 //   · guard 插件退役后也没有启动器再把 `dsh web` 的 stdout 重定向到那个目录，
 //     日志里剩下的是**上一个进程**的陈旧 token，换 Cookie 只会得到 401。
-const cookie = discoverDshSessionCookie(BASE);
-check('本机签名密钥 → 铸造会话 Cookie 成功', Boolean(cookie), cookie ? `${cookie.length} 字节` : '读不到 browser-session 密钥');
-async function rpc(e, a) {
-  const r = await fetch(`${BASE}/api/${e}`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId: 'v' + Math.random().toString(36).slice(2, 8), method: e, payload: { args: a } }) });
-  return (await r.json()).result;
-}
-const st = await rpc('settings/describe', {});
-check('settings/describe 可用', st.ok === true);
-const dm = st.value?.namespaces?.find((n) => n.ns === 'agent-default-model');
-check('DSH 全局默认模型 = deepseek-flash', dm?.value?.model === 'deepseek-flash', `当前 ${dm?.value?.model}`);
-const ap = await rpc('agentPresets/list', {});
-const presetIds = ap.value?.presets?.map((p) => p.id) ?? [];
-check('agentPresets/list 含 qq-chat 与 qq-chat-v2', presetIds.includes('qq-chat') && presetIds.includes('qq-chat-v2'), presetIds.join(', '));
-// 0.1.7 把设置命名空间从 `agent-presets` 改名为 `agent-preset-registry`，而且「用户默认」
-// 是易失字段 selectedDefault，不会出现在 describe 的 value 里。部署默认由 registry 行的
-// config.default 决定（dsh-web-app 的 patch 写的是 standard）。桥接在 closedAgentPreset
-// 留空时依赖的正是它，所以这里断言「注册表已装载」+「standard 预设存在」这两件可观测的事。
-const registryNs = st.value?.namespaces?.find((n) => n.ns === 'agent-preset-registry');
-check('preset 注册表命名空间已装载', registryNs !== undefined, st.value?.namespaces?.map((n) => n.ns).filter((n) => n.includes('preset')).join(', '));
-check('closed-agent 兜底所需的 standard 预设可用', presetIds.includes('standard'), presetIds.join(', '));
-
-// ── 5a. qq-mode 命名空间（0.2.0 删除了 ctx.settings.register()）──────────────
-// 0.2.0 里命名空间**不再需要注册**：它由 profile 里 id 恰好等于命名空间名的 loader
-// entry + 该插件导出的 Config（含 volatile 字段）推导出来。这条断言把「模式能写穿
-// DSH 设置」的可观测结果钉住 —— 它一旦坏掉，控制台改模式只在本地生效，下一次
-// DSH 轮询就回滚，而且不会有任何提示。
-const qqMode = st.value?.namespaces?.find((n) => n.ns === 'qq-mode');
-check('settings/describe 列出 qq-mode 命名空间', qqMode !== undefined, st.value?.namespaces?.map((n) => n.ns).length + ' 个命名空间');
-if (qqMode) {
-  check('qq-mode 带 mode 字段', typeof qqMode.value?.mode === 'string', JSON.stringify(qqMode.value));
-  check('qq-mode 带 revision（写入所需）', Number.isInteger(qqMode.revision), String(qqMode.revision));
-  // settings/update 是**多参数** RPC：args 是 { ns, patch, expectedRevision } 平铺，
-  // 不是 { request: {...} }（传 request 会被网关拒为
-  // `gateway/arguments-invalid: missing "ns", "patch"; unexpected "request"`）。
-  const writeBack = await rpc('settings/update', {
-    ns: 'qq-mode', patch: { mode: qqMode.value.mode }, expectedRevision: qqMode.revision,
-  });
-  check(
-    'settings/update 可写 qq-mode（参数为平铺多参数，非 request 包装）',
-    writeBack.ok === true,
-    writeBack.ok ? `mode=${writeBack.value?.value?.mode}` : `${writeBack.error?.code}: ${writeBack.error?.message}`,
-  );
-}
-
-// ── 5b. session/projections：读会话队列的主路径 ──────────────────────────────
-const probeDir = path.join(os.tmpdir(), 'qq-bridge-verify-020');
-fs.rmSync(probeDir, { recursive: true, force: true });
-fs.mkdirSync(probeDir, { recursive: true });
-const api = new NodeApiClient(BASE, undefined, {});
-await api.ensureAuth();
-
-let probeSessionId = null;
+let dshReachable = false;
 try {
-  const created = unwrap(await api.sessions.create({ cwd: probeDir, agentPreset: 'qq-chat-v2' }), 'session.create');
-  probeSessionId = created.sessionId;
-  check('session/create 挂 qq-chat-v2 preset 成功', typeof probeSessionId === 'string' && probeSessionId.length > 0, probeSessionId);
-  unwrap(await api.sessions.selectModel({
-    sessionId: probeSessionId, provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max'
-  }), 'session.selectModel');
-  check('session/selectModel(deepseek-flash) 被接受', true);
+  const probe = await fetch(`${BASE}/api/status`, { signal: AbortSignal.timeout(1500) });
+  if (probe.status === 200 || probe.status === 401) dshReachable = true;
+} catch {}
 
-  const projections = await api.callUnary('session/projections', { sessionId: probeSessionId });
-  check('session/projections 一元 RPC 可用', projections.result?.ok === true,
-    projections.result?.ok ? '' : `${projections.result?.error?.code}: ${projections.result?.error?.message}`);
-  const values = projections.result?.value?.values;
-  check('session/projections 返回 values.inbox（next-turn / next-step）',
-    values?.inbox !== undefined && Array.isArray(values.inbox['next-turn']) && Array.isArray(values.inbox['next-step']),
-    Object.keys(values ?? {}).slice(0, 6).join(','));
+if (!dshReachable) {
+  skip('运行中的 DSH 0.2.x 实时 RPC 测试', `DSH 未在 ${BASE} 响应（桌面端未启动？）；启动后重跑以验证实时 RPC`);
+  skip('点号 endpoint 测试', 'DSH 桌面端未运行');
+} else {
+  const cookie = discoverDshSessionCookie(BASE);
+  check('本机签名密钥 → 铸造会话 Cookie 成功', Boolean(cookie), cookie ? `${cookie.length} 字节` : '读不到 browser-session 密钥');
+  async function rpc(e, a) {
+    const r = await fetch(`${BASE}/api/${e}`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId: 'v' + Math.random().toString(36).slice(2, 8), method: e, payload: { args: a } }) });
+    return (await r.json()).result;
+  }
+  const st = await rpc('settings/describe', {});
+  check('settings/describe 可用', st?.ok === true);
+  const dm = st?.value?.namespaces?.find((n) => n.ns === 'agent-default-model');
+  check('DSH 全局默认模型 = deepseek-flash', dm?.value?.model === 'deepseek-flash', `当前 ${dm?.value?.model}`);
+  const ap = await rpc('agentPresets/list', {});
+  const presetIds = ap?.value?.presets?.map((p) => p.id) ?? [];
+  check('agentPresets/list 含 qq-chat 与 qq-chat-v2', presetIds.includes('qq-chat') && presetIds.includes('qq-chat-v2'), presetIds.join(', '));
+  // 0.1.7 把设置命名空间从 `agent-presets` 改名为 `agent-preset-registry`，而且「用户默认」
+  // 是易失字段 selectedDefault，不会出现在 describe 的 value 里。部署默认由 registry 行的
+  // config.default 决定（dsh-web-app 的 patch 写的是 standard）。桥接在 closedAgentPreset
+  // 留空时依赖的正是它，所以这里断言「注册表已装载」+「standard 预设存在」这两件可观测的事。
+  const registryNs = st?.value?.namespaces?.find((n) => n.ns === 'agent-preset-registry');
+  check('preset 注册表命名空间已装载', registryNs !== undefined, st?.value?.namespaces?.map((n) => n.ns).filter((n) => n.includes('preset')).join(', '));
+  check('closed-agent 兜底所需的 standard 预设可用', presetIds.includes('standard'), presetIds.join(', '));
 
-  // ── 5c. control baseline 形状（0.2.0 的核心断裂点）────────────────────────
-  const url = new URL('/api/remote.mux', BASE);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  const baseline = await new Promise((resolve, reject) => {
-    const socket = new WebSocket(url, { headers: { cookie: api.cookie } });
-    const streamId = randomUUID();
-    const timer = setTimeout(() => { try { socket.close(); } catch {} reject(new Error('control baseline 超时')); }, 15_000);
-    const finish = (err, value) => { clearTimeout(timer); try { socket.close(); } catch {} err ? reject(err) : resolve(value); };
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'open', streamId, endpoint: 'session/control', payload: { args: {} } })));
-    socket.addEventListener('message', (ev) => {
-      let m; try { m = JSON.parse(ev.data); } catch { return; }
-      if (m.streamId !== streamId) return;
-      if (m.type === 'item' && m.value?.type === 'baseline') finish(null, m.value);
-      else if (m.type === 'error' || m.type === 'end') finish(new Error(`control ${m.type}${m.error?.code ? ` (${m.error.code})` : ''}`));
+  // ── 5a. qq-mode 命名空间（0.2.0 删除了 ctx.settings.register()）──────────────
+  // 0.2.0 里命名空间**不再需要注册**：它由 profile 里 id 恰好等于命名空间名的 loader
+  // entry + 该插件导出的 Config（含 volatile 字段）推导出来。这条断言把「模式能写穿
+  // DSH 设置」的可观测结果钉住 —— 它一旦坏掉，控制台改模式只在本地生效，下一次
+  // DSH 轮询就回滚，而且不会有任何提示。
+  const qqMode = st?.value?.namespaces?.find((n) => n.ns === 'qq-mode');
+  check('settings/describe 列出 qq-mode 命名空间', qqMode !== undefined, st?.value?.namespaces?.map((n) => n.ns).length + ' 个命名空间');
+  if (qqMode) {
+    check('qq-mode 带 mode 字段', typeof qqMode.value?.mode === 'string', JSON.stringify(qqMode.value));
+    check('qq-mode 带 revision（写入所需）', Number.isInteger(qqMode.revision), String(qqMode.revision));
+    // settings/update 是**多参数** RPC：args 是 { ns, patch, expectedRevision } 平铺，
+    // 不是 { request: {...} }（传 request 会被网关拒为
+    // `gateway/arguments-invalid: missing "ns", "patch"; unexpected "request"`）。
+    const writeBack = await rpc('settings/update', {
+      ns: 'qq-mode', patch: { mode: qqMode.value.mode }, expectedRevision: qqMode.revision,
     });
-    socket.addEventListener('error', () => finish(new Error('control socket error')));
-  }).catch((error) => { skip('session/control 开场 baseline 形状', error.message); return null; });
-  if (baseline) {
-    const bv = baseline.value;
-    check('control baseline 是 value.projections（0.2.0 形状）',
-      bv !== null && typeof bv?.projections === 'object' && bv.projections !== null);
-    check('control baseline 不再有 value.queues（0.1.7 形状已废弃）',
-      bv !== null && !Object.hasOwn(bv ?? {}, 'queues'));
-    const sample = bv?.projections?.[probeSessionId]?.values;
-    check('baseline 里探测会话的投影带 inbox', sample?.inbox !== undefined,
-      Object.keys(sample ?? {}).slice(0, 6).join(','));
+    check(
+      'settings/update 可写 qq-mode（参数为平铺多参数，非 request 包装）',
+      writeBack?.ok === true,
+      writeBack?.ok ? `mode=${writeBack.value?.value?.mode}` : `${writeBack?.error?.code}: ${writeBack?.error?.message}`,
+    );
   }
 
-  // ── 5d. 核心回归：退役会话不再抛 baseline 结构错 ─────────────────────────
-  // 0.2.0 之前这段代码读 `value.queues[<id>]`，形状一变就**每次**退役都抛
-  // "invalid session/control baseline"，队列清不掉、旧任务继续在 DSH 里跑，
-  // 而桥接日志里只有一行警告。这条断言就是那次断裂的回归网。
-  let retireError = null;
-  let retired = null;
-  try { retired = await api.stopSessionWork(probeSessionId); }
-  catch (error) { retireError = error; }
-  check('stopSessionWork 在真实会话上成功返回（不再抛 baseline 结构错）',
-    retireError === null, retireError?.message ?? `removed=${retired?.removed}`);
+  // ── 5b. session/projections：读会话队列的主路径 ──────────────────────────────
+  const probeDir = path.join(os.tmpdir(), 'qq-bridge-verify-020');
+  fs.rmSync(probeDir, { recursive: true, force: true });
+  fs.mkdirSync(probeDir, { recursive: true });
+  const api = new NodeApiClient(BASE, undefined, {});
+  await api.ensureAuth();
 
-  // ── 5e. $events ready 帧 ─────────────────────────────────────────────────
-  const readyFrame = await new Promise((resolve) => {
-    const socket = new WebSocket(url, { headers: { cookie: api.cookie } });
-    const streamId = randomUUID();
-    const timer = setTimeout(() => { try { socket.close(); } catch {} resolve(null); }, 10_000);
-    const finish = (value) => { clearTimeout(timer); try { socket.close(); } catch {} resolve(value); };
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'open', streamId, endpoint: '$events', payload: { args: {} } })));
-    socket.addEventListener('message', (ev) => {
-      let m; try { m = JSON.parse(ev.data); } catch { return; }
-      if (m.streamId !== streamId || m.type !== 'item') return;
-      if (m.value?.type === 'ready') finish(m.value);
+  let probeSessionId = null;
+  try {
+    const created = unwrap(await api.sessions.create({ cwd: probeDir, agentPreset: 'qq-chat-v2' }), 'session.create');
+    probeSessionId = created.sessionId;
+    check('session/create 挂 qq-chat-v2 preset 成功', typeof probeSessionId === 'string' && probeSessionId.length > 0, probeSessionId);
+    unwrap(await api.sessions.selectModel({
+      sessionId: probeSessionId, provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max'
+    }), 'session.selectModel');
+    check('session/selectModel(deepseek-flash) 被接受', true);
+
+    const projections = await api.callUnary('session/projections', { sessionId: probeSessionId });
+    check('session/projections 一元 RPC 可用', projections.result?.ok === true,
+      projections.result?.ok ? '' : `${projections.result?.error?.code}: ${projections.result?.error?.message}`);
+    const values = projections.result?.value?.values;
+    check('session/projections 返回 values.inbox（next-turn / next-step）',
+      values?.inbox !== undefined && Array.isArray(values.inbox['next-turn']) && Array.isArray(values.inbox['next-step']),
+      Object.keys(values ?? {}).slice(0, 6).join(','));
+
+    // ── 5c. control baseline 形状（0.2.0 的核心断裂点）────────────────────────
+    const url = new URL('/api/remote.mux', BASE);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    const baseline = await new Promise((resolve, reject) => {
+      const socket = new WebSocket(url, { headers: { cookie: api.cookie } });
+      const streamId = randomUUID();
+      const timer = setTimeout(() => { try { socket.close(); } catch {} reject(new Error('control baseline 超时')); }, 15_000);
+      const finish = (err, value) => { clearTimeout(timer); try { socket.close(); } catch {} err ? reject(err) : resolve(value); };
+      socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'open', streamId, endpoint: 'session/control', payload: { args: {} } })));
+      socket.addEventListener('message', (ev) => {
+        let m; try { m = JSON.parse(ev.data); } catch { return; }
+        if (m.streamId !== streamId) return;
+        if (m.type === 'item' && m.value?.type === 'baseline') finish(null, m.value);
+        else if (m.type === 'error' || m.type === 'end') finish(new Error(`control ${m.type}${m.error?.code ? ` (${m.error.code})` : ''}`));
+      });
+      socket.addEventListener('error', () => finish(new Error('control socket error')));
+    }).catch((error) => { skip('session/control 开场 baseline 形状', error.message); return null; });
+    if (baseline) {
+      const bv = baseline.value;
+      check('control baseline 是 value.projections（0.2.0 形状）',
+        bv !== null && typeof bv?.projections === 'object' && bv.projections !== null);
+      check('control baseline 不再有 value.queues（0.1.7 形状已废弃）',
+        bv !== null && !Object.hasOwn(bv ?? {}, 'queues'));
+      const sample = bv?.projections?.[probeSessionId]?.values;
+      check('baseline 里探测会话的投影带 inbox', sample?.inbox !== undefined,
+        Object.keys(sample ?? {}).slice(0, 6).join(','));
+    }
+
+    // ── 5d. 核心回归：退役会话不再抛 baseline 结构错 ─────────────────────────
+    let retireError = null;
+    let retired = null;
+    try { retired = await api.stopSessionWork(probeSessionId); }
+    catch (error) { retireError = error; }
+    check('stopSessionWork 在真实会话上成功返回（不再抛 baseline 结构错）',
+      retireError === null, retireError?.message ?? `removed=${retired?.removed}`);
+
+    // ── 5e. $events ready 帧 ─────────────────────────────────────────────────
+    const readyFrame = await new Promise((resolve) => {
+      const socket = new WebSocket(url, { headers: { cookie: api.cookie } });
+      const streamId = randomUUID();
+      const timer = setTimeout(() => { try { socket.close(); } catch {} resolve(null); }, 10_000);
+      const finish = (value) => { clearTimeout(timer); try { socket.close(); } catch {} resolve(value); };
+      socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'open', streamId, endpoint: '$events', payload: { args: {} } })));
+      socket.addEventListener('message', (ev) => {
+        let m; try { m = JSON.parse(ev.data); } catch { return; }
+        if (m.streamId !== streamId || m.type !== 'item') return;
+        if (m.value?.type === 'ready') finish(m.value);
+      });
+      socket.addEventListener('error', () => finish(null));
     });
-    socket.addEventListener('error', () => finish(null));
+    check('$events 下发 ready 帧并带 clientId',
+      typeof readyFrame?.clientId === 'string' && readyFrame.clientId.length > 0,
+      readyFrame ? `${String(readyFrame.clientId).slice(0, 8)}…` : '未收到 ready 帧');
+
+    // ── 5f. session/modelCatalog 形状 ────────────────────────────────────────
+    const catalog = await api.callUnary('session/modelCatalog', {});
+    check('session/modelCatalog 可用且给出模型分组', catalog.result?.ok === true && Array.isArray(catalog.result?.value?.groups),
+      catalog.result?.ok ? `${catalog.result.value.groups.length} 组` : `${catalog.result?.error?.code}`);
+  } catch (error) {
+    check('DSH 实测段无未捕获异常', false, error?.message ?? String(error));
+  } finally {
+    if (probeSessionId) {
+      try { await api.callUnary('session/cancel', { sessionId: probeSessionId }); } catch {}
+      try { await api.callUnary('workspace/archiveSession', { sessionId: probeSessionId }); } catch {}
+    }
+    try { fs.rmSync(probeDir, { recursive: true, force: true }); } catch {}
+  }
+
+  // 点号 endpoint（旧协议）应返回纯文本 404（不是 JSON 信封）——证明协议确为斜杠式
+  const dotRes = await fetch(`${BASE}/api/session.list`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'client-request', rpcId: 'v-dot', method: 'session.list', payload: { args: { _request: {} } } }),
   });
-  check('$events 下发 ready 帧并带 clientId',
-    typeof readyFrame?.clientId === 'string' && readyFrame.clientId.length > 0,
-    readyFrame ? `${String(readyFrame.clientId).slice(0, 8)}…` : '未收到 ready 帧');
-
-  // ── 5f. session/modelCatalog 形状 ────────────────────────────────────────
-  const catalog = await api.callUnary('session/modelCatalog', {});
-  check('session/modelCatalog 可用且给出模型分组', catalog.result?.ok === true && Array.isArray(catalog.result?.value?.groups),
-    catalog.result?.ok ? `${catalog.result.value.groups.length} 组` : `${catalog.result?.error?.code}`);
-} catch (error) {
-  check('DSH 实测段无未捕获异常', false, error?.message ?? String(error));
-} finally {
-  if (probeSessionId) {
-    try { await api.callUnary('session/cancel', { sessionId: probeSessionId }); } catch {}
-    try { await api.callUnary('workspace/archiveSession', { sessionId: probeSessionId }); } catch {}
-  }
-  try { fs.rmSync(probeDir, { recursive: true, force: true }); } catch {}
+  const dotBody = await dotRes.text();
+  check('点号 endpoint /api/session.list 不可用（旧协议已废弃）', dotRes.status === 404 && /not found/i.test(dotBody), `HTTP ${dotRes.status}`);
 }
-
-// 点号 endpoint（旧协议）应返回纯文本 404（不是 JSON 信封）——证明协议确为斜杠式
-const dotRes = await fetch(`${BASE}/api/session.list`, {
-  method: 'POST', headers: { cookie, 'content-type': 'application/json' },
-  body: JSON.stringify({ type: 'client-request', rpcId: 'v-dot', method: 'session.list', payload: { args: { _request: {} } } }),
-});
-const dotBody = await dotRes.text();
-check('点号 endpoint /api/session.list 不可用（旧协议已废弃）', dotRes.status === 404 && /not found/i.test(dotBody), `HTTP ${dotRes.status}`);
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────
 console.log(results.join('\n'));

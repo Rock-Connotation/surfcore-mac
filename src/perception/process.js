@@ -5,6 +5,20 @@ const DEFAULT_OUTPUT_LIMIT = 2 * 1024 * 1024;
 const TERM_WAIT_MS = 1200;
 const KILL_WAIT_MS = 1200;
 
+const unreleasedProcesses = new Map();
+
+export function getUnreleasedProcesses() {
+  return [...unreleasedProcesses.values()];
+}
+
+export function clearUnreleasedProcess(pid) {
+  unreleasedProcesses.delete(pid);
+}
+
+function recordUnreleasedProcess(info) {
+  if (info?.pid) unreleasedProcesses.set(info.pid, info);
+}
+
 function collectTail(current, chunk, limit) {
   const next = Buffer.concat([current, Buffer.from(chunk)]);
   return next.length <= limit ? next : next.subarray(next.length - limit);
@@ -67,15 +81,58 @@ export async function runProcess(executable, args, {
   let timedOut = false;
   let timeoutHandle = null;
   let abortPromise = null;
+  let abortResolver = null;
+  const abortTriggerPromise = new Promise((resolve) => { abortResolver = resolve; });
+
   const onAbort = () => {
-    if (!abortPromise) abortPromise = terminateChild(child, closePromise, { termWaitMs, killWaitMs });
+    if (!abortPromise) {
+      abortPromise = terminateChild(child, closePromise, { termWaitMs, killWaitMs });
+      abortResolver(abortPromise);
+    }
   };
   signal?.addEventListener('abort', onAbort, { once: true });
   if (timeoutMs > 0) timeoutHandle = setTimeout(() => { timedOut = true; onAbort(); }, timeoutMs);
+  if (signal?.aborted) onAbort();
 
   try {
-    const close = await closePromise;
-    if (abortPromise) await abortPromise;
+    const outcome = await Promise.race([
+      closePromise.then((close) => ({ type: 'close', close })),
+      abortTriggerPromise.then(async (promise) => {
+        const term = await promise;
+        return { type: 'aborted', term };
+      }),
+    ]);
+
+    let close;
+    if (outcome.type === 'close') {
+      close = outcome.close;
+    } else {
+      const term = outcome.term;
+      if (!term?.terminated) {
+        const processInfo = {
+          pid: child?.pid,
+          executable,
+          stage,
+          terminated: false,
+          outcome: 'unknown',
+          timedOut,
+          aborted: Boolean(signal?.aborted),
+          recordedAt: new Date().toISOString(),
+        };
+        recordUnreleasedProcess(processInfo);
+        const code = timedOut ? 'JOB_TIMEOUT' : 'PROCESS_TERMINATION_UNKNOWN';
+        const msg = timedOut
+          ? 'The local process exceeded its time limit and could not be confirmed stopped.'
+          : 'The local process was cancelled but could not be confirmed stopped.';
+        const hint = 'The process did not exit after SIGKILL. Check PID ' + (child?.pid ?? 'unknown') + ' before retrying.';
+        throw fail(code, msg, hint, { retryable: false, stage, processInfo });
+      }
+      close = await Promise.race([
+        closePromise,
+        wait(50).then(() => ({ code: null, signal: 'SIGKILL' })),
+      ]);
+    }
+
     if (timedOut) {
       throw fail('JOB_TIMEOUT', 'The local process exceeded its time limit.', 'Retry the job or use a shorter requested range after checking local system load.', { retryable: true, stage });
     }

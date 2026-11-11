@@ -59,6 +59,9 @@ import * as characterStore from '../src/character-persona.js';
 import * as biliCard from '../src/bili-card.js';
 import * as historyCatchup from '../src/history-catchup.js';
 import * as purposeEngine from '../src/purpose-engine.js';
+import * as interactionLifecycle from '../src/interaction-lifecycle.js';
+import * as taskLedger from '../src/task-ledger.js';
+import * as taskHarness from '../src/task-harness.js';
 import * as conversationClosure from '../src/conversation-closure.js';
 import { fetchVideoInfo } from '../src/bili-api.js';
 import * as stateAcl from '../src/state-acl.mjs';
@@ -103,7 +106,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   fs.writeFileSync(path.join(temp, 'state/voice-send-budget.json'), JSON.stringify({version:2,day:localDay,count:0,lastAt:0,pending:null,reconciliations:[]}), {mode:0o600});
   const harnessConfig = {
     dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
-    allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
+    allow: { private: ['123'], groups: ['456'] },
+    deny: { private: [], groups: [], users: [] },
+    consolePort: 0,
     consoleToken: 'fixture-console-token', slang: { enabled: false }, ...config,
   };
   // 旧审计用例按“每条消息都能醒”写；Token 防爆破默认会让部分用例被 2 分钟间隔拦住。
@@ -247,6 +252,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     closeConversationV2, assessClosureV2, closureConfigV2, closureSuppressesWake, noteClosureReopenV2,
     voiceCfg, voiceTriggerBlock, voiceMentionAt, voiceOwnerAt, voiceLastSentAt, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText, readConfigObject, atomicWriteJson,
     voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
+    taskLedger, taskHarness,
     setMode(value) { currentMode = value; },
     getModelStatus() { return modelStatusState; },
     setReady(value) { dshReady = value; },
@@ -295,6 +301,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
+    ...interactionLifecycle,
+    ...taskLedger,
+    ...taskHarness,
     ...conversationClosure,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。
     // 不能直接用真实 character-store 的 DSH_HOME（它在主进程 import 时已固定）。

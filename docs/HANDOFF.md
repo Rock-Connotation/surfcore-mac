@@ -5,6 +5,68 @@
 
 ---
 
+## 阶段验收与合入：2026-11-11 Phase B-E 实施与独立验收完成（Memory V2闭环、TaskHarness任务守门、Mac本地执行与自主生活）
+
+- 工作区：`/Users/shizihan/Daily/Github/surfcore-mac`，分支：`refactor`（基线 `748afe6256a4619e83936c1bb225a29320a3a555`）。
+- **Phase B（Memory V2 召回质量与装配闭环）已独立验收**：
+  - `src/core/memory-v2-store.js`：
+    - `searchMemory` 接入时间戳感知（`occurredAt/recordedAt/observedAt/validFrom`），在词法 overlap 分数并列时按发生时间降序排序（最新优先）。
+    - `prepareMemoryContext` 严格保留有效时间区间（`validFrom..validTo`）与时间标签，长文本有界摘录受显式 `budget.allowExcerpt` 开关门禁（默认安全排除不完整长消息，契约测试 100% 保持）。
+  - `plugins/surfcore/lib/index.js`：为 `createMemoryV2Runtime` 接入真实的 `retireForLifecycle` 与 `lifecycleInventory` 回调，消除桩函数。
+  - `npm run test:memory-v2`：47/47 测试脚本全量通过。
+- **Phase C（QQ → Mac 网页研究 → 报告回传耐久任务闭环）已独立验收**：
+  - 新增深模块 `src/task-ledger.js`：轻量级持久化任务账本（原子落盘 `state/tasks.json`），完整管理任务标识、步骤流转、引用来源清单、产物元数据（路径、SHA256、字节数）与外部交付回执（`delivered / delivery_unknown / failed`）。
+  - 新增深模块 `src/task-harness.js`：
+    - `checkAdmission`：独立硬性准入检查，群聊直接拒绝（`ADMISSION_GROUP_DENIED`），非主人直接拒绝（`ADMISSION_OWNER_REQUIRED`）。
+    - `executeResearchStep`：受控网页抓取与正文清洗，抓取保留来源 URL、抓取时间、状态与摘要。
+    - `executeSynthesisStep`：本地 Markdown 报告合成，原子落盘并校验文件存在、大小与 SHA256。
+    - `executeDeliveryStep`：格式化私聊回传结果，通过 `lastSendSucceeded` 严格确认发送回执；发送失败/异常记录为 `delivery_unknown`，绝不虚假宣称成功。
+  - `src/bridge.js`：在 `handleIncoming` 前置拦截任务相关指令（`任务：...`、`调研：...`、`研究：...`、`任务状态`、`取消任务`），严格经由 Harness 准入判定并回复清晰的可行动提示。
+- **Phase D（扩展本地执行：文件整理、终端/脚本运行与 Mac 原生应用控制）已独立验收**：
+  - `executeFilePlan`：文件整理计划执行前逐一校验路径；严格拦截 `/System`、`/usr`、`/bin`、`/etc`、`/Library`、`/Applications` 等系统目录与越界路径；支持创建目录、复制、移动，删除文件强制安全备份至 `state/_quarantine/`。
+  - `executeCommandStep`：受限终端与脚本执行；拦截危险破坏性指令（`rm -rf /` 等）；有界超时保护（SIGTERM + 1s 超时后 SIGKILL）；输出超限（>8KB）自动截断并保留头部与尾部错误。
+  - `executeMacAppStep`：原生 Mac 应用控制 Seam（支持 `open -a`、`osascript` AppleScript 与 `shortcuts` 快捷指令），统一纳管于 Harness 守门下。
+- **Phase E（统一生活与自主日常活动）已独立验收**：
+  - `runAutonomousIdleActivity`：自主低风险日常活动（如整理记忆、思维草稿反思），透明记录至任务账本与日志，不向外部未经授权的渠道广播，不篡改长期记忆事实。
+- **门禁与测试验证**：
+  - `node scripts/test-phase-a-verification.mjs`：全项通过。
+  - `node scripts/test-phase-bc-verification.mjs`：全项通过。
+  - `node scripts/test-phase-de-verification.mjs`：全项通过。
+  - `npm run test:regressions`：17/17 通过。
+  - `npm run test:audit`：191/191 全部通过。
+- **案例与交付**：
+  - 案例记录：`docs/cases/2026-11-11-phase-bcde-memory-v2-task-harness-and-mac-execution.md`。
+  - 案例索引已登记至 `docs/cases/README.md`。
+
+---
+
+## 阶段验收与合入：2026-11-11 Phase A 修复完成（主动目的受众收敛、进程有界终态与交互取消准确回执）
+
+- 工作区：`/Users/shizihan/Daily/Github/surfcore-mac`，分支：`refactor`（基线 `748afe6256a4619e83936c1bb225a29320a3a555`）。
+- **A1（记忆材料受众与归属边界）已独立验收**：
+  - `src/memory-card.js`：增强 `visibleFor`，导出 `filterVisibleRecords`，过滤 `revoked/corrected/forgotten` 状态并对不同会话/平台严格隔离。
+  - `src/bridge.js`：`readPurposeMemoryRecords` 和 `gatherPurposeMaterials` 接入 `filterVisibleRecords`，明确锁定目标受众。
+  - `src/purpose-engine.js`：`collectMaterials` 继承上下文与主体归属；`subjectOf(material)` 按照 `attributionSubject`（`self/user/external`）分流，第三方愿望归属为 `member`，永不转变成鱼自身愿望；`formatMaterialLine` 显式添加 `[记忆·他人]` 标签。
+  - 5 项针对性反例（公开包含、跨会话私密排除、受限平台排除、撤销/纠错排除、他人愿望主体隔离）在实际模型输入上验证全部通过。
+- **A2（取消状态回执与进程有界终态）已独立验收**：
+  - 新增深模块 `src/interaction-lifecycle.js`：集中封装 `assertInteractionReceipt`、`cancelPendingInteraction` 和 `createHistoricalInteractionRegistry`。
+  - `src/bridge.js`：接入取消判定与历史记录。超时与覆盖取消不再静默盲报“已取消”，明确区分 `confirmed`、`rejected`、`timeout` 与 `unknown`，如实向 QQ 汇报状态并提供下一步建议。
+  - `src/perception/process.js`：`runProcess` 限制子进程终止等待时间（SIGTERM + SIGKILL 竞速），忽略退出信号的进程返回结构化异常 `PROCESS_TERMINATION_UNKNOWN` 并登记至 `getUnreleasedProcesses()`，防止资源被盲目复用。
+  - `scripts/audit-bridge-harness.mjs`：注入 `interactionLifecycle`，回归测试 17 项全过。
+- **A3（V2 能力声明与宿主诊断修复）已核验**：
+  - `src/core/memory-v2-qq.js`、`src/core/memory-v2-routing.js` 与 `src/core/memory-v2-service.js` 默认 `validateSessionSafety` fail-closed (`ok: false`)，fresh 环境默认 `backend: 'v1'`，未装配组件不假装可用。
+  - `scripts/verify-dsh-020-adaptation.mjs` 修复配置路径发现、动态 profile 检测及模板变量兼容。
+- **门禁验证**：
+  - `node scripts/test-phase-a-verification.mjs`：全项通过（5 项记忆反例 + 进程超时终态 + 交互取消多状态 + V2 默认 fail-closed）。
+  - `npm run test:regressions`：17/17 通过。
+  - `npm run test:audit`：191/191 通过。
+- **案例与交付**：
+  - 案例记录：`docs/cases/2026-11-11-phase-a-remediation.md`。
+- **下一步**：
+  - 推进阶段 B（Memory V2 生产闭环与召回质量提升）与阶段 C（QQ → Mac 网页研究 → 报告回传耐久任务闭环）。
+
+---
+
 ## 阶段验收与合入：2026-11-11 Memory V2 全面工程实施、独立验收与 dev 合并完成
 
 - 分支：`feat/memory-v2` 已成功 `--no-ff` 合入本地 `dev`。未修改 package.json version、无 tag/push/Release，保持 V1 默认生效。

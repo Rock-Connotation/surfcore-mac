@@ -1,5 +1,12 @@
 import { voiceGroupPolicies, voiceMentionBlock } from './voice-group-policy.js';
 import { resolveQqDataPaths } from './qq-data-paths.js';
+import {
+  assertInteractionReceipt,
+  createHistoricalInteractionRegistry,
+  cancelPendingInteraction
+} from './interaction-lifecycle.js';
+import { createTaskLedger } from './task-ledger.js';
+import { createTaskHarness } from './task-harness.js';
 // QQ ↔ DeepSeek Harness 桥接主程序。
 //
 // 链路：
@@ -84,7 +91,7 @@ import {
 } from './token-budget.js';
 import { createBiliMemory } from './bili-memory.js';
 import {
-  appendMemoryInboxEvent, looksNoteworthyMessage, resolveMemoryCardPaths,
+  appendMemoryInboxEvent, filterVisibleRecords, looksNoteworthyMessage, resolveMemoryCardPaths,
 } from './memory-card.js';
 import {
   activeMemoryPaths, activePersonaFile, activePlatformStateDir, characterPaths, readCurrentCharacter,
@@ -1779,11 +1786,11 @@ function allowed(kind, id, cfg) {
   // OneBot 事件里的 id 可能是数字也可能是字符串（int64 序列化差异），统一转字符串比较。
   // 配置字段兼容单数（group/private）与复数（groups/privates）两种写法。
   const s = String(id);
-  const denyList = cfg.deny[kind] ?? cfg.deny[kind + 's'] ?? [];
+  const denyList = cfg?.deny?.[kind] ?? cfg?.deny?.[kind + 's'] ?? [];
   if (denyList.map(String).includes(s)) return false;
-  const allowList = cfg.allow[kind] ?? cfg.allow[kind + 's'] ?? [];
+  const allowList = cfg?.allow?.[kind] ?? cfg?.allow?.[kind + 's'] ?? [];
   if (allowList.length > 0) return allowList.map(String).includes(s);
-  return cfg.allowAllWhenEmpty;
+  return Boolean(cfg?.allowAllWhenEmpty);
 }
 
 /**
@@ -1827,7 +1834,26 @@ async function main() {
   hardenStateDirAcl();
   acquireLock();
   loadState();
-  const qqMemory = createQQMemoryBridge({ stateDir: SURFCORE_DIR, getCharacter: readCurrentCharacter });
+  const qqMemory = createQQMemoryBridge({
+    stateDir: SURFCORE_DIR,
+    getCharacter: readCurrentCharacter,
+    getSessionMemorySafety: ({ sessionId, preset }) => {
+      return preset === 'qq-chat' || preset === 'qq-chat-v2' || preset === 'closed-agent';
+    }
+  });
+  const taskLedger = createTaskLedger({ stateDir: STATE_DIR });
+  const taskHarness = createTaskHarness({
+    ledger: taskLedger,
+    reportsDir: path.join(STATE_DIR, 'reports'),
+    sendCallback: async ({ conversationKey, text }) => {
+      await sendToQQ(conversationKey, text);
+      if (!lastSendSucceeded(conversationKey)) {
+        return { ok: false, error: `QQ message send failed for ${conversationKey}` };
+      }
+      return { ok: true };
+    },
+    log
+  });
   const memoryV2Failures = new Map();
   const memoryV2Barriers = new Map();
   const memoryV2SelectedRoutes = new Map();
@@ -12626,15 +12652,26 @@ async function main() {
   function readPurposeMemoryRecords() {
     try {
       const raw = readJsonSafe(MEMORY_CARD_PATHS.json, null);
-      return Array.isArray(raw?.records) ? raw.records : [];
+      if (!raw || !Array.isArray(raw.records)) return [];
+      const ownerId = purposeOwnerId();
+      const conversationKey = ownerId ? `private:${ownerId}` : '';
+      return filterVisibleRecords(raw.records, {
+        platform: 'qq',
+        config: cfg.memory ?? {},
+        conversationKey,
+      });
     } catch { return []; }
   }
 
   function gatherPurposeMaterials(now = Date.now()) {
+    const ownerId = purposeOwnerId();
+    const targetConversationKey = ownerId ? `private:${ownerId}` : '';
     return collectMaterials({
       now,
       config: cfg.purpose,
-      ownerUin: purposeOwnerId(),
+      ownerUin: ownerId,
+      targetPlatform: 'qq',
+      targetConversationKey,
       roleName: String(readRoleState().role || ''),
       conversations: purposeConversations(),
       biliEntries: readPurposeBiliEntries(),
@@ -16027,7 +16064,15 @@ async function main() {
       const isApprovalReply = approval && (APPROVE_WORDS.has(action) || REJECT_WORDS.has(action));
       const isQuestionReply = /^[a-f0-9]{8}\s+\S/i.test(text);
       if (isApprovalReply || isQuestionReply) {
-        await sendToQQ(key, '⚠️ 该编号已结束或不存在，请等待新请求。');
+        const reqId = (approval ? approval[2] : text.slice(0, 8)).toLowerCase();
+        const past = historicalInteractions.get(reqId);
+        if (past) {
+          const statusText = past.status === 'confirmed' ? '已确认取消'
+            : (past.status === 'rejected' ? '取消被拒绝' : '取消结果未知');
+          await sendToQQ(key, `⚠️ 请求 [${reqId}] 此前已结束（状态：${statusText}），不能再处理该回复。`);
+        } else {
+          await sendToQQ(key, '⚠️ 该编号已结束或不存在，请等待新请求。');
+        }
         return;
       }
     }
@@ -16077,6 +16122,118 @@ async function main() {
     if (roleState.mode === 'silent' && !isOwner) {
       appendActivity(`${key}（静默模式）群友 ${event.user_id}：${textContent.slice(0, 80)}`);
       log(`静默模式，忽略群友消息 ${key}`);
+      return;
+    }
+
+    // 电脑任务与研究指令：由 Harness 独立准入拦截（硬性：群聊与非主人直接阻断）
+    const taskStatusMatch = plainContent.match(/^(?:(?:\/|#)tasks?|任务状态)(?:[：:\s]+(\S+))?$/i);
+    if (taskStatusMatch) {
+      const requestor = {
+        platform: 'qq',
+        userId: String(event.user_id),
+        conversationKey: key,
+        isOwner: Boolean(isOwner)
+      };
+      const admission = taskHarness.checkAdmission({ requestor });
+      if (!admission.ok) {
+        await sendToQQ(key, `[权限拦截] ${admission.error}\n提示：${admission.hint}`);
+        return;
+      }
+      const targetTaskId = taskStatusMatch[1]?.trim();
+      if (targetTaskId) {
+        const t = taskLedger.getTask(targetTaskId);
+        if (!t) {
+          await sendToQQ(key, `未找到任务编号 [${targetTaskId}]。`);
+        } else {
+          const info = [
+            `【任务详情】${t.taskId}`,
+            `- 目标：${t.goal}`,
+            `- 状态：${t.status}`,
+            `- 创建时间：${new Date(t.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+            t.artifact ? `- 产物：${t.artifact.fileName} (${t.artifact.sizeBytes} 字节, 哈希: ${t.artifact.sha256.slice(0, 8)}…)` : '- 产物：无',
+            t.delivery ? `- 交付：${t.delivery.status}` : '- 交付：未开始',
+            t.error ? `- 错误：${t.error}` : ''
+          ].filter(Boolean).join('\n');
+          await sendToQQ(key, info);
+        }
+      } else {
+        const tasks = taskLedger.listTasks({ conversationKey: key, limit: 5 });
+        if (tasks.length === 0) {
+          await sendToQQ(key, '当前会话暂无任务记录。');
+        } else {
+          const list = tasks.map((t, idx) => {
+            const time = new Date(t.createdAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' });
+            return `${idx + 1}. [${t.status}] ${t.taskId} (${time})\n   ${t.goal.slice(0, 40)}`;
+          }).join('\n');
+          await sendToQQ(key, `📋 最近任务列表：\n${list}\n\n查询详情发送：任务状态 <任务编号>`);
+        }
+      }
+      return;
+    }
+
+    const taskCancelMatch = plainContent.match(/^(?:(?:\/|#)cancel-task|取消任务)(?:[：:\s]+(\S+))?$/i);
+    if (taskCancelMatch) {
+      const requestor = {
+        platform: 'qq',
+        userId: String(event.user_id),
+        conversationKey: key,
+        isOwner: Boolean(isOwner)
+      };
+      const admission = taskHarness.checkAdmission({ requestor });
+      if (!admission.ok) {
+        await sendToQQ(key, `[权限拦截] ${admission.error}\n提示：${admission.hint}`);
+        return;
+      }
+      let taskId = taskCancelMatch[1]?.trim();
+      if (!taskId) {
+        const active = taskLedger.findActiveTask(key);
+        if (active) taskId = active.taskId;
+      }
+      if (!taskId) {
+        await sendToQQ(key, '未找到可取消的活跃任务。请指定任务编号：取消任务 <任务编号>');
+        return;
+      }
+      const res = taskLedger.cancelTask(taskId, '用户主动通过 QQ 取消');
+      if (!res) {
+        await sendToQQ(key, `未找到任务 [${taskId}]。`);
+      } else {
+        await sendToQQ(key, `任务 [${taskId}] 状态已置为 cancelled。`);
+      }
+      return;
+    }
+
+    const taskMatch = plainContent.match(/^(?:(?:\/|#)task|任务|调研|研究)(?:[：:\s]+([\s\S]+))?$/i);
+    if (taskMatch) {
+      const rawGoal = taskMatch[1]?.trim();
+      const requestor = {
+        platform: 'qq',
+        userId: String(event.user_id),
+        conversationKey: key,
+        isOwner: Boolean(isOwner)
+      };
+      const admission = taskHarness.checkAdmission({ requestor });
+      if (!admission.ok) {
+        await sendToQQ(key, `[任务拒绝] ${admission.error}\n提示：${admission.hint}`);
+        return;
+      }
+      if (!rawGoal) {
+        await sendToQQ(key, '格式：任务：<研究目标或关键词> [网址]');
+        return;
+      }
+      const urlMatches = rawGoal.match(/https?:\/\/[^\s]+/g) || [];
+      await sendToQQ(key, `收到电脑研究任务，已创建工单并加入调度：\n「${rawGoal}」\n正在安全执行中…`);
+      try {
+        const result = await taskHarness.runTaskPipeline({
+          requestor,
+          goal: rawGoal,
+          urls: urlMatches
+        });
+        if (!result.ok) {
+          await sendToQQ(key, `[任务失败] ${result.error || '执行异常'}\n状态：${result.status}`);
+        }
+      } catch (err) {
+        await sendToQQ(key, `[任务异常] ${err.message}`);
+      }
       return;
     }
 
@@ -16526,36 +16683,18 @@ async function main() {
     log(`已投递 ${key}: ${promptText.slice(0, 80)}${promptText.length > 80 ? '…' : ''}`);
   }
 
-  // 取消/拒绝一个挂起的提问或审批，并给 DSH 回执（超时、被新请求覆盖时使用）
-  async function cancelPendingEntry(entry) {
-    if (!entry) return;
-    if (entry.responding) return; // an in-flight result may already have reached DSH
-    try {
-      if (entry.kind === 'approval') {
-        await withTimeout(api.respond({
-          clientId: entry.clientId,
-          eventId: entry.eventId,
-          outcome: { kind: 'result', value: 'rejected' }
-        }), 5000, '取消挂起回执');
-        log(`已取消挂起审批（拒绝回执）: ${entry.eventId ?? entry.rpcId}`);
-      } else if (entry.kind === 'question') {
-        await withTimeout(api.respond({
-          clientId: entry.clientId,
-          eventId: entry.eventId,
-          outcome: { kind: 'result', value: { answers: [] } }
-        }), 5000, '取消挂起回执');
-        log(`已取消挂起提问（空答案回执）: ${entry.eventId ?? entry.rpcId}`);
-      }
-    } catch (error) {
-      log('取消挂起请求回执失败:', error?.message ?? error);
-    }
-  }
+  const historicalInteractions = createHistoricalInteractionRegistry({ maxSize: 1000 });
+  const recordHistoricalInteraction = (entry, status, code = '', error = '') =>
+    historicalInteractions.record(entry, status, code, error);
 
-  function assertInteractionReceipt(receipt) {
-    if (receipt?.result?.ok === false || receipt?.ok === false) {
-      const error = new Error('DSH 明确拒绝回执'); error.outcomeKnown = true; throw error;
-    }
-    if (receipt?.result?.ok !== true && receipt?.ok !== true) throw new Error('DSH 未确认回执');
+  // 取消/拒绝一个挂起的提问或审批，并给 DSH 回执（超时、被新请求覆盖时使用）
+  async function cancelPendingEntry(entry, { reason = 'cancel' } = {}) {
+    return cancelPendingInteraction(entry, api, {
+      timeoutMs: 5000,
+      reason,
+      historyRegistry: historicalInteractions,
+      log
+    });
   }
 
   // 回答挂起的提问/审批
@@ -16718,12 +16857,22 @@ async function main() {
   }
 
   function armInteractionTimeout(key, entry) {
-    entry.timer = setTimeout(() => {
+    entry.timer = setTimeout(async () => {
+      if (pending.get(key) !== entry) return;
+      log(`挂起请求超时 (${key})`);
+      entry.status = 'cancelling';
+
+      const outcome = await cancelPendingEntry(entry, { reason: 'timeout' });
       if (pending.get(key) === entry) {
         pending.delete(key);
-        log(`挂起请求超时 (${key})`);
-        cancelPendingEntry(entry).catch(() => {});
-        sendToQQ(key, '⏰ 等待回答超时，已取消该请求');
+      }
+
+      if (outcome.status === 'confirmed') {
+        await sendToQQ(key, '⏰ 等待回答超时，已确认取消该请求');
+      } else if (outcome.status === 'rejected') {
+        await sendToQQ(key, `⏰ 等待回答超时，取消请求被拒绝（${outcome.code || 'DSH_REJECTED'}），请在 DSH 检查任务`);
+      } else {
+        await sendToQQ(key, '⏰ 等待回答超时，取消结果未知（未能收到 DSH 确认），已断开本地等待，请在 DSH 检查任务');
       }
     }, Math.max(0, entry.deadline - Date.now()));
   }
