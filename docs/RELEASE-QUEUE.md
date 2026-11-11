@@ -17,6 +17,106 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+### 批次 2026-11-11 17:15 · 记忆层 V2 完整工程闭环与平台隔离
+<!-- release-batch: start=2026-11-09T00:00+08:00 end=2026-11-11T17:15+08:00 commits=226ffc9..082fc34 -->
+
+**覆盖提交**：`226ffc9` ~ `082fc34`（含合并 `32ffbae` 及清单与协作更新）
+**建议**：**0.9.0（minor）**
+
+**改了什么**：
+- **核心层（V2 Kernel & Context Engine）**：建立独立 SQLite 事务存储、Spool 环形缓冲、自适应记忆衰减与生长内核、Token 预算原子消费准入屏障（`MemoryGate`）、双模上下文准备引擎；
+- **管理层（Management Worker & Admin RPC）**：建立独立无特权管理 Worker、原操作会话续接（`resume`）、脱敏安全迁移预览（`plan-only`、`importReady=false`，严守敏感数据隔离防线）；
+- **QQ 接入层（Native Ledger & Lease）**：建立 QQ 平台原生语法账本（支持 Core 全字符集、`tool-calls` 与 `stop` 终结语义、安全整数校验）、Owner 观察闭环、鲜活身份生命周期漂移阻断、一次性发送租约（`SendLease`）；
+- **B站接入层（Read Pipeline & Core Recall）**：建立官方公开读取管道、来源审批屏障、Core 召回接入与完整性校验（严格拒绝截断与坏 finish）、托管单轮与 V2 退役 ACK 闭环；
+- **插件集成与宿主装配**：插件主入口接入 V2 Runtime，保留 V1 作为生产默认激活；抖音伴侣与语音管理共享宿主接口对齐；
+- **工程与质量**：补齐统一测试运行器 `scripts/run-memory-v2-tests.mjs`（47/47 通过）；完成 29 篇交付案例与全套规格契约文档。
+
+**没做**：
+- 未启用生产环境默认 V2 路由（严格保持 V1 默认，`cfg.memoryV2` 未开启）；
+- 未执行物理生产数据库迁移（仅提供 `plan-only` 安全预览，未执行写入式数据转换）；
+- 编辑会话未修改 `package.json` 版本号，未创建 git tag，未推送到远端仓库。
+
+**验证**：
+```text
+node scripts/run-memory-v2-tests.mjs
+npm run test:audit
+npm run test:regressions
+node scripts/release-manifest.mjs --verify-ref HEAD
+```
+
+**重启**：
+- 更新桌面插件 Host 后，在 DSH 重载 Profile 或重启 DSH 桌面端；
+- QQ Bridge 进程重启。
+
+**风险**：
+- 零破坏性风险：V2 默认未激活，现有 V1 读写逻辑与数据格式 100% 保持；
+- 桌面 profile 安装采用原子置换包，经 `artifact-manifest.json` 逐文件哈希核对，依赖隔离闭环。
+
+**case 索引**：
+- `docs/cases/2026-11-10-memory-v2-integration.md`
+- `docs/cases/2026-11-11-memory-v2-qq-native-ledger.md`
+- `docs/cases/2026-11-11-memory-v2-bili-native-recall.md`
+- `docs/cases/2026-11-11-memory-v2-qq-source-runtime.md`
+- `docs/cases/2026-11-11-memory-v2-bili-manual-round.md`
+- `docs/cases/2026-11-11-memory-v2-migration-preview.md`
+- （共 29 篇，详见 `docs/cases/README.md`）
+
+**交接块（复制这一整段给发布会话）**
+
+```text
+【发布交接 · 2026-11-11 批次 · 建议 v0.9.0（minor）】
+
+一、改了什么
+1) 记忆层 V2 核心与上下文引擎（226ffc9 / 5ec7686）
+   - src/core/memory-v2-*.js：SQLite 事务存储、Spool 缓冲、衰减与生长内核、双模上下文引擎
+   - src/core/memory-gate.js、src/core/token-budget-service.js：模型准入屏障与预算原子消费
+2) 管理 Worker 与安全迁移预览（4de4635）
+   - plugins/surfcore/lib/memory-v2-management.mjs：原操作回执恢复、脱敏盘点指标透出、激活阻断
+3) QQ 平台 V2 原生账本与单次租约（6c2714a）
+   - plugins/surfcore/lib/qq-v2-native-ledger.mjs、qq-v2-source-runtime.mjs：
+     完整输入输出工具账本、身份变更即时阻断、一次性发送租约、私有 Host 适配器
+4) B站平台公开读取与 Core Recall 召回（acc7853）
+   - plugins/surfcore/lib/bili-v2-source-runtime.mjs：官方公开读取、来源审批、召回注入与结束完整性
+   - src/scheduler.js、plugins/surfcore/lib/bili-round-controller.js：托管单轮 V2 闭环与退役 ACK
+5) 插件装配与共享宿主（a9b28e7）
+   - plugins/surfcore/lib/index.js：装配 V2 Runtime 与路由，保持 V1 默认；抖音与语音共享宿主对齐
+6) 测试与交付文档（6cb981f / 15408c4）
+   - 接入 scripts/run-memory-v2-tests.mjs；落盘 29 篇案例与 HANDOFF/PITFALLS/COORDINATION 同步
+
+二、测了什么、结果
+- npm run test:audit → 187/187 全部通过
+- npm run test:regressions → 17/17 全部通过
+- node scripts/run-memory-v2-tests.mjs → 47/47 全部通过（88.5s）
+- node scripts/release-manifest.mjs --verify-ref HEAD → 问题 0 个（1053 文件）
+- 官方 App pnpm 11.28.5 隔离安装与模块导入 → PASS
+
+三、改动层级与兼容
+- 架构扩展层：新建 V2 独立协议与存储，完全不修改原有 V1 memory / memory-card 存储结构；
+- 接口 100% 向后兼容；V1 保持默认激活（未设 cfg.memoryV2 标志）；
+- 宿主 cordis.patch.yml 规范化：保留原自定义 subagent 及 qq-mode，MCP 注册一致。
+
+四、失败路径
+- 认证缺失：报 MEMORY_ADMIN_REQUIRED / MEMORY_AUTH_REQUIRED，带结构化 code 与 hint；
+- 来源未经验证：结构化拒绝 MEMORY_NATIVE_INPUT_UNPROVEN；
+- 模型预算超限：原子拦截 MODEL_BUDGET_EXHAUSTED，不扣真实额度；
+- 非法/截断响应：严格拒绝，不当作合法 complete。所有失败路径均有专门测试钉死。
+
+五、没验证
+- 生产真实全量数据入库（当前保持 plan-only 预览，未触碰真实生产数据库）；
+- Windows 实机原生 Electron 运行（当前基于 macOS 原生 Host 及 Node 24.21.0 闭环验证）；
+- 真实对外平台发送（测试全程基于隔离 fake fixture 与回环，未产生真实 QQ/B站外发与付费调用）。
+
+六、发布时请
+- 确认从 dev 分支合并至 main（git merge --no-ff dev）；
+- 重新跑三条硬门禁：release-manifest.mjs 与 verify-ref HEAD；
+- bump package.json version 至 0.9.0；
+- 发布后将 main 合回 dev。
+```
+
+**状态**：待发布
+
+---
+
 ### 批次 2026-11-03 08:30 · 人格语气层去重
 <!-- release-batch: start=2026-11-03T08:20+08:00 end=2026-11-03T08:30+08:00 commits=2a473a3 -->
 
