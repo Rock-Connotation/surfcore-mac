@@ -79,3 +79,7 @@ dist/*.zip
 
 # Installation-local ownership metadata; generated inside built artifacts.
 /.surfcore-install.json
+
+# Local agent metadata
+/.serena/
+/.mnemon/
