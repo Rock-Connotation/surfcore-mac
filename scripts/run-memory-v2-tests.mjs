@@ -1,4 +1,5 @@
-import { readdirSync } from 'node:fs';
+import { readdirSync, mkdtempSync, mkdirSync } from 'node:fs';
+import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -42,10 +43,13 @@ const env = { ...process.env, QQ_BRIDGE_TEST_LIVE: '0' };
 for (const name of Object.keys(env)) {
   if (/^SURFCORE_.*NATIVE/.test(name)) delete env[name];
 }
+const testHome = mkdtempSync(path.join(os.tmpdir(), 'surfcore-memory-tests-'));
 const started = Date.now();
 for (const name of selected) {
+  const isolatedHome = path.join(testHome, path.basename(name, '.mjs'));
+  mkdirSync(isolatedHome, { recursive: true });
   const run = spawnSync(process.execPath, [name], {
-    cwd: root, env, encoding: 'utf8', timeout: 60_000, maxBuffer: 8 * 1024 * 1024,
+    cwd: root, env: { ...env, DSH_HOME: isolatedHome }, encoding: 'utf8', timeout: 60_000, maxBuffer: 8 * 1024 * 1024,
   });
   if (run.error || run.status !== 0) {
     console.error(`FAIL ${name}: ${run.error?.message || `exit ${run.status}`}`);

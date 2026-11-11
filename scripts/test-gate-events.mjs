@@ -69,6 +69,18 @@ try {
 
   // 故障恢复后自动确认：同 dedupeKey 的未处理事件应被 ack 掉（避免"连着还弹 L2"）。
   {
+    const pending = { gate: 'memory-v2', kind: 'fault', event: 'MEMORY_POLICY_DENIED', dedupeKey: 'memory-v2:local:app:8', dedupe: true, reason: { code: 'MEMORY_POLICY_DENIED' }, subject: { channel: 'local' }, recommendation: '在对应渠道设置中确认处理范围。' };
+    assert.equal(classifyGateEvent(pending), 'L1', 'Missing processing approval is visible setup state, not a security incident');
+    const first = store.record(pending);
+    assert.equal(store.record(pending).id, first.id, 'Polling the same condition must not create another incident');
+    store.ack([first.id]);
+    const reopened = createGateEventStore({ dir });
+    assert.equal(reopened.record(pending).id, first.id, 'Acknowledged unchanged conditions stay acknowledged across restart');
+    assert.equal(reopened.list({ includeAcked: false }).events.some(row => row.id === first.id), false);
+    assert.notEqual(store.record({ ...pending, subject: { channel: 'qq' } }).id, first.id, 'A different affected channel is a separate condition');
+    assert.equal(classifyGateEvent({ ...pending, event: 'guard-missing' }), 'L3', 'Real security failures must keep their severity');
+  }
+  {
     store.record({ gate: 'snowluma', kind: 'fault', event: 'send-channel-down', level: 'L2', dedupeKey: 'test:down' });
     store.record({ gate: 'snowluma', kind: 'fault', event: 'send-channel-down', level: 'L2', dedupeKey: 'test:down' });
     const before = store.list({ limit: 50, includeAcked: false }).events.filter((e) => e.dedupeKey === 'test:down');

@@ -83,6 +83,7 @@ import { createCompanionSharing } from './companion-sharing.mjs';
 import { createSharingController } from './companion-sharing-controller.mjs';
 import { createMemoryV2Runtime } from './memory-v2-runtime.mjs';
 import { createBiliV2Host } from './bili-v2-host.mjs';
+import { createQQV2ReplyHost, resolveQQV2ModelRoute } from './qq-v2-reply-host.mjs';
 import { appendExperienceEvent } from '../../../src/core/experience.js';
 import { resolveMediaRuntime } from '../tools/lib/ffmpeg.mjs';
 import { readInstallationIdentity } from '../../../src/install-identity.js';
@@ -251,7 +252,7 @@ export function apply(ctx) {
     log: (message) => pluginLog(message),
   });
   let douyinMemoryService = null;
-  let biliMemoryHost = null, gateEvents = null;
+  let biliMemoryHost = null, qqReplyHost = null, gateEvents = null;
   const memoryV2 = createMemoryV2Runtime({ stateDir: STATE_DIR, charactersDir: CHARACTERS_DIR,
     getCharacter: readCurrentCharacter, currentDshUrl,
     getManagementAuthorization: req => {
@@ -266,7 +267,8 @@ export function apply(ctx) {
       const response = await callBridge('/api/memory-v2/identity', { timeoutMs: 8000 });
       return response.ok && response.data?.ok === true ? response.data : null;
     },
-    getQQRoute: state => state?.route ?? null,
+    getQQRoute: state => state ? resolveQQV2ModelRoute(ctx, state) : null,
+    onQQReply: request => qqReplyHost?.submit(request) ?? ({ ok: false, code: 'QQ_V2_HOST_NOT_READY', error: 'QQ reply Host is not ready.', hint: 'Wait for the Host to initialize, then retry.' }),
     getPlatformState: async channel => {
       if (channel === 'bili') return platformStartEnabled('bili') && biliMemoryHost ? biliMemoryHost.getPlatformState() : null;
       if (channel !== 'douyin' || !douyinMemoryService || !platformStartEnabled('douyin')) return null;
@@ -295,18 +297,25 @@ export function apply(ctx) {
   // 闸门事件中心：桥接负责写，插件负责展示/确认；同一份文件、同一套分级。
   gateEvents = createGateEventStore({ dir: STATE_DIR, log: (message) => pluginLog(message) });
   function reportMemoryBlocked(result) {
-    const code = /^(BILI|MEMORY|CHARACTER)_[A-Z0-9_]+$/.test(result?.code ?? '') ? result.code : 'MEMORY_RUNTIME_FAILED';
-    const error = '记忆渠道任务未完成。';
+    const code = /^(BILI|QQ|VOICE|MEMORY|CHARACTER|BUDGET)_[A-Z0-9_]+$/.test(result?.code ?? '') ? result.code : 'MEMORY_RUNTIME_FAILED';
+    const channel = ['qq', 'bili', 'douyin', 'local'].includes(result?.channel) ? result.channel : /^QQ_/.test(code) ? 'qq' : /^BILI_/.test(code) ? 'bili' : 'unknown';
+    const key = /^(group|private):[1-9][0-9]{0,19}$/.test(result?.conversationKey ?? '') ? result.conversationKey : '';
+    const affected = ({ qq: 'QQ', bili: 'B站', douyin: '抖音', local: '本机伙伴', unknown: '记忆渠道' })[channel] + (key ? ` ${key}` : '');
+    const role = readCurrentCharacter();
+    const error = code === 'MEMORY_POLICY_DENIED' ? `${affected}尚未确认当前模型的处理许可。` : `${affected}任务未完成。`;
     let hint = '打开记忆页的“身份与权限”检查当前账号、模型和完整来源集合；先预览再审批，随后重试原任务。';
     if (/^(?:BILI_V2_ROUTE|MEMORY_PROVIDER)/.test(code)) hint = '在Host选择有效模型并恢复连接，再刷新记忆页的精确路由与来源审批。';
     else if (/^(?:BILI_OFFICIAL|BILI_VIDEO)/.test(code)) hint = '检查B站登录及官方来源是否仍可读取，再刷新确切来源集合；不要用通知摘要代替原件。';
     else if (/RETIRE|LIFECYCLE/.test(code)) hint = '先停止当前轮次并查询原操作回执；保留未确认的会话与owner，排除原因后显式重试退休。';
     else if (/^CHARACTER_/.test(code)) hint = '选择当前角色并刷新任务与来源列表后重试，不要沿用旧角色的审批。';
-    else if (/^(?:BILI_V2_CORE|BILI_V2_NATIVE|MEMORY_NATIVE)/.test(code)) hint = '核对当前角色核心人设、已安装Host SDK及原生来源证明，再刷新任务；不会改用旧上下文。';
-    pluginLog(`[记忆] ${code}：${error} ${hint}`);
-    gateEvents?.record({ gate: 'memory-v2', kind: 'fault', event: code, action: 'blocked',
-      reason: { code, message: error }, impact: '当前轮次尚未通过记忆与来源检查。', recommendation: hint,
-      dedupeKey: `memory-v2:${code}`, evidence: { code } });
+    else if (/^(?:BILI_V2_CORE|BILI_V2_NATIVE|MEMORY_NATIVE|QQ_NATIVE|QQ_SOURCE)/.test(code)) hint = '核对当前角色核心人设、已安装Host SDK及原生来源证明，再刷新任务；不会改用旧上下文。';
+    else if (/^VOICE_/.test(code)) hint = result?.hint || '在语音页检查服务、触发规则和额度；发送结果未知时先核对原回执，不要重发。';
+    if (code === 'MEMORY_POLICY_DENIED') hint = channel === 'qq' ? '在 QQ → 白名单卡片中核对当前会话和模型，预览并确认启用回复；名单保存与处理许可状态会在同处显示。' : `在${affected}对应设置中确认是否启用模型处理；未启用时保持关闭，不需要批准其他渠道来消除此提示。`;
+    const event = gateEvents?.record({ gate: 'memory-v2', kind: 'fault', event: code, action: 'blocked', dedupe: code === 'MEMORY_POLICY_DENIED',
+      subject: { channel, ...(key ? { conversationKey: key } : {}), characterId: role?.id || '', characterEpoch: role?.epoch || 0 },
+      reason: { code, message: error }, impact: code === 'MEMORY_POLICY_DENIED' ? `${affected}保持阻断，未扩大权限。` : `${affected}当前轮次未通过检查。`, recommendation: hint,
+      dedupeKey: `memory-v2:${channel}:${key}:${role?.id}:${role?.epoch}:${code}`, evidence: { code, channel } });
+    if (event && !event.deduplicated) pluginLog(`[记忆] ${code}：${error} ${hint}`);
   }
   biliMemoryHost = createBiliV2Host({ ctx, stateDir: STATE_DIR, memoryV2: memoryV2.channelMemory('bili'),
     tokenBudget, getCharacter: readCurrentCharacter, getCredentials: () => readJson(BILI_CRED, {}),
@@ -321,7 +330,7 @@ export function apply(ctx) {
         throw Object.assign(new Error('候选视频标识不完整。'), { code: 'BILI_V2_SOURCE_UNPROVEN', hint: '恢复有效候选列表后重试；只使用确切BV号重新读取官方元数据。' });
       }
       return body.items.map(item => ({ kind: 'video', bvid: item.bv }));
-    }, onBlocked: reportMemoryBlocked });
+    }, onBlocked: result => reportMemoryBlocked({ ...result, channel: 'bili' }) });
 
   // ── 桌宠（独立栏目，默认不安装；用户自己安装才生效）────────────────────
   const petService = createPetService({ stateDir: STATE_DIR, pluginLog, getSubprocess: () => ctx.get('subprocess') });
@@ -331,6 +340,12 @@ export function apply(ctx) {
     file: path.join(STATE_DIR, 'context-telemetry-plugin.jsonl'),
     source: 'plugin',
     log: (message) => pluginLog(message),
+  });
+  qqReplyHost = createQQV2ReplyHost({ ctx, memoryV2: memoryV2.channelMemory('qq'), tokenBudget,
+    getCharacter: readCurrentCharacter,
+    getQQIdentity: async () => { const response = await callBridge('/api/memory-v2/identity', { timeoutMs: 8000 }); return response?.data ?? response; },
+    callBridge,
+    onBlocked: reportMemoryBlocked,
   });
   // A+B 账单：每 10 分钟刷新到 ~/.dsh/surfcore/billing；只读，不调用模型。
   const personaClassifier = createPersonaClassifier({ ctx, log: (message) => pluginLog(message), tokenBudget });
@@ -498,7 +513,7 @@ export function apply(ctx) {
         workspaceTitle: BILI_WORKSPACE_TITLE,
         sessionId,
         tokenBudget,
-        memoryV2: memoryV2.channelMemory('bili'), biliV2Agent: biliMemoryHost, onMemoryBlocked: reportMemoryBlocked,
+        memoryV2: memoryV2.channelMemory('bili'), biliV2Agent: biliMemoryHost, onMemoryBlocked: result => reportMemoryBlocked({ ...result, channel: 'bili' }),
         log: (message) => pluginLog(message),
       });
       schedulerStatus = { running: true, disabled: false, reason: '', startedAt: new Date().toISOString(), lastError: null, lastTickAt: null, sessionId };
@@ -645,7 +660,15 @@ export function apply(ctx) {
   async function switchCharacterEverywhere(id) {
     const current = readCurrentCharacter();
     if (current?.id === id) return { ok: true, already: true, current };
-    return biliMemoryHost.withTransition(() => companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id))))));
+    const qqRetired = await qqReplyHost.retire();
+    if (!qqRetired.ok) throw Object.assign(new Error(qqRetired.error), qqRetired);
+    // This private role switch acknowledges logical retirement after QQ/Bili retire,
+    // and Sharing itself aborts/drains its active request and releases retained views.
+    // New-role reads and inference still require their own fresh memory admission.
+    return biliMemoryHost.withTransition(() => companionSharing.withTransition(
+      () => douyinCompanion.withTransition(() => douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id)))),
+      { retirementAcknowledged: true },
+    ));
   }
   async function switchCharacterImplementation(id) {
     const current = readCurrentCharacter();
@@ -955,7 +978,11 @@ export function apply(ctx) {
           await handler(req, res);
         } catch (error) {
           const lifecycle = /^(BILI_V2_|MEMORY_|CHARACTER_)/.test(error?.code ?? '');
-          if (lifecycle) reportMemoryBlocked(error);
+          if (lifecycle) {
+            const path = String(req.url || pathname).split('?', 1)[0];
+            const channel = path.includes('companion-sharing') ? 'local' : path.includes('/douyin') ? 'douyin' : path.includes('/bili') ? 'bili' : path.includes('/qq') ? 'qq' : undefined;
+            reportMemoryBlocked({ code: error.code, hint: error.hint, channel });
+          }
           const structured = typeof error?.code === 'string' && Boolean(error?.hint);
           pluginLog('API 失败：', structured ? error.code : error?.message ?? error);
           const status = lifecycle ? 500 : (structured ? 409 : 500);
@@ -4073,6 +4100,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     clearInterval(companionTimer);
     void memoryV2Ready.finally(async () => {
       const retired = await biliMemoryHost.close();
+      await qqReplyHost?.close?.();
       if (!retired.ok) { reportMemoryBlocked(retired); return; }
       await memoryV2.close();
     }).catch(() => pluginLog('[记忆] 停止失败，请检查原操作回执'));

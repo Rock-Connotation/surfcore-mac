@@ -53,6 +53,12 @@ export function createMemoryV2Panel(React, { api, Btn, fmtTime }) {
     const resumeRef = useRef(null);
     const uncertainRef = useRef(null);
     const mounted = useRef(true);
+    const feedbackRef = useRef(null);
+    useEffect(() => {
+      if (!error && !notice && !uncertain) return;
+      feedbackRef.current?.scrollIntoView?.({ block: 'nearest' });
+      feedbackRef.current?.focus?.({ preventScroll: true });
+    }, [error, notice, uncertain]);
     const request = async (path, options) => {
       const result = await api(path, { ...options, signal: AbortSignal.timeout(12000) });
       if (result?.ok !== true) throw Object.assign(new Error(result?.error || '记忆请求未完成'), fail(result), { data: result });
@@ -98,7 +104,7 @@ export function createMemoryV2Panel(React, { api, Btn, fmtTime }) {
           const expected = list(statusRef.current.approvedConversations).find(item => item.id === actualPayload.conversationId)?.sourceSetPreview;
           if (!publicSetReady(expected) || canonical(expected) !== canonical(result.preview.sourceSetPreview)) throw fail({ code: 'MEMORY_PREVIEW_INVALID', error: '完整公开来源集合与预览不匹配', hint: '刷新官方来源与当前角色、账号和模型，核对完整集合后重新预览。新增来源必须重新批准。' });
         }
-        const next = { action, payload: actualPayload, payloadDigest, expectedRevision, operationId, character, details: result.preview };
+        const next = { action, payload: actualPayload, payloadDigest, expectedRevision, operationId, character, details: result.preview, expiresAt: result.expiresAt };
         previewRef.current = next; setPreview(next);
       } catch (e) { if (mounted.current && generation === version.current) setError(fail(e)); }
       finally { if (mounted.current && generation === version.current) { lock.current = false; setBusy(''); } }
@@ -107,21 +113,28 @@ export function createMemoryV2Panel(React, { api, Btn, fmtTime }) {
       uncertainRef.current = operation; setUncertain(operation);
       setError(fail({ code: result?.code || 'MEMORY_COMMIT_UNCERTAIN', error: result?.error || result?.message || '尚不能确认本次是否已提交', hint: `${result?.hint ? result.hint + ' ' : ''}点击「核对提交状态」。核对前请勿重新发起同一操作。` }));
     };
-    const refreshCreatedPerson = async (operation, generation) => {
-      if (operation.action !== 'create_person') return;
-      try { const result = await request('/memory-v2/status'); if (mounted.current && generation === version.current) applyStatus(result); }
-      catch (e) { if (mounted.current && generation === version.current) setError(fail(e)); }
+    const refreshCommittedControls = async (operation, generation) => {
+      if (!['create_person', 'configure_policy', 'revoke_policy'].includes(operation.action)) return;
+      const character = operation.character || statusRef.current?.character;
+      try {
+        const result = await request('/memory-v2/status');
+        if (mounted.current && generation === version.current) {
+          applyStatus(result);
+          if (result.character?.id === character?.id && result.character?.epoch === character?.epoch) setNotice(`已确认提交${caption[operation.action]}；已重新读取状态（修订 ${result.revision}）。请核对下方各项共享状态。`);
+        }
+      } catch (e) { if (mounted.current && generation === version.current) { setNotice('操作已返回成功回执，但最新状态读取失败；请刷新状态，不要重复提交。'); setError(fail(e)); } }
     };
     const execute = async () => {
       const operation = previewRef.current;
       if (lock.current || !operation || uncertainRef.current || !allowed(operation.action)) return;
+      if (Number.isFinite(operation.expiresAt) && Date.now() >= operation.expiresAt) { setError(fail({ code: 'MEMORY_PREVIEW_REQUIRED', error: '预览已过期，本次未提交', hint: '点击原操作的预览按钮重新预览，核对新预览后再确认。' })); previewRef.current = null; setPreview(null); return; }
       if (operation.expectedRevision !== statusRef.current.revision || operation.character.id !== statusRef.current.character?.id || operation.character.epoch !== statusRef.current.character?.epoch) { setError(fail({ code: 'MEMORY_POLICY_STALE', error: '状态已变化，预览已失效', hint: '重新预览后确认。' })); previewRef.current = null; setPreview(null); return; }
       lock.current = true; uncertainRef.current = operation; previewRef.current = null; setPreview(null); setBusy('execute'); const generation = version.current;
       try {
         const result = await request('/memory-v2/manage', { method: 'POST', body: { action: operation.action, payload: { ...operation.payload, payloadDigest: operation.payloadDigest }, expectedRevision: operation.expectedRevision, operationId: operation.operationId, characterId: operation.character.id, characterEpoch: operation.character.epoch } });
         if (!mounted.current || generation !== version.current) return;
         if (requiresReceipt(result)) markUnknown(operation, result);
-        else { uncertainRef.current = null; setUncertain(null); setError(null); setNotice('服务已返回回执；请刷新状态查看具体阶段。'); await refreshCreatedPerson(operation, generation); }
+        else { uncertainRef.current = null; setUncertain(null); setError(null); setNotice('服务已返回回执；请刷新状态查看具体阶段。'); await refreshCommittedControls(operation, generation); }
       } catch (e) {
         if (!mounted.current || generation !== version.current) return;
         if (requiresReceipt(e, true)) markUnknown(operation, e);
@@ -181,7 +194,7 @@ export function createMemoryV2Panel(React, { api, Btn, fmtTime }) {
         if (result.operationId !== operation.operationId) throw fail({ code: 'MEMORY_OPERATION_CONFLICT', error: '回执操作编号不匹配', hint: '保留原操作编号，检查 Host 后再次核对。' });
         const state = result.receipt?.state || result.state;
         if (requiresReceipt(result)) markUnknown(operation, result);
-        else if (state === 'committed') { uncertainRef.current = null; setUncertain(null); setError(null); setNotice('已确认提交；具体完成阶段以回执为准。'); await refreshCreatedPerson(operation, generation); }
+        else if (state === 'committed') { uncertainRef.current = null; setUncertain(null); setError(null); setNotice('已确认提交；具体完成阶段以回执为准。'); await refreshCommittedControls(operation, generation); }
         else if (state === 'failed') { uncertainRef.current = null; setUncertain(null); setError(fail(result.receipt || result, 'MEMORY_OPERATION_FAILED')); }
         else markUnknown(operation);
       } catch (e) { if (mounted.current && generation === version.current) setError(fail(e)); }
@@ -224,9 +237,9 @@ export function createMemoryV2Panel(React, { api, Btn, fmtTime }) {
       h('style', null, `.mv2-panel{margin-bottom:14px;overflow-wrap:anywhere}.mv2-panel *{min-width:0}.mv2-panel h3{font-size:15px;margin:0}.mv2-panel h4{font-size:13px;margin:0 0 8px}.mv2-panel p{max-width:72ch}.mv2-panel .mv2-section{margin-top:18px;padding-top:14px;border-top:1px solid var(--qbw-line-soft)}.mv2-panel .qbw-kv{gap:16px;align-items:start}.mv2-panel .qbw-kv>span:last-child{text-align:right;max-width:66%;white-space:normal}.mv2-panel .qbw-input,.mv2-panel .qbw-select{max-width:100%;min-width:0}.mv2-panel label{display:block;margin:8px 0}.mv2-panel .qbw-rec>div:first-child{min-width:0}.mv2-panel summary{cursor:pointer;padding:8px 0}.mv2-panel :focus-visible{outline:2px solid var(--qbw-brand);outline-offset:3px}.mv2-panel ::selection{background:var(--qbw-brand);color:var(--qbw-on-brand)}.mv2-panel input{caret-color:var(--qbw-brand)}.mv2-panel button:disabled{opacity:.5;cursor:not-allowed}.mv2-panel .mv2-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}.mv2-panel .mv2-tabs button[aria-pressed=true]{border-color:var(--qbw-brand);color:var(--qbw-brand)}.mv2-panel .mv2-confirm{padding:12px;background:var(--qbw-surface-2);margin-top:14px}.mv2-panel .mv2-status{font-variant-numeric:tabular-nums}@media(max-width:480px){.mv2-panel .qbw-kv{flex-wrap:wrap}.mv2-panel .qbw-kv>span:last-child{max-width:100%;text-align:left}.mv2-panel .mv2-tabs button{flex:1 1 42%;white-space:normal}.mv2-panel .qbw-search input{min-width:0;width:100%;flex-basis:100%}}`),
       h('div', { className: 'qbw-meter-head' }, h('h3', null, current.backend === 'v2' ? 'V2 记忆管理' : 'V2 影子管理'), h(Btn, { kind: 'qbw-btn2', onClick: load, disabled: !!busy }, busy === 'status' ? '读取中…' : '刷新状态')),
       h('p', { className: 'qbw-hint' }, current.backend === 'v2' ? '当前由 V2 保存与检索。每个阶段单独确认。' : 'V1 继续作为当前记忆来源；此处单独检查 V2 影子库，不自动切换。'),
-      error ? h('div', { role: 'alert', className: 'qbw-err' }, `${error.error} · ${error.code}；${error.hint}`) : null,
+      h('div', { ref: feedbackRef, tabIndex: -1, 'aria-label': '记忆操作结果' }, error ? h('div', { role: 'alert', className: 'qbw-err' }, `${error.error} · ${error.code}；${error.hint}`) : null,
       notice ? h('p', { role: 'status', 'aria-live': 'polite' }, notice) : null,
-      uncertain ? h('div', { className: 'qbw-warnbox' }, h('div', null, `待核对操作：${uncertain.operationId}`), h(Btn, { onClick: receipt, disabled: !!busy }, busy === 'receipt' ? '核对中…' : '核对提交状态')) : null,
+      uncertain ? h('div', { className: 'qbw-warnbox' }, h('div', null, `待核对操作：${uncertain.operationId}`), h(Btn, { onClick: receipt, disabled: !!busy }, busy === 'receipt' ? '核对中…' : '核对提交状态')) : null),
       !status ? h('p', { role: 'status' }, busy ? '正在读取记忆状态与可用操作…' : '状态未知。请刷新状态；服务接通前无法执行管理操作。') : null,
       status && Object.values(current.capabilities || {}).some(value => value !== true) ? h('p', { className: 'qbw-hint' }, '灰色操作尚未开放：请刷新状态，或等待 Host 补齐对应能力与验证证据。') : null,
       h('nav', { className: 'mv2-tabs', 'aria-label': '记忆管理视图' }, [['status', '保存与待办'], ['records', '经历与当前认识'], ['privacy', '身份与权限'], ['recovery', '恢复与费用']].map(([id, label]) => h('button', { type: 'button', key: id, className: 'qbw-btn qbw-btn2', 'aria-pressed': tab === id, onClick: () => setTab(id) }, label))),
@@ -279,6 +292,7 @@ export function createMemoryV2Panel(React, { api, Btn, fmtTime }) {
       status && tab === 'status' ? h('div', { className: 'qbw-actions' }, button('预览备份', 'backup', {}), h('span', { className: 'qbw-hint' }, '备份、恢复、迁移与费用见「恢复与费用」。')) : null,
       resumeConfirm,
       preview ? h('section', { className: 'mv2-confirm', 'aria-label': '操作预览' }, h('h4', null, `${caption[preview.action]}预览 · 尚未执行`),
+        h('p', { className: 'qbw-hint' }, Number.isFinite(preview.expiresAt) ? `本预览有效至 ${new Date(preview.expiresAt).toLocaleTimeString()}；过期后须重新预览，不会自动批准。` : '预览通常两分钟内有效；过期或重启后须重新预览，不会自动批准。'),
         preview.action === 'configure_policy' ? null : [['来源数', preview.details.sources], ['受影响认识版本', preview.details.derivedVersions], ['受管理副本', preview.details.retainedCopies], ['备份后新增来源', preview.details.postBackupSources], ['隔离记录', preview.details.quarantine], ['访问停止', preview.details.accessRevoked], ['活跃库清理', preview.details.activeStorePurged], ['受管理副本清理', preview.details.retainedCopiesPurged], ['当前控制', preview.details.currentControls], ['当前额度', preview.details.budget]].map(([label, value]) => kv(label, value)),
         sourceSetView(preview.details.sourceSetPreview, '本次批准的确切公开来源集合'),
         h('p', null, preview.action === 'configure_policy' ? '只批准本预览展示的确切会话、公开来源集合与模型处理范围。任何来源或身份变化都须重新预览并批准。' : preview.action === 'create_person' ? '将从当前角色中已验证的稳定来源账号登记新人物并建立锚点绑定；不按昵称自动合并，也不自动扩大跨平台权限。人物编号由服务生成，提交后刷新关联列表。' : '移出热记忆只影响提示词选取；禁止使用会保留屏障；删除来源会传播到派生版本。访问停止 → 活跃库清理 → 受管理副本清理分别报告。手动导出及不受管理的副本无法代为清理。'),

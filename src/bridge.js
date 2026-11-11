@@ -100,6 +100,8 @@ import {
 import { composePersonaLayers, personaSceneFromKey } from './persona-layers.js';
 import { buildCharacterContext } from './core/context.js';
 import { createQQMemoryBridge } from './core/memory-v2-qq.js';
+import { createMemoryClient } from './core/memory-v2-client.js';
+import { createNativeQQChannel } from './core/qq-native-channel.js';
 import { deriveMemoryProviderRouteId } from './core/memory-v2-routing.js';
 import { isHardDirectWakeReason, hasStrictDirectUnread } from './wake-policy.js';
 import { DEFAULT_GROUP_POLICY, normalizeGroupPolicy, groupTier, shouldSkipTriggerForTier } from './group-policy.js';
@@ -1834,12 +1836,23 @@ async function main() {
   hardenStateDirAcl();
   acquireLock();
   loadState();
-  const qqMemory = createQQMemoryBridge({
-    stateDir: SURFCORE_DIR,
-    getCharacter: readCurrentCharacter,
-    getSessionMemorySafety: ({ sessionId, preset }) => {
-      return preset === 'qq-chat' || preset === 'qq-chat-v2' || preset === 'closed-agent';
-    }
+  const qqMemory = createQQMemoryBridge({ stateDir: SURFCORE_DIR, getCharacter: readCurrentCharacter });
+  const nativeMemoryClient = createMemoryClient({ stateDir: SURFCORE_DIR, scope: 'qq', getCharacter: readCurrentCharacter });
+  const nativeQQ = createNativeQQChannel({ memory: qqMemory, getCharacter: readCurrentCharacter,
+    getIdentity: readOfficialMemoryQQIdentity,
+    isAllowed: key => usesMemoryV2() && isSessionAllowedInCurrentMode(key) && !shouldBlockSilentReply(key),
+    send: sendNativeQQReply,
+    getCapabilities: getNativeQQCapabilities,
+    onComplete: async (job, result) => {
+      pendingWakeKeys.delete(job.key); disarmPendingWakeLease(job.key);
+      if (result.ok) {
+        memoryV2Failures.delete(job.key);
+        const st = getSocialV2State(job.key);
+        acknowledgeMessagesV2(st, job.throughSeq);
+        saveSocialV2State();
+        replayPendingWakeReasonsV2(job.key);
+      } else memoryV2Failure(job.key, result);
+    },
   });
   const taskLedger = createTaskLedger({ stateDir: STATE_DIR });
   const taskHarness = createTaskHarness({
@@ -2429,7 +2442,7 @@ async function main() {
   /**
    * text → 本地 wav。AI 通道与操作者通道共用，抛出的错误已经是可直接展示的句子。
    */
-  async function synthesizeVoiceText(text, { character = '', voice = '', route = '' } = {}) {
+  async function synthesizeVoiceText(text, { character = '', voice = '', route = '', signal = null } = {}) {
     const vc = voiceCfg();
     const say = String(text ?? '').trim();
     if (!say) throw codedVoiceError(new Error('要合成的内容是空的'));
@@ -2459,6 +2472,7 @@ async function main() {
       voice: voice || '',
       baseUrl: endpointOf(r),
       timeoutMs: vc.tts.timeoutMs,
+      signal,
       cacheVersion: vc.tts.cacheVersion ?? null,
       outDir: vc.tts.dir
       });
@@ -2672,11 +2686,30 @@ async function main() {
     }
   }
 
-  async function sendVoiceV2(key, filePath, { guard = false, audit = true, audio = null, extraGuard = null, budgetScope = key } = {}) {
+  function canonicalOneBotMessageId(value) {
+    if (typeof value === 'string' && /^-?[1-9][0-9]*$/.test(value)) return value;
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value !== 0) return value;
+    return null;
+  }
+
+  /**
+   * Shared media transport. It owns audio validation, OneBot ordering, send quota and ACK only;
+   * memory ownership stays with the caller because Native and legacy sends use different leases.
+   */
+  async function sendVoiceTransport(key, filePath, {
+    guard = false, audit = true, audio = null, extraGuard = null, budgetScope = key,
+    validate = null, signal = null, beforeNetwork = null, onReceipt = null,
+  } = {}) {
     const vc = voiceCfg();
     // 注意：这里**不检查** vc.enabled —— 那是「AI 能不能发语音」的开关，判定放在
     // AI 路由（/api/socialV2/send-voice）与 sendVoiceForV2 里。底层只管发，
     // 否则"默认不启用"会连操作者通道（CLI / 控制台面板 / 图形界面）一起封死。
+    const validateCurrent = async () => {
+      if (signal?.aborted) throw Object.assign(new Error('QQ 语音作业已取消。'), { code: 'MEMORY_QQ_JOB_STALE', hint: '作业已退役或超时；检查原回执后再由新消息发起。' });
+      if (validate) await validate();
+      if (signal?.aborted) throw Object.assign(new Error('QQ 语音作业已取消。'), { code: 'MEMORY_QQ_JOB_STALE', hint: '作业已退役或超时；检查原回执后再由新消息发起。' });
+    };
+    await validateCurrent();
     if (audit) assertOutboundAuditOk(key, `[语音:${path.basename(filePath)}]`);
     let info;
     try {
@@ -2723,21 +2756,18 @@ async function main() {
     let rejectSend;
     const sendPromise = new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; });
     sendChain = sendChain.then(async () => {
-      let memorySendLease = null, memorySendRecorded = false;
+      let reservation = null, reservationFinalized = false, requestStarted = false, failureBudgetResult = 'rejected';
       try {
+        await validateCurrent();
         if (assertSendAllowed) assertSendAllowed();
         if (guard) { const block = voiceTriggerBlock(key, kind, id); if (block) throw Object.assign(new Error(block), {code:'VOICE_TRIGGER_DENIED',hint:'检查分群触发规则，并由允许的成员重新请求语音。'}); }
-        if (extraGuard) extraGuard();
+        if (extraGuard) await extraGuard();
         voiceBudgetCheck(budgetScope, vc);
-        const reservation = await updateVoiceBudget({ type: 'reserve', key, groupLimit: vc.groupPolicies?.[String(id)]?.maxPerDay || 0 });
-        try {
-          if (assertSendAllowed) assertSendAllowed();
-          if (guard) { const block = voiceTriggerBlock(key, kind, id); if (block) throw Object.assign(new Error(block), {code:'VOICE_TRIGGER_DENIED',hint:'检查分群触发规则，并由允许的成员重新请求语音。'}); }
-          if (extraGuard) extraGuard();
-        } catch (error) {
-          await updateVoiceBudget({ id: reservation, result: 'rejected' });
-          throw error;
-        }
+        reservation = await updateVoiceBudget({ type: 'reserve', key, groupLimit: vc.groupPolicies?.[String(id)]?.maxPerDay || 0 });
+        await validateCurrent();
+        if (assertSendAllowed) assertSendAllowed();
+        if (guard) { const block = voiceTriggerBlock(key, kind, id); if (block) throw Object.assign(new Error(block), {code:'VOICE_TRIGGER_DENIED',hint:'检查分群触发规则，并由允许的成员重新请求语音。'}); }
+        if (extraGuard) await extraGuard();
         // 语音条比图片大、要过一次 SILK 转码，给 60s 预算（文本/图片共用同一 sendChain，
         // 所以这条语音发完之前后面的文本会自然排队，不会插队到语音前面）。
         const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
@@ -2745,8 +2775,14 @@ async function main() {
         const params = kind === 'private'
           ? { user_id: Number(id), message: [recordSegment] }
           : { group_id: Number(id), message: [recordSegment] };
-        memorySendLease = await beginMemoryV2Send(key);
+        if (beforeNetwork) await beforeNetwork();
+        await validateCurrent();
+        if (assertSendAllowed) assertSendAllowed();
+        if (guard) { const block = voiceTriggerBlock(key, kind, id); if (block) throw Object.assign(new Error(block), {code:'VOICE_TRIGGER_DENIED',hint:'检查分群触发规则，并由允许的成员重新请求语音。'}); }
+        if (extraGuard) await extraGuard();
         let res;
+        failureBudgetResult = 'uncertain';
+        requestStarted = true;
         try { res = await fetch(`${httpUrl}/${action}`, {
           method: 'POST',
           headers: {
@@ -2754,37 +2790,67 @@ async function main() {
             ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
           },
           body: JSON.stringify(params),
-          signal: AbortSignal.timeout(60000)
+          signal: signal ? AbortSignal.any([AbortSignal.timeout(60000), signal]) : AbortSignal.timeout(60000)
         }); } catch (cause) {
-          await updateVoiceBudget({ id: reservation, result: 'uncertain' });
+          failureBudgetResult = 'uncertain';
           throw Object.assign(new Error('语音发送结果未知，请先核对网关记录。'), { code: 'VOICE_SEND_UNCERTAIN', hint: '使用 voice-send-reconcile.mjs inspect 核对，再凭网关证据对账。', cause });
         }
         const body = await res.json().catch(() => ({}));
-        await finishMemoryV2Send(memorySendLease, key, '[QQ语音]', res.ok && body.status === 'ok' && body.retcode === 0 ? body.data : null);
-        memorySendRecorded = true;
-        if (!res.ok || body.status !== 'ok' || body.retcode !== 0 || !Number.isSafeInteger(Number(body.data?.message_id)) || Number(body.data?.message_id) === 0) {
+        const messageId = canonicalOneBotMessageId(body.data?.message_id);
+        const accepted = res.ok && body.status === 'ok' && body.retcode === 0 && messageId !== null;
+        let accountingWarning = null;
+        const explicitFailure = body.status === 'failed' && Number.isFinite(body.retcode) && body.retcode !== 0;
+        if (accepted) {
+          // ACK is authoritative before any awaited local receipt writer can fail.
+          voiceBudgetCommit(budgetScope);
+          if (guard) voiceLastSentAt.set(String(key), Date.now());
+          try {
+            voiceSendBudget(STATE_DIR, { id: reservation, result: 'sent' });
+            reservationFinalized = true;
+          } catch {
+            failureBudgetResult = 'uncertain';
+            try { voiceSendBudget(STATE_DIR, { id: reservation, result: 'uncertain' }); } catch {}
+            reservationFinalized = true;
+            accountingWarning = {
+              code: 'VOICE_SEND_UNCERTAIN',
+              error: 'QQ 已确认接收语音，但发送额度账本未确认。',
+              hint: 'QQ 已送达。若额度账本仍显示处理中，先停止 QQ 桥接，再凭原发送回执使用 voice-send-reconcile.mjs inspect 核对；不要重发。',
+            };
+          }
+        } else {
+          failureBudgetResult = explicitFailure ? 'rejected' : 'uncertain';
+        }
+        if (onReceipt) {
+          try { await onReceipt({ accepted, response: res, body, messageId, accountingWarning }); }
+          catch (error) {
+            if (accepted && error && typeof error === 'object') {
+              error.deliveryReceipt = { messageId, deliveryState: 'delivered', ...(accountingWarning ? { warning: accountingWarning } : {}) };
+            }
+            throw error;
+          }
+        }
+        if (!accepted) {
           const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口）' : '';
-          if (body.status === 'failed' && Number.isFinite(body.retcode) && body.retcode !== 0) await updateVoiceBudget({ id: reservation, result: 'rejected' });
-          else { await updateVoiceBudget({ id: reservation, result: 'uncertain' }); throw Object.assign(new Error('语音发送结果未知，请先核对网关记录。'), { code: 'VOICE_SEND_UNCERTAIN', hint: '使用 voice-send-reconcile.mjs inspect 核对，再凭网关证据对账。' }); }
+          if (!explicitFailure) throw Object.assign(new Error('语音发送结果未知，请先核对网关记录。'), { code: 'VOICE_SEND_UNCERTAIN', hint: '使用 voice-send-reconcile.mjs inspect 核对，再凭网关证据对账。' });
           throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}${hint}`);
         }
-        try { await updateVoiceBudget({ id: reservation, result: 'sent' }); }
-        catch (cause) {
-          try { await updateVoiceBudget({ id: reservation, result: 'uncertain' }); } catch {}
-          throw Object.assign(new Error('网关已接受语音，但额度记账未确认。'), {code:'VOICE_SEND_UNCERTAIN',hint:'请凭网关回执使用 voice-send-reconcile.mjs 对账；不要重复发送。',cause});
-        }
-        voiceBudgetCommit(budgetScope);
-        if (guard) voiceLastSentAt.set(String(key), Date.now());
-        resolveSend(body.data);
+        resolveSend({ data: body.data, messageId, accountingWarning });
       } catch (error) {
-        if (memorySendLease && !memorySendRecorded) await finishMemoryV2Send(memorySendLease, key, '[QQ语音]', null, 'delivery_unknown');
+        if (reservation && !reservationFinalized) {
+          try {
+            await updateVoiceBudget({ id: reservation, result: requestStarted ? failureBudgetResult : 'rejected' });
+            reservationFinalized = true;
+          } catch {}
+        }
         rejectSend(error);
       }
     });
     try {
-      const data = await sendPromise;
+      const { data, messageId, accountingWarning } = await sendPromise;
       return {
-        messageId: data?.message_id ?? null,
+        messageId,
+        deliveryState: 'delivered',
+        ...(accountingWarning ? { accountingWarning } : {}),
         bytes: info.size,
         duration: info.duration ?? null,
         codec: info.codec ?? '',
@@ -2799,6 +2865,38 @@ async function main() {
     } finally {
       // 音量处理产物是一次性的：发完（或失败）就删，别把 temp 撑大
       cleanupTemp(sendPath, processed.converted);
+    }
+  }
+
+  /** Legacy memory transaction wrapper. Native replies use their one-shot channel lease instead. */
+  async function sendVoiceV2(key, filePath, options = {}) {
+    let memorySendLease = null, memorySendRecorded = false;
+    try {
+      const sent = await sendVoiceTransport(key, filePath, {
+        ...options,
+        beforeNetwork: async () => { memorySendLease = await beginMemoryV2Send(key); },
+        onReceipt: async ({ accepted, body }) => {
+          await finishMemoryV2Send(memorySendLease, key, '[QQ语音]', accepted ? body.data : null);
+          memorySendRecorded = true;
+        },
+      });
+      if (sent.accountingWarning) {
+        throw Object.assign(new Error(sent.accountingWarning.error), {
+          code: sent.accountingWarning.code,
+          hint: sent.accountingWarning.hint,
+          deliveryReceipt: { messageId: String(sent.messageId), deliveryState: 'delivered' },
+        });
+      }
+      return sent;
+    } catch (error) {
+      if (memorySendLease && !memorySendRecorded) {
+        const receipt = error?.deliveryReceipt;
+        const acknowledged = receipt?.deliveryState === 'delivered' && receipt.messageId != null;
+        try {
+          await finishMemoryV2Send(memorySendLease, key, '[QQ语音]', acknowledged ? { message_id: receipt.messageId } : null, acknowledged ? null : 'delivery_unknown');
+        } catch {}
+      }
+      throw error;
     }
   }
 
@@ -4922,7 +5020,8 @@ async function main() {
       // 127.0.0.1 时，浏览器会把 evil.com:3100 当作同源，Origin 校验随之失效；卡住 Host
       // 这一层后，这类请求在进入任何业务分支之前就被拒掉。
       // 反代/端口转发场景会被一并拒绝——这是有意的（要远程访问请用 SSH 隧道并自行承担）。
-      const memoryIdentityRequest = url.pathname === '/api/memory-v2/identity';
+      const memoryNativeRequest = url.pathname === '/api/memory-v2/native';
+      const memoryIdentityRequest = url.pathname === '/api/memory-v2/identity' || memoryNativeRequest;
       const hostHeader = String(req.headers.host ?? '');
       // 用**实际绑定端口**而不是配置值：测试夹具用 consolePort: 0 让系统分配端口，
       // 配置里那个 0 不是请求里的 Host 端口。请求必然发生在 listen 之后，所以这里拿得到。
@@ -4957,6 +5056,12 @@ async function main() {
         try { if (!originMatches) originMatches = new URL(String(req.headers.origin)).origin === `http://${hostHeader.toLowerCase()}`; } catch {}
         if (req.headers['x-agent-token'] !== undefined || req.headers['x-agent-call'] !== undefined || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket?.remoteAddress) || !originMatches) {
           sendJson(memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_FORBIDDEN', '官方身份只允许同源回环控制台读取，智能体请求不能访问。'), 403); return;
+        }
+        if (memoryNativeRequest) {
+          if (req.method !== 'POST') { sendJson(memoryQQIdentityFailure('MEMORY_QQ_REQUEST_INVALID', 'Native 作业只接受 JSON POST。'), 405); return; }
+          if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers['content-type'] ?? ''))) { sendJson(memoryQQIdentityFailure('MEMORY_JSON_REQUIRED', 'Native 作业需要 JSON 请求。'), 415); return; }
+          const result = await nativeQQ.request(await readBody());
+          sendJson(result, result.ok ? 200 : 409); return;
         }
         if (req.method !== 'GET') { sendJson(memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_METHOD', '官方身份查询只接受 GET。'), 405); return; }
         const identity = await readOfficialMemoryQQIdentity();
@@ -5122,7 +5227,6 @@ async function main() {
         }
         if (req.method === 'GET' && url.pathname === '/api/status') {
         const memoryV2 = { ...memoryV2Route(), failures: [...memoryV2Failures.entries()].map(([key, failure]) => ({ key, ...failure })), retirementPending: Object.keys(state.memoryV2Retirements).length };
-        if (usesMemoryV2()) { sendJson({ ok: true, memoryV2, mode: currentMode, dshReady }); return; }
           const rs = readRoleState();
           // 带 agent token 的调用来自 QQ 群里的 AI：只能拿到它自己该知道的运行状态。
           // activity 是**全局**收发摘要（含其它群的发言片段与告警），ownerQQ/白名单属于管理信息，
@@ -5142,6 +5246,7 @@ async function main() {
             return;
           }
           sendJson({
+            memoryV2,
             mode: currentMode,
             root: ROOT,
             dshBaseUrl: cfg.dsh.baseUrl,
@@ -10806,7 +10911,163 @@ async function main() {
     return roleState.mode === 'silent' && key !== `private:${String(cfg.ownerQQ ?? '')}`;
   }
 
-  // 统一出站消息：先完整文本审计，再发送。返回是否真的发出。
+  function nativeVoiceFailure(code, error, hint) {
+    return { ok: false, code, error, hint };
+  }
+
+  function nativeVoiceMaxChars(voice = voiceCfg()) {
+    return Math.max(1, Math.min(120, Math.floor(Number(voice.tts.maxChars) || 120)));
+  }
+
+  /** Read-only capability/admission check; token charging is reserved only by the send path. */
+  function nativeVoiceAdmission(key, text = null, { consumeToken = false, checkToken = true, checkQuota = true } = {}) {
+    const voice = voiceCfg();
+    const maxChars = nativeVoiceMaxChars(voice);
+    const fail = (code, error, hint) => ({ ok: false, code, error, hint, maxChars });
+    const match = /^(group|private):([1-9][0-9]{0,19})$/.exec(String(key ?? ''));
+    if (!match) return fail('VOICE_TARGET_INVALID', 'QQ 语音目标无效。', '使用当前 Native 回复绑定的私聊或群会话。');
+    if (!voice.enabled) return fail('VOICE_DISABLED', 'QQ 语音发送已关闭。', '在语音设置中启用语音总开关后再试。');
+    if (!v2ToolEnabled('sendVoice')) return fail('VOICE_TOOL_DISABLED', 'QQ 语音回复工具未启用。', '在语音设置中启用发语音工具后再试。');
+    if (!voice.tts.enabled) return fail('VOICE_TTS_DISABLED', '语音合成未开启。', '在语音设置中启用当前合成服务后再试。');
+    if (text !== null) {
+      const say = String(text).trim();
+      if (!say) return fail('VOICE_TTS_TEXT_INVALID', '语音文字不能为空。', '提供一条有实际内容且不超过字数上限的回复。');
+      if (say.length > maxChars) return fail('VOICE_TTS_TEXT_INVALID', '语音文字超过当前字数上限。', `请压缩到 ${maxChars} 字以内。`);
+      if (shouldAuditKey(key) && (SENSITIVE_RE.test(say) || [...KNOWN_AGENT_TOKENS].some(token => token && say.includes(token)))) {
+        return fail('MEMORY_QQ_OUTPUT_DENIED', '语音回复被出站安全策略拦截。', '检查概览中的安全事件；这段内容不会合成或发送。');
+      }
+    }
+    if (shouldBlockSilentReply(key)) return fail('MEMORY_QQ_OUTPUT_DENIED', '当前会话处于静默状态。', '检查角色静默设置后，用一条新的 QQ 消息重新请求。');
+    const trigger = voiceTriggerBlock(key, match[1], Number(match[2]));
+    if (trigger) return fail('VOICE_TRIGGER_DENIED', trigger, '检查当前私聊/群语音触发规则，由允许的成员重新请求。');
+    const st = getSocialV2State(key);
+    const fishBlock = fishGuardSendBlock(key, st);
+    if (fishBlock) return fail(fishBlock.code || 'FISH_GUARD_SEND_BLOCK', fishBlock.error || '鱼群保护暂时阻止发送。', fishBlock.hint || '检查 QQ 鱼群保护设置后再试。');
+    if (checkToken || consumeToken) {
+      if (consumeToken) {
+        const tokenBlock = tokenGuardSendBlock(key, st, 1);
+        if (tokenBlock) return fail(tokenBlock.code || 'TOKEN_GUARD_SEND_LIMIT', tokenBlock.error || '本轮发送额度已用完。', tokenBlock.hint || '检查 QQ Token 防爆破设置后再试。');
+      } else {
+        const guard = tokenGuardCfg();
+        if (guard.enabled !== false) {
+          const outbound = evaluateOutbound({ used: Number(st?.tokenTurnSent) || 0, count: 1, guard });
+          if (outbound.blocked) return fail('TOKEN_GUARD_SEND_LIMIT', outbound.error, '检查 QQ Token 防爆破设置后再试。');
+        }
+      }
+    }
+    if (voice.tts.route === 'cloud' && voice.tts.cloudProvider === 'volc') {
+      let keyAvailable = false;
+      try { keyAvailable = Boolean(readVolcKey(CONFIG_FILE, voice.tts.volcKeyId)); } catch {}
+      if (!keyAvailable) return fail('VOICE_VOLC_KEY_INVALID', '火山语音凭据未就绪。', '在本机语音设置中配置火山 API Key 后再试。');
+    }
+    if (checkQuota) {
+      try { voiceBudgetCheck(key, voice); }
+      catch (error) { return fail(error?.code || 'VOICE_SEND_LIMIT', error?.message || '语音额度暂不可用。', error?.hint || '检查语音额度状态后再试。'); }
+    }
+    return { ok: true, maxChars, voice };
+  }
+
+  function getNativeQQCapabilities(key) {
+    let admission;
+    try { admission = nativeVoiceAdmission(key); }
+    catch { admission = { ok: false, code: 'VOICE_CAPABILITY_UNAVAILABLE', hint: '检查语音设置、触发权限和本机额度后重试。', maxChars: 120 }; }
+    return {
+      ok: true,
+      voice: {
+        enabled: admission.ok,
+        maxChars: admission.maxChars,
+        ...(admission.ok ? {} : { code: admission.code, hint: admission.hint }),
+      },
+    };
+  }
+
+  function nativeReplyFailure(error, fallbackCode = 'MEMORY_QQ_DELIVERY_UNKNOWN') {
+    const known = error && typeof error === 'object' ? error : {};
+    const code = typeof known.code === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{1,79}$/.test(known.code)
+      ? known.code : fallbackCode;
+    const userError = typeof known.error === 'string' && known.error.length <= 240
+      ? known.error : 'QQ 回复没有完成发送。';
+    const hint = typeof known.hint === 'string' && known.hint.length <= 360
+      ? known.hint : '检查当前 QQ 作业与发送回执；结果未知时不要自动重发。';
+    return { ok: false, code, error: userError, hint };
+  }
+
+  // 统一出站文本：Native channel owns the lease; this function owns only audited transport.
+  async function sendNativeQQText(key, message, { validate = null, signal = null } = {}) {
+    const guard = captureSendGuard(key);
+    if (shouldBlockSilentReply(key) || (shouldAuditKey(key) && (SENSITIVE_RE.test(message) || [...KNOWN_AGENT_TOKENS].some(token => token && message.includes(token))))) {
+      return { ok: false, code: 'MEMORY_QQ_OUTPUT_DENIED', error: '回复被出站安全策略拦截。', hint: '在概览检查安全事件；不会发送未经审计的原文。' };
+    }
+    const [kind, id] = key.split(':');
+    try {
+      if (signal?.aborted) return nativeReplyFailure({ code: 'MEMORY_QQ_JOB_STALE', error: '该 Native 回复已退役或过期。' });
+      if (validate) await validate();
+      if (signal?.aborted) return nativeReplyFailure({ code: 'MEMORY_QQ_JOB_STALE', error: '该 Native 回复已退役或过期。' });
+      guard();
+      const response = await fetch(`${String(cfg.snowluma.httpUrl).replace(/\/+$/, '')}/${kind === 'private' ? 'send_private_msg' : 'send_group_msg'}`, {
+        method: 'POST', headers: { 'content-type': 'application/json', ...(cfg.snowluma.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}) },
+        body: JSON.stringify({ [kind === 'private' ? 'user_id' : 'group_id']: Number(id), message: [{ type: 'text', data: { text: escapeCqText(message) } }] }),
+        signal: signal ? AbortSignal.any([AbortSignal.timeout(15000), signal]) : AbortSignal.timeout(15000),
+      });
+      const body = await response.json().catch(() => ({}));
+      const messageId = canonicalOneBotMessageId(body.data?.message_id);
+      if (!response.ok || body?.status !== 'ok' || body.retcode !== 0 || messageId === null) {
+        noteSendFailure(key, new Error('Native QQ delivery unconfirmed'));
+        return { ok: false, code: 'MEMORY_QQ_DELIVERY_UNKNOWN', error: 'QQ 未确认发送结果。', hint: '检查原消息是否送达；不会自动重发。' };
+      }
+      noteSendSuccess(key);
+      try { recordSentMessagesV2(key, [message]); } catch (error) { log(`[Native] 文本回执已确认，近期消息记账失败：${error?.code || 'local-write'}`); }
+      appendActivity(`${key} [Native 回复] 已取得 QQ 发送回执`);
+      return { ok: true, messageId: String(messageId), deliveryState: 'delivered' };
+    } catch (error) {
+      noteSendFailure(key, new Error('Native QQ delivery unconfirmed'));
+      return nativeReplyFailure(error, 'MEMORY_QQ_DELIVERY_UNKNOWN');
+    }
+  }
+
+  async function sendNativeQQReply(key, message, { delivery = 'text', validate = null, signal = null } = {}) {
+    if (delivery === 'text') return sendNativeQQText(key, message, { validate, signal });
+    if (delivery !== 'voice') return nativeReplyFailure({ code: 'MEMORY_QQ_OUTPUT_INVALID', error: 'QQ 回复类型无效。' }, 'MEMORY_QQ_OUTPUT_INVALID');
+    const say = String(message ?? '').trim();
+    try {
+      if (signal?.aborted) throw { code: 'MEMORY_QQ_JOB_STALE', error: '该 Native 回复已退役或过期。' };
+      if (validate) await validate();
+      const sendGuard = captureSendGuard(key);
+      sendGuard();
+      if (signal?.aborted) throw { code: 'MEMORY_QQ_JOB_STALE', error: '该 Native 回复已退役或过期。' };
+      const denied = nativeVoiceAdmission(key, say, { consumeToken: true });
+      if (!denied.ok) return nativeReplyFailure(denied, denied.code);
+      auditOwner('voice.trigger', {
+        actor: { id: voiceLastSpeaker.get(String(key))?.userId || '', isOwner: voiceLastSpeaker.get(String(key))?.isOwner === true },
+        rule: 'voice.trigger', decision: 'allow', ref: { session: key },
+      });
+      const resolved = await synthesizeVoiceText(say, { signal });
+      if (signal?.aborted) throw { code: 'MEMORY_QQ_JOB_STALE', error: '语音合成完成后 Native 作业已退役。' };
+      if (validate) await validate();
+      sendGuard();
+      const sent = await sendVoiceTransport(key, resolved.path, {
+        guard: true,
+        audit: true,
+        validate,
+        signal,
+        extraGuard: () => {
+          const current = nativeVoiceAdmission(key, say, { checkToken: false });
+          if (!current.ok) throw Object.assign(new Error(current.error), current);
+        },
+      });
+      if (sent.accountingWarning) {
+        appendActivity(`${key} [Native 语音] QQ 已确认回执；本机语音额度账本待核对（${sent.accountingWarning.code}），不要重发`);
+        logVoiceError({ scope: 'send', route: 'native', code: sent.accountingWarning.code, stage: 'accounting', message: 'QQ 已确认语音发送，但本机额度账本未确认', fallback: '' });
+      }
+      try { recordVoiceSentV2(key, sent, '[Native 语音回复]'); }
+      catch (error) { log(`[Native] 语音回执已确认，近期消息记账失败：${error?.code || 'local-write'}`); }
+      appendActivity(`${key} [Native 语音回复] 已取得 QQ 发送回执`);
+      return { ok: true, messageId: String(sent.messageId), deliveryState: 'delivered', ...(sent.accountingWarning ? { warning: sent.accountingWarning } : {}) };
+    } catch (error) {
+      return nativeReplyFailure(error);
+    }
+  }
+
   async function auditAndSend(key, text) {
     const hasKnownToken = [...KNOWN_AGENT_TOKENS].some((t) => t && String(text ?? '').includes(t));
     if (shouldAuditKey(key) && (SENSITIVE_RE.test(text) || hasKnownToken)) {
@@ -13322,26 +13583,22 @@ async function main() {
       if (currentMode === 'closed-agent') return memoryV2Failure(key, { code: 'MEMORY_PRESET_UNSAFE', error: 'V2 QQ requires a restricted QQ tool surface.', hint: 'Use a restricted QQ conversation preset; a full local-tool owner session cannot admit V2 memory.' });
       const retired = await retireMemoryV2Session(key);
       if (!retired.ok) return retired;
+      const started = nativeQQ.begin(key, role, getSocialV2State(key).lastUnreadSeq || 0);
+      if (!started.ok) return memoryV2Failure(key, started);
       const prepared = await qqMemory.prepareReply({ key });
-      if (!prepared.ok) return memoryV2Failure(key, prepared);
+      if (!prepared.ok) {
+        await nativeQQ.request({ ...started.request, action: 'complete', code: prepared.code, error: prepared.error, hint: prepared.hint, ok: false });
+        return memoryV2Failure(key, prepared);
+      }
       const current = readCurrentCharacter();
       if (!role || current?.id !== role.id || current?.epoch !== role.epoch) return memoryV2Failure(key, { code: 'CHARACTER_EPOCH_STALE', error: 'The character changed during QQ preparation.', hint: 'Retire the request and capture the current role again.' });
-      state.memoryV2Sessions[key] = prepared.sessionStamp; saveState();
-      const sessionId = await ensureSession(key);
-      const modelRoute = validateMemoryV2ProviderRoute(key, sessionId);
-      if (!modelRoute.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); return modelRoute; }
-      const validated = await qqMemory.validate(key, { prepared: true });
-      if (!validated.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); return memoryV2Failure(key, validated); }
-      const token = currentMode === 'reserved2' ? getSocialV2State(key).agentToken : '';
-      const protocol = token ? `\n\n当前QQ会话：${key}；会话令牌：${token}。只使用本次已提供材料；历史/轻量记忆工具无来源引用时不可用。需要回复时使用当前QQ发送工具。` : '';
-      const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: prepared.text + protocol }] });
-      await requireMemoryV2SessionSafety(key, sessionId);
-      const after = await qqMemory.validate(key);
-      if (!after.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); return memoryV2Failure(key, after); }
-      if (!accepted.result?.ok) return memoryV2Failure(key, { code: 'MEMORY_PROMPT_REJECTED', error: 'DSH did not accept the authorized QQ prompt.', hint: 'Inspect the DSH session and submit a fresh request.' });
-      if (accepted.result.value?.command?.text && !opts.silent && currentMode !== 'reserved2') await auditAndSend(key, mdToPlain(accepted.result.value.command.text));
+      const accepted = await nativeMemoryClient.requestQQReply(started.request);
+      if (!accepted.ok) {
+        await nativeQQ.request({ ...started.request, action: 'complete', code: accepted.code, error: accepted.error, hint: accepted.hint, ok: false });
+        return memoryV2Failure(key, accepted);
+      }
       memoryV2Failures.delete(key);
-      return { ok: true, sessionId, providerAdmissionCoverage: 'submission-observed' };
+      return { ok: true, queued: true, requestId: started.request.requestId, providerAdmissionCoverage: 'native-owner' };
       } catch (error) {
         await retireMemoryV2Session(key); await qqMemory.retire(key);
         return memoryV2Failure(key, { code: error?.code ?? 'MEMORY_PROMPT_FAILED', error: 'The authorized QQ prompt could not be submitted.', hint: 'Check the restricted QQ preset and DSH status, then use a fresh input; old context remains blocked.' });

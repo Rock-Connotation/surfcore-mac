@@ -5,6 +5,10 @@ import { spawnSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
+  'test-qq-native-channel.mjs',
+  'test-qq-native-voice.mjs',
+  '../plugins/surfcore/scripts/test-qq-access-panel.mjs',
+  '../plugins/surfcore/scripts/test-memory-v2-alerts.mjs',
   'test-update-archive.mjs',
   'test-self-test-target.mjs',
   'test-package-data-paths.mjs', 'test-package-data-consumers.mjs',

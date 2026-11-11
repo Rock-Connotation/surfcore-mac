@@ -890,7 +890,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
             : h("span", { className: "qbw-hint" }, emptyHint || "（空）")));
     }
 
-    function WhitelistCard({ allow = {}, allowAll = false, ownerQQ = "", onAllowChange, onAllowAllChange }) {
+    function WhitelistCard({ allow = {}, allowAll = false, ownerQQ = "", onAllowChange, onAllowAllChange, dirty = false, onSave, roleKey = "" }) {
       const groups = Array.isArray(allow?.groups) ? allow.groups.map(String) : [];
       const people = Array.isArray(allow?.private) ? allow.private.map(String) : [];
       const ownerMissing = Boolean(ownerQQ) && !people.includes(String(ownerQQ));
@@ -932,6 +932,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
         allowAll
           ? h("div", { className: "qbw-dangerbox" }, "⚠️ 「白名单为空时全部放行」开着：任何群 / 任何 QQ 都能触发智能体。建议先填名单，再关掉这个开关。")
           : null,
+        h(QQAccessPanel, { dirty, onSave, roleKey, draftAllow: allow }),
         h("div", { className: "qbw-admin-foot" },
           h("label", { className: "qbw-admin-check" },
             h("input", {
@@ -940,6 +941,26 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
             }),
             h("span", null, "白名单为空时全部放行（不推荐）")),
           h("span", { className: "qbw-hint" }, "黑名单（deny.*）优先于白名单，在下面的「QQ 黑名单」卡片里设置。")));
+    }
+
+    function QQAccessPanel({ dirty = false, onSave, roleKey = "", draftAllow = {} }) {
+      const [Component, setComponent] = useState(null);
+      const [error, setError] = useState("");
+      const [attempt, setAttempt] = useState(0);
+      useEffect(() => {
+        let active = true;
+        import("/dsh-surfcore/api/memory-v2/qq-access-client")
+          .then((module) => {
+            if (typeof module.createQQAccessPanel !== "function") throw new Error("invalid QQ access panel module");
+            if (active) { setComponent(() => module.createQQAccessPanel(React, { api, Btn, fmtTime })); setError(""); }
+          })
+          .catch(() => { if (active) setError("QQ_ACCESS_PANEL_NOT_READY：白名单内的回复设置尚未接通；可重载入口后再试。"); });
+        return () => { active = false; };
+      }, [attempt]);
+      if (Component) return h(Component, { dirty, onSave, roleKey, draftAllow });
+      return h("div", { className: "qbw-card", role: error ? "alert" : "status" },
+        error || "正在加载白名单内的回复设置…",
+        error ? h(Btn, { kind: "qbw-btn2", onClick: () => { setError(""); setAttempt((n) => n + 1); } }, "重载入口") : null);
     }
 
     // ── QQ 黑名单（人 / 群 / 私聊）──────────────────────────────────────────
@@ -2114,6 +2135,10 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       };
       const limitEvents = (gateData?.events ?? []).filter((ev) => ev.gate === "limit" || ev.gate === "timeout" || ev.evidence?.setting);
       return h("div", null,
+        bridge.replyFailure ? h("div", { className: "qbw-warnbox", role: "alert" },
+          h("b", null, bridge.replyFailure.error),
+          h("div", null, bridge.replyFailure.code), h("div", null, bridge.replyFailure.hint),
+          h(Btn, { kind: "qbw-btn2", onClick: () => goTab?.("qq") }, "检查 QQ 回复设置")) : null,
         overview?.adminProjectionFailure ? h("div", { className: "qbw-warnbox", role: "alert" },
           h("b", null, overview.adminProjectionFailure.error), h("div", null, overview.adminProjectionFailure.hint)) : null,
         bridge.snowluma?.configWriteFailure ? h("div", { className: "qbw-warnbox", role: "alert" },
@@ -2138,7 +2163,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           "合体插件不复制配置，只把参数、记忆、身份对齐和扩展接口装到一起。"),
         h("div", { className: "qbw-grid" },
           h("div", { className: "qbw-card" },
-            h("h4", null, "QQ 桥接 ", h(StatusDot, { ok: bridge.running && bridge.ok, warn: bridge.running && !bridge.ok }, bridge.running ? "运行中" : "未运行")),
+            h("h4", null, "QQ 桥接 ", h(StatusDot, { ok: bridge.replyReady === true, warn: bridge.running && bridge.replyReady !== true }, bridge.replyFailure ? "回复受阻" : bridge.replyReady ? "可回复" : bridge.running ? "进程运行中 · 等待连接" : "未运行")),
             h("div", { className: "qbw-kv" }, h("span", null, "端口"), h("span", null, bridge.port ?? "—")),
             h("div", { className: "qbw-kv" }, h("span", null, "PID"), h("span", null, bridge.pid ?? bridge.lockPid ?? "—")),
             h("div", { className: "qbw-kv" }, h("span", null, "模式"), h("span", null, overview?.mode?.effective ?? overview?.mode?.local ?? bridge.mode ?? "—")),
@@ -3328,6 +3353,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           allow: cfg?.allow ?? {},
           allowAll: cfg?.allowAllWhenEmpty === true,
           ownerQQ: admin?.qq || cfg?.ownerQQ || overview?.mode?.ownerQQ || "",
+          dirty,
+          onSave,
+          roleKey: overview?.character?.active?.id || overview?.character?.id || "",
           onAllowChange: (key, list) => set(["allow", key], list),
           onAllowAllChange: (value) => set(["allowAllWhenEmpty"], value),
         }),
@@ -7108,6 +7136,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           setNotes(nextNotes);
           notify(`✓ 已保存${budgetDirty ? "（token 额度即时生效）" : ""}${resetSessions ? (resetDone ? "，已重置相关会话上下文" : "，没有可重置的在线会话") : ""}${r.bridge ? (r.bridge.ok ? "，桥接已重启" : "，桥接重启失败") : ""}${nextWarnings.length ? "（有提示）" : ""}`);
           await loadOverview();
+          return r;
         } catch (e) { setErr(`保存失败：${[e.code, e.message, e.hint].filter(Boolean).join(" · ")}`); setWarnings([]); setNotes([]); } finally { setBusy(""); }
       };
       const reload = async () => { await loadOverview(); await loadConfig(); await loadBudget(); };

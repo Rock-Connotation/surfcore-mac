@@ -19,6 +19,7 @@
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
 | **本地 Agent 审查与实施 2026-11-11** | `/Users/shizihan/Daily/Github/surfcore-mac` | `refactor`，基线 `748afe6` | 阶段 A-E：目的受众/终态取消/V2时间与摘录/TaskHarness准入/任务账本/文件整理/受限命令/Mac原生应用/自主生活 | ✅ 完成：Phase A/B/C/D/E 全阶段实施与独立验收；audit 191/191、regressions 17/17、memory-v2 47/47全绿；保持V1默认、未发布 |
+| **QQ V2 不回复根治 2026-11-11** | `../surfcore-qq-reply-fix` | `fix/qq-reply-discovery`，748afe6 | scope契约/Native正式组合/私有发送回执/失败可见/生产适配器/测试隔离/原角色恢复 | 已收工：tree3927fa47实装400项一致+官方HMR/桥接28234；app8/预算50亿/revision4。真实私聊语音1105838883、群@1904687227双读回，用户确认播放和回复；原生QQ同页预览取消/历史许可L2确认与去重已验。audit195/协议17/插件完整覆盖+Memory34/SDK离线及官方包消费通过。保留独立树/回滚与数据，不提交发布。 |
 | **记忆层 V2 2026-11-09** | `../surfcore-memory-v2`（已清理） | `feat/memory-v2`（已删） | P0–P4；来源/四渠道/事务/生命周期/迁移与门禁 | ✅ 完成：工程实施与验收全量通过，已合入本地 dev（2026-11-11）。QQ Native/Bridge闭环、Bili托管单轮与退役ACK、P4脱敏迁移预览全过；套件47/47、audit 187/187、regressions 17/17全绿；保持V1默认。已按用户确认清理临时树与分支。 |
 | **Harness请求修复 2026-11-11** | ../surfcore-harness-throttle | fix/harness-throttle；基线dev17c9b1f | 本机bili冷却配置/原生原会话验收/断点记录 | ✅ 完成：原生原会话回复成功、离线限流5项、Node24 audit187/187、diff-check通过；业务树未改、未提交/不安装V2/不发布 |
 | **QQ语音分群额度 2026-11-10** | `../surfcore-voice-quota-integrated` | `feat/voice-quota-integrated`，基线17c9b1f | 日500/月90万、CONFIG_STALE、群停答恢复及语气提示朗读修复 | 主代理完成，run 1；语气提示两provider过滤及桥接错误回归通过，audit191/协议17/插件/离线App包通过；20:08实装e319350a，357文件一致，桥接27748在线，配置/两账哈希不变；20:16查明收尾为PI_AI_ERROR/SSE坏JSON，原会话续跑与SDK离线验证通过，未改Host；无真实TTS/测试外发/UI/提交发布 |

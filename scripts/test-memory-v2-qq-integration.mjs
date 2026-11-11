@@ -95,6 +95,7 @@ if (!process.env.QQ_MEMORY_FIXTURE) {
 
   const providerRouteId = good(deriveMemoryProviderRouteId({ provider: 'fixture', model: 'fixture' })).providerRouteId;
   let fixtureSessionSafety = true;
+  const nativeSubmissions = [];
   createCharacter({ name: 'QQ fixture', id: 'qq-test', personaText: '我是隔离测试角色，不读取旧记忆。' }); switchCharacter('qq-test');
   const firstRole = readCurrentCharacter(), management = Object.freeze({}), replayAuthority = Object.freeze({});
   const stateDir = path.join(process.env.QQ_MEMORY_FIXTURE, 'surfcore');
@@ -113,72 +114,47 @@ if (!process.env.QQ_MEMORY_FIXTURE) {
   let api, harness, restartedHarness;
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    api = createMemoryApiService({ host, stateDir, currentDshUrl: () => `http://127.0.0.1:${server.address().port}`, scopes: [{ id: 'qq-bridge', channel: 'qq', principal: {}, canBindInput: true, canSubmitSourceFacts: true }] }); good(api.writeHostFiles());
-    const client = createMemoryClient({ stateDir, getCharacter: readCurrentCharacter });
+    api = createMemoryApiService({ host, stateDir, currentDshUrl: () => `http://127.0.0.1:${server.address().port}`, onQQReply: input => { nativeSubmissions.push(input); return { ok: true, accepted: true, requestId: input.requestId }; }, scopes: [{ id: 'qq', channel: 'qq', principal: {}, canBindInput: true, canSubmitSourceFacts: true }] }); good(api.writeHostFiles());
+    const client = createMemoryClient({ stateDir, scope: 'qq', getCharacter: readCurrentCharacter });
     const adapter = createQQMemoryBridge({ stateDir, getCharacter: readCurrentCharacter, client });
     const source = (id, actor = '200', key = 'group:900', text = '完整QQ当前输入：今天计划去河边散步。') => ({ key, loginAccountId: '100', actorAccountId: actor, objectId: String(id), text });
     good(await adapter.captureSource(source(1, '200', 'group:900', '长文本保留。'.repeat(250) + 'sk-' + 'fixturesecret1234567890')));
     good(await adapter.captureSource(source(2, '201')));
     const prepared = good(await adapter.prepareReply({ key: 'group:900' })); assert.equal(prepared.inputManifest.length, 2); assert.ok(prepared.text.includes('长文本保留。'.repeat(250))); assert.ok(!prepared.text.includes('fixturesecret1234567890'));
-    const privateAdapter = createQQMemoryBridge({ stateDir, getCharacter: readCurrentCharacter, client: createMemoryClient({ stateDir, getCharacter: readCurrentCharacter }) });
+    const privateAdapter = createQQMemoryBridge({ stateDir, getCharacter: readCurrentCharacter, client: createMemoryClient({ stateDir, scope: 'qq', getCharacter: readCurrentCharacter }) });
     good(await privateAdapter.captureSource(source(3, '200', 'private:200', '只在私聊出现的橘子密码故事。'))); const privatePrepared = good(await privateAdapter.prepareReply({ key: 'private:200' })); assert.ok(!prepared.text.includes('橘子密码故事')); assert.ok(privatePrepared.text.includes('橘子密码故事'));
-    harness = await bridgeHarness({ config: { ownerQQ: 100, agentPreset: 'qq-safe', dsh: { provider: 'fixture', model: 'fixture', followDefaultModel: false, allowModelFallback: true }, allow: { private: ['200'], groups: ['900'] } }, globals: { readCurrentCharacter, createQQMemoryBridge: options => createQQMemoryBridge({ ...options, stateDir, getCharacter: readCurrentCharacter, client: createMemoryClient({ stateDir, getCharacter: readCurrentCharacter }), getSessionMemorySafety: async ({ sessionId, preset }) => { const runtime = [harness, restartedHarness].find(item => Object.values(item?.state.sessions ?? {}).includes(sessionId)); const actual = runtime?.calls.created.find((item, index) => sessionId === `fixture-${index + 1}` && item.agentPreset === preset); return fixtureSessionSafety === true && !!actual; } }) } });
+    harness = await bridgeHarness({ config: { ownerQQ: 100, agentPreset: 'qq-safe', dsh: { provider: 'fixture', model: 'fixture', followDefaultModel: false, allowModelFallback: true }, allow: { private: ['200'], groups: ['900'] } }, globals: { readCurrentCharacter, createMemoryClient: options => createMemoryClient({ ...options, stateDir, scope: 'qq' }), createQQMemoryBridge: options => createQQMemoryBridge({ ...options, stateDir, getCharacter: readCurrentCharacter, client: createMemoryClient({ stateDir, scope: 'qq', getCharacter: readCurrentCharacter }), getSessionMemorySafety: async ({ sessionId, preset }) => { const runtime = [harness, restartedHarness].find(item => Object.values(item?.state.sessions ?? {}).includes(sessionId)); const actual = runtime?.calls.created.find((item, index) => sessionId === `fixture-${index + 1}` && item.agentPreset === preset); return fixtureSessionSafety === true && !!actual; } }) } });
     harness.setMode('reserved2'); harness.setReady(true); harness.setPresets([harness.cfg['social' + 'V2'].agentPreset, harness.cfg.agentPreset].filter(Boolean)); harness.setSelfUserId('100');
     harness.socialV2.paused = true;
     await harness.handleIncoming('group', 900, { self_id: 100, user_id: 200, group_id: 900, message_id: 10, raw_message: '来自真实入站信封的当前测试消息。', message: [{ type: 'text', data: { text: '来自真实入站信封的当前测试消息。' } }], sender: { nickname: 'fixture actor' } }, harness.cfg);
     assert.equal(harness.qqMemory.status('group:900').sourceState, 'committed');
-    const beforeCreateRace = harness.calls.prompts.length, originalCreate = harness.api.sessions.create;
-    harness.api.sessions.create = async value => { const response = await originalCreate(value); good(await action({ type: 'binding_barrier' })); await publishFixtureRoute(); return response; };
-    const createRace = await harness.deliverPromptNow('group:900', '旧会话创建竞态', {}); assert.equal(createRace.ok, false); assert.equal(harness.calls.prompts.length, beforeCreateRace);
-    harness.api.sessions.create = originalCreate;
     good(await harness.qqMemory.captureSource(source(11, '200', 'group:900', '来自真实入站信封的新鲜当前测试消息。')));
-    fixtureSessionSafety = false;
-    const unsafeBefore = harness.calls.prompts.length;
-    const unsafe = await harness.deliverPromptNow('group:900', 'No native restricted-tool proof is mounted.'); assert.equal(unsafe.code, 'MEMORY_PRESET_UNSAFE'); assert.ok(unsafe.hint); assert.equal(harness.calls.prompts.length, unsafeBefore); assert.equal(harness.state.sessions['group:900'], undefined);
-    fixtureSessionSafety = true;
-    const originalSelect = harness.api.sessions.selectModel;
-    for (const scenario of [
-      { id: 101, model: 'fixture', selected: { provider: 'fixture' }, code: 'MEMORY_PROVIDER_ROUTE_REQUIRED' },
-      { id: 102, model: 'other', selected: { provider: 'fixture', model: 'other' }, code: 'MEMORY_PROVIDER_ROUTE_MISMATCH' },
-      { id: 103, model: 'fixture', selected: { provider: 'fallback', model: 'fallback' }, code: 'MEMORY_PROVIDER_ROUTE_MISMATCH' },
-    ]) {
-      good(await harness.qqMemory.captureSource(source(scenario.id)));
-      harness.cfg.dsh.model = scenario.model;
-      harness.api.sessions.selectModel = async () => ({ result: { ok: true, value: { selected: scenario.selected } } });
-      const prompts = harness.calls.prompts.length, created = harness.calls.created.length;
-      const refused = await harness.deliverPromptNow('group:900', '未授权实际模型不得接收输入', {});
-      assert.equal(refused.ok, false); assert.equal(refused.code, scenario.code); assert.ok(refused.hint); assert.equal(harness.calls.prompts.length, prompts); assert.equal(harness.state.sessions['group:900'], undefined); assert.ok(harness.calls.archived.includes(`fixture-${created + 1}`));
-    }
-    harness.api.sessions.selectModel = originalSelect; harness.cfg.dsh.model = 'fixture';
-    good(await harness.qqMemory.captureSource(source(12, '200', 'group:900', '来自真实入站信封的新鲜当前测试消息。')));
-    const sentBefore = harness.calls.sent.length;
-    good(await harness.deliverPromptNow('group:900', 'FORBIDDEN_LEGACY_HISTORY', {})); assert.equal(harness.calls.prompts.length, 1);
-    const submitted = JSON.stringify(harness.calls.prompts[0]); assert.ok(submitted.includes('真实入站信封')); assert.ok(!submitted.includes('FORBIDDEN_LEGACY_HISTORY'));
-    const sessionId = harness.state.sessions['group:900']; assert.ok(sessionId);
-    assert.equal((await harness.qqMemory.validateSessionSafety({ sessionId: 'foreign-session', preset: harness.calls.created.at(-1).agentPreset })).code, 'MEMORY_PRESET_UNSAFE');
-    assert.equal((await harness.qqMemory.validateSessionSafety({ sessionId, preset: 'foreign-preset' })).code, 'MEMORY_PRESET_UNSAFE');
-    await harness.sendToQQ('group:900', '当前授权的模型回复。'); assert.equal(harness.calls.sent.length, sentBefore + 1);
-    const observedDrift = harness.validateMemoryV2ProviderRoute('group:900', sessionId, { provider: 'fixture', model: 'changed-after-submit' });
-    assert.equal(observedDrift.code, 'MEMORY_PROVIDER_ROUTE_MISMATCH');
-    await harness.sendToQQ('group:900', '实际模型偏离后不得发送'); assert.equal(harness.calls.sent.length, sentBefore + 1); assert.equal(harness.state.sessions['group:900'], undefined); assert.ok(harness.calls.archived.includes(sessionId));
-    good(await harness.qqMemory.captureSource(source(13))); good(await harness.deliverPromptNow('group:900', '恢复精确授权的模型', {}));
-    const currentSessionId = harness.state.sessions['group:900'];
+    const forwarded = good(await harness.deliverPromptNow('group:900', 'FORBIDDEN_LEGACY_HISTORY', {}));
+    assert.equal(forwarded.providerAdmissionCoverage, 'native-owner');
+    assert.equal(harness.calls.prompts.length, 0, 'V2 must never submit to a general DSH session.');
+    assert.equal(harness.calls.created.length, 0);
+    assert.equal(nativeSubmissions.length, 1);
+    const submitted = nativeSubmissions[0];
+    assert.deepEqual(Object.keys(submitted).sort(), ['key', 'requestId', 'characterId', 'characterEpoch'].sort());
+    assert.equal(submitted.key, 'group:900'); assert.equal(submitted.characterId, firstRole.id);
+    assert.ok(!JSON.stringify(submitted).includes('FORBIDDEN_LEGACY_HISTORY'));
+    const busy = await harness.deliverPromptNow('group:900', 'second trigger', {});
+    assert.equal(busy.code, 'MEMORY_QQ_BUSY'); assert.equal(nativeSubmissions.length, 1);
+    const unproven = await harness.qqMemory.validateSessionSafety({ sessionId: 'foreign', preset: 'foreign' });
+    assert.equal(unproven.code, 'MEMORY_PRESET_UNSAFE', 'Generic DSH safety must remain fail-closed.');
+    await harness.nativeQQ.request({ ...submitted, action: 'complete', ok: true });
     good(await action({ type: 'revoke_policy', policyId: 'qq-group' })); await publishFixtureRoute();
-    await harness.sendToQQ('group:900', '撤销后不得发送。'); assert.equal(harness.memoryV2Failures.get('group:900')?.ok, false); assert.equal(harness.calls.sent.length, sentBefore + 1);
-    const beforePrompts = harness.calls.prompts.length; const blocked = await harness.deliverPromptNow('group:900', '不得回放旧会话。', {}); assert.equal(blocked.ok, false); assert.equal(harness.calls.prompts.length, beforePrompts); assert.ok(harness.calls.cancelled.includes(currentSessionId)); assert.ok(harness.calls.archived.includes(currentSessionId));
-    good(await action({ type: 'configure_policy', policy: { policyId: 'qq-group-next', approved: true, audiences: [['qq', base.conversationKey, '*']], processingGrants: [{ grantId: 'qq-grant-next', providerRouteId: providerRouteId }] } })); await publishFixtureRoute();
-    good(await harness.qqMemory.captureSource(source(30)));
-    const originalPrompt = harness.api.sessions.prompt, beforeGeneration = harness.calls.sent.length;
-    harness.api.sessions.prompt = async value => { const response = await originalPrompt(value); good(await action({ type: 'binding_barrier' })); await publishFixtureRoute(); return response; };
-    const generatedDuringRevocation = await harness.deliverPromptNow('group:900', '生成期间撤销', {}); assert.equal(generatedDuringRevocation.ok, false); assert.equal(harness.calls.sent.length, beforeGeneration); assert.equal(harness.state.sessions['group:900'], undefined);
-    harness.api.sessions.prompt = originalPrompt;
-    const mass = createQQMemoryBridge({ stateDir, getCharacter: readCurrentCharacter, client: createMemoryClient({ stateDir, getCharacter: readCurrentCharacter }) });
+    const rejected = await harness.deliverPromptNow('group:900', 'revoked input', {});
+    assert.equal(rejected.ok, false); assert.equal(nativeSubmissions.length, 1);
+    assert.equal(harness.calls.prompts.length, 0);
+    good(await action({ type: 'configure_policy', policy: { policyId: 'qq-group-next', approved: true, audiences: [['qq', base.conversationKey, '*']], processingGrants: [{ grantId: 'qq-grant-next', providerRouteId }] } })); await publishFixtureRoute();
+    const mass = createQQMemoryBridge({ stateDir, getCharacter: readCurrentCharacter, client: createMemoryClient({ stateDir, scope: 'qq', getCharacter: readCurrentCharacter }) });
     for (let i = 0; i < 605; i++) good(await mass.captureSource(source(1000 + i, '200', 'group:900', `第${i}条完整原始来源。`)));
     const { DatabaseSync } = await import('node:sqlite');
     const db = new DatabaseSync(path.join(CHARACTERS_DIR, firstRole.id, 'memory', 'memory-v2.sqlite'), { readOnly: true });
     try { assert.ok(db.prepare('SELECT COUNT(*) AS n FROM events').get().n > 600); assert.ok(db.prepare('SELECT payload FROM events').all().some(row => row.payload.includes('长文本保留'))); } finally { db.close(); }
     let loseRegistration = true;
-    const lossy = createMemoryClient({ stateDir, getCharacter: readCurrentCharacter, fetchImpl: async (url, options) => { const response = await fetch(url, options); if (loseRegistration && JSON.parse(options.body ?? '{}').action === 'registerProducer') { loseRegistration = false; await response.text(); throw new Error('fixture lost original registration response'); } return response; } });
+    const lossy = createMemoryClient({ stateDir, scope: 'qq', getCharacter: readCurrentCharacter, fetchImpl: async (url, options) => { const response = await fetch(url, options); if (loseRegistration && JSON.parse(options.body ?? '{}').action === 'registerProducer') { loseRegistration = false; await response.text(); throw new Error('fixture lost original registration response'); } return response; } });
     const pendingRegistration = createQQMemoryBridge({ stateDir, getCharacter: readCurrentCharacter, client: lossy });
     const lost = await pendingRegistration.captureSource(source(80)); assert.equal(lost.acceptance, 'queued_durable'); assert.equal(lost.sourceState, 'pending'); assert.ok(lost.operationId);
     good(await adapter.captureSource(source(20))); good(await adapter.prepareReply({ key: 'group:900' }));
@@ -190,17 +166,24 @@ if (!process.env.QQ_MEMORY_FIXTURE) {
     const allSources = fs.readdirSync(path.join(stateDir, 'memory-v2', 'qq-producer', firstRole.id, String(firstRole.epoch))).filter(name => name.endsWith('.jsonl')).map(name => fs.readFileSync(path.join(stateDir, 'memory-v2', 'qq-producer', firstRole.id, String(firstRole.epoch), name), 'utf8')).join('');
     assert.ok(allSources.includes('旧角色在切换边界')); assert.ok(allSources.includes(`"capturedEpoch":${firstRole.epoch}`));
     good(await harness.qqMemory.captureSource(source(90))); good(await harness.deliverPromptNow('group:900', '新角色的新鲜输入', {}));
-    const activeSession = harness.state.sessions['group:900'], previousPromptCount = harness.calls.prompts.length;
+    const lastNative = nativeSubmissions.at(-1);
+    await harness.nativeQQ.request({ ...lastNative, action: 'complete', ok: true });
+    // A pre-upgrade generic session must still finish the retirement barrier
+    // before the new Native path can accept a request.
+    const activeSession = 'legacy-before-native', previousPromptCount = harness.calls.prompts.length;
+    harness.state.sessions['group:900'] = activeSession;
+    harness.state.memoryV2Sessions['group:900'] = { characterId: readCurrentCharacter().id };
     const stop = harness.api.stopSessionWork; harness.api.stopSessionWork = async () => { throw new Error('fixture queue cancellation unavailable'); };
     const retirementPending = await harness.deliverPromptNow('group:900', '旧会话未清退不得继续', {}); assert.equal(retirementPending.code, 'MEMORY_SESSION_RETIRE_PENDING'); assert.equal(harness.calls.prompts.length, previousPromptCount);
     const savedState = JSON.parse(JSON.stringify(harness.state)); assert.equal(savedState.memoryV2Retirements[activeSession].pending, true); harness.api.stopSessionWork = stop;
-    restartedHarness = await bridgeHarness({ savedState, config: { ownerQQ: 100, agentPreset: 'qq-safe', dsh: { provider: 'fixture', model: 'fixture', followDefaultModel: false, allowModelFallback: true }, allow: { private: ['200'], groups: ['900'] } }, globals: { readCurrentCharacter, createQQMemoryBridge: options => createQQMemoryBridge({ ...options, stateDir, getRouting: () => ({ ok: true, backend: 'v1' }), getCharacter: readCurrentCharacter, client: createMemoryClient({ stateDir, getCharacter: readCurrentCharacter }), getSessionMemorySafety: async ({ sessionId, preset }) => { const runtime = [harness, restartedHarness].find(item => Object.values(item?.state.sessions ?? {}).includes(sessionId)); const actual = runtime?.calls.created.find((item, index) => sessionId === `fixture-${index + 1}` && item.agentPreset === preset); return fixtureSessionSafety === true && !!actual; } }) } });
+    restartedHarness = await bridgeHarness({ savedState, config: { ownerQQ: 100, agentPreset: 'qq-safe', dsh: { provider: 'fixture', model: 'fixture', followDefaultModel: false, allowModelFallback: true }, allow: { private: ['200'], groups: ['900'] } }, globals: { readCurrentCharacter, createMemoryClient: options => createMemoryClient({ ...options, stateDir, scope: 'qq' }), createQQMemoryBridge: options => createQQMemoryBridge({ ...options, stateDir, getRouting: () => ({ ok: true, backend: 'v1' }), getCharacter: readCurrentCharacter, client: createMemoryClient({ stateDir, scope: 'qq', getCharacter: readCurrentCharacter }), getSessionMemorySafety: async ({ sessionId, preset }) => { const runtime = [harness, restartedHarness].find(item => Object.values(item?.state.sessions ?? {}).includes(sessionId)); const actual = runtime?.calls.created.find((item, index) => sessionId === `fixture-${index + 1}` && item.agentPreset === preset); return fixtureSessionSafety === true && !!actual; } }) } });
     assert.equal(restartedHarness.qqMemory.routing().backend, 'v1'); assert.equal(restartedHarness.state.memoryV2Sessions['group:900'], undefined);
     assert.ok(restartedHarness.calls.cancelled.includes(activeSession)); assert.ok(restartedHarness.calls.archived.includes(activeSession)); assert.equal(restartedHarness.calls.prompts.length, 0); assert.ok(!restartedHarness.calls.follows.includes(activeSession));
     good(await harness.qqMemory.captureSource(source(91))); good(await harness.deliverPromptNow('group:900', 'worker退出前的新鲜输入', {}));
-    const workerSession = harness.state.sessions['group:900'], sendsBeforeWorkerDeath = harness.calls.sent.length, promptsBeforeWorkerDeath = harness.calls.prompts.length;
+    await harness.nativeQQ.request({ ...nativeSubmissions.at(-1), action: 'complete', ok: true });
+    const sendsBeforeWorkerDeath = harness.calls.sent.length, promptsBeforeWorkerDeath = harness.calls.prompts.length;
     await service.close(); await harness.sendToQQ('group:900', 'worker已退出不得发送'); assert.equal(harness.calls.sent.length, sendsBeforeWorkerDeath);
-    assert.equal((await harness.deliverPromptNow('group:900', 'worker已退出不得回退', {})).ok, false); assert.equal(harness.calls.prompts.length, promptsBeforeWorkerDeath); assert.ok(harness.calls.cancelled.includes(workerSession)); assert.ok(harness.calls.archived.includes(workerSession));
+    assert.equal((await harness.deliverPromptNow('group:900', 'worker已退出不得回退', {})).ok, false); assert.equal(harness.calls.prompts.length, promptsBeforeWorkerDeath);
     console.log('PASS real QQ Host/kernel/HTTP: complete inputs, multi-actor group, private separation, actual VM prompt/send gates, revocation retirement and original-epoch/lost-registration recovery, 605 sources, exact model route/unknown/mismatch/fallback/observed drift, default-deny native preset proof (positive proof is fixture-only), creation/generation revocation, pending retirement restart into V1 and worker death');
   } finally { if (restartedHarness) await restartedHarness.close(); if (harness) await harness.close(); api?.close(); host.close(); await new Promise(resolve => server.close(resolve)); await service.close(); }
 }

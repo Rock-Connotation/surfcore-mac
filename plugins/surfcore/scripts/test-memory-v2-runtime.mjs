@@ -9,6 +9,7 @@ import { createMemoryV2Runtime } from '../lib/memory-v2-runtime.mjs';
 import { digest, validatePolicy } from '../../../src/core/memory-v2-contract.js';
 import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
 import { COMPANION_ROUTE } from '../lib/douyin-companion-model.mjs';
+import { createQQMemoryBridge } from '../../../src/core/memory-v2-qq.js';
 
 const root = path.resolve('_backups/memory-v2-runtime', randomUUID());
 fs.mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -38,11 +39,23 @@ const request = async (suffix, body, owner = true) => {
 };
 try {
   const init = await runtime.initialize(); assert.equal(init.ok, true, JSON.stringify(init)); assert.equal(init.backend, 'v1');
+  // Use the production writer and the production QQ factory; a hand-aligned
+  // fixture scope hid the real qq / qq-bridge discovery mismatch.
+  const defaultQq = createQQMemoryBridge({ stateDir: path.join(root, 'state'), getCharacter: () => current, getRouting: () => ({ ok: true, backend: 'v2' }) });
+  const scopeProbe = await defaultQq.captureSource({ key: 'private:3', loginAccountId: '1', actorAccountId: '3', objectId: 'scope-regression', text: 'hello' });
+  assert.notEqual(scopeProbe.code, 'MEMORY_DISCOVERY_INVALID', 'The QQ default must reach the actual Host discovery, even when V1 refuses the source.');
   const state = await request('status'); assert.equal(state.status, 200); assert.equal(state.value.ok, true, JSON.stringify(state));
   assert.equal(state.value.backend, 'v1'); assert.equal(state.value.capabilities.activation, false); assert.equal(state.value.capabilities.migration, false);
   assert.equal(state.value.capabilities.adminResume, true);
   const denied = await request('status', null, false); assert.equal(denied.value.ok, false); assert.ok(denied.value.code && denied.value.hint);
   const conversations = await runtime.approvedConversations(); assert.ok(conversations.length >= 4);
+  const readsBeforeQQ = douyinReads;
+  const qqOnly = (await request('status?channel=qq')).value;
+  assert.equal(qqOnly.ok, true); assert.equal(douyinReads, readsBeforeQQ, 'QQ setup must never wait for unrelated platform identity');
+  assert.equal(qqOnly.approvedConversations.length, 2);
+  assert.ok(qqOnly.approvedConversations.every(row => row.id.startsWith('qq-') && row.replyAccess.approved === false));
+  assert.equal(qqOnly.approvedConversations[0].replyAccess.model, selected.model);
+  assert.equal((await request('status?channel=bili')).value.code, 'MEMORY_REQUEST_INVALID');
   for (const conversation of conversations) for (const scope of conversation.processorScopes) validatePolicy(scope.policy);
   assert.equal(conversations.find(item => item.id === 'qq-group-2').processorScopes[0].policy.processingGrants[0].providerRouteId, deriveMemoryProviderRouteId(selected).providerRouteId);
   assert.equal(JSON.stringify(state.value).includes('processingGrants'), false);
@@ -51,6 +64,11 @@ try {
     const body = { action, payload: { ...payload, payloadDigest: digest(payload), preview: true }, expectedRevision: status.revision,
       operationId: randomUUID(), characterId: current.id, characterEpoch: current.epoch };
     const preview = await request('manage', body); assert.equal(preview.value.ok, true, JSON.stringify(preview));
+    if (action === 'configure_policy' && payload.conversationId.startsWith('qq-')) {
+      assert.equal(preview.value.preview.qqAccessPreview.conversationId, payload.conversationId);
+      assert.equal(preview.value.preview.qqAccessPreview.model, selected.model);
+      assert.equal(preview.value.preview.qqAccessPreview.accountId, '1');
+    }
     if (action === 'configure_policy' && payload.conversationId.startsWith('bili-public-set-')) {
       const candidate = (await runtime.approvedConversations()).find(item => item.id === payload.conversationId);
       assert.deepEqual(preview.value.preview.sourceSetPreview, candidate.sourceSetPreview, 'The final confirmation must bind the same complete source list shown before approval.');
@@ -60,6 +78,21 @@ try {
     return committed.value;
   }
   const localPolicy = conversations.find(item => item.id === 'local-sharing').processorScopes[0].policy.policyId;
+  await manage('configure_policy', { conversationId: 'qq-group-2', processorScope: 'exact-model' });
+  const qqGranted = (await request('status?channel=qq')).value;
+  assert.equal(qqGranted.approvedConversations.find(row => row.id === 'qq-group-2').replyAccess.approved, true);
+  assert.equal(qqGranted.approvedConversations.find(row => row.id === 'qq-private-3').replyAccess.approved, false);
+  selected.model = 'different-model';
+  assert.equal((await request('status?channel=qq')).value.approvedConversations.find(row => row.id === 'qq-group-2').replyAccess.approved, false, 'A model change cannot inherit old processing approval');
+  selected.model = 'fixture-model';
+  const beforeRouteRace = (await request('status?channel=qq')).value;
+  const racePayload = { conversationId: 'qq-private-3', processorScope: 'exact-model' };
+  const raceBody = { action: 'configure_policy', payload: { ...racePayload, payloadDigest: digest(racePayload), preview: true }, expectedRevision: beforeRouteRace.revision, operationId: randomUUID(), characterId: current.id, characterEpoch: current.epoch };
+  selected.model = 'changed-before-preview';
+  const actualPreview = (await request('manage', raceBody)).value;
+  assert.equal(actualPreview.preview.qqAccessPreview.model, 'changed-before-preview', 'Confirmation must display the plan actually previewed, not stale status');
+  selected.model = 'fixture-model'; delete raceBody.payload.preview;
+  assert.equal((await request('manage', raceBody)).value.ok, false, 'A changed preview model cannot be committed under the previous route');
   await manage('configure_policy', { conversationId: 'local-sharing', processorScope: 'exact-model' });
   const configured = (await request('status')).value;
   assert.ok(configured.policies.some(row => row.id === localPolicy), 'Configured policy must be available for revocation before any source ingestion.');

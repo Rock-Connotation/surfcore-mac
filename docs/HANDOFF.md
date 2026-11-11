@@ -1,3 +1,39 @@
+## 2026-11-12 01:49 QQ语音、群@、白名单入口与L2已真实验收
+
+- 最终本地候选tree `3927fa47d90265e5ae6db33310935005efa75e90`（未提交，分支fix/qq-reply-discovery基线748afe6）。常用desktop实装400项一致/0不符，官方SurfCore禁用→启用均applied；五份profile声明文件SHA未变，整App未重启。QQ正式入口重启后PID28234、dshReady=true、failures=[]。
+- 用户在01:46发两条新消息，DSH插件自动处理，无Codex管理唤醒：私聊语音ACK1105838883、群文字ACK1904687227，get_msg实际private/record和group/text，发送方787661104；群正文与Core规范化后完全一致（原始差别为一个空行，Core既有折叠规则）。真实WAV为PCM16/24kHz/单声道/5.423458秒，火山最近预留17:46:32Z与合成对应。用户明确确认“语音能正常播放，群里也回复了”。三笔真实模型调用均app/红豆/epoch8、WorkBuddy DeepSeek，总4190Token、金额未知；无自动重试。
+- 原生DSH已验证QQ白名单卡片显示群1135502130/私聊212当前模型许可已确认，155仍未确认；实际打开155只读预览后取消，页面“没有提交”，Core revision仍4。此前用户同意仅新增群的授权已提交；不扩大其它渠道。QQ预算仍每日50亿Token/cny:null，语音限额原值保留。
+- 重复L2根因：生产者把许可缺失归fault、store忽略dedupeKey每次新UUID。仅准确memory-v2/fault/blocked/MEMORY_POLICY_DENIED归L1并按完整语义持久去重，真实安全故障不降级。400条当前同类历史记录通过正式ack入口确认，保留原事件；新原生设置不再弹L2，最终可见L2/L3=0。未通过给本机伙伴/B站补授权消警。
+- 门禁：audit195/195、协议17；全插件各命令覆盖完成（初次并行Bili120ms夹具失败串行通过；续跑末尾Memory夹具因新增URL全局依赖失败，移除不必要解析后该用例及全部34Memory插件脚本通过）；NativeSDK离线5fakecalls/75faketokens/1voicefakeACK/0network；最终官方离线包消费安装/导入通过；独立源码复核无剩余阻断。语音迟到取消/预留回滚/畸形ACK/账本BUSY/回调失败已钉测试。
+- 回滚只换程序：`~/.dsh/_backups/qq-voice-access-2026-11-11T174009786Z/program-previous`；不恢复旧角色、配置、密钥、消息或预算。原包管理声明仍指旧包，未来重装可覆盖本地候选；发布会话应从最终提交构建正式包。主目录9eb4028及其它树保留，不提交、不改版本、不推送发布。
+- 完整七步、制品/证据与可转发交接块：[case](cases/2026-11-12-qq-native-voice-access.md)。外部证据包`../_surfcore-qq-reply-backups-20261111/FINAL-VOICE-ACCESS.json`、`voice-and-group-real-acceptance.json`、`installed-voice-access.json`、门禁日志。下面均是历史检查点，未验/待发消息等措辞按本段结论更新。
+
+## QQ当前检查点 2026-11-12 00:27：红豆已恢复，待最后新消息
+
+- 当前真实角色已通过正式API恢复为app/红豆/epoch8；原current/index未回退，全部Alpha和已保存来源保留。当前app V2 events=0，尚没有切回红豆之后的新入站。
+- 唯一有效QQ授权为实际发送账号2125387192、magpie / workbuddy/deepseek-v4.1-flash；误选1558596500已撤销。policy是全局精确audience/model域，正式切换没有新增授权或复制Alpha记忆。
+- 新程序tree98b17f0ca87981c20b6e63367f61a79600db1475已安装399项一致、官方SurfCore热重载applied；QQ桥接PID40161已正式重启，dshReady=true、无新QQ失败；typedQQ memory status ready V2。没有整App重启或发布。
+- 同步release的生产契约、测试DSH_HOME隔离、仅角色切换私有ACK均已修复。独立角色安全复核通过；原始请求会话匹配错误与预览超时已在case纠正。
+- 最终audit192/192、协议17、真实SDK离线3 fake calls/45 tokens/1 fakeACK/0network通过。全插件命令在浏览器probe偶发失败处停过，单独UI重跑0退出，后续所有命令及33个Memory插件脚本均通过；原始失败与续跑日志保留。
+- 用户已被请求从2125387192再发一条消息。不要再让用户审批其它会话；下一步追踪当前app8新入站→Native真实模型→QQ ACK，必要时修复新暴露原因。当前仍不宣称真实回复闭环。
+- 桥接状态有些activity为历史Alpha失败，必须看新消息时间+准确key。完整管理status可能被其它渠道身份探测拖慢，QQ typed status/bridge控制状态是独立可用证据；本机伙伴未授权提醒另在，不新增其授权掩盖。
+
+## QQ重要更正：实际新入站来自2125387192
+
+23:54:55与23:31:04活动key均为private:2125387192；之前误认历史1558596500为本次会话，需纠正。现有revision1的唯一155策略已提交，但不覆盖实际发送账号212，故仍拒绝且0来源/0模型。已向用户明确解释错误，准备撤回155/改批212同一精确模型的预览，正在等待明确替换同意；不得擅自扩为两个私聊。
+
+## QQ最新：单私聊授权已实际提交
+
+用户明确同意代确认后，已现读精确模型/角色并即时预览提交。原操作265f8813-7b3d-4545-adbf-3440da5b89df独立回执committed/completed/applied=true；Host revision0→1，policies0→1，只包含已批准私聊1558596500及magpie / workbuddy/deepseek-v4.1-flash。未扩权至群/其他私聊。桥接dshReady=true且读到revision1；等待授权后新入站以完成实际模型/QQ ACK验证，尚不宣称回复恢复。
+
+## QQ审批最新实证
+
+再次点击后原生UI确切返回MEMORY_PREVIEW_REQUIRED，Host仍revision0/policies0。根因已证实为预览失效；停止“代理先预览、聊天等待后用户才点”的重复模式。已准备同一单私聊与精确模型预览，正在等待用户是否明确同意代理即时确认；不擅自扩大授权。桥接Native候选及审批UI补修已安装，实际模型/QQ ACK仍待有效授权和新入站验证。
+
+## 2026-11-11 QQ最新检查点：点击后授权仍未落盘
+
+用户报告已确认并发新消息；真实桥接收到该入站但 MEMORY_POLICY_DENIED，Host revision=0/policies=0。新增审批结果可见性补修：展示预览TTL/过期本地拒绝、错误提示滚入视口、成功后回读策略。补修audit192/192和完整插件门禁通过，已备份实装399项一致（tree e99b186）；当前Host/renderer未重载，新UI尚未激活，不能声称QQ已恢复。原生CUA控制报noWindowsAvailable，已请用户手动打开权限页。未代确认、未模型调用或QQ补发；详见QQ V2案例。
+
 # 交接状态（HANDOFF）
 
 > 给「半天后的我」和接手的人：**现在做到哪、什么没验证、下一步按什么顺序做**。
@@ -66,6 +102,12 @@
   - 推进阶段 B（Memory V2 生产闭环与召回质量提升）与阶段 C（QQ → Mac 网页研究 → 报告回传耐久任务闭环）。
 
 ---
+
+<!-- 以下为历史检查点；以文首最终验收为准。 -->
+## 2026-11-11 QQ V2 不回复修复（历史检查点，后续已验收）
+
+独立树 `../surfcore-qq-reply-fix` / `fix/qq-reply-discovery`，基线748afe6；主目录重构保留。已证实Host写qq scope、QQ工厂却读qq-bridge；且生产Native安全执行未装配，状态提前返回使失败不可见。正式接线NativeOwner/来源账本和一次性QQ回执，保留V2与fail-closed。audit192/192、协议17、新组合及实际SDK/Core隔离闭环、399项清单官方离线安装通过；完整插件exit0、MemoryV2 48/48、最终audit192/192。官方原请求超时后cancelled并核对恢复，再仅原子换SurfCore程序，399项一致、4保护文件/其他插件声明不变。用户已重启；孤儿旧桥接经精确归属核验单进程退出，Host自动起新桥接46440，dshReady/OneBot在线true、发现错误消失。原生记忆页已打开当前私聊授权预览，待用户确认/明确授权及新消息；真实QQ未验；实时管理状态4候选/policies=0，须用户界面批准，禁止静默新增授权。完整七步与发布块见[case](cases/2026-11-11-qq-v2-native-reply.md)。不发布、不更改用户配置或额度。
+
 
 ## 阶段验收与合入：2026-11-11 Memory V2 全面工程实施、独立验收与 dev 合并完成
 

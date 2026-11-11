@@ -17,7 +17,7 @@ const routeId = route => deriveMemoryProviderRouteId(route).providerRouteId;
 export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, currentDshUrl,
   getManagementAuthorization = () => false, getQQState = () => null, getQQRoute = () => null,
   getPlatformState = () => null, retireForLifecycle, lifecycleInventory, onControlChanged = () => {},
-  onBlocked = () => null, organizer, migrator, now = Date.now } = {}) {
+  onBlocked = () => null, onQQReply, organizer, migrator, now = Date.now } = {}) {
   const adminAuthorization = Symbol('memory settings owner'), producerAuthorization = Symbol('official QQ producer');
   let initialized = false, closed = false, initialization, diagnostic = null;
   const role = () => {
@@ -107,28 +107,32 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
   const host = createMemoryHost({ memoryService: service, getCharacter, resolveIdentity, now, handleTtlMs: 300000,
     getProducerReplayAuthorization: ({ channel }) => channel === 'qq' ? producerAuthorization : null });
   const adapters = Object.fromEntries(['local', 'douyin', 'bili', 'qq'].map(channel => [channel, host.createAdapter({ channel, principal: { source: 'surfcore-host' }, canBindInput: true, ...(channel === 'qq' ? { canSubmitSourceFacts: true } : {}) })]));
-  const api = createMemoryApiService({ host, stateDir, currentDshUrl,
+  const api = createMemoryApiService({ host, stateDir, currentDshUrl, onQQReply,
     scopes: [{ id: 'qq', channel: 'qq', principal: { source: 'surfcore-qq-bridge' }, canBindInput: true, canSubmitSourceFacts: true }] });
   const adminRunner = Object.freeze({
     preview: ({ context, action, payload, expectedRevision }) => service.host.admin?.preview(context, { action, payload }, expectedRevision) ?? failure('MEMORY_ADMIN_UNSUPPORTED', '角色记忆管理模块尚未就绪。'),
     commit: ({ context, action, payload, expectedRevision, previewDigest, operationId }) => service.host.admin?.commit(context, { action, payload, previewDigest }, expectedRevision, operationId) ?? failure('MEMORY_ADMIN_UNSUPPORTED', '角色记忆管理模块尚未就绪。'),
     receipt: ({ context, operationId }) => service.getMemoryReceipt(context, operationId),
   });
-  async function approvedConversations() {
+  async function approvedConversations({ channel } = {}) {
     const before = role(), result = [];
     const add = (id, label, channel, conversationKey, requester, route, extraAudiences = [], sourceSetPreview) => {
       const providerRouteId = routeId(route ?? {});
       if (!providerRouteId) return;
       const policy = { policyId: `policy-${digest({ characterId: before.id, id, conversationKey, requester, providerRouteId, extraAudiences }).slice(0, 32)}`, approved: true,
         audiences: [[channel, conversationKey, requester], ...extraAudiences], processingGrants: [{ grantId: 'approved-route', providerRouteId }] };
-      result.push({ id, label, ...(sourceSetPreview ? { sourceSetPreview } : {}), processorScopes: [{ id: 'exact-model', label: sourceSetPreview ? '仅此来源集合与所示精确模型' : '仅此会话与所示精确模型', policy }] });
+      result.push({ id, label, ...(channel === 'qq' ? { replyAccess: { provider: route.provider, model: route.model, accountId: conversationKey.split(':')[1] } } : {}), ...(sourceSetPreview ? { sourceSetPreview } : {}), processorScopes: [{ id: 'exact-model', label: sourceSetPreview ? '仅此来源集合与所示精确模型' : '仅此会话与所示精确模型', policy }] });
     };
     const local = `local:companion-sharing:${before.id}`;
-    add('local-sharing', '本机伙伴对话', 'local', local, 'local:owner', COMPANION_ROUTE);
+    if (channel !== 'qq') add('local-sharing', '本机伙伴对话', 'local', local, 'local:owner', COMPANION_ROUTE);
     const state = await qqState(), selected = await getQQRoute(state);
     if (state) {
       for (const id of state.allowedGroups) add(`qq-group-${id}`, `QQ群 ${id}`, 'qq', `qq:${state.accountId}:group:${id}`, '*', selected);
       for (const id of state.allowedPrivates) add(`qq-private-${id}`, `QQ私聊 ${id}`, 'qq', `qq:${state.accountId}:private:${id}`, `qq:${id}`, selected);
+    }
+    if (channel === 'qq') {
+      if (!sameRole(before, role())) throw Object.assign(new Error('角色已变化。'), failure('CHARACTER_EPOCH_STALE', '角色已变化。'));
+      return result;
     }
     const bili = await biliState();
     if (bili) {
@@ -150,13 +154,20 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
   }
   const manager = createMemoryManagementController({ memoryService: service, getCharacter, now,
     getAuthorization: req => getManagementAuthorization(req) === true ? adminAuthorization : null,
-    getRuntimeStatus: async ({ context }) => {
+    getRuntimeStatus: async ({ context, channel }) => {
       const route = checked(routing());
       const current = service.host.admin ? checked(await service.host.admin.status(context)) : {};
+      const conversations = await approvedConversations({ channel });
+      for (const row of conversations) if (row.replyAccess) {
+        const desired = row.processorScopes[0].policy, audience = desired.audiences[0], providerRouteId = desired.processingGrants[0].providerRouteId;
+        const account = `qq:${row.replyAccess.accountId}`;
+        const resolved = await service.host.resolveAudience({ channel: 'qq', conversationKey: audience[1], sourceAccountKey: audience[2] === '*' ? account : audience[2], requesterAccountKey: audience[2] === '*' ? account : audience[2], providerRouteId, purpose: 'conversation' });
+        row.replyAccess = { ...row.replyAccess, approved: resolved.ok === true, ...(resolved.ok ? { policyId: resolved.audiencePolicyId } : { code: resolved.code || 'MEMORY_POLICY_DENIED' }) };
+      }
       return { ...current, characterId: context.characterId, backend: route.backend,
         policies: (current.policies ?? []).map(row => ({ id: row.policyId, label: row.approved ? '已批准' : '已撤销' })),
         backups: (current.backups ?? []).map(row => ({ id: row.backupId, verified: row.state === 'verified' })),
-        approvedConversations: await approvedConversations() };
+        approvedConversations: conversations };
     },
     inspectMemory: async ({ context, ...options }) => {
       if (!service.host.admin) return failure('MEMORY_INSPECTION_UNSUPPORTED', '角色来源检视尚未就绪。');
@@ -193,7 +204,7 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
   function channelMemory(channel) {
     const adapter = adapters[channel];
     if (!adapter) throw new TypeError('Unsupported private memory channel.');
-    return Object.freeze({ adapter, getRouting: routing, onBlocked });
+    return Object.freeze({ adapter, getRouting: routing, onBlocked: result => onBlocked({ ...result, channel }) });
   }
   function modelRequest({ jobId, step, characterId, characterEpoch, providerRouteId, model, system, prompt, images = [] }) {
     const expected = routeId(COMPANION_ROUTE);

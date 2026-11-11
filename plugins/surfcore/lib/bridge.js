@@ -131,6 +131,7 @@ export async function status() {
  */
 export function mapStatusPayload(data = {}, { port = consolePort(), pid } = {}) {
   const payload = data ?? {};
+  const memoryFailure = payload.memoryV2?.ok === false ? payload.memoryV2 : payload.memoryV2?.failures?.find(item => item?.ok === false);
   return {
     ok: true,
     running: true,
@@ -142,6 +143,9 @@ export function mapStatusPayload(data = {}, { port = consolePort(), pid } = {}) 
     // （见 lib/index.js 的 allReady）。以前这里漏了这个字段，于是判据恒为 undefined，
     // 弹窗永远等满 180 秒再误报「DSH 还没连上」。
     dshReady: payload.dshReady === true,
+    memoryV2: payload.memoryV2 ?? null,
+    replyReady: payload.dshReady === true && payload.snowluma?.connected === true && payload.snowluma?.accountOnline === true && !memoryFailure,
+    replyFailure: memoryFailure ? { code: memoryFailure.code, error: /^VOICE_/.test(memoryFailure.code) ? 'QQ 语音回复未完成。' : 'QQ 回复未完成。', hint: memoryFailure.code === 'MEMORY_DISCOVERY_INVALID' ? '重启 QQ 桥接以加载匹配的宿主接口；若仍失败，检查当前角色和接口状态。' : /^VOICE_/.test(memoryFailure.code) ? memoryFailure.hint || '在语音页检查服务、触发规则和额度；先核对原回执，不要重复发送。' : '打开 QQ 页的白名单回复设置，核对当前会话、账号与精确模型处理许可，再发送一条新消息。' } : null,
     mode: payload.mode ?? payload.currentMode ?? null,
     dsh: payload.dsh ?? null,
     snowluma: payload.snowluma ?? null,

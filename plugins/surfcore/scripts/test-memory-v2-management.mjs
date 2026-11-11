@@ -264,7 +264,7 @@ try {
   });
   await test('backup-real-core-preview-digest-private-cache-and-receipt', async () => {
     const body = await f.body('backup'); bad(await f.commit(body), 'MEMORY_PREVIEW_REQUIRED'); const first = good(await f.preview(body)); assert.ok(first.preview && !first.preview.previewDigest); assert.equal(first.payloadDigest, digest({}));
-    assert.deepEqual(good(await f.preview(body)), first); const done = good(await f.commit(body)); assert.ok(done.backupId); f.runtime.backups.push({ id: done.backupId, label: '真实备份', verified: true }); f.savedBackup = done.backupId;
+    assert.equal(first.expiresAt, f.now + 120000); assert.deepEqual(good(await f.preview(body)), first); const done = good(await f.commit(body)); assert.ok(done.backupId); f.runtime.backups.push({ id: done.backupId, label: '真实备份', verified: true }); f.savedBackup = done.backupId;
     good((await f.request(`/receipt?operationId=${body.operationId}`)).value);
     const unresolved = bad((await f.request('/receipt?operationId=missing-original')).value, 'MEMORY_RECEIPT_UNRESOLVED'); assert.equal(unresolved.retry, 'query_receipt'); assert.equal(unresolved.operationId, 'missing-original');
   });

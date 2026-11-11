@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { canonical, digest, validatePolicy } from '../../../src/core/memory-v2-contract.js';
 import { isLoopbackReq, json } from './http-guard.js';
 import { deriveBiliV2PublicSourceSet } from './bili-v2-public-source-set.mjs';
+import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
 
 const PREFIX = '/dsh-surfcore/api/memory-v2';
 const PREVIEWS = { preview_backup: 'backup', preview_restore: 'restore', preview_delete: 'request_delete', preview_migration: 'migrate' };
@@ -72,6 +73,15 @@ function sourceSetPreview(candidate, role) {
   return { id: set.id, characterId: value.characterId, characterEpoch: value.characterEpoch, accountMid: value.accountMid, providerRouteId: value.providerRouteId,
     provider: value.provider, model: value.model, selectors: set.selectors, outputTarget: set.outputTarget };
 }
+function qqAccessPreview(candidate, role) {
+  if (!/^qq-(group|private)-[1-9][0-9]*$/.test(candidate?.id ?? '')) return;
+  const access = candidate.replyAccess, policy = candidate.processorScopes?.[0]?.policy;
+  ensure(plain(access) && label(access.provider) && label(access.model) && /^[1-9][0-9]{0,19}$/.test(access.accountId), 'MEMORY_POLICY_REQUIRED');
+  const [, kind, id] = candidate.id.split('-'), conversationKey = `qq:${access.accountId}:${kind}:${id}`;
+  const route = deriveMemoryProviderRouteId(access);
+  ensure(route.ok && policy?.approved === true && policy.audiences?.length === 1 && policy.audiences[0][0] === 'qq' && policy.audiences[0][1] === conversationKey && policy.audiences[0][2] === (kind === 'group' ? '*' : `qq:${id}`) && policy.processingGrants?.length === 1 && policy.processingGrants[0].providerRouteId === route.providerRouteId, 'MEMORY_POLICY_REQUIRED');
+  return { conversationId: candidate.id, conversationKey, accountId: access.accountId, provider: access.provider, model: access.model, characterId: role.id, characterEpoch: role.epoch };
+}
 
 export function createMemoryManagementController({ memoryService, getCharacter, getAuthorization = () => null, getRuntimeStatus = () => ({}), inspectMemory, organizer, migrator, identityManager, corrector, hotManager = null, adminResumer = null, onControlChanged = () => {}, now = Date.now, previewTtlMs = 120000 } = {}) {
   if (typeof memoryService?.host?.captureAdminContext !== 'function' || typeof getCharacter !== 'function' || typeof getAuthorization !== 'function' || typeof getRuntimeStatus !== 'function' || typeof onControlChanged !== 'function' || typeof now !== 'function' || !Number.isSafeInteger(previewTtlMs) || previewTtlMs < 1 || previewTtlMs > 300000) throw new TypeError('Invalid management Host dependencies.');
@@ -86,9 +96,9 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
   async function capture(role, authorization) {
     return checked(await wait(role, memoryService.host.captureAdminContext({ channel: 'local', conversationKey: 'local:memory-management', sourceAccountKey: 'local:owner', requesterAccountKey: 'local:owner', audiencePolicyId: 'local:management', providerRouteId: 'local:management', processingGrantId: 'local:management' }, authorization))).context;
   }
-  async function snapshot(role, ctx) {
+  async function snapshot(role, ctx, channel) {
     const core = checked(await wait(role, memoryService.getStatus()));
-    const runtime = await wait(role, getRuntimeStatus({ context: ctx }));
+    const runtime = await wait(role, getRuntimeStatus({ context: ctx, ...(channel ? { channel } : {}) }));
     ensure(plain(runtime) && (runtime.characterId === undefined || runtime.characterId === role.id), 'MEMORY_RUNTIME_SCOPE_INVALID');
     const scoped = { ...runtime };
     for (const key of ['backups', 'policies', 'approvedConversations', 'bindings']) scoped[key] = list(runtime[key]).filter(row => row.characterId === undefined || row.characterId === role.id);
@@ -107,7 +117,9 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
       operations: list(runtime.operations).filter(row => row.characterId === role.id).slice(0, 100).map(row => ({ ...phases(row), ...(token(row.action) ? { action: row.action } : {}) })),
       approvedConversations: safeRows(runtime.approvedConversations, ['id', 'label']).map(row => {
         const candidate = runtime.approvedConversations.find(item => item.id === row.id), preview = sourceSetPreview(candidate, role);
-        return { ...row, ...(preview ? { sourceSetPreview: preview } : {}), processorScopes: list(candidate?.processorScopes).filter(scope => plain(scope) && stable(scope.id)).slice(0, 32).map(scope => ({ id: scope.id, ...(label(scope.label) ? { label: scope.label } : {}) })) };
+        const access = candidate?.replyAccess;
+        const replyAccess = plain(access) && typeof access.approved === 'boolean' && label(access.provider) && label(access.model) && /^[1-9][0-9]{0,19}$/.test(access.accountId) ? { approved: access.approved, provider: access.provider, model: access.model, accountId: access.accountId, ...(stable(access.policyId) ? { policyId: access.policyId } : {}), ...(token(access.code) ? { code: access.code } : {}) } : undefined;
+        return { ...row, ...(replyAccess ? { replyAccess } : {}), ...(preview ? { sourceSetPreview: preview } : {}), processorScopes: list(candidate?.processorScopes).filter(scope => plain(scope) && stable(scope.id)).slice(0, 32).map(scope => ({ id: scope.id, ...(label(scope.label) ? { label: scope.label } : {}) })) };
       }),
       budget: pickNumbers(runtime.budget, ['settled', 'reserved', 'unknownHolds', 'cost']),
     };
@@ -157,7 +169,8 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
       const candidate = list(runtime.approvedConversations).find(row => row.id === payload.conversationId);
       const scope = list(candidate?.processorScopes).find(row => row.id === payload.processorScope), preview = sourceSetPreview(candidate, role);
       ensure(scope?.policy, 'MEMORY_POLICY_REQUIRED', '从 Host 已批准会话及真实处理授权中选择；客户端不能填写授权字段。');
-      return { kind: 'control', request: { type: 'configure_policy', policy: validatePolicy(scope.policy) }, ...(preview ? { sourceSetPreview: preview } : {}) };
+      const qqPreview = qqAccessPreview(candidate, role);
+      return { kind: 'control', request: { type: 'configure_policy', policy: validatePolicy(scope.policy) }, ...(preview ? { sourceSetPreview: preview } : {}), ...(qqPreview ? { qqAccessPreview: qqPreview } : {}) };
     }
     if (action === 'revoke_policy') { ensure(list(runtime.policies).some(row => row.id === payload.policyId), 'MEMORY_POLICY_REQUIRED'); return { kind: 'control', request: { type: 'revoke_policy', policyId: payload.policyId } }; }
     if (action === 'continue_delete') {
@@ -180,6 +193,7 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
     if (plan.request.roots) result.roots = plan.request.roots;
     if (plan.request.backupId) result.backupId = plan.request.backupId;
     if (plan.sourceSetPreview) result.sourceSetPreview = plan.sourceSetPreview;
+    if (plan.qqAccessPreview) result.qqAccessPreview = plan.qqAccessPreview;
     if (corePreview?.preservePostBackupEvents === true) result.postBackupSources = 'preserved';
     if (corePreview?.restoreControls === false) result.currentControls = 'preserved';
     if (corePreview?.restoreQuota === false) result.budget = 'not-restored';
@@ -213,7 +227,7 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
   async function management(role, ctx, body) {
     const parsed = bodyShape(body), { action, payload, isPreview } = parsed;
     guard(role); ensure(body.characterId === role.id && body.characterEpoch === role.epoch, 'CHARACTER_EPOCH_STALE');
-    const { core, runtime } = await snapshot(role, ctx);
+    const { core, runtime } = await snapshot(role, ctx, action === 'configure_policy' && /^qq-(group|private)-/.test(payload.conversationId) ? 'qq' : undefined);
     const requestBinding = { operationId: body.operationId, action, payloadDigest: digest(payload), expectedRevision: body.expectedRevision, characterId: role.id, characterEpoch: role.epoch };
     if (!isPreview) {
       let previous = await query(role, ctx, body.operationId);
@@ -231,7 +245,7 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
     if (old) ensure(old.action === action && old.actualDigest === actualDigest && canonical(old.payload) === canonical(payload), 'MEMORY_OPERATION_CONFLICT');
     if (old) ensure(canonical(old.cut) === canonical(cut), 'MEMORY_PREVIEW_STALE');
     if (isPreview) {
-      if (old) return { ok: true, revision: body.expectedRevision, payloadDigest: actualDigest, preview: old.preview };
+      if (old) return { ok: true, revision: body.expectedRevision, payloadDigest: actualDigest, preview: old.preview, expiresAt: old.expiresAt };
       ensure(previews.size + planning.size < 128, 'MEMORY_PREVIEW_LIMIT');
       const planningKey = canonical({ action, payload, cut });
       if (planning.has(body.operationId)) { ensure(planning.get(body.operationId) === planningKey, 'MEMORY_OPERATION_CONFLICT'); throw failure('MEMORY_PREVIEW_BUSY'); }
@@ -246,8 +260,9 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
         const after = checked(await wait(role, memoryService.getStatus()));
         ensure(after.revision === core.revision && after.storeGeneration === core.storeGeneration, 'MEMORY_PREVIEW_STALE');
         const visible = cleanPreview(planned, preview.preview);
-        previews.set(body.operationId, { cut, action, payload, actualDigest, planned, coreDigest: preview.previewDigest, preview: visible, expiresAt: now() + previewTtlMs });
-        return { ok: true, revision: body.expectedRevision, payloadDigest: actualDigest, preview: visible };
+        const expiresAt = now() + previewTtlMs;
+        previews.set(body.operationId, { cut, action, payload, actualDigest, planned, coreDigest: preview.previewDigest, preview: visible, expiresAt });
+        return { ok: true, revision: body.expectedRevision, payloadDigest: actualDigest, preview: visible, expiresAt };
       } finally { planning.delete(body.operationId); }
     }
     ensure(old && old.expiresAt > now(), 'MEMORY_PREVIEW_REQUIRED', '预览已失效或服务已重启；重新预览并明确确认，不会自动执行。');
@@ -350,9 +365,10 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
       if (authorization?.then) { Promise.resolve(authorization).catch(() => {}); throw failure('MEMORY_ADMIN_REQUIRED'); }
       ensure(authorization !== null && authorization !== undefined && typeof authorization !== 'boolean', 'MEMORY_ADMIN_REQUIRED');
       role = native();
-      const route = url.pathname.slice(PREFIX.length), allowedQuery = route === '/search' ? ['q', 'limit'] : route === '/receipt' ? ['operationId'] : [];
+      const route = url.pathname.slice(PREFIX.length), allowedQuery = route === '/search' ? ['q', 'limit'] : route === '/receipt' ? ['operationId'] : route === '/status' ? ['channel'] : [];
       ensure([...url.searchParams.keys()].every(key => allowedQuery.includes(key)) && [...url.searchParams.keys()].every(key => url.searchParams.getAll(key).length === 1), 'MEMORY_FIELD_FORBIDDEN');
-      ensure(req.method === 'GET' && ['/status', '/search', '/receipt', '/panel-client'].includes(route) || req.method === 'POST' && ['/manage', '/admin-resume'].includes(route), 'MEMORY_ROUTE_INVALID');
+      ensure(!url.searchParams.has('channel') || url.searchParams.get('channel') === 'qq', 'MEMORY_REQUEST_INVALID');
+      ensure(req.method === 'GET' && ['/status', '/search', '/receipt', '/panel-client', '/qq-access-client'].includes(route) || req.method === 'POST' && ['/manage', '/admin-resume'].includes(route), 'MEMORY_ROUTE_INVALID');
       let body;
       if (req.method === 'POST') {
         ensure(/^application\/json(?:\s*;|$)/i.test(req.headers?.['content-type'] || ''), 'MEMORY_JSON_REQUIRED');
@@ -364,8 +380,8 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
       }
       if (route === '/receipt') { operationId = url.searchParams.get('operationId'); ensure(stable(operationId), 'MEMORY_REQUEST_INVALID'); receiptQuery = true; }
       const ctx = await capture(role, authorization);
-      if (route === '/panel-client') {
-        const module = await wait(role, fs.promises.readFile(new URL('./memory-v2-panel.mjs', import.meta.url), 'utf8'));
+      if (route === '/panel-client' || route === '/qq-access-client') {
+        const module = await wait(role, fs.promises.readFile(new URL(route === '/panel-client' ? './memory-v2-panel.mjs' : './qq-access-panel.mjs', import.meta.url), 'utf8'));
         guard(role); res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(module); return;
       }
       if (route === '/manage' || resumeRequest) {
@@ -379,7 +395,7 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
         send(200, result); return;
       }
       let result;
-      if (route === '/status') { const snap = await snapshot(role, ctx); result = status(role, snap.core, snap.runtime); }
+      if (route === '/status') { const snap = await snapshot(role, ctx, url.searchParams.get('channel')); result = status(role, snap.core, snap.runtime); }
       if (route === '/receipt') {
         const id = url.searchParams.get('operationId'); ensure(stable(id), 'MEMORY_REQUEST_INVALID'); operationId = id; receiptQuery = true;
         let receipt = await query(role, ctx, id);

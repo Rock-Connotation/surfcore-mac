@@ -1,3 +1,5 @@
+import { createMemoryClient } from '../src/core/memory-v2-client.js';
+import { createNativeQQChannel } from '../src/core/qq-native-channel.js';
 import { deriveMemoryProviderRouteId } from '../src/core/memory-v2-routing.js';
 import { createQQMemoryBridge } from '../src/core/memory-v2-qq.js';
 import { buildCharacterContext } from '../src/core/context.js';
@@ -127,7 +129,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   // 所以这里给 VM 注入一个记录型 fetch：既不让测试真的发 QQ 消息，又能断言发出的段内容。
   const fakeFetch = async (url, init = {}) => {
     const body = (() => { try { return JSON.parse(init.body ?? '{}'); } catch { return init.body; } })();
-    calls.http.push({ url: String(url), body });
+    calls.http.push({ url: String(url), body, signal: init.signal });
     const action = String(url).split('/').pop();
     // 本地 TTS（voxd）：返回一个最小合法 wav，别让测试去连真实服务。
     if (String(url).includes('/v1/speak/file')) {
@@ -216,7 +218,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
-    qqMemory, retireMemoryV2Session, memoryV2Failures, memoryV2Route, validateMemoryV2ProviderRoute, beginMemoryV2Send, finishMemoryV2Send, setSelfUserId(value) { selfUserId = Number(value); },
+    qqMemory, nativeQQ, retireMemoryV2Session, memoryV2Failures, memoryV2Route, validateMemoryV2ProviderRoute, beginMemoryV2Send, finishMemoryV2Send, setSelfUserId(value) { selfUserId = Number(value); },
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, deliverPromptNow, drainPromptQueue,
     pumpMux, pending, registerPending, handlePendingAnswer,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
@@ -251,7 +253,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // 对话收尾判断：测试可直接调内部函数（不连真 QQ）。
     closeConversationV2, assessClosureV2, closureConfigV2, closureSuppressesWake, noteClosureReopenV2,
     voiceCfg, voiceTriggerBlock, voiceMentionAt, voiceOwnerAt, voiceLastSentAt, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText, readConfigObject, atomicWriteJson,
-    voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
+    voiceBudgetCheck, sendVoiceTransport, sendVoiceV2, sendVoiceForV2, sendNativeQQReply, getNativeQQCapabilities, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
     taskLedger, taskHarness,
     setMode(value) { currentMode = value; },
     getModelStatus() { return modelStatusState; },
@@ -297,7 +299,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...dshHealth,
     synthesizeToFile: synthesizeImpl, createVoiceManagement: voiceManagementImpl, encodeVoiceRecord, readVolcKey, startVoxdCloud, voiceSendBudget, commitQqConfigPatch, transactQqConfig, persistSnowLumaEndpoint, persistToken, voiceGroupPolicies, voiceMentionBlock,
     ...tokenBudget,
-    createQQMemoryBridge, buildCharacterContext, deriveMemoryProviderRouteId,
+    createQQMemoryBridge, createMemoryClient, createNativeQQChannel, buildCharacterContext, deriveMemoryProviderRouteId,
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
