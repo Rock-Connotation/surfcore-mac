@@ -10,7 +10,17 @@ import { loadFixture, validateFixture, partitionFixture, measureCandidates, summ
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PROVIDER = 'fixture-local:uninvoked-provider';
 const GRANT = 'fixture-local-processing';
-const V1_PATH = path.join(ROOT, '_backups/memory-v2-evaluation/v1-L3VBpm/report.json');
+function resolveV1ReportPath() {
+  const preferred = path.join(ROOT, '_backups/memory-v2-evaluation/v1-L3VBpm/report.json');
+  if (fs.existsSync(preferred)) return preferred;
+  const parent = path.join(ROOT, '_backups/memory-v2-evaluation');
+  if (fs.existsSync(parent)) {
+    const candidates = fs.readdirSync(parent).filter(name => name.startsWith('v1-')).map(name => path.join(parent, name, 'report.json')).filter(file => fs.existsSync(file));
+    if (candidates.length > 0) return candidates[candidates.length - 1];
+  }
+  return preferred;
+}
+const V1_PATH = resolveV1ReportPath();
 const KERNEL_FILES = ['contract', 'store', 'worker', 'service'].map((name) => `src/core/memory-v2-${name}.js`);
 const good = (value) => { assert.equal(value?.ok, true, JSON.stringify(value)); return value; };
 const tuple = (facts) => [facts.channel, facts.conversationKey, facts.requesterAccountKey];
