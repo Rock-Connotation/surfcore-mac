@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.8.8",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-11T09:15:03.906Z",
+  "generatedAt": "2026-11-11T10:09:06.240Z",
   "files": {
     ".gitattributes": "65b1023623fb87849b0d7e7a39141bd9d2662d98dcd55fefc9e8bf1683d2d934",
     ".gitignore": "b151eb21357da07aea0a56e986fe5906bd34f75148e39a03bc8eb9e9fa45821c",
@@ -221,6 +221,7 @@
     "docs/cases/2026-11-11-memory-bili-official-public-read.md": "f15ba4c09a87fc78fe89ed0a22af8480fe5263577412556a985e44a5fd869d87",
     "docs/cases/2026-11-11-memory-v2-bili-manual-round.md": "8f71437e9dbab1a6f2e50a0e6bb87bbcd7154b7f776fc8b663c7bd92ed0e9aa8",
     "docs/cases/2026-11-11-memory-v2-bili-native-recall.md": "91b7b2b8930d2a3fab5971ae2bcf2fe1d3be564424a7b8b81c0ef334d1b8d18d",
+    "docs/cases/2026-11-11-memory-v2-cutover-app.md": "f47bd826f17032c5bb7b10d4bc5a09898eaa7b9831657cda19f4d0829e91da8b",
     "docs/cases/2026-11-11-memory-v2-legacy-registry.md": "821e72094b1abe1571cec9af7f41d5304697aa086d85289b385c7504a8ed71fd",
     "docs/cases/2026-11-11-memory-v2-migration-preview.md": "6e9412f46893ac7a1776db313a33f91f6e862af329864890e98fb73ead9c388d",
     "docs/cases/2026-11-11-memory-v2-native-retirement-ack.md": "eb37cbf0a4667dafed32f0d0798dac813e3ffc80496b9e7451ba129cd568ac6f",
