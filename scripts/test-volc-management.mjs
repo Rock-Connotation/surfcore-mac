@@ -60,7 +60,7 @@ test('火山显式启用合成并单独设置月上限，不打开发送开关',
   assert.equal(requests, 0);
   const quota = await svc.dispatch(post('/volc-config', { monthlyQuota: 5000 }));
   assert.equal(quota.data.monthlyLimit, 5000);
-  const invalid = await svc.dispatch(post('/volc-config', { monthlyQuota: 100001 }));
+  const invalid = await svc.dispatch(post('/volc-config', { monthlyQuota: 900001 }));
   assert.equal(invalid.data.code, 'VOICE_VOLC_QUOTA_INVALID'); assert.ok(invalid.data.hint);
   const read = await svc.dispatch({ pathname: '/volc-config' }); assert.equal(read.data.monthlyLimit, 5000);
   const raised = await svc.dispatch(post('/volc-config', { monthlyQuota: 9000 })); assert.equal(raised.data.monthlyLimit, 7000);

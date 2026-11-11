@@ -4910,7 +4910,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       };
       const saveQuota = async () => {
         const value = Number(quota);
-        if (!Number.isSafeInteger(value) || value < 1 || value > 100000) { setMessage("月上限需为1至100000之间的整数。"); return; }
+        if (!Number.isSafeInteger(value) || value < 1 || value > 900000) { setMessage("月上限需为1至900000之间的整数。"); return; }
         setBusy(true);
         try {
           const result = await api("/voice/volc-config", { method: "POST", body: { monthlyQuota: value } });
@@ -4930,7 +4930,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h(Btn, { kind: "qbw-btn2", disabled: busy, onClick: () => save("voxd") }, "使用原云端服务")),
         h("div", { style: { display: "flex", gap: "8px", marginTop: "8px", alignItems: "center", flexWrap: "wrap" } },
           h("label", { htmlFor: "volc-month-limit" }, "本机 UTC 月上限（字）"),
-          h("input", { id: "volc-month-limit", type: "number", min: 1, max: 100000, step: 1, value: quota, onChange: e => setQuota(e.target.value), style: { width: "110px" } }),
+          h("input", { id: "volc-month-limit", type: "number", min: 1, max: 900000, step: 1, value: quota, onChange: e => setQuota(e.target.value), style: { width: "110px" } }),
           h(Btn, { kind: "qbw-btn2", disabled: busy || !cfg, onClick: saveQuota }, "保存月上限"),
           cfg ? h("span", null, `当前生效：${cfg.monthlyLimit} 字`) : null),
         message ? h("div", { role: "status", style: { marginTop: "8px", fontSize: "12px" } }, message) : null);
@@ -5042,6 +5042,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [ttsCheck, setTtsCheck] = useState(null);
       const [ttsChecking, setTtsChecking] = useState(false);
       const [rules, setRules] = useState(null);
+      const [rulesSaving, setRulesSaving] = useState(false);
       const rulesBaseRef = useRef(null), rulesDraftRef = useRef(null);
       rulesDraftRef.current = rules;
       const [err, setErr] = useState("");
@@ -5278,14 +5279,33 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
 
       const fmt = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round(b / 1e6) + " MB");
       const saveRules = async () => {
-        const submitted = rules;
+        if (rulesSaving) return;
+        setRulesSaving(true);
+        const draft = rules, base = rulesBaseRef.current;
         try {
-          const result = await api("/voice/rules", { method: "POST", body: { ...submitted, baseStamp: submitted.configStamp } });
-          rulesBaseRef.current = { ...submitted, configStamp: result.afterStamp };
-          setRules(prev => prev ? { ...prev, configStamp: result.afterStamp } : prev);
+          const latest = await api("/voice/rules");
+          let submitted;
+          try {
+            submitted = planVoiceRebase({ base, draft, remote: latest, baseStamp: base?.configStamp,
+              beforeStamp: base?.configStamp, afterStamp: latest.configStamp, remoteStamp: latest.configStamp }).draft;
+          } catch {
+            throw Object.assign(new Error("语音规则与未保存草稿发生冲突。"), { code: "CONFIG_STALE", hint: "保留草稿，重新读取并核对冲突字段后再保存。" });
+          }
+          const result = await api("/voice/rules", { method: "POST", body: { ...submitted, baseStamp: latest.configStamp } });
+          const savedRules = { ...submitted, configStamp: result.afterStamp };
+          rulesBaseRef.current = savedRules;
+          setRules(prev => {
+            if (!prev) return prev;
+            const next = { ...savedRules };
+            for (const key of Object.keys(prev)) {
+              if (key !== "configStamp" && JSON.stringify(prev[key]) !== JSON.stringify(draft[key])) next[key] = prev[key];
+            }
+            return next;
+          });
           const synced = onVoiceConfigSaved ? await onVoiceConfigSaved(result) : { ok: false };
           toast(synced.ok ? "✓ 触发规则已保存" : "规则已保存，但主设置草稿未能安全同步；请先复制草稿再重新读取。");
         } catch (e) { toast("✗ " + voiceError(e)); }
+        finally { setRulesSaving(false); }
       };
 
       const card = (p) => h("div", {
@@ -5605,9 +5625,23 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("label", { style: { display: "flex", gap: "6px", alignItems: "center", marginTop: "8px", fontSize: "13px" } },
             h("input", { type: "checkbox", checked: !!rules.aiEnabled, onChange: (e) => setRules({ ...rules, aiEnabled: e.target.checked }) }),
             "允许 AI 主动发语音（默认关；关着只有你手动试发才出声）"),
-          h("div", { style: { marginTop: "8px" } }, h(Btn, { onClick: saveRules }, "保存触发规则")),
+          h("div", { style: { marginTop: "16px" } },
+            h("strong", null, "分群语音规则"),
+            h("p", { style: { fontSize: "12px", lineHeight: "1.7", margin: "6px 0 10px" } },
+              "未配置的群沿用上方触发规则。日额度 0 表示该群不额外限额；所有会话仍共用每天 500 条成功发送及火山每月字符额度。"),
+            ...(rules.groupRules || []).map((rule, index) => {
+              const change = patch => setRules({ ...rules, groupRules: rules.groupRules.map((item, i) => i === index ? { ...item, ...patch } : item) });
+              return h("div", { key: index, style: { display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap", marginBottom: "10px", fontSize: "12px" } },
+                h("label", null, "群号", h("input", { "aria-label": "语音规则群号 " + (index + 1), inputMode: "numeric", value: rule.groupId, onChange: e => change({groupId:e.target.value}), style: { display: "block", width: "138px", marginTop: "4px" } })),
+                h("label", null, "谁可触发", h("select", { "aria-label": "群语音触发方式 " + (index + 1), value: rule.triggerWho, onChange: e => change({triggerWho:e.target.value}), style: { display: "block", width: "144px", marginTop: "4px" } },
+                  h("option", {value:"owner"}, "仅主人"), h("option", {value:"mention"}, "群友 @ 可触发"))),
+                h("label", null, "每日条数（0不限）", h("input", { "aria-label": "群语音日额度 " + (index + 1), type: "number", min: 0, max: 500, step: 1, value: rule.maxPerDay, onChange: e => change({maxPerDay:Number(e.target.value)}), style: {display:"block",width:"96px",marginTop:"4px"} })),
+                h(Btn, {kind:"qbw-btn2", disabled:rulesSaving, onClick:()=>setRules({...rules,groupRules:rules.groupRules.filter((_,i)=>i!==index)}), "aria-label":"删除语音群规则 " + (index + 1)}, "删除"));
+            }),
+            h(Btn, {kind:"qbw-btn2", disabled:rulesSaving, onClick:()=>setRules({...rules,groupRules:[...(rules.groupRules || []),{groupId:"",triggerWho:"owner",maxPerDay:0}]})}, "添加群规则")),
+          h("div", { style: { marginTop: "12px" } }, h(Btn, { onClick: saveRules, disabled:rulesSaving }, rulesSaving ? "保存中…" : "保存触发规则")),
           h("div", { style: { fontSize: "12px", opacity: 0.7, marginTop: "6px" } },
-            "仅主人可触发：群聊里最后一条消息必须是你发的（5 分钟内），且一条消息最多换一条语音。")) : null);
+            "仅主人：最近10分钟有主人请求；群友 @：最近10分钟真实 @ 过机器人。一条请求最多换一条语音；修改规则无需重启。")) : null);
     }
 
     function MemoryTab({ qq, unified, setUnified, overview, busy, setBusy, toast, reload }) {
@@ -6942,13 +6976,13 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const onVoiceConfigSaved = async result => {
         try {
           const first = voiceDraftRef.current;
-          if (!first.saved || !first.qq || first.configStamps?.qq !== result.beforeStamp) return { ok: false };
+          if (!first.saved || !first.qq || !first.configStamps?.qq) return { ok: false };
           const current = await api('/config');
           const latest = voiceDraftRef.current;
-          if (latest.configStamps?.qq !== result.beforeStamp || !latest.saved || !latest.qq) return { ok: false };
+          if (latest.configStamps?.qq !== first.configStamps.qq || !latest.saved || !latest.qq) return { ok: false };
           const base = JSON.parse(latest.saved);
           const plan = planVoiceRebase({ base: base.qq, draft: latest.qq, remote: current.qq,
-            baseStamp: latest.configStamps.qq, beforeStamp: result.beforeStamp, afterStamp: result.afterStamp, remoteStamp: current.stamps?.qq });
+            baseStamp: latest.configStamps.qq, beforeStamp: latest.configStamps.qq, afterStamp: result.afterStamp, remoteStamp: current.stamps?.qq });
           const savedNext = JSON.stringify({ ...base, qq: plan.saved });
           const stampsNext = { ...latest.configStamps, qq: plan.stamp };
           voiceDraftRef.current = { qq: plan.draft, saved: savedNext, configStamps: stampsNext };

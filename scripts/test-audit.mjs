@@ -186,6 +186,7 @@ const tests = [
   'test-volc-management.mjs',
   'test-volc-form.mjs',
   'test-volc-budget.mjs',
+  'test-voice-group-policy.mjs', 'test-quota.mjs', 'test-quota-bridge.mjs', 'test-quota-management.mjs',
   'test-volc-bridge.mjs',
   // 真实 bridge.js 的 text→TTS→record 链路（假网关 + 本地假 TTS，不发 QQ）
   'test-voice-route.mjs',

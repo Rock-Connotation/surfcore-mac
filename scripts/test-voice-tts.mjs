@@ -65,6 +65,8 @@ let calls = 0;
   const b = await synthesizeToFile({ text: '你好呀', baseUrl: srv.url, outDir: dir });
   assert.equal(b.path, a.path);
   assert.equal(b.cached, true);
+  const annotated = await synthesizeToFile({ text: '【温柔】你好呀', baseUrl: srv.url, outDir: dir });
+  assert.equal(annotated.path, a.path, '缓存键应使用清理后的正文，避免命中带标签的旧音频');
   assert.equal(calls, 1, '同内容应复用本地文件，不再打服务端');
   await srv.close();
 }
@@ -106,6 +108,51 @@ let calls = 0;
   const r = await synthesizeToFile({ text: '缓存命中', baseUrl: base, outDir: dir, timeoutMs: 500 });
   assert.equal(r.cached, true);
   assert.equal(r.durationMs, 500, '本地命中也要能报时长');
+}
+
+// 语气标记应在两个 provider 的实际请求前剥离，正常括号正文保留。
+for (const provider of ['voxd', 'volc']) {
+  for (const [text, expected] of [
+    ['【温柔】你好', '你好'],
+    ['【语气：温柔】 [轻声] 你好（微笑）呀【开心】', '你好呀'],
+    ['你好【温柔地说】呀', '你好呀'],
+    ['【通知】带上（两份）材料，书名是《温柔的夜晚》。', '【通知】带上（两份）材料，书名是《温柔的夜晚》。'],
+    ['【温柔的夜晚】很好听，[版本2]照常保留。', '【温柔的夜晚】很好听，[版本2]照常保留。']
+  ]) {
+    const fixture = fs.mkdtempSync(path.join(dir, 'tone-'));
+    const configFile = path.join(fixture, 'config.json');
+    fs.writeFileSync(configFile, JSON.stringify({ socialV2: { voice: { tts: { enabled: true, route: 'cloud', cloudProvider: 'volc', volcKeyId: 'fixture-id' } } } }));
+    let requestText;
+    await synthesizeToFile({ text, provider, outDir: fixture, apiKey: 'offline-fixture-key', budget: { configFile, keyId: 'fixture-id' },
+      fetchImpl: async (_url, options) => {
+        const body = JSON.parse(options.body);
+        requestText = provider === 'volc' ? body.req_params.text : body.text;
+        const audio = makeWav(0.1, 24000);
+        return provider === 'volc'
+          ? new Response(JSON.stringify({ code: 0, data: audio.toString('base64') }) + JSON.stringify({ code: 20000000, data: null }))
+          : new Response(audio);
+      }
+    });
+    assert.equal(requestText, expected, provider + '不应把语气提示送进合成请求');
+    if (provider === 'volc') {
+      const ledger = JSON.parse(fs.readFileSync(path.join(fixture, 'state', 'volc-voice-budget.json')));
+      assert.equal(ledger.chars, expected.length, '月额度只预留实际合成正文');
+    }
+  }
+  let calls = 0;
+  await assert.rejects(synthesizeToFile({ text: '【温柔】（轻声）', provider, outDir: dir,
+    fetchImpl: async () => { calls++; throw new Error('不应联网'); }
+  }), e => e.code === 'VOICE_TTS_TEXT_INVALID' && Boolean(e.hint));
+  assert.equal(calls, 0, '只有提示词时必须在网络和额度预留前拒绝');
+}
+
+// 实际桥接应保留输入错误的 code/hint，不当成服务故障换路。
+{
+  const { bridgeHarness } = await import('./audit-bridge-harness.mjs');
+  const h = await bridgeHarness({ config: { socialV2: { voice: { tts: { enabled: true, route: 'local' } } } } });
+  try {
+    await assert.rejects(h.synthesizeVoiceText('【温柔】', {}), e => e.code === 'VOICE_TTS_TEXT_INVALID' && /实际要说/.test(e.hint));
+  } finally { await h.close(); }
 }
 
 fs.rmSync(dir, { recursive: true, force: true });

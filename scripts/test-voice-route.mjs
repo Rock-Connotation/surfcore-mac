@@ -53,10 +53,10 @@ const h = await bridgeHarness({
     socialV2: {
       mode: 'reserved2',
       voice: {
-        enabled: true,
+        enabled: true, trigger: {who: 'anyone'},
         maxPerMinute: 5,
         tts: {
-          enabled: true,
+          enabled: true, trigger: {who: 'anyone'},
           // 桥接解析顺序是 endpoints[route] > endpoints[默认 route] > baseUrl；
           // 只给 baseUrl 会被默认 127.0.0.1:8765 覆盖（本机只跑云端 8767 时直接 fetch failed）。
           baseUrl,
@@ -92,14 +92,14 @@ try {
   assert.equal(onebot.body.message[0].data.file, r.path, '默认保留本机路径');
 
   if (fs.constants.O_NOFOLLOW) {
-  const inline = await bridgeHarness({ config: { allow: { groups: ['456'] }, socialV2: { mode: 'reserved2', voice: { enabled: true, recordTransport: 'base64' }, tools: { sendVoice: true } } } });
+  const inline = await bridgeHarness({ config: { allow: { groups: ['456'] }, socialV2: { mode: 'reserved2', voice: { enabled: true, trigger: {who: 'anyone'}, recordTransport: 'base64' }, tools: { sendVoice: true } } } });
   try {
     await inline.sendVoiceForV2('group:456', null, { resolved: r, verify: false });
     const msg = inline.calls.http.filter(c => c.url.endsWith('send_group_msg')).pop();
     assert.equal(msg.body.message[0].data.file, 'base64://' + fs.readFileSync(r.path).toString('base64'));
   } finally { await inline.close(); }
 
-  const reverse = await bridgeHarness({ config: { socialV2: { voice: { tts: { enabled: true, route: 'cloud', cloudProvider: 'voxd', endpoints: { cloud: baseUrl } } } } } });
+  const reverse = await bridgeHarness({ config: { socialV2: { voice: { tts: { enabled: true, trigger: {who: 'anyone'}, route: 'cloud', cloudProvider: 'voxd', endpoints: { cloud: baseUrl } } } } } });
   try {
     const oldCloud = await reverse.synthesizeVoiceText('旧云可用', {});
     assert.equal(oldCloud.route, 'cloud'); assert(seen.some(value => value.text === '旧云可用'));
@@ -117,7 +117,7 @@ try {
   } finally { await reverse.close(); }
 
   let fallbackCalls = 0;
-  const fallback = await bridgeHarness({ config: { socialV2: { voice: { tts: { enabled: true, route: 'local', cloudProvider: 'voxd', endpoints: { local: 'http://127.0.0.1:11111', cloud: baseUrl } } } } },
+  const fallback = await bridgeHarness({ config: { socialV2: { voice: { tts: { enabled: true, trigger: {who: 'anyone'}, route: 'local', cloudProvider: 'voxd', endpoints: { local: 'http://127.0.0.1:11111', cloud: baseUrl } } } } },
     synthesizeImpl: async () => { fallbackCalls++; throw new Error('TTS 服务没起来'); } });
   try {
     const file = `${fallback.temp}/config.json`, changed = JSON.parse(fs.readFileSync(file));
@@ -128,7 +128,7 @@ try {
 
   const keyId = '00000000-0000-4000-8000-000000000000';
   let volcCalls = 0;
-  const volc = await bridgeHarness({ config: { socialV2: { voice: { tts: { enabled: true, route: 'cloud', cloudProvider: 'volc', volcKeyId: keyId, maxChars: 120 } } } },
+  const volc = await bridgeHarness({ config: { socialV2: { voice: { tts: { enabled: true, trigger: {who: 'anyone'}, route: 'cloud', cloudProvider: 'volc', volcKeyId: keyId, maxChars: 120 } } } },
     files: { [`state/volc-voice-keys/${keyId}`]: 'fixture-key' },
     synthesizeImpl: async opts => {
       volcCalls++;
@@ -149,7 +149,7 @@ try {
   } finally { await volc.close(); }
 
   let cloudCalls = 0;
-  const stale = await bridgeHarness({ config: { socialV2: { voice: { tts: { enabled: true, route: 'cloud', cloudProvider: 'volc', volcKeyId: keyId, maxChars: 120, endpoints: { cloud: baseUrl } } } } },
+  const stale = await bridgeHarness({ config: { socialV2: { voice: { tts: { enabled: true, trigger: {who: 'anyone'}, route: 'cloud', cloudProvider: 'volc', volcKeyId: keyId, maxChars: 120, endpoints: { cloud: baseUrl } } } } },
     files: { [`state/volc-voice-keys/${keyId}`]: 'fixture-key' },
     synthesizeImpl: opts => synthesizeToFile({ ...opts, fetchImpl: async () => { cloudCalls++; throw new Error('must not fetch'); } }) });
   try {

@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { bridgeHarness } from './audit-bridge-harness.mjs';
+let calls = 0, mode = 'ok', release, started;
+let entered = new Promise(resolve => { started=resolve; });
+const fetch = async () => { calls++; if(mode==='wait') { started(); await new Promise(resolve=>{release=resolve;}); } if (mode === 'network') throw new Error('disconnected'); return {ok:true,status:200,json:async()=>mode === 'reject' ? {status:'failed',retcode:100,wording:'fixture reject'} : {status:'ok',retcode:0,data:{message_id:123}}}; };
+const h = await bridgeHarness({config:{socialV2:{voice:{enabled:true,maxPerMinute:30,maxPerHour:100}}},globals:{fetch,inspectAudio:async()=>({ok:true,size:64,duration:1,codec:'wav',warnings:[]})}});
+try {
+  const ledger = path.join(h.temp,'state','voice-send-budget.json');
+  const file = path.join(h.temp,'dummy.wav');
+  const d=new Date(), today=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  fs.writeFileSync(ledger,JSON.stringify({version:2,day:today,count:0,lastAt:0,pending:null,reconciliations:[]}),{mode:0o600});
+  mode='wait'; const first=h.sendVoiceV2('private:123',file,{audit:false}); await entered;
+  h.voiceBudgetCheck('group:456',h.voiceCfg());
+  const second=h.sendVoiceV2('group:456',file,{audit:false}); mode='ok'; release(); await Promise.all([first,second]);
+  assert.equal(JSON.parse(fs.readFileSync(ledger)).count,2);
+  fs.writeFileSync(ledger,JSON.stringify({version:2,day:today,count:0,lastAt:0,pending:null,reconciliations:[]}),{mode:0o600}); calls=0;
+  await Promise.all([h.sendVoiceV2('private:123',file,{audit:false}),h.sendVoiceV2('group:456',file,{audit:false})]);
+  assert.equal(JSON.parse(fs.readFileSync(ledger)).count,2);
+  mode='reject'; await assert.rejects(h.sendVoiceV2('private:123',file,{audit:false}));
+  assert.equal(JSON.parse(fs.readFileSync(ledger)).count,2);
+  const beforeLimit=JSON.parse(fs.readFileSync(ledger)); beforeLimit.count=499; fs.writeFileSync(ledger,JSON.stringify(beforeLimit));
+  mode='ok'; await h.sendVoiceV2('private:123',file,{audit:false});
+  assert.equal(JSON.parse(fs.readFileSync(ledger)).count,500);
+  await assert.rejects(h.sendVoiceV2('group:456',file,{audit:false}),e=>e.code==='VOICE_DAILY_LIMIT'&&!!e.hint);
+  const reset=JSON.parse(fs.readFileSync(ledger)); reset.count=2; fs.writeFileSync(ledger,JSON.stringify(reset));
+  mode='network'; await assert.rejects(h.sendVoiceV2('private:123',file,{audit:false}),e=>e.code==='VOICE_SEND_UNCERTAIN'&&!!e.hint);
+  assert.equal(JSON.parse(fs.readFileSync(ledger)).count,2);
+  mode='ok'; await assert.rejects(h.sendVoiceV2('group:456',file,{audit:false}),e=>e.code==='VOICE_SEND_UNCERTAIN');
+  assert.equal(calls,5);
+  const pending=JSON.parse(fs.readFileSync(ledger)).pending;
+  const cli=new URL('./voice-send-reconcile.mjs',import.meta.url).pathname;
+  const inspect=spawnSync(process.execPath,[cli,'inspect','--state-dir',path.dirname(ledger)],{encoding:'utf8'});
+  assert.equal(inspect.status,0); assert.equal(JSON.parse(inspect.stdout).pending.id,pending.id);
+  const bad=spawnSync(process.execPath,[cli,'resolve','--state-dir',path.dirname(ledger),'--id',pending.id,'--confirm','wrong','--result','sent','--evidence','gateway receipt','--accepted-at',new Date().toISOString()],{encoding:'utf8'});
+  assert.equal(bad.status,1); assert.equal(JSON.parse(fs.readFileSync(ledger)).pending.id,pending.id);
+  const resolved=spawnSync(process.execPath,[cli,'resolve','--state-dir',path.dirname(ledger),'--id',pending.id,'--confirm',pending.id,'--result','sent','--evidence','gateway receipt 123','--accepted-at',new Date().toISOString()],{encoding:'utf8'});
+  assert.equal(resolved.status,0,resolved.stderr); const after=JSON.parse(fs.readFileSync(ledger));
+  assert.equal(after.count,3); assert.equal(after.pending,null); assert.equal(after.reconciliations.length,1); assert.equal(after.reconciliations[0].key,'private:123');
+
+  console.log('bridge regression passed: cross-conversation concurrency, rejection, uncertain send');
+} finally { await h.close(); }

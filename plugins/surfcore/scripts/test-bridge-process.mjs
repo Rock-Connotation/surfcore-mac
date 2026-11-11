@@ -9,6 +9,7 @@ if (process.platform !== 'darwin') {
  console.log('NOT RUN: native macOS process ownership fixtures require Darwin; other-platform real lifecycle acceptance remains unverified.');
 } else {
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'桥接 空格 $(touch INJECTED) '));
+fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({type:'commonjs'}));
 fs.mkdirSync(path.join(root,'src')); fs.mkdirSync(path.join(root,'state'));
 const script=path.join(root,'src','bridge.js');
 fs.writeFileSync(script, `const http=require('http'); const fs=require('fs'); const root=process.env.FIXTURE_ROOT; const cfg=JSON.parse(fs.readFileSync(root+'/config.json')); http.createServer((req,res)=>{ if(req.headers['x-console-token']!==cfg.consoleToken){res.writeHead(401);res.end();return;} if(fs.existsSync(root+'/swap-lock')) fs.writeFileSync(root+'/state/bridge.lock','2147483647'); res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({root})); }).listen(cfg.consolePort,'127.0.0.1');`);
