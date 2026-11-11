@@ -9,6 +9,7 @@ import { createMemoryV2Runtime } from '../lib/memory-v2-runtime.mjs';
 import { digest, validatePolicy } from '../../../src/core/memory-v2-contract.js';
 import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
 import { COMPANION_ROUTE } from '../lib/douyin-companion-model.mjs';
+import { createQQMemoryBridge } from '../../../src/core/memory-v2-qq.js';
 
 const root = path.resolve('_backups/memory-v2-runtime', randomUUID());
 fs.mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -38,6 +39,11 @@ const request = async (suffix, body, owner = true) => {
 };
 try {
   const init = await runtime.initialize(); assert.equal(init.ok, true, JSON.stringify(init)); assert.equal(init.backend, 'v1');
+  // Use the production writer and the production QQ factory; a hand-aligned
+  // fixture scope hid the real qq / qq-bridge discovery mismatch.
+  const defaultQq = createQQMemoryBridge({ stateDir: path.join(root, 'state'), getCharacter: () => current, getRouting: () => ({ ok: true, backend: 'v2' }) });
+  const scopeProbe = await defaultQq.captureSource({ key: 'private:3', loginAccountId: '1', actorAccountId: '3', objectId: 'scope-regression', text: 'hello' });
+  assert.notEqual(scopeProbe.code, 'MEMORY_DISCOVERY_INVALID', 'The QQ default must reach the actual Host discovery, even when V1 refuses the source.');
   const state = await request('status'); assert.equal(state.status, 200); assert.equal(state.value.ok, true, JSON.stringify(state));
   assert.equal(state.value.backend, 'v1'); assert.equal(state.value.capabilities.activation, false); assert.equal(state.value.capabilities.migration, false);
   assert.equal(state.value.capabilities.adminResume, true);

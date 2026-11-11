@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
+  'test-qq-native-channel.mjs',
   'test-update-archive.mjs',
   'test-self-test-target.mjs',
   'test-package-data-paths.mjs', 'test-package-data-consumers.mjs',

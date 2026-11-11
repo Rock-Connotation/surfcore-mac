@@ -14,7 +14,6 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
 const originalConnect = net.connect, originalFetch = globalThis.fetch;
 net.connect = () => {
   const socket = new EventEmitter(); socket.setTimeout = () => socket; socket.destroy = () => socket;

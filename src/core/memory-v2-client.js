@@ -86,6 +86,7 @@ export function createMemoryClient({ stateDir, discoveryFile, scope = 'qq-bridge
   }
   return Object.freeze({
     status: (options) => request(undefined, options),
+    requestQQReply: (input, options) => request({ ...input, action: 'qqReply' }, options),
     async capture(conversationKey, { sourceFacts, ...options } = {}) {
       const result = await request({ action: 'capture', conversationKey, ...(sourceFacts !== undefined ? { sourceFacts } : {}) }, options); prune();
       if (result.ok && typeof result.handle === 'string' && Number.isFinite(result.expiresAt) && issued.size < 256) issued.set(result.handle, { ...responses.get(result), expiresAt: Math.min(result.expiresAt, Date.now() + 300_000), prepared: new Map() });

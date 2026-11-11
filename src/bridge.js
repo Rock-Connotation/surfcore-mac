@@ -93,6 +93,8 @@ import {
 import { composePersonaLayers, personaSceneFromKey } from './persona-layers.js';
 import { buildCharacterContext } from './core/context.js';
 import { createQQMemoryBridge } from './core/memory-v2-qq.js';
+import { createMemoryClient } from './core/memory-v2-client.js';
+import { createNativeQQChannel } from './core/qq-native-channel.js';
 import { deriveMemoryProviderRouteId } from './core/memory-v2-routing.js';
 import { isHardDirectWakeReason, hasStrictDirectUnread } from './wake-policy.js';
 import { DEFAULT_GROUP_POLICY, normalizeGroupPolicy, groupTier, shouldSkipTriggerForTier } from './group-policy.js';
@@ -1828,6 +1830,22 @@ async function main() {
   acquireLock();
   loadState();
   const qqMemory = createQQMemoryBridge({ stateDir: SURFCORE_DIR, getCharacter: readCurrentCharacter });
+  const nativeMemoryClient = createMemoryClient({ stateDir: SURFCORE_DIR, scope: 'qq', getCharacter: readCurrentCharacter });
+  const nativeQQ = createNativeQQChannel({ memory: qqMemory, getCharacter: readCurrentCharacter,
+    getIdentity: readOfficialMemoryQQIdentity,
+    isAllowed: key => usesMemoryV2() && isSessionAllowedInCurrentMode(key) && !shouldBlockSilentReply(key),
+    send: sendNativeQQText,
+    onComplete: async (job, result) => {
+      pendingWakeKeys.delete(job.key); disarmPendingWakeLease(job.key);
+      if (result.ok) {
+        memoryV2Failures.delete(job.key);
+        const st = getSocialV2State(job.key);
+        acknowledgeMessagesV2(st, job.throughSeq);
+        saveSocialV2State();
+        replayPendingWakeReasonsV2(job.key);
+      } else memoryV2Failure(job.key, result);
+    },
+  });
   const memoryV2Failures = new Map();
   const memoryV2Barriers = new Map();
   const memoryV2SelectedRoutes = new Map();
@@ -4896,7 +4914,8 @@ async function main() {
       // 127.0.0.1 时，浏览器会把 evil.com:3100 当作同源，Origin 校验随之失效；卡住 Host
       // 这一层后，这类请求在进入任何业务分支之前就被拒掉。
       // 反代/端口转发场景会被一并拒绝——这是有意的（要远程访问请用 SSH 隧道并自行承担）。
-      const memoryIdentityRequest = url.pathname === '/api/memory-v2/identity';
+      const memoryNativeRequest = url.pathname === '/api/memory-v2/native';
+      const memoryIdentityRequest = url.pathname === '/api/memory-v2/identity' || memoryNativeRequest;
       const hostHeader = String(req.headers.host ?? '');
       // 用**实际绑定端口**而不是配置值：测试夹具用 consolePort: 0 让系统分配端口，
       // 配置里那个 0 不是请求里的 Host 端口。请求必然发生在 listen 之后，所以这里拿得到。
@@ -4931,6 +4950,12 @@ async function main() {
         try { if (!originMatches) originMatches = new URL(String(req.headers.origin)).origin === `http://${hostHeader.toLowerCase()}`; } catch {}
         if (req.headers['x-agent-token'] !== undefined || req.headers['x-agent-call'] !== undefined || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket?.remoteAddress) || !originMatches) {
           sendJson(memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_FORBIDDEN', '官方身份只允许同源回环控制台读取，智能体请求不能访问。'), 403); return;
+        }
+        if (memoryNativeRequest) {
+          if (req.method !== 'POST') { sendJson(memoryQQIdentityFailure('MEMORY_QQ_REQUEST_INVALID', 'Native 作业只接受 JSON POST。'), 405); return; }
+          if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers['content-type'] ?? ''))) { sendJson(memoryQQIdentityFailure('MEMORY_JSON_REQUIRED', 'Native 作业需要 JSON 请求。'), 415); return; }
+          const result = await nativeQQ.request(await readBody());
+          sendJson(result, result.ok ? 200 : 409); return;
         }
         if (req.method !== 'GET') { sendJson(memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_METHOD', '官方身份查询只接受 GET。'), 405); return; }
         const identity = await readOfficialMemoryQQIdentity();
@@ -5096,7 +5121,6 @@ async function main() {
         }
         if (req.method === 'GET' && url.pathname === '/api/status') {
         const memoryV2 = { ...memoryV2Route(), failures: [...memoryV2Failures.entries()].map(([key, failure]) => ({ key, ...failure })), retirementPending: Object.keys(state.memoryV2Retirements).length };
-        if (usesMemoryV2()) { sendJson({ ok: true, memoryV2, mode: currentMode, dshReady }); return; }
           const rs = readRoleState();
           // 带 agent token 的调用来自 QQ 群里的 AI：只能拿到它自己该知道的运行状态。
           // activity 是**全局**收发摘要（含其它群的发言片段与告警），ownerQQ/白名单属于管理信息，
@@ -5116,6 +5140,7 @@ async function main() {
             return;
           }
           sendJson({
+            memoryV2,
             mode: currentMode,
             root: ROOT,
             dshBaseUrl: cfg.dsh.baseUrl,
@@ -10781,6 +10806,27 @@ async function main() {
   }
 
   // 统一出站消息：先完整文本审计，再发送。返回是否真的发出。
+  async function sendNativeQQText(key, message) {
+    const guard = captureSendGuard(key);
+    if (shouldBlockSilentReply(key) || (shouldAuditKey(key) && (SENSITIVE_RE.test(message) || [...KNOWN_AGENT_TOKENS].some(token => token && message.includes(token))))) {
+      return { ok: false, code: 'MEMORY_QQ_OUTPUT_DENIED', error: '回复被出站安全策略拦截。', hint: '在概览检查安全事件；不会发送未经审计的原文。' };
+    }
+    const [kind, id] = key.split(':');
+    guard();
+    const response = await fetch(`${String(cfg.snowluma.httpUrl).replace(/\/+$/, '')}/${kind === 'private' ? 'send_private_msg' : 'send_group_msg'}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...(cfg.snowluma.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}) },
+      body: JSON.stringify({ [kind === 'private' ? 'user_id' : 'group_id']: Number(id), message: [{ type: 'text', data: { text: escapeCqText(message) } }] }), signal: AbortSignal.timeout(15000),
+    });
+    const body = await response.json();
+    if (!response.ok || body?.status !== 'ok' || body.retcode !== 0 || !/^-?[1-9][0-9]*$/.test(String(body.data?.message_id ?? ''))) {
+      noteSendFailure(key, new Error('Native QQ delivery unconfirmed'));
+      return { ok: false, code: 'MEMORY_QQ_DELIVERY_UNKNOWN', error: 'QQ 未确认发送结果。', hint: '检查原消息是否送达；不会自动重发。' };
+    }
+    noteSendSuccess(key); recordSentMessagesV2(key, [message]);
+    appendActivity(`${key} [Native 回复] 已取得 QQ 发送回执`);
+    return { ok: true, messageId: String(body.data.message_id), deliveryState: 'delivered' };
+  }
+
   async function auditAndSend(key, text) {
     const hasKnownToken = [...KNOWN_AGENT_TOKENS].some((t) => t && String(text ?? '').includes(t));
     if (shouldAuditKey(key) && (SENSITIVE_RE.test(text) || hasKnownToken)) {
@@ -13285,26 +13331,22 @@ async function main() {
       if (currentMode === 'closed-agent') return memoryV2Failure(key, { code: 'MEMORY_PRESET_UNSAFE', error: 'V2 QQ requires a restricted QQ tool surface.', hint: 'Use a restricted QQ conversation preset; a full local-tool owner session cannot admit V2 memory.' });
       const retired = await retireMemoryV2Session(key);
       if (!retired.ok) return retired;
+      const started = nativeQQ.begin(key, role, getSocialV2State(key).lastUnreadSeq || 0);
+      if (!started.ok) return memoryV2Failure(key, started);
       const prepared = await qqMemory.prepareReply({ key });
-      if (!prepared.ok) return memoryV2Failure(key, prepared);
+      if (!prepared.ok) {
+        await nativeQQ.request({ ...started.request, action: 'complete', code: prepared.code, error: prepared.error, hint: prepared.hint, ok: false });
+        return memoryV2Failure(key, prepared);
+      }
       const current = readCurrentCharacter();
       if (!role || current?.id !== role.id || current?.epoch !== role.epoch) return memoryV2Failure(key, { code: 'CHARACTER_EPOCH_STALE', error: 'The character changed during QQ preparation.', hint: 'Retire the request and capture the current role again.' });
-      state.memoryV2Sessions[key] = prepared.sessionStamp; saveState();
-      const sessionId = await ensureSession(key);
-      const modelRoute = validateMemoryV2ProviderRoute(key, sessionId);
-      if (!modelRoute.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); return modelRoute; }
-      const validated = await qqMemory.validate(key, { prepared: true });
-      if (!validated.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); return memoryV2Failure(key, validated); }
-      const token = currentMode === 'reserved2' ? getSocialV2State(key).agentToken : '';
-      const protocol = token ? `\n\n当前QQ会话：${key}；会话令牌：${token}。只使用本次已提供材料；历史/轻量记忆工具无来源引用时不可用。需要回复时使用当前QQ发送工具。` : '';
-      const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: prepared.text + protocol }] });
-      await requireMemoryV2SessionSafety(key, sessionId);
-      const after = await qqMemory.validate(key);
-      if (!after.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); return memoryV2Failure(key, after); }
-      if (!accepted.result?.ok) return memoryV2Failure(key, { code: 'MEMORY_PROMPT_REJECTED', error: 'DSH did not accept the authorized QQ prompt.', hint: 'Inspect the DSH session and submit a fresh request.' });
-      if (accepted.result.value?.command?.text && !opts.silent && currentMode !== 'reserved2') await auditAndSend(key, mdToPlain(accepted.result.value.command.text));
+      const accepted = await nativeMemoryClient.requestQQReply(started.request);
+      if (!accepted.ok) {
+        await nativeQQ.request({ ...started.request, action: 'complete', code: accepted.code, error: accepted.error, hint: accepted.hint, ok: false });
+        return memoryV2Failure(key, accepted);
+      }
       memoryV2Failures.delete(key);
-      return { ok: true, sessionId, providerAdmissionCoverage: 'submission-observed' };
+      return { ok: true, queued: true, requestId: started.request.requestId, providerAdmissionCoverage: 'native-owner' };
       } catch (error) {
         await retireMemoryV2Session(key); await qqMemory.retire(key);
         return memoryV2Failure(key, { code: error?.code ?? 'MEMORY_PROMPT_FAILED', error: 'The authorized QQ prompt could not be submitted.', hint: 'Check the restricted QQ preset and DSH status, then use a fresh input; old context remains blocked.' });

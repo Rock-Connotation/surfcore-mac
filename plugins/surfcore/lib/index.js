@@ -83,6 +83,7 @@ import { createCompanionSharing } from './companion-sharing.mjs';
 import { createSharingController } from './companion-sharing-controller.mjs';
 import { createMemoryV2Runtime } from './memory-v2-runtime.mjs';
 import { createBiliV2Host } from './bili-v2-host.mjs';
+import { createQQV2ReplyHost, resolveQQV2ModelRoute } from './qq-v2-reply-host.mjs';
 import { appendExperienceEvent } from '../../../src/core/experience.js';
 import { resolveMediaRuntime } from '../tools/lib/ffmpeg.mjs';
 import { readInstallationIdentity } from '../../../src/install-identity.js';
@@ -251,7 +252,7 @@ export function apply(ctx) {
     log: (message) => pluginLog(message),
   });
   let douyinMemoryService = null;
-  let biliMemoryHost = null, gateEvents = null;
+  let biliMemoryHost = null, qqReplyHost = null, gateEvents = null;
   const memoryV2 = createMemoryV2Runtime({ stateDir: STATE_DIR, charactersDir: CHARACTERS_DIR,
     getCharacter: readCurrentCharacter, currentDshUrl,
     getManagementAuthorization: req => {
@@ -266,7 +267,8 @@ export function apply(ctx) {
       const response = await callBridge('/api/memory-v2/identity', { timeoutMs: 8000 });
       return response.ok && response.data?.ok === true ? response.data : null;
     },
-    getQQRoute: state => state?.route ?? null,
+    getQQRoute: state => state ? resolveQQV2ModelRoute(ctx, state) : null,
+    onQQReply: request => qqReplyHost?.submit(request) ?? ({ ok: false, code: 'QQ_V2_HOST_NOT_READY', error: 'QQ reply Host is not ready.', hint: 'Wait for the Host to initialize, then retry.' }),
     getPlatformState: async channel => {
       if (channel === 'bili') return platformStartEnabled('bili') && biliMemoryHost ? biliMemoryHost.getPlatformState() : null;
       if (channel !== 'douyin' || !douyinMemoryService || !platformStartEnabled('douyin')) return null;
@@ -315,6 +317,12 @@ export function apply(ctx) {
     file: path.join(STATE_DIR, 'context-telemetry-plugin.jsonl'),
     source: 'plugin',
     log: (message) => pluginLog(message),
+  });
+  qqReplyHost = createQQV2ReplyHost({ ctx, memoryV2: memoryV2.channelMemory('qq'), tokenBudget,
+    getCharacter: readCurrentCharacter,
+    getQQIdentity: async () => { const response = await callBridge('/api/memory-v2/identity', { timeoutMs: 8000 }); return response?.data ?? response; },
+    callBridge,
+    onBlocked: reportMemoryBlocked,
   });
   // A+B 账单：每 10 分钟刷新到 ~/.dsh/surfcore/billing；只读，不调用模型。
   const personaClassifier = createPersonaClassifier({ ctx, log: (message) => pluginLog(message), tokenBudget });
@@ -629,6 +637,8 @@ export function apply(ctx) {
   async function switchCharacterEverywhere(id) {
     const current = readCurrentCharacter();
     if (current?.id === id) return { ok: true, already: true, current };
+    const qqRetired = await qqReplyHost.retire();
+    if (!qqRetired.ok) throw Object.assign(new Error(qqRetired.error), qqRetired);
     return biliMemoryHost.withTransition(() => companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id))))));
   }
   async function switchCharacterImplementation(id) {
@@ -4057,6 +4067,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     clearInterval(companionTimer);
     void memoryV2Ready.finally(async () => {
       const retired = await biliMemoryHost.close();
+      await qqReplyHost?.close?.();
       if (!retired.ok) { reportMemoryBlocked(retired); return; }
       await memoryV2.close();
     }).catch(() => pluginLog('[记忆] 停止失败，请检查原操作回执'));

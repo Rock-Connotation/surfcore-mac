@@ -24,7 +24,7 @@ childProcess.execFile = (command, args, options, callback) => { calls.push({ com
 syncBuiltinESMExports();
 const { apply } = await import('../lib/index.js');
 const routes = [], effects = [];
-const ctx = { webServer: { register(route) { routes.push(route); return () => {}; } }, get(name) { return name === 'connection' ? { requestRejection: () => false } : null; }, effect(fn) { effects.push(fn); return () => {}; }, sessionController: { inspect: async () => ({ events: [] }), create: async () => ({}), prompt: async () => ({ accepted: true }) }, settings: null };
+const ctx = { webServer: { register(route) { routes.push(route); return () => {}; } }, get(name) { return name === 'connection' ? { requestRejection: () => false } : null; }, effect(fn) { effects.push(fn()); return () => {}; }, sessionController: { inspect: async () => ({ events: [] }), create: async () => ({}), prompt: async () => ({ accepted: true }) }, settings: null };
 async function invoke(api, body = {}) {
   const req = new EventEmitter(); req.method = 'POST'; req.url = '/dsh-surfcore/api/dsh/repair'; req.headers = { host: '127.0.0.1:1234', 'content-type': 'application/json' };
   const res = { statusCode: 200, body: '', writeHead(code) { this.statusCode = code; }, end(chunk = '') { this.body += chunk; } };

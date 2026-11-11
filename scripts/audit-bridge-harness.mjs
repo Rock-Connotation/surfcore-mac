@@ -1,3 +1,5 @@
+import { createMemoryClient } from '../src/core/memory-v2-client.js';
+import { createNativeQQChannel } from '../src/core/qq-native-channel.js';
 import { deriveMemoryProviderRouteId } from '../src/core/memory-v2-routing.js';
 import { createQQMemoryBridge } from '../src/core/memory-v2-qq.js';
 import { buildCharacterContext } from '../src/core/context.js';
@@ -211,7 +213,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
-    qqMemory, retireMemoryV2Session, memoryV2Failures, memoryV2Route, validateMemoryV2ProviderRoute, beginMemoryV2Send, finishMemoryV2Send, setSelfUserId(value) { selfUserId = Number(value); },
+    qqMemory, nativeQQ, retireMemoryV2Session, memoryV2Failures, memoryV2Route, validateMemoryV2ProviderRoute, beginMemoryV2Send, finishMemoryV2Send, setSelfUserId(value) { selfUserId = Number(value); },
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, deliverPromptNow, drainPromptQueue,
     pumpMux, pending, registerPending, handlePendingAnswer,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
@@ -291,7 +293,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...dshHealth,
     synthesizeToFile: synthesizeImpl, createVoiceManagement: voiceManagementImpl, encodeVoiceRecord, readVolcKey, startVoxdCloud, voiceSendBudget, commitQqConfigPatch, transactQqConfig, persistSnowLumaEndpoint, persistToken, voiceGroupPolicies, voiceMentionBlock,
     ...tokenBudget,
-    createQQMemoryBridge, buildCharacterContext, deriveMemoryProviderRouteId,
+    createQQMemoryBridge, createMemoryClient, createNativeQQChannel, buildCharacterContext, deriveMemoryProviderRouteId,
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,

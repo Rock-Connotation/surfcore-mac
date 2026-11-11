@@ -2114,6 +2114,10 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       };
       const limitEvents = (gateData?.events ?? []).filter((ev) => ev.gate === "limit" || ev.gate === "timeout" || ev.evidence?.setting);
       return h("div", null,
+        bridge.replyFailure ? h("div", { className: "qbw-warnbox", role: "alert" },
+          h("b", null, bridge.replyFailure.error),
+          h("div", null, bridge.replyFailure.code), h("div", null, bridge.replyFailure.hint),
+          h(Btn, { kind: "qbw-btn2", onClick: () => goTab?.("memory") }, "检查记忆权限")) : null,
         overview?.adminProjectionFailure ? h("div", { className: "qbw-warnbox", role: "alert" },
           h("b", null, overview.adminProjectionFailure.error), h("div", null, overview.adminProjectionFailure.hint)) : null,
         bridge.snowluma?.configWriteFailure ? h("div", { className: "qbw-warnbox", role: "alert" },
@@ -2138,7 +2142,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           "合体插件不复制配置，只把参数、记忆、身份对齐和扩展接口装到一起。"),
         h("div", { className: "qbw-grid" },
           h("div", { className: "qbw-card" },
-            h("h4", null, "QQ 桥接 ", h(StatusDot, { ok: bridge.running && bridge.ok, warn: bridge.running && !bridge.ok }, bridge.running ? "运行中" : "未运行")),
+            h("h4", null, "QQ 桥接 ", h(StatusDot, { ok: bridge.replyReady === true, warn: bridge.running && bridge.replyReady !== true }, bridge.replyFailure ? "回复受阻" : bridge.replyReady ? "可回复" : bridge.running ? "进程运行中 · 等待连接" : "未运行")),
             h("div", { className: "qbw-kv" }, h("span", null, "端口"), h("span", null, bridge.port ?? "—")),
             h("div", { className: "qbw-kv" }, h("span", null, "PID"), h("span", null, bridge.pid ?? bridge.lockPid ?? "—")),
             h("div", { className: "qbw-kv" }, h("span", null, "模式"), h("span", null, overview?.mode?.effective ?? overview?.mode?.local ?? bridge.mode ?? "—")),

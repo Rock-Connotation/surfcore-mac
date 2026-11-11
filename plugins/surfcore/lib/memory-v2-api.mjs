@@ -10,6 +10,7 @@ const fields = {
   prepare: ['handle', 'query', 'budget'], search: ['handle', 'query', 'options'], validate: ['handle', 'preparedHandle'],
   bindActualInput: ['handle', 'refs'], release: ['handle'],
   registerProducer: ['handle', 'producerId', 'segmentId', 'operationId'], replayProducer: ['registrationId', 'batch', 'operationId'], queryProducerReceipt: ['registrationId', 'operationId'],
+  qqReply: ['key', 'requestId', 'characterId', 'characterEpoch'],
 };
 function localOrigin(raw) {
   const value = new URL(raw);
@@ -34,7 +35,7 @@ function readJson(req, maxBodyBytes, timeoutMs) {
 }
 
 /** Each discovery credential is bound to one trusted adapter closure. No management RPC exists. */
-export function createMemoryApiService({ host, stateDir, currentDshUrl, scopes = [], maxBodyBytes = 256 * 1024, maxResponseBytes = 512 * 1024, bodyTimeoutMs = 5000 } = {}) {
+export function createMemoryApiService({ host, stateDir, currentDshUrl, scopes = [], onQQReply, maxBodyBytes = 256 * 1024, maxResponseBytes = 512 * 1024, bodyTimeoutMs = 5000 } = {}) {
   if (!host || typeof currentDshUrl !== 'function' || !path.isAbsolute(stateDir ?? '') || !Array.isArray(scopes) || !scopes.length || scopes.length > 8 || !Number.isInteger(maxBodyBytes) || maxBodyBytes < 1024 || maxBodyBytes > 1024 * 1024 || !Number.isInteger(maxResponseBytes) || maxResponseBytes < 1024 || maxResponseBytes > 2 * 1024 * 1024 || !Number.isInteger(bodyTimeoutMs) || bodyTimeoutMs < 1 || bodyTimeoutMs > 30_000) throw new TypeError('Invalid memory transport configuration.');
   const root = path.join(stateDir, 'memory-v2'), ids = new Set();
   const entries = scopes.map((scope) => {
@@ -78,6 +79,12 @@ export function createMemoryApiService({ host, stateDir, currentDshUrl, scopes =
     try {
       const body = await readJson(req, maxBodyBytes, bodyTimeoutMs), allowed = typeof body?.action === 'string' && Object.hasOwn(fields, body.action) ? fields[body.action] : null;
       if (!allowed || !body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => key !== 'action' && !allowed.includes(key))) { respond(400, failure('MEMORY_FIELD_FORBIDDEN', 'The RPC accepts only typed ordinary operations; authorization fields are forbidden.')); return; }
+      if (body.action === 'qqReply') {
+        if (!entry.canRecoverProducer || typeof onQQReply !== 'function') { respond(403, failure('MEMORY_QQ_NATIVE_UNAVAILABLE', 'QQ Native reply execution is unavailable.', 'Restore the official QQ Host adapter before retrying.')); return; }
+        if (!/^(group|private):[1-9][0-9]{0,19}$/.test(body.key ?? '') || !/^[a-zA-Z0-9][a-zA-Z0-9:_-]{0,127}$/.test(body.requestId ?? '') || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(body.characterId ?? '') || !Number.isSafeInteger(body.characterEpoch) || body.characterEpoch < 1) { respond(400, failure('MEMORY_QQ_REQUEST_INVALID', 'The QQ reply request is invalid.')); return; }
+        const result = await onQQReply({ key: body.key, requestId: body.requestId, characterId: body.characterId, characterEpoch: body.characterEpoch });
+        respond(result?.ok ? 200 : 409, result); return;
+      }
       if (body.action === 'bindActualInput' && !entry.canBindInput) { respond(403, failure('MEMORY_ADAPTER_REQUIRED', 'This channel credential cannot attach actual inputs.')); return; }
       if (body.action === 'capture' && body.sourceFacts !== undefined && !entry.canSubmitSourceFacts) { respond(403, failure('MEMORY_ADAPTER_REQUIRED', 'This channel credential cannot submit platform source facts.')); return; }
       if (['registerProducer', 'replayProducer', 'queryProducerReceipt'].includes(body.action) && !entry.canRecoverProducer) { respond(403, failure('MEMORY_ADAPTER_REQUIRED', 'This channel credential cannot register or recover durable QQ producers.')); return; }

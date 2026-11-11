@@ -27,7 +27,7 @@ function save(file, value) {
   fs.renameSync(temporary, file); syncDirectory(path.dirname(file));
 }
 
-export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () => readMemoryRouting({ stateDir }), client = createMemoryClient({ stateDir, getCharacter }), prepareContext = prepareCharacterContext, getSessionMemorySafety = () => false } = {}) {
+export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () => readMemoryRouting({ stateDir }), client = createMemoryClient({ stateDir, scope: 'qq', getCharacter }), prepareContext = prepareCharacterContext, getSessionMemorySafety = () => false } = {}) {
   if (!stateDir || typeof getCharacter !== 'function') throw new TypeError('QQ memory requires stateDir and a synchronous getCharacter.');
   const directory = path.join(stateDir, 'memory-v2', 'qq-producer');
   const latest = new Map(), history = new Map(), active = new Map(), failures = new Map(), sendLeases = new WeakMap();
@@ -292,7 +292,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     const task = sourceChain.then(() => recordSource({ key: approved.key, ...approved.facts, text, platformMessageId: messageId, deliveryState, expectedCharacter: approved.role }, approved));
     sourceChain = task.catch(() => {}); return task;
   }
-  async function retire(key) { const packet = active.get(key); active.delete(key); latest.delete(key); history.delete(key); if (packet?.handle) await client.release(packet.handle).catch(() => {}); }
+  async function retire(key, { preserveSources = false } = {}) { const packet = active.get(key); active.delete(key); if (!preserveSources) { latest.delete(key); history.delete(key); } if (packet?.handle) await client.release(packet.handle).catch(() => {}); }
   async function drainPending(key) {
     await sourceChain;
     const records = [];
