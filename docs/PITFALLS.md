@@ -4458,3 +4458,7 @@ Host写`memory-v2/qq.json`而QQ默认读`qq-bridge.json`，会在模型前报`ME
 QQ旧MCP注册qq_send_voice不代表私有NativeOwner拥有语音工具；Owner/Source toolSpecs必须同源，实际SDK注册使用JSON Schema，不能把参数DSL直接当schema。语音媒体传输不应内嵌旧会话记忆策略，否则Native新租约撞旧state.sessions且重复记账。退役先取消桥接TTS/排队发送再等待Owner，整轮只用一个截止期限。QQ白名单仅接入与Core处理许可分离时，必须在QQ页显示真实可处理状态并提供同入口预览确认；不要让用户保存成功后仍被静默拦截。状态应调用Core resolveAudience，admin policies摘要没有受众/模型明细，不能自行按policyId推断。QQ状态与configure预览仅查询QQ身份，不能等待其它平台。见本轮case。
 
 2026-11-12重复L2补充：dedupeKey只是字段，不等于store已去重。轮询同一许可缺失若每次产生新UUID，确认单条无法止住弹窗。共享store支持生产者显式语义去重，跨确认/重启复用相同事件；仅准确memory-v2许可拒绝归L1，其它真实安全失败保持级别。不得靠扩大授权、ack-all或关安全总闸解决。
+
+### 2026-11-12：唯一历史资料不等于当前业务依赖
+
+清理先核对已提交源码、活动cwd、真实安装目录、profile包引用和依赖symlink。历史ASR夹具、旧程序快照与验收资料即使内容独有，也不自动等于当前业务需要。用户明确“无当前业务用途就删、不需要备份”后，不再建立数GiB归档；取消并删除本轮生成副本，保留Git有效源码与真实运行数据。大tar内容去重方案仅为已取消尝试，不宣称保全完成。见2026-11-12功能提交与清理case。

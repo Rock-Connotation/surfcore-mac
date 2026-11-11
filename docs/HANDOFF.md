@@ -1,3 +1,9 @@
+## 2026-11-12 功能收拢与清理完成
+
+QQ修复四批4b86c0d、03e4581、7227f5f、2b9d625已合dev（合并5bef7e1），保留主线Phase A–E。主目录当前dev，仅余main/dev两个分支和主目录一个worktree；main保持9eb4028。指定七目录及本次归档/临时测试副本按用户明确“无当前业务用途就删、不备份”授权删除，未迁移为另一份大备份。当前DSH独立程序、真实用户数据、记忆、配置与既有运行回滚目录未动。
+
+合并候选2210660已过audit195/195、协议17、完整插件（含34插件Memory脚本）、全Memory49及Phase A–E；最终仅交接文档/清单变化。无改版本/push/tag/发布、未重新部署合并HEAD。提交、清理边界与完整逻辑见[case](cases/2026-11-12-functional-commits-and-safe-cleanup.md)。以下按时间保留历史记录，早期“未提交/待授权/进行中”不代表当前状态。
+
 ## 2026-11-12 01:49 QQ语音、群@、白名单入口与L2已真实验收
 
 - 最终本地候选tree `3927fa47d90265e5ae6db33310935005efa75e90`（未提交，分支fix/qq-reply-discovery基线748afe6）。常用desktop实装400项一致/0不符，官方SurfCore禁用→启用均applied；五份profile声明文件SHA未变，整App未重启。QQ正式入口重启后PID28234、dshReady=true、failures=[]。
