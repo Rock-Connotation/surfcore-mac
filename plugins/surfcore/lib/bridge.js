@@ -145,7 +145,7 @@ export function mapStatusPayload(data = {}, { port = consolePort(), pid } = {}) 
     dshReady: payload.dshReady === true,
     memoryV2: payload.memoryV2 ?? null,
     replyReady: payload.dshReady === true && payload.snowluma?.connected === true && payload.snowluma?.accountOnline === true && !memoryFailure,
-    replyFailure: memoryFailure ? { code: memoryFailure.code, error: 'QQ 回复被记忆安全检查阻断。', hint: memoryFailure.code === 'MEMORY_DISCOVERY_INVALID' ? '重启 QQ 桥接以加载匹配的宿主接口；若仍失败，在记忆页检查当前角色和权限。' : '打开记忆页核对当前角色、QQ 账号与精确模型权限，再发送一条新消息。' } : null,
+    replyFailure: memoryFailure ? { code: memoryFailure.code, error: /^VOICE_/.test(memoryFailure.code) ? 'QQ 语音回复未完成。' : 'QQ 回复未完成。', hint: memoryFailure.code === 'MEMORY_DISCOVERY_INVALID' ? '重启 QQ 桥接以加载匹配的宿主接口；若仍失败，检查当前角色和接口状态。' : /^VOICE_/.test(memoryFailure.code) ? memoryFailure.hint || '在语音页检查服务、触发规则和额度；先核对原回执，不要重复发送。' : '打开 QQ 页的白名单回复设置，核对当前会话、账号与精确模型处理许可，再发送一条新消息。' } : null,
     mode: payload.mode ?? payload.currentMode ?? null,
     dsh: payload.dsh ?? null,
     snowluma: payload.snowluma ?? null,

@@ -462,7 +462,7 @@ async function nativeQQSourceCycle() {
   const budget = createTokenBudgetService({ ctx: {}, dshHome: f.dir, qqStateDir: path.join(f.dir, 'state') });
   budget.saveLimits({ qq: { cny: null, tokens: 100 }, bili: { cny: null, tokens: null }, other: { cny: null, tokens: null }, total: { cny: null, tokens: null } });
 
-  let owner, providerCalls = 0, toolCalls = 0;
+  let owner, providerCalls = 0, toolCalls = 0, voiceCycle = false, voiceModelCalls = 0;
   const deadline = async promise => {
     let timer;
     try {
@@ -484,6 +484,13 @@ async function nativeQQSourceCycle() {
       async *stream(options) {
         providerCalls++;
         assert.ok(JSON.stringify(options.messages).includes(marker), 'actual SDK request must include earlier Core memory');
+        if (voiceCycle && ++voiceModelCalls === 1) {
+          assert.equal(options.tools.length, 1); assert.equal(options.tools[0].name, 'qq_send_voice');
+          yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } };
+          yield { type: 'block-end', index: 0, block: { type: 'text', text: 'Intermediate text must never be sent.' } };
+          yield { type: 'block-end', index: 1, block: { type: 'tool-call', id: 'native-voice-intent', name: 'qq_send_voice', arguments: JSON.stringify({ text: 'Hello blue voice' }) } };
+          yield { type: 'finish', reason: { kind: 'tool-calls' } }; return;
+        }
         if (providerCalls === 1) {
           yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } };
           yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'call-tool-qq-1', name: 'qq_reply', arguments: JSON.stringify({ text: 'Hello blue' }) } };
@@ -608,6 +615,24 @@ async function nativeQQSourceCycle() {
     assert.deepEqual(network, []);
     console.log('PASS production QQ reply Host + installed Native SDK + Core + private bridge: 1 complete reply, 1 fake QQ ACK, 0 external calls');
 
+    voiceCycle = true;
+    good(await f.bridge.captureSource({ key: 'group:900', loginAccountId: '100', actorAccountId: '200', objectId: 'native-host-voice', text: marker + ' Please reply by voice.' }));
+    good(await f.bridge.prepareReply({ key: 'group:900' }));
+    let voiceSends = 0;
+    const voiceChannel = createNativeQQChannel({ memory: f.bridge, getCharacter: f.getCharacter, getIdentity: f.getQQIdentity,
+      isAllowed: () => true, getCapabilities: () => ({ ok: true, voice: { enabled: true, maxChars: 120 } }),
+      send: async (_key, text, options) => { await options.validate(); assert.equal(options.delivery, 'voice'); assert.equal(text, 'Hello blue voice'); voiceSends++; return { ok: true, messageId: '124' }; }, onComplete: () => {} });
+    const voiceRequest = good(voiceChannel.begin('group:900', f.getCharacter(), 2)).request;
+    const voiceHost = createQQV2ReplyHost({ ctx: outer, memoryV2: { adapter: f.adapter, getRouting: () => f.bridge.routing() }, tokenBudget: budget,
+      getCharacter: f.getCharacter, getQQIdentity: f.getQQIdentity, readPersona: () => persona,
+      loadEnvironment: async () => ({ nativeModules: bootstrapModules, nativeCodec: actual, llm: outer.get('llm'), getLlmHookContext: () => outer }),
+      callBridge: async (_url, { body }) => { const data = await voiceChannel.request(body); return { ok: data.ok, status: data.ok ? 200 : 409, data }; } });
+    good(voiceHost.submit(voiceRequest)); await deadline(voiceHost.whenIdle());
+    assert.equal(voiceHost.getReceipt(voiceRequest.requestId)?.delivered, true, JSON.stringify(voiceHost.getReceipt(voiceRequest.requestId)));
+    assert.equal(voiceSends, 1); assert.equal(voiceModelCalls, 2);
+    good(await voiceHost.close()); assert.deepEqual(network, []);
+    console.log('PASS production Native voice tool: actual SDK witness + Core ledger + one voice intent + one fake ACK, no intermediate/final duplicate text, 0 network');
+
     const evidenceDir = path.resolve('_backups/memory-v2-coordinator/qq-source-runtime-independent');
     fs.mkdirSync(evidenceDir, { recursive: true });
     const evidence = {
@@ -617,6 +642,8 @@ async function nativeQQSourceCycle() {
       tokens: (await budget.status()).usage.total.tokens,
       gates: providerCalls,
       productionHostReplies: nativeSends,
+      productionHostVoiceReplies: voiceSends,
+      productionVoiceModelCalls: voiceModelCalls,
       admittedInputs: status.admittedInputs,
       committedOutputs: status.committedOutputs,
       sentLeases: status.sentLeases,

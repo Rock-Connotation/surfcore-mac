@@ -14,14 +14,6 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-const originalConnect = net.connect, originalFetch = globalThis.fetch;
-net.connect = () => {
-  const socket = new EventEmitter(); socket.setTimeout = () => socket; socket.destroy = () => socket;
-  queueMicrotask(() => socket.emit('error', new Error('offline fixture'))); return socket;
-};
-globalThis.fetch = async () => { throw new Error('offline fixture'); };
-
-
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-platform-host-'));
 const stateDir = path.join(tmp, 'surfcore');
 fs.mkdirSync(stateDir, { recursive: true });
@@ -68,6 +60,7 @@ const ctx = {
   webServer: { register(route) { routes.push(route); return () => {}; } },
   get(name) {
     if (name === 'connection') return { requestRejection: () => false };
+    if (name === 'webServer') return { protocol: 'http:', port: 12345 };
     return null;
   },
   effect(fn) { effects.push(fn); return () => {}; },

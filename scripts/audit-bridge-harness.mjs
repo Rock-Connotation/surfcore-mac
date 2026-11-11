@@ -124,7 +124,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   // 所以这里给 VM 注入一个记录型 fetch：既不让测试真的发 QQ 消息，又能断言发出的段内容。
   const fakeFetch = async (url, init = {}) => {
     const body = (() => { try { return JSON.parse(init.body ?? '{}'); } catch { return init.body; } })();
-    calls.http.push({ url: String(url), body });
+    calls.http.push({ url: String(url), body, signal: init.signal });
     const action = String(url).split('/').pop();
     // 本地 TTS（voxd）：返回一个最小合法 wav，别让测试去连真实服务。
     if (String(url).includes('/v1/speak/file')) {
@@ -248,7 +248,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // 对话收尾判断：测试可直接调内部函数（不连真 QQ）。
     closeConversationV2, assessClosureV2, closureConfigV2, closureSuppressesWake, noteClosureReopenV2,
     voiceCfg, voiceTriggerBlock, voiceMentionAt, voiceOwnerAt, voiceLastSentAt, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText, readConfigObject, atomicWriteJson,
-    voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
+    voiceBudgetCheck, sendVoiceTransport, sendVoiceV2, sendVoiceForV2, sendNativeQQReply, getNativeQQCapabilities, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
     setMode(value) { currentMode = value; },
     getModelStatus() { return modelStatusState; },
     setReady(value) { dshReady = value; },
