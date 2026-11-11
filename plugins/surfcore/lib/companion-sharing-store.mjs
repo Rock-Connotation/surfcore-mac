@@ -14,11 +14,19 @@ function checkRecord(value) {
     request: ['openingId', 'requestId', 'text', 'owner', 'pid'], answer: ['openingId', 'requestId', 'text'],
     failure: ['openingId', 'requestId', 'code', 'error', 'hint'], ack: ['openingId'],
   }[value.kind];
-  if (Object.keys(value).some(key => !['version', 'kind', 'id', 'epoch', 'at', ...allowed].includes(key))) throw unavailable();
+  if (Object.keys(value).some(key => !['version', 'kind', 'id', 'epoch', 'at', ...allowed, 'memoryV2Refs', 'memoryV2Receipts', 'sourceState', 'modelState'].includes(key))) throw unavailable();
   for (const key of ['openingId', 'requestId', 'jobId', 'sourceId']) {
     if (value[key] !== undefined && !safeDisplayText(value[key], 160)) throw unavailable();
   }
-  if (['opening', 'request', 'answer'].includes(value.kind) && !safeDisplayText(value.text, value.kind === 'request' ? 1000 : 600)) throw unavailable();
+  if (['opening', 'request', 'answer'].includes(value.kind) && !safeDisplayText(value.text, value.kind === 'request' && value.memoryV2Refs ? 6000 : value.kind === 'request' ? 1000 : 600)) throw unavailable();
+  if (value.memoryV2Refs !== undefined) {
+    if (!Array.isArray(value.memoryV2Refs) || value.memoryV2Refs.length < 1 || value.memoryV2Refs.length > 100 ||
+        value.memoryV2Refs.some(ref => !ref || !['event', 'memory'].includes(ref.type) || typeof ref.id !== 'string' || ref.id.length > 256 || !Number.isSafeInteger(ref.revision) || !/^[a-f0-9]{64}$/.test(ref.payloadDigest)) ||
+        !Array.isArray(value.memoryV2Receipts) || value.memoryV2Receipts.length < 1 || value.memoryV2Receipts.length > 100 ||
+        value.memoryV2Receipts.some(receipt => receipt?.ok !== true || receipt.sourceState !== 'committed' || receipt.operationState !== 'completed' || typeof receipt.operationId !== 'string' || !Number.isSafeInteger(receipt.commitSequence) || receipt.commitSequence < 1 || !Array.isArray(receipt.eventIds) || !Array.isArray(receipt.eventRefs) || !receipt.eventIds.length || receipt.eventIds.length !== receipt.eventRefs.length || receipt.eventRefs.some(ref => ref?.type !== 'event' || ref.revision !== 1 || !receipt.eventIds.includes(ref.id) || !/^[a-f0-9]{64}$/.test(ref.payloadDigest)))) throw unavailable();
+  }
+  if (value.sourceState !== undefined && !['committed', 'commit_unknown', 'pending'].includes(value.sourceState)) throw unavailable();
+  if (value.modelState !== undefined && !['completed', 'failed', 'not_started'].includes(value.modelState)) throw unavailable();
   if (value.kind === 'request' && (value.owner !== undefined || value.pid !== undefined) &&
       (!/^\d+:[0-9a-f-]{36}$/.test(value.owner || '') || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !value.owner.startsWith(`${value.pid}:`))) throw unavailable();
   if (value.kind === 'opening' && (!/^\d{1,32}$/.test(value.sourceId) || !/^douyin-[0-9a-f-]{36}$/.test(value.jobId) ||
@@ -88,7 +96,11 @@ export function createSharingStore(stateDir) {
       if (!stat.isFile() || stat.size + data.length > MAX_BYTES) throw problem('DOUYIN_CHAT_ARCHIVE_LIMIT', '本机对话归档已达到大小上限，未删除旧记录。', '保留原 sharing.jsonl 并整理归档后再继续对话。');
       checkBeforeWrite();
       let written = 0;
-      while (written < data.length) written += fs.writeSync(fd, data, written, data.length - written);
+      while (written < data.length) {
+        const progress = fs.writeSync(fd, data, written, data.length - written);
+        if (!Number.isInteger(progress) || progress <= 0) throw problem('DOUYIN_CHAT_WRITE_FAILED', '伙伴对话写入未取得进展，已停止保存。', '保留原记录并检查磁盘空间或权限；不要重复发送。');
+        written += progress;
+      }
       fs.fsyncSync(fd);
       // Match the existing memory archive contract: Windows cannot supply a
       // POSIX directory-fsync handle; the append itself is still fsynced.

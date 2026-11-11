@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -29,7 +30,25 @@ process.env.SURFCORE_SKIP_AUTOSTART = '1';
 process.env.SURFCORE_DISABLE_CHARACTER_MIGRATION = '1';
 process.env.SURFCORE_DISABLE_MEMORY_TIMER = '1';
 
-const { apply } = await import('../lib/index.js');
+const originalConnect = net.connect;
+const originalFetch = globalThis.fetch;
+const statusProbes = [];
+const unexpectedNetwork = [];
+net.connect = (options) => {
+  statusProbes.push({ host: options.host, port: options.port });
+  if (options.host !== '127.0.0.1' || ![3100, 8765, 8767, 9880].includes(options.port)) {
+    unexpectedNetwork.push('unexpected TCP target');
+  }
+  const socket = new EventEmitter();
+  socket.setTimeout = () => socket;
+  socket.destroy = () => socket;
+  process.nextTick(() => socket.emit('error', Object.assign(new Error('fixture bridge unavailable'), { code: 'ECONNREFUSED' })));
+  return socket;
+};
+globalThis.fetch = async () => {
+  unexpectedNetwork.push('unexpected fetch');
+  throw new Error('network disabled in voice management Host fixture');
+};
 
 const routes = [];
 const effects = [];
@@ -77,6 +96,7 @@ async function invoke(route, method, url, body) {
 }
 
 try {
+  const { apply } = await import('../lib/index.js');
   apply(ctx);
   const api = routes.find((route) => route.path === '/dsh-surfcore/api');
   assert.ok(api, 'API 路由没有注册');
@@ -109,7 +129,9 @@ try {
   assert.equal(deniedStop.data.ok,false,'unknown management state must never be reported stopped');
   assert.equal(deniedStop.data.items[0].code,'VOICE_MANAGEMENT_BUSY');assert(deniedStop.data.items[0].hint);
   fs.unlinkSync(ownerLock);
-  console.log('voice management actual Host route: QQ-off reads, launch state, guarded start/check/stop passed');
+  assert.ok(statusProbes.some(probe => probe.port === 3100), 'Host overview must probe fixture bridge availability');
+  assert.deepEqual(unexpectedNetwork, [], 'fixture must not attempt fetch or probe another network target');
+  console.log('voice management actual Host route: QQ-off reads, launch state, guarded start/check/stop passed (network isolated)');
 
 } finally {
   for (const fn of effects) {
@@ -118,5 +140,7 @@ try {
       if (typeof dispose === 'function') dispose();
     } catch {}
   }
+  net.connect = originalConnect;
+  globalThis.fetch = originalFetch;
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
 }

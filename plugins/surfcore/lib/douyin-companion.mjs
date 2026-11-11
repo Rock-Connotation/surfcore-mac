@@ -1,12 +1,16 @@
 import path from 'node:path';
+import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
+import { createCompanionMemory } from './douyin-companion-memory.mjs';
+import { COMPANION_ROUTE } from './douyin-companion-model.mjs';
 import crypto from 'node:crypto';
 import { createDouyinCompanionStore } from './douyin-companion-ledger.mjs';
 import { buildDouyinReflectionSystem, parseDouyinReflection } from './douyin-companion-reflection.mjs';
 import {
-  CompanionError, problem, check, isRecord, safeCode, safeDisplayText, scrubPromptText,
+  CompanionError, problem, check, isRecord, safeCode as legacySafeCode, safeDisplayText, scrubPromptText,
   normalizeRole, roleKey, timestamp, safeSourceUrl, safeSourceId, frameImage, cleanCoverage, shanghaiParts,
 } from './douyin-companion-utils.mjs';
 
+const safeCode = (value, fallback) => /^(?:MEMORY|MODEL|COMPANION|CHARACTER|BUDGET)_[A-Z0-9_]{1,72}$/.test(String(value ?? '')) ? value : legacySafeCode(value, fallback);
 const MAX_ACCEPTANCE_CALLS = 12;
 const MAX_DAILY_ROUNDS = 2;
 const MAX_DAILY_CALLS = 8;
@@ -31,8 +35,9 @@ function contextSection(built, kind) {
 }
 export function createDouyinCompanion({
   stateDir, getCharacter, readFeed, perceive, modelCall, buildContext, recordMemory, recordSharing = null, readiness,
-  now = () => new Date(), callbackTimeoutMs = 180_000,
+  memoryV2, getModelRequest, now = () => new Date(), callbackTimeoutMs = 180_000,
 } = {}) {
+  const v2 = createCompanionMemory({ stateDir, getCharacter, memoryV2 });
   if (!path.isAbsolute(String(stateDir ?? '')) || typeof getCharacter !== 'function' || typeof readFeed !== 'function' ||
       typeof perceive !== 'function' || typeof modelCall !== 'function' || typeof buildContext !== 'function' ||
       typeof recordMemory !== 'function' || (recordSharing !== null && typeof recordSharing !== 'function') || typeof readiness !== 'function') {
@@ -180,6 +185,7 @@ export function createDouyinCompanion({
       hint: safeDisplayText(item.hint, 300) || null,
     } : { code: null, error: null, hint: null };
     return {
+      ...(item.memoryV2Refs ? { memoryV2Refs: item.memoryV2Refs, memoryV2Receipts: item.memoryV2Receipts, memoryV2Receipt: item.memoryV2Receipt } : {}),
       id: safeSourceId(item.id) || '',
       url: safeSourceUrl(item.url) || '',
       title: safeDisplayText(item.title, 240),
@@ -219,6 +225,7 @@ export function createDouyinCompanion({
     return {
       ok: true,
       jobId: /^douyin-[0-9a-f-]{36}$/.test(String(job.jobId)) ? job.jobId : '',
+      ...(job.memoryV2Refs ? { memoryV2Refs: job.memoryV2Refs, memoryV2Receipts: job.memoryV2Receipts, memoryV2Receipt: job.memoryV2Receipt } : {}),
       mode: ['acceptance', 'daily'].includes(job.mode) ? job.mode : 'acceptance',
       state: JOB_STATES.has(job.state) ? job.state : 'failed',
       phase: JOB_PHASES.has(job.phase) ? job.phase : 'failed',
@@ -331,6 +338,14 @@ export function createDouyinCompanion({
     job.calls += 1;
     saveJob(ledger, job);
   }
+  function retainProvenance(job, item, saved, phase) {
+    const receipt = { ...saved.receipt, phase };
+    for (const target of [job, item]) {
+      target.memoryV2Refs = [...(target.memoryV2Refs ?? []), ...saved.refs];
+      target.memoryV2Receipts = [...(target.memoryV2Receipts ?? []), receipt];
+      target.memoryV2Receipt = receipt;
+    }
+  }
   async function processOne(job, context, entry, index, sharedContext, trustedPersona = '') {
     const activityId = `${job.jobId}-${index + 1}`;
     const runtime = runtimes.get(job.jobId);
@@ -345,9 +360,13 @@ export function createDouyinCompanion({
       partial: true,
       coverage: { status: 'partial', transcriptComplete: false, missingRanges: 0, visualCoverage: 'none', frameSamples: 0, warningCount: 0, acceptanceQualified: false },
     };
+    let session;
     job.items.push(item);
     saveJob(localLedger, job);
     try {
+      const routing = v2.routing();
+      check(routing.ok, routing.code, routing.error, routing.hint);
+      if (routing.backend === 'v2') session = await v2.capture(context, 'douyin:homepage-recommendation');
       const input = { id: entry.id, url: entry.url, title: entry.title, durationMs: entry.durationMs, mediaSource: entry.mediaSource, mediaUserAgent: entry.mediaUserAgent };
       job.phase = 'perceive'; saveJob(localLedger, job);
       let perceived;
@@ -374,6 +393,12 @@ export function createDouyinCompanion({
       const partial = !coverage.complete || coverage.missingRanges.length > 0 || visualCoverage !== 'complete';
       item.coverage = { status: 'partial', transcriptComplete: coverage.complete, missingRanges: coverage.missingRanges.length, visualCoverage, frameSamples: images.length, warningCount: Math.min(100, warnings), acceptanceQualified: false };
       saveJob(localLedger, job);
+      if (session) {
+        const saved = await v2.observe(session, { jobId: job.jobId, activityId, entry, perceived, images });
+        retainProvenance(job, item, saved, 'source'); saveJob(localLedger, job);
+        const built = await v2.prepareStep(session, JSON.stringify({ objectId: entry.id, transcript: transcriptText }));
+        sharedContext = built.memoryText; trustedPersona = built.personaText;
+      }
       check(transcriptText.length <= 50_000, 'DOUYIN_TRANSCRIPT_TOO_LARGE', '转写内容超过本地单条输入上限，未提交模型。', '选择更短的推荐视频或调整本地转写长度限制。');
       check(images.length > 0, 'DOUYIN_FRAMES_UNAVAILABLE', '没有可用的稀疏画面采样，未调用模型。', '补齐本机画面采样后再手动验收；音频单独不足以完成本轮。');
       check(transcriptText.length > 0 && coverage.speechState === 'speech', 'DOUYIN_TRANSCRIPT_EMPTY', '没有可确认的语音转写用于解释这条推荐。', '选择含可辨语音的推荐视频后再手动验收。');
@@ -390,18 +415,39 @@ export function createDouyinCompanion({
       if (trustedPersona.trim()) inputPayload.persona = scrubPromptText(trustedPersona, 4_000);
       const system = buildDouyinReflectionSystem({ sharingEnabled: typeof recordSharing === 'function', trustedPersonaIncluded: Boolean(trustedPersona.trim()) });
       const prompt = JSON.stringify(inputPayload);
+      let requestMetadata;
+      if (session) {
+        const bound = await v2.bindStep(session, { system, prompt, images });
+        retainProvenance(job, item, bound, 'model-input');
+        check(typeof getModelRequest === 'function', 'DOUYIN_MODEL_METADATA_REQUIRED', 'V2缺少可信逐步预算请求元数据。', '接入Host稳定请求编号、真实路由与估计量；不会猜测价格或编号。');
+      }
+      if (typeof getModelRequest === 'function') {
+        requestMetadata = getModelRequest({ jobId: job.jobId, activityId, step: index + 1, characterId: context.characterId, characterEpoch: context.characterEpoch,
+          providerRouteId: deriveMemoryProviderRouteId(COMPANION_ROUTE).providerRouteId, model: COMPANION_ROUTE.model, system, prompt, images });
+        check(requestMetadata && typeof requestMetadata.then !== 'function', 'DOUYIN_MODEL_METADATA_REQUIRED', '预算请求元数据必须由可信同步回调提供。', '按实际步骤提供稳定请求编号与路由。');
+      }
+      if (session) check(requestMetadata.providerRouteId === session.sourceStamp.providerRouteId && requestMetadata.model === COMPANION_ROUTE.model && requestMetadata.role === context.characterId && requestMetadata.epoch === context.characterEpoch, 'COMPANION_ROUTE_MISMATCH', '逐步模型元数据与原始上下文授权不一致。', '核对固定provider/model与旧句柄授权后重新开始，不会改写旧grant。');
+      const beforeSend = async ({ phase } = {}) => {
+        assertRole(job, context);
+        if (session) await v2.validate(session, phase !== 'completion');
+        else { const route = v2.routing(); check(route.ok && route.backend === 'v1', route.code || 'MEMORY_ROUTING_CHANGED', route.error || '活动期间记忆路由已变化。', route.hint || '以当前可信路由重新开始。'); }
+        return { ok: true };
+      };
+      await beforeSend();
       reserveCall(job);
       job.phase = 'model'; saveJob(localLedger, job);
       let result;
       try {
         result = await guarded(job, context, () => modelCall({
-          system, prompt, images, signal: runtime.controller.signal, maxTokens: MODEL_MAX_TOKENS, timeoutMs: MODEL_TIMEOUT_MS,
+          system, prompt, images, requestMetadata, beforeSend, ...(session ? { admitNetwork: (dispatch, options) => v2.admitNetwork(session, dispatch, options) } : {}), signal: runtime.controller.signal, maxTokens: MODEL_MAX_TOKENS, timeoutMs: MODEL_TIMEOUT_MS,
         }), MODEL_TIMEOUT_MS, problem('DOUYIN_MODEL_TIMEOUT', '模型调用超过180秒上限，活动已取消。', '检查模型连接与已用请求数；失败请求仍计入额度，不会自动重试。'));
       } catch (error) {
         if (runtime.controller.signal.aborted) throw error;
+        if (session && error?.code) throw error;
         throw problem('DOUYIN_MODEL_FAILED', '模型调用失败。', '检查模型连接和请求账本；不会自动客户端重试。');
       }
       check(isRecord(result) && typeof result.text === 'string' && ['stop', 'end_turn', 'completed'].includes(String(result.finishReason ?? '')), 'DOUYIN_MODEL_INCOMPLETE', '模型没有正常完成并返回文本。', '检查模型服务状态；失败请求仍计入额度，不会自动重试。');
+      if (session) await v2.validate(session);
       const review = parseDouyinReflection(result.text, { sharingEnabled: typeof recordSharing === 'function' });
       item.state = partial ? 'partial' : 'completed';
       item.feeling = review.feeling;
@@ -423,13 +469,15 @@ export function createDouyinCompanion({
       let memory;
       try {
         assertRole(job, context);
-        memory = await guarded(job, context, () => recordMemory(context, memoryPayload, { signal: runtime.controller.signal }), operationTimeout,
+        memory = await guarded(job, context, () => session ? v2.reflect(session, memoryPayload) : recordMemory(context, memoryPayload, { signal: runtime.controller.signal }), operationTimeout,
           problem('DOUYIN_MEMORY_TIMEOUT', '记忆写入等待超时，活动已停止。', '检查Host记忆服务与请求状态；不会自动重复写入。'));
       } catch (error) {
         if (runtime.controller.signal.aborted) throw error;
+        if (session && error?.code) throw error;
         throw problem('DOUYIN_MEMORY_FAILED', '模型结果未能写入当前角色记忆。', '检查Host记忆服务与角色归属；原始草稿仍在本机作业状态中。');
       }
       check(memory?.ok === true, safeCode(memory?.code, 'DOUYIN_MEMORY_FAILED'), safeDisplayText(memory?.error, 240) || '模型结果未能写入当前角色记忆。', safeDisplayText(memory?.hint, 300) || '检查Host记忆服务与角色归属后再手动恢复。');
+      if (session) { retainProvenance(job, item, memory, 'reflection'); await v2.validate(session); }
       item.state = partial ? 'partial' : 'completed';
       item.partial = partial;
       item.memorySaved = true;
@@ -448,6 +496,7 @@ export function createDouyinCompanion({
             share: review.share,
             question: review.question,
             coverage: item.coverage,
+            ...(session ? { memoryV2Refs: job.memoryV2Refs, memoryV2Receipts: job.memoryV2Receipts, memoryV2Receipt: job.memoryV2Receipt } : {}),
           }, { signal: runtime.controller.signal }), operationTimeout,
           problem('DOUYIN_SHARING_SAVE_FAILED', '自然开场没有保存到本机日记。', '观看记忆已保存；检查本地分享记录服务后手动恢复，不会自动重试。'));
           check(saved?.ok === true, 'DOUYIN_SHARING_SAVE_FAILED', '自然开场没有保存到本机日记。', '观看记忆已保存；检查本地分享记录服务后手动恢复，不会自动重试。');
@@ -457,6 +506,13 @@ export function createDouyinCompanion({
         }
       }
     } catch (error) {
+      if (session || memoryV2 || /^(?:MEMORY|CHARACTER)_/.test(error?.code ?? '')) {
+        const blocked = await v2.blocked(session, error, { jobId: job.jobId, characterId: context.characterId, characterEpoch: context.characterEpoch });
+        error = Object.assign(new Error(blocked.error), blocked);
+        const runtime = runtimes.get(job.jobId);
+        if (runtime) { runtime.cancelReason = error; runtime.controller.abort(); }
+        delete item.feeling; delete item.reason; delete item.summary; delete item.draft;
+      }
       const failure = failObject(error);
       item.state = item.feeling ? 'partial' : 'skipped';
       item.partial = true;
@@ -465,7 +521,7 @@ export function createDouyinCompanion({
       item.hint = failure.hint;
       saveJob(localLedger, job);
       throw error;
-    }
+    } finally { v2.release(session); }
   }
   async function runJob(job, context) {
     startRoleWatch(job, context);
@@ -493,8 +549,10 @@ export function createDouyinCompanion({
       }
       if (!candidates.length) throw problem('DOUYIN_NO_QUALIFIED_MATERIAL', '首页推荐中没有时长合规且来源可验证的素材。', '检查首页推荐是否可用；没有合格素材时不会调用模型或记为观看。');
       job.phase = 'context'; saveJob(localLedger, job);
+      const route = v2.routing();
+      check(route.ok, route.code, route.error, route.hint);
       let built;
-      try { built = await guarded(job, context, () => buildContext(context)); }
+      try { built = route.backend === 'v2' ? { ok: true, text: '', memoryText: '', personaText: '' } : await guarded(job, context, () => buildContext(context)); }
       catch (error) { if (runtimes.get(job.jobId).controller.signal.aborted) throw error; throw problem('DOUYIN_CONTEXT_FAILED', '无法读取当前角色的记忆上下文。', '检查当前角色和Host记忆服务后重新手动验收。'); }
       check(built?.ok === true && typeof built.text === 'string', safeCode(built?.code, 'DOUYIN_CONTEXT_FAILED'), safeDisplayText(built?.error, 240) || '无法读取当前角色的记忆上下文。', safeDisplayText(built?.hint, 300) || '检查当前角色和Host记忆服务后重新手动验收。');
       const trustedPersona = contextSection(built, 'persona') ?? (typeof built.personaText === 'string' ? built.personaText : '');
@@ -516,6 +574,10 @@ export function createDouyinCompanion({
         day.windows[job.scheduleWindow] = { state: 'completed', jobId: job.jobId, startedAt: day.windows[job.scheduleWindow]?.startedAt ?? job.createdAt, completedAt: nowIso() };
       }
     } catch (error) {
+      if (!runtimes.get(job.jobId)?.cancelReason && /^(?:MEMORY|CHARACTER)_/.test(error?.code ?? '')) {
+        const blocked = await v2.blocked(null, error, { jobId: job.jobId, characterId: context.characterId, characterEpoch: context.characterEpoch });
+        error = Object.assign(new Error(blocked.error), blocked);
+      }
       const issue = runtimes.get(job.jobId)?.cancelReason ?? (error instanceof CompanionError ? error : failObject(error));
       const failure = failObject(issue);
       job.code = failure.code; job.error = failure.error; job.hint = failure.hint;
@@ -604,9 +666,68 @@ export function createDouyinCompanion({
     if (!isRecord(options)) return Promise.resolve(callIssue(problem('DOUYIN_MODE_INVALID', '陪伴活动模式参数无效。', '使用手动验收模式启动。')));
     const mode = options.mode ?? 'acceptance';
     if (mode !== 'acceptance') return Promise.resolve(callIssue(problem(mode === 'daily' ? 'DOUYIN_DAILY_TICK_REQUIRED' : 'DOUYIN_MODE_INVALID', mode === 'daily' ? '日常活动只能由本地tick触发。' : '陪伴活动模式无效。', '等待上海时间12:30或20:30窗口，或使用手动验收模式。')));
-    return startJob(context, 'acceptance');
+    return startJob(context, 'acceptance').then(value => response(context, value));
+  }
+  const responseLeases = new Map();
+  const responseDigest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const hasProof = value => Array.isArray(value?.memoryV2Refs) && value.memoryV2Refs.length > 0 && Array.isArray(value.memoryV2Receipts) && value.memoryV2Receipts.length > 0;
+  function releaseResponse(value) {
+    const lease = responseLeases.get(value);
+    if (lease) { v2.release(lease.session); responseLeases.delete(value); }
+  }
+  async function validateResponse(context, value) {
+    try {
+      const role = requireCurrentRole(context), route = v2.routing();
+      check(route.ok, route.code, route.error, route.hint);
+      const lease = responseLeases.get(value);
+      if (route.backend === 'v1' && !lease) return { ok: true };
+      check(route.backend === 'v2' && lease && lease.role.id === role.id && lease.role.epoch === role.epoch && lease.digest === responseDigest(value),
+        'MEMORY_RESPONSE_UNTRUSTED', '本次日记响应没有完整的当前授权凭据。', '刷新当前角色日记；不要复用或改写旧响应。');
+      await v2.validate(lease.session);
+      check(v2.routing().backend === 'v2', 'MEMORY_ROUTING_CHANGED', '响应期间记忆后端已变化。', '以当前可信路由刷新日记。');
+      requireCurrentRole(context);
+      check(lease.digest === responseDigest(value), 'MEMORY_RESPONSE_UNTRUSTED', '等待期间日记响应已变化。', '重新读取日记后再展示。');
+      return { ok: true };
+    } catch (error) { return callIssue(error); }
+  }
+  async function response(context, value) {
+    let session;
+    try {
+      const route = v2.routing(); check(route.ok, route.code, route.error, route.hint);
+      if (route.backend === 'v1' || value?.ok !== true) return value;
+      const role = requireCurrentRole(context), stamp = contextStamp(context, role);
+      const safeJob = job => {
+        if (!job) return null;
+        if (hasProof(job) && job.items.every(hasProof)) return job;
+        if (activeJob?.jobId === job.jobId && ACTIVE.has(job.state)) {
+          const items = job.items.filter(hasProof);
+          return { ...job, items };
+        }
+        return null;
+      };
+      if (Array.isArray(value.recentJobs)) {
+        value = { ...value, recentJobs: value.recentJobs.map(safeJob).filter(Boolean), activeJob: safeJob(value.activeJob) };
+        const visible = new Set(value.recentJobs.map(job => job.jobId));
+        value.daily = { ...value.daily, windows: Object.fromEntries(Object.entries(value.daily.windows).filter(([, entry]) => visible.has(entry.jobId))) };
+      } else if (value.jobId && !safeJob(value)) return callIssue(problem('MEMORY_RESPONSE_PROVENANCE_REQUIRED', '旧活动缺少完整来源授权，已停止展示。', '保留原账本并完成来源迁移后再查看；不会回退旧记忆。'));
+      else if (value.jobId) value = safeJob(value);
+      const jobs = Array.isArray(value.recentJobs) ? [...value.recentJobs, value.activeJob].filter(Boolean) : value.jobId ? [value] : [];
+      const refs = [...new Map(jobs.flatMap(job => [...(job.memoryV2Refs ?? []), ...job.items.flatMap(item => item.memoryV2Refs ?? [])]).map(ref => [JSON.stringify(ref), ref])).values()];
+      session = await v2.capture(stamp, 'douyin:homepage-recommendation');
+      const bound = await memoryV2.adapter.bindActualInput(session.handle, refs);
+      check(bound?.ok === true, bound?.code || 'MEMORY_RESPONSE_DENIED', bound?.error || '日记来源未获当前展示授权。', bound?.hint || '核对当前来源权限后刷新日记。');
+      await v2.validate(session);
+      responseLeases.set(value, { session, role, digest: responseDigest(value) });
+      session = null;
+      return value;
+    } catch (error) { return callIssue(error); }
+    finally { v2.release(session); }
   }
   async function status(context) {
+    const role = context ?? currentRole();
+    return response(context ?? { characterId: role?.id, characterEpoch: role?.epoch }, await statusValue(context));
+  }
+  async function statusValue(context) {
     let role;
     try {
       role = context === undefined || context === null ? currentRole() : requireCurrentRole(context);
@@ -656,7 +777,8 @@ export function createDouyinCompanion({
       recentJobs: visibleJobs,
     };
   }
-  async function cancel(context) {
+  async function cancel(context) { return response(context, await cancelValue(context)); }
+  async function cancelValue(context) {
     return serialize(async () => {
       let role;
       try { role = requireCurrentRole(context); }
@@ -699,7 +821,7 @@ export function createDouyinCompanion({
   }
   function configure(context, options = {}) {
     const enabled = isRecord(options) ? options.enabled : undefined;
-    if (enabled !== false) return serialize(() => configureCore(context, enabled));
+    if (enabled !== false) return serialize(() => configureCore(context, enabled)).then(value => response(context, value));
     return transition(() => configureCore(context, false, true), {
       beforeAbort: () => {
         if (disposed) return callIssue(problem('DOUYIN_CLOSED', '陪伴服务已关闭。', '重新打开服务后查看保留的状态。'));
@@ -708,7 +830,7 @@ export function createDouyinCompanion({
         catch (error) { return callIssue(error); }
       },
       cancelReason: problem('DOUYIN_CHANNEL_DISABLED', '抖音陪伴已关闭，当前活动已停止。', '查看已保留结果；重新启用日常活动前确认当前角色验收状态。'),
-    });
+    }).then(value => response(context, value));
   }
   async function tick() {
     if (disposed) return callIssue(problem('DOUYIN_CLOSED', '陪伴服务已关闭。', '重新打开服务后再运行本地tick。'));
@@ -722,7 +844,7 @@ export function createDouyinCompanion({
     const result = await startJob(context, 'daily', scheduled.window);
     const after = currentRole();
     if (!after || after.id !== role.id || after.epoch !== role.epoch) return callIssue(problem('DOUYIN_STALE_CHARACTER', '日常窗口触发期间角色已切换。', '已停止后续模型和记忆写入；以当前角色重新验收。'));
-    return result;
+    return response(context, result);
   }
   async function transition(action, { beforeAbort = null, cancelReason = null } = {}) {
     if (typeof action !== 'function') return callIssue(problem('DOUYIN_TRANSITION_INVALID', '角色切换操作无效。', '传入本地切换操作后重试。'));
@@ -747,6 +869,7 @@ export function createDouyinCompanion({
   async function dispose() {
     if (disposed) return { ok: true };
     disposed = true;
+    for (const value of responseLeases.keys()) releaseResponse(value);
     if (activeJob) {
       const runtime = runtimes.get(activeJob.jobId);
       if (runtime) { runtime.cancelReason = problem('DOUYIN_CLOSED', '陪伴服务已关闭。', '查看已保留的活动状态后再决定是否重启。'); runtime.controller.abort(); }
@@ -757,5 +880,5 @@ export function createDouyinCompanion({
     return { ok: true };
   }
 
-  return { start, status, cancel, configure, tick, withTransition, dispose };
+  return { start, status, cancel, configure, tick, withTransition, dispose, validateResponse, releaseResponse };
 }
