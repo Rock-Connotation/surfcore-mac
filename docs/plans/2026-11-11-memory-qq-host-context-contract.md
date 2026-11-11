@@ -1,0 +1,9 @@
+# QQ private Host context
+
+`runtime.channelMemory('qq')` returns a private in-process QQ adapter. A trusted caller captures `{conversationKey,sourceFacts}` against the runtime's current verified QQ login, exact conversation allowlist, actor and selected route. The adapter can submit bounded QQ source facts and bind actual input references. Capture selects only an existing approved Core audience and grant; it neither grants access nor changes V1 routing or activation.
+
+The private adapter and the existing scoped loopback QQ API have distinct Host owners. A handle issued by either cannot be used by the other, or by another channel's adapter. The network admission callback is an in-process capability: the RPC allowlist does not expose it. A caller uses the same adapter and handle for capture, ingestion, `bindActualInput`, and `withNetworkAdmission`; callback dispatch is synchronous under the existing Core fence after context/manifest validation. Cancelled, stale-role, stale-policy and denied-reference admissions do not invoke the callback.
+
+The existing runtime resolves QQ login, allowlists and selected route freshly **at capture**. Existing Host admission rechecks role and Core context/policy/manifest, but does not re-read QQ login, allowlists or selected route after capture. This adapter does not close that gap. A future real QQ composition must address identity drift before claiming live route/account admission safety; this fixture is synthetic shadow Worker evidence, not real Native or provider proof. In particular, invalidating a QQ allowlist or changing login/route alone does not automatically revoke an already captured handle.
+
+Existing API behavior and permissions remain unchanged. No bridge composition, source authorization, historical import, native provider dispatch or production activation is implemented here; V1 remains the default.

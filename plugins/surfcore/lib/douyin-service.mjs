@@ -74,7 +74,7 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
         candidate = parsed.ok ? { id: randomUUID(), identity: parsed.identity, context: op.context, gen: op.gen } : null;
         pageState = parsed.ok ? 'candidate' : 'login_required';
       }
-      if (meta.pathname === SELF && (op.kind === 'feed' || op.kind === 'companion') && meta.requestSeq > op.identityCutoff && !op.identityFailure) {
+      if (meta.pathname === SELF && (op.kind === 'feed' || op.kind === 'companion' || op.kind === 'identity') && meta.requestSeq > op.identityCutoff && !op.identityFailure) {
         if (!parsed.ok) op.identityFailure = auth();
         else if (!same(parsed.identity, op.expectedIdentity)) op.identityFailure = error('DOUYIN_ACCOUNT_CHANGED', '读取时登录账号发生变化', '重新登录并确认账号。');
       }
@@ -155,6 +155,22 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
     const items = includeMedia && feedEvent ? companionItems({ ...feed, rawFeed: feedEvent.rawFeed }, mediaUserAgent) : feed.items.slice(0, 5);
     return finish(op, { ok: true, source: 'homepage-recommendation', items });
   }
+  async function readOfficialIdentity(context) {
+    if (transitionDepth) return transitioning();
+    if (!matches(context) || disposed) return stale(); if (active) return busy();
+    let account; try { if (!enabled(context)) return error('DOUYIN_DISABLED', '抖音渠道未开启', '先开启抖音渠道。'); account = binding(context)?.identity; } catch { return ioError(); }
+    if (!account) return auth();
+    let op; try { op = makeOp(context, 'identity', account); } catch { return error('DOUYIN_BROWSER_FAILED', '创建独立浏览器失败', '检查浏览器和资料目录后重试。'); }
+    const started = await start(op); if (!started.ok) return finish(op, started);
+    const first = await findEvent(op, SELF, 0); if (!first.ok) return finish(op, first);
+    if (!same(first.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '当前登录账号与绑定账号不一致', '重新登录并确认账号。'));
+    const state = browserStatus(op); if (!state.ok || !state.running) return finish(op, state.ok ? auth() : state);
+    const cutoff = state.requestSeq; op.identityCutoff = cutoff;
+    const reloaded = await navigate(op, false); if (!reloaded.ok) return finish(op, reloaded);
+    const fresh = await findEvent(op, SELF, cutoff); if (!fresh.ok) return finish(op, fresh);
+    if (!same(fresh.identity, account)) return finish(op, error('DOUYIN_ACCOUNT_CHANGED', '读取后登录账号发生变化', '重新登录并确认账号。'));
+    return finish(op, { ok: true, verified: true, accountId: fresh.identity.accountKey });
+  }
   function expectedPage(snap) { try { const u = new URL(snap.url); return u.protocol === 'https:' && u.hostname === 'www.douyin.com' && u.port === '' && u.pathname === '/'; } catch { return false; } }
   function unexpectedPage() { candidate = null; pageState = 'login_required'; return error('DOUYIN_PAGE_UNEXPECTED', '独立浏览器已离开抖音首页', '返回抖音官方首页并重新登录后重试。'); }
   return {
@@ -207,6 +223,7 @@ export function createDouyinService({ stateDir, getCharacter, browserFactory = c
     },
     async readFeed(context) { return await readFeed(context, false); },
     async readFeedForCompanion(context) { return await readFeed(context, true); },
+    async readOfficialIdentity(context) { return await readOfficialIdentity(context); },
     async closeLogin(context) { if (transitionDepth) return transitioning(); if (!matches(context) || disposed) return stale(); if (!active || active.kind !== 'login') return busy(); return cancel(); },
     async withTransition(action) {
       if (disposed) { const failure = stale(); throw Object.assign(new Error(failure.error), failure); }

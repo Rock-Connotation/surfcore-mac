@@ -1,3 +1,16 @@
+import { biliV2Fetch } from '../lib/bili-v2-dispatch.mjs'
+const MANAGED_WRITE = process.env.SURFCORE_BILI_V2_WORKER === '1' || typeof process.send === 'function'
+const managedResult = (value) => {
+  if (!MANAGED_WRITE) return
+  process.stdout.write('\n' + JSON.stringify({ __biliV2WriteResult: true, ...value }) + '\n')
+}
+const dispatchFailure = (error) => ({
+  ok: false,
+  code: typeof error?.code === 'string' ? error.code : 'BILI_V2_DISPATCH_UNKNOWN',
+  error: typeof error?.error === 'string' ? error.error : String(error?.message || 'Bili V2 Host dispatch did not complete.'),
+  hint: typeof error?.hint === 'string' ? error.hint : 'Inspect the original action receipt before retrying.',
+  unknown: error?.unknown === true,
+})
 // 私信（专属通道）—— 2026-10-18 主人定：**三条写死在代码里**
 //   ① **一天只锁定 1 个收信人**（防刷量；对同一个人发多少条不限 ✓）
 //   ② 只发给配置里的 owner.mid（同一个用户，别处发不出去）
@@ -107,13 +120,29 @@ async function send(toMid, text) {
   body.set('msg[timestamp]', String(Math.floor(Date.now() / 1000)))
   body.set('msg[dev_id]', 'WEB-' + crypto.randomUUID().toUpperCase())
   body.set('msg[content]', JSON.stringify({ content: text }))
-  body.set('csrf', String(cred.bili_jct))
-  const r = await fetch('https://api.vc.bilibili.com/web_im/v1/web_im/send_msg', {
-    method: 'POST',
-    headers: { ...H, 'content-type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  })
+  if (!MANAGED_WRITE) body.set('csrf', String(cred.bili_jct))
+  let r
+  try {
+    r = await biliV2Fetch('dm', 'https://api.vc.bilibili.com/web_im/v1/web_im/send_msg', {
+      method: 'POST',
+      headers: MANAGED_WRITE
+        ? { 'content-type': 'application/x-www-form-urlencoded' }
+        : { ...H, 'content-type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    })
+  } catch (error) {
+    if (!MANAGED_WRITE) throw error
+    managedResult({ action: 'dm', ...dispatchFailure(error) })
+    process.exit(6)
+  }
   const j = await r.json().catch(() => ({}))
+  managedResult({
+    action: 'dm',
+    ok: j.code === 0,
+    ...(j.code === 0
+      ? { http: r.status, code: 0, target: { mid: String(toMid) }, text, receipt: j.data ?? {} }
+      : { code: 'BILI_PLATFORM_REJECTED', platformCode: j.code, error: String(j.message || 'Platform rejected the request; inspect the original receipt.'), hint: 'Do not retry under another role.' }),
+  })
   return { http: r.status, code: j.code, message: j.message, data: j.data }
 }
 

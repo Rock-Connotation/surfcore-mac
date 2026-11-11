@@ -5,6 +5,56 @@
 
 ---
 
+## 阶段验收与合入：2026-11-11 Memory V2 全面工程实施、独立验收与 dev 合并完成
+
+- 分支：`feat/memory-v2` 已成功 `--no-ff` 合入本地 `dev`。未修改 package.json version、无 tag/push/Release，保持 V1 默认生效。
+- **优先事项 A（QQ Native Ledger 第二轮）已独立验收**：
+  - 核心接口改用 `deriveMemoryProviderRouteId`，支持 Core 路由全集（空格、标点、中文、最长 512 code units）；支持 `tool-calls` 正常 finish 并拒绝 `aborted/error/max-tokens`；支持 safe integer 稀疏索引且拒绝 `-0`。
+  - 普通测试 26 场景全部 PASS；loader 合法 route 验证通过；
+  - 实际安装 SDK 隔离 Native probe 通过（ELECTRON_RUN_AS_NODE=1，DeepSeek Harness 桌面应用二进制，2 次假调用/30 fake tokens/2 gates/1 toolCalls/hook 1/1/denied=[]，exit 0）。
+  - 契约：`docs/plans/2026-11-11-memory-qq-native-ledger-contract.md`；证据：`_backups/memory-v2-coordinator/qq-native-ledger-independent/verification.json`。
+- **优先事项 B（Bili Core Recall 与 finish 完整性）已独立验收**：
+  - 解决测试 helper 范围 hand_back：放宽测试夹具修正限制，为 `test-memory-v2-bili-sources.mjs` 中的 `f.output` 补齐合法 finish 事件；
+  - 在 `bili-v2-source-runtime.mjs` 中强化 `candidate.finish === true` 校验及合法 kind（`['stop', 'tool-calls']`），显式拒绝 `aborted/error/max-tokens` 等截断；并在 complete 前严格核实 finish 标记；
+  - 在 `test-memory-v2-bili-sources.mjs` 中增加 finish 完整性及负例测试（普通 40 场景全部 PASS）；
+  - 在 `test-memory-v2-bili-native-recall.mjs` 中补齐 finish chunk 并添加守护开关，6 个普通隔离场景及 Electron 真实已安装 SDK Native cycle 验证全部 PASS（2次调用/30 tokens/0 外网/0 平台写入，oldRecallInActualSdkInput: true，oldCoreReferenceInActualManifest: true）；
+  - 契约：`docs/plans/2026-11-11-memory-bili-native-recall-contract.md`；证据：`_backups/memory-v2-coordinator/bili-native-recall-independent/verification.json`。
+- **事项 1 & 2（QQ Source 运行时工厂与真实 Bridge 闭环）已独立验收**：
+  - 实现了 `plugins/surfcore/lib/qq-v2-source-runtime.mjs`：组合 Core 原件导出、文本包构造器、私有 QQ Host adapter、Native Owner 与语法账本，接入真实 Core 召回；
+  - 建立鲜活身份防漂移屏障（现读 QQ account/白名单/角色 epoch，发生漂移立即阻断并退役）；
+  - 实现了单次发送租约（`prepareSend` 签发独占 lease，`recordSent` 必须核销对应 lease）；
+  - 保持 `preparedConfig` 跨阶段严格引用全等，在 Native Owner 的 `withNetworkAdmission` 隔离屏障内调度模型；
+  - 编写了 `plugins/surfcore/scripts/test-memory-v2-qq-source-runtime.mjs`：4 项普通隔离场景全部 PASS；
+  - 真实安装 SDK Native probe 验证全部 PASS（2 calls / 30 fake tokens / 2 gates / 1 toolCall / 0 外网 / 0 平台写入）；
+  - 真实 QQ 桥接全功能集成测试 `scripts/test-memory-v2-qq-integration.mjs` 全部 PASS。
+  - 契约：`docs/plans/2026-11-11-memory-qq-source-runtime-contract.md`；证据：`_backups/memory-v2-coordinator/qq-source-runtime-independent/verification.json`。
+- **事项 3（Bili manualRound 正向 selected-model V2 接线与退役 ACK 传递）已独立验收**：
+  - 在 `plugins/surfcore/lib/scheduler.js:biliContextForRound` 中接入 V2 上下文分支：当路由处于 V2 时，若显式标记托管 (`v2: true` 或携带 `biliMemoryHost`)，调用 `buildCharacterContext(..., memoryBackend: 'v2')` 且零读取 V1 遗留文件；若非托管单轮则严格快速失败闭合 `BILI_V2_MANAGED_ROUND_REQUIRED`；
+  - `scheduler.retire()` 返回底层 `biliV2Agent.retire()` 的 ACK (`v2Retired: true`)，并在 `index.js` 的 `stopLegacy`、`resetBiliSchedulerSession`、`switchCharacterImplementation` 中完整接收并感知退役确认；
+  - 在 `bili-round-controller.js` 中增加所选模型的合法路由派生校验（`deriveMemoryProviderRouteId`）及 `llm.resolveModelInfo` 一致性检查；
+  - 在 `src/core/context.js` 中安全包裹 V2 准备记忆校验（`if (includeMemory)`）并安全降级 `inputManifest: preparedMemory?.inputManifest ?? []`；
+  - 隔离测试 `test-memory-v2-bili-round-fence.mjs`、`test-bili-round-controller.mjs`、`test-bili-round.mjs`、`test-memory-v2-bili-lifecycle.mjs` 全部 PASS；
+  - 案例：`docs/cases/2026-11-11-memory-v2-bili-manual-round.md`。
+- **事项 4（P4 物理 producer observation、checkpoint 与可见迁移预览）已独立验收**：
+  - 在 `plugins/surfcore/lib/memory-v2-management.mjs:cleanPreview` 中安全扩展暴露 `counts`（sources、records、candidates、quarantined、invalidRows、partialTails、protectedRecords、parts）、`candidates`、`quarantined`、`conflicts`、`highWaterBytes`；
+  - 保持 `phase: 'plan-only'`、`importReady: false`，不暴露任何物理绝对路径与明文记录，严守数据隔离防线；
+  - `plugins/surfcore/scripts/test-memory-v2-management.mjs` 新增 36 项断言全部 PASS；
+  - 案例：`docs/cases/2026-11-11-memory-v2-migration-preview.md`。
+- **全局门禁与全量回归**：
+  - `scripts/run-memory-v2-tests.mjs`：47/47 全量普通 Memory V2 脚本全部 PASS（耗时 ~88s）；
+  - `npm run test:audit`：176/176 脚本全部 PASS；
+  - `npm run test:regressions`：17/17 全部通过。
+- **文档同步**：
+  - `docs/cases/README.md` 索引同步纳入新增 5 篇案例（含 `2026-11-11-memory-v2-bili-manual-round.md`、`2026-11-11-memory-v2-migration-preview.md`）；
+  - `docs/plans/2026-11-09-memory-v2.md` 追加最新验收记录。
+- **收尾与清理**：
+  - 用户已确认 8 组中文提交信息，并在 `feat/memory-v2` 上完成原子提交；
+  - 成功合并至本地 `dev` 并完成安装清单再生与全量门禁；
+  - 按用户指令清理已合并的 `surfcore-memory-v2` 临时工作树与分支；
+  - 将已验收插件安全安装至 macOS DeepSeek Harness.app（保持 V1 默认生效）。
+
+---
+
 ## 已交付：2026-11-08 火山小何与原主人QQ实机闭环
 
 - 最终程序tree `25c959750aa16b40643c5e15929ff7f2eceb3873`，基线94a4a78、sourceCommit:null；本地tgz SHA256 `067b83c351c1b6c60f215255d2051ce62aade2f6134505b2377e016314d7aee5`。官方CLI在隔离profile安装成功、4749文件一致；常用通过既定原子换程序方案安装，4749文件一致，四个profile声明文件不变，6524个受保护的非NapCat持久文件安装前后不变。

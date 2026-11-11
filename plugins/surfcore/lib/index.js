@@ -39,7 +39,7 @@ import {
   deleteCharacter, manualSnapshot, migrateIfNeeded, restoreCharacterSnapshot, switchToCharacter,
   updateCharacterFromPayload,
 } from './characters.js';
-import { activeMemoryPaths, activePlatformStateDir, characterPaths, personaLayersForCharacter, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
+import { CHARACTERS_DIR, activeMemoryPaths, activePlatformStateDir, characterPaths, personaLayersForCharacter, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
 import {
   backupFile, listBackups, pathSummary,
@@ -81,6 +81,8 @@ import { createCompanionMemory } from './douyin-companion-memory.mjs';
 import { createCompanionController } from './douyin-companion-controller.mjs';
 import { createCompanionSharing } from './companion-sharing.mjs';
 import { createSharingController } from './companion-sharing-controller.mjs';
+import { createMemoryV2Runtime } from './memory-v2-runtime.mjs';
+import { createBiliV2Host } from './bili-v2-host.mjs';
 import { appendExperienceEvent } from '../../../src/core/experience.js';
 import { resolveMediaRuntime } from '../tools/lib/ffmpeg.mjs';
 import { readInstallationIdentity } from '../../../src/install-identity.js';
@@ -248,8 +250,63 @@ export function apply(ctx) {
     getQqConfig: () => readQqConfig().config,
     log: (message) => pluginLog(message),
   });
+  let douyinMemoryService = null;
+  let biliMemoryHost = null, gateEvents = null;
+  const memoryV2 = createMemoryV2Runtime({ stateDir: STATE_DIR, charactersDir: CHARACTERS_DIR,
+    getCharacter: readCurrentCharacter, currentDshUrl,
+    getManagementAuthorization: req => {
+      if (req.headers?.['x-agent-token'] || req.headers?.['x-agent-call']) return false;
+      const connection = ctx.get('connection');
+      if (typeof connection?.requestRejection !== 'function') return false;
+      const rejected = connection.requestRejection(req);
+      return rejected === undefined || rejected === null || rejected === false;
+    },
+    getQQState: async () => {
+      if (!platformStartEnabled('qq')) return null;
+      const response = await callBridge('/api/memory-v2/identity', { timeoutMs: 8000 });
+      return response.ok && response.data?.ok === true ? response.data : null;
+    },
+    getQQRoute: state => state?.route ?? null,
+    getPlatformState: async channel => {
+      if (channel === 'bili') return platformStartEnabled('bili') && biliMemoryHost ? biliMemoryHost.getPlatformState() : null;
+      if (channel !== 'douyin' || !douyinMemoryService || !platformStartEnabled('douyin')) return null;
+      const current = readCurrentCharacter();
+      return douyinMemoryService.readOfficialIdentity({ characterId: current?.id, characterEpoch: current?.epoch });
+    },
+    onBlocked: reportMemoryBlocked,
+  });
+  const memoryV2Ready = memoryV2.initialize().catch(error => ({ ok: false, code: error?.code || 'MEMORY_RUNTIME_FAILED', error: '记忆服务初始化失败。', hint: '检查记忆页和本机运行时后重试。' }));
   // 闸门事件中心：桥接负责写，插件负责展示/确认；同一份文件、同一套分级。
-  const gateEvents = createGateEventStore({ dir: STATE_DIR, log: (message) => pluginLog(message) });
+  gateEvents = createGateEventStore({ dir: STATE_DIR, log: (message) => pluginLog(message) });
+  function reportMemoryBlocked(result) {
+    const code = /^(BILI|MEMORY|CHARACTER)_[A-Z0-9_]+$/.test(result?.code ?? '') ? result.code : 'MEMORY_RUNTIME_FAILED';
+    const error = '记忆渠道任务未完成。';
+    let hint = '打开记忆页的“身份与权限”检查当前账号、模型和完整来源集合；先预览再审批，随后重试原任务。';
+    if (/^(?:BILI_V2_ROUTE|MEMORY_PROVIDER)/.test(code)) hint = '在Host选择有效模型并恢复连接，再刷新记忆页的精确路由与来源审批。';
+    else if (/^(?:BILI_OFFICIAL|BILI_VIDEO)/.test(code)) hint = '检查B站登录及官方来源是否仍可读取，再刷新确切来源集合；不要用通知摘要代替原件。';
+    else if (/RETIRE|LIFECYCLE/.test(code)) hint = '先停止当前轮次并查询原操作回执；保留未确认的会话与owner，排除原因后显式重试退休。';
+    else if (/^CHARACTER_/.test(code)) hint = '选择当前角色并刷新任务与来源列表后重试，不要沿用旧角色的审批。';
+    else if (/^(?:BILI_V2_CORE|BILI_V2_NATIVE|MEMORY_NATIVE)/.test(code)) hint = '核对当前角色核心人设、已安装Host SDK及原生来源证明，再刷新任务；不会改用旧上下文。';
+    pluginLog(`[记忆] ${code}：${error} ${hint}`);
+    gateEvents?.record({ gate: 'memory-v2', kind: 'fault', event: code, action: 'blocked',
+      reason: { code, message: error }, impact: '当前轮次尚未通过记忆与来源检查。', recommendation: hint,
+      dedupeKey: `memory-v2:${code}`, evidence: { code } });
+  }
+  biliMemoryHost = createBiliV2Host({ ctx, stateDir: STATE_DIR, memoryV2: memoryV2.channelMemory('bili'),
+    tokenBudget, getCharacter: readCurrentCharacter, getCredentials: () => readJson(BILI_CRED, {}),
+    getFeedCandidates: async ({ signal }) => {
+      const role = readCurrentCharacter();
+      if (!role) throw Object.assign(new Error('当前角色尚未就绪。'), { code: 'CHARACTER_CONTEXT_REQUIRED', hint: '选择当前角色后重试来源预览。' });
+      const result = await runBili(['feed', '--json', '--no-remember'], 120_000, { signal,
+        envPatch: { SURFCORE_EXPECTED_CHARACTER_ID: role.id, SURFCORE_EXPECTED_CHARACTER_EPOCH: String(role.epoch) } });
+      if (!result.ok) throw Object.assign(new Error('候选视频读取失败。'), { code: 'BILI_V2_SOURCE_UNPROVEN', hint: '检查B站登录和候选读取状态，再重试；不会把摘要当作原件。' });
+      let body; try { body = JSON.parse(result.out); } catch { body = null; }
+      if (body?.ok !== true || !Array.isArray(body.items) || body.items.length < 1 || body.items.length > 31 || body.items.some(item => typeof item?.bv !== 'string' || !/^BV[A-Za-z0-9]{10}$/.test(item.bv))) {
+        throw Object.assign(new Error('候选视频标识不完整。'), { code: 'BILI_V2_SOURCE_UNPROVEN', hint: '恢复有效候选列表后重试；只使用确切BV号重新读取官方元数据。' });
+      }
+      return body.items.map(item => ({ kind: 'video', bvid: item.bv }));
+    }, onBlocked: reportMemoryBlocked });
+
   // ── 桌宠（独立栏目，默认不安装；用户自己安装才生效）────────────────────
   const petService = createPetService({ stateDir: STATE_DIR, pluginLog, getSubprocess: () => ctx.get('subprocess') });
   // 桌宠对话与「目的机制」的桌宠载体：和 QQ / B站 共用当前角色的人格卡、记忆卡、目的状态。
@@ -425,6 +482,7 @@ export function apply(ctx) {
         workspaceTitle: BILI_WORKSPACE_TITLE,
         sessionId,
         tokenBudget,
+        memoryV2: memoryV2.channelMemory('bili'), biliV2Agent: biliMemoryHost, onMemoryBlocked: reportMemoryBlocked,
         log: (message) => pluginLog(message),
       });
       schedulerStatus = { running: true, disabled: false, reason: '', startedAt: new Date().toISOString(), lastError: null, lastTickAt: null, sessionId };
@@ -435,11 +493,9 @@ export function apply(ctx) {
     }
     return schedulerStatus;
   }
-  function stopSchedulerNow() {
+  async function stopSchedulerNow() {
     const wasRunning = Boolean(scheduler && schedulerStatus.running);
-    try { scheduler?.stop?.(); } catch (error) {
-      pluginLog('生物钟停止失败：', String(error?.message ?? error));
-    }
+    await scheduler?.retire?.();
     scheduler = null;
     schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
     if (wasRunning) pluginLog('生物钟已停止');
@@ -449,14 +505,15 @@ export function apply(ctx) {
   // 只停/起重启调度器，不删除 B站 的观看历史/行为账本；丢的是模型对话上下文。
   async function resetBiliSchedulerSession() {
     if (!scheduler || !schedulerStatus.running) return { reset: false, reason: 'not-running' };
-    try { await scheduler?.retire?.(); } catch (error) {
-      pluginLog('B站 旧会话退役失败（继续换新会话）：', String(error?.message ?? error));
-    }
-    scheduler = null;
-    schedulerStatus = idleSchedulerStatus('reset');
-    biliSessionEpoch = Date.now();
-    const next = startSchedulerNow();
-    return { reset: true, sessionId: next?.sessionId ?? null, started: next?.running === true };
+    return biliMemoryHost.withTransition(async () => {
+      const retired = await scheduler?.retire?.();
+      if (retired && retired.ok === false) return retired;
+      scheduler = null;
+      schedulerStatus = idleSchedulerStatus('reset');
+      biliSessionEpoch = Date.now();
+      const next = startSchedulerNow();
+      return { reset: true, sessionId: next?.sessionId ?? null, started: next?.running === true };
+    });
   }
   startSchedulerNow();
 
@@ -572,7 +629,7 @@ export function apply(ctx) {
   async function switchCharacterEverywhere(id) {
     const current = readCurrentCharacter();
     if (current?.id === id) return { ok: true, already: true, current };
-    return companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id)))));
+    return biliMemoryHost.withTransition(() => companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id))))));
   }
   async function switchCharacterImplementation(id) {
     const current = readCurrentCharacter();
@@ -584,7 +641,8 @@ export function apply(ctx) {
     let schedulerWasRunning = !skipPlatform && Boolean(scheduler && schedulerStatus.running);
     try {
       if (schedulerWasRunning) {
-        try { await scheduler?.retire?.(); } catch (error) { pluginLog('切换角色：停 B站 会话失败：', error?.message ?? error); }
+        const retired = await scheduler?.retire?.();
+        if (retired && retired.ok === false) throw Object.assign(new Error(retired.error || 'B站调度器退役未确认'), retired);
         scheduler = null;
         schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
       }
@@ -649,7 +707,8 @@ export function apply(ctx) {
   };
   const transcription = createPerceptionService({ ...perceptionOptions(), dataRoot: STATE_DIR, getCharacter: readCurrentCharacter });
   const douyin = createDouyinService({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter });
-  const companionModel = createCompanionModel({ ctx, tokenBudget });
+  douyinMemoryService = douyin;
+  const companionModel = createCompanionModel({ ctx, tokenBudget, getCharacter: readCurrentCharacter });
   const companionMemory = createCompanionMemory({ getCharacter: readCurrentCharacter,
     maintainMemory: options => runMemoryCardMaintenance(options),
   });
@@ -665,6 +724,7 @@ export function apply(ctx) {
   const companionSharing = createCompanionSharing({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
     buildContext: context => companionMemory.buildContext(context),
     modelReply: options => companionModel.reply(options), readiness: companionReadiness,
+    memoryV2: memoryV2.channelMemory('local'), getModelRequest: metadata => memoryV2.modelRequest(metadata),
   });
   const douyinCompanion = createDouyinCompanion({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
     readFeed: context => douyin.readFeedForCompanion(context),
@@ -673,6 +733,7 @@ export function apply(ctx) {
     buildContext: context => companionMemory.buildContext(context),
     recordMemory: (context, value, options) => companionMemory.recordMemory(context, value, options),
     recordSharing: (context, value, options) => companionSharing.record(context, value, options),
+    memoryV2: memoryV2.channelMemory('douyin'), getModelRequest: metadata => memoryV2.modelRequest(metadata),
     readiness: companionReadiness,
   });
   const companionController = createCompanionController({ engine: douyinCompanion, getCharacter: readCurrentCharacter, readiness: companionReadiness });
@@ -715,11 +776,22 @@ export function apply(ctx) {
   });
   const biliRoundController = createBiliRoundController({
     ctx, stateDir: STATE_DIR, tokenBudget, perception, runBili,
-    getCharacter: readCurrentCharacter, buildContext: biliContextForRound,
+    getCharacter: readCurrentCharacter,
+    buildContext: (req) => biliContextForRound({
+      ...req,
+      biliMemoryHost,
+      v2: readMemoryRouting({ stateDir: STATE_DIR })?.backend === 'v2',
+      memoryV2: memoryV2.channelMemory('bili'),
+    }),
     maintainMemory: async () => { const result = await runMemoryCardMaintenance({}); return { ...result, ok: result.ok !== false }; },
     readConfig: () => readBiliConfig().config, saveConfig: value => saveBiliConfig(value),
     platformEnabled: () => platformStartEnabled('bili'), legacyRunning: () => Boolean(scheduler),
-    stopLegacy: async () => { await scheduler?.retire?.(); scheduler = null; schedulerStatus = idleSchedulerStatus('controlled-only'); },
+    stopLegacy: () => biliMemoryHost.withTransition(async () => {
+      const retired = await scheduler?.retire?.();
+      if (retired && retired.ok === false) return retired;
+      scheduler = null; schedulerStatus = idleSchedulerStatus('controlled-only');
+      return { ok: true, retired: true };
+    }),
     json, readBody,
   });
   platforms.setRuntime('bili', {
@@ -866,9 +938,15 @@ export function apply(ctx) {
           }
           await handler(req, res);
         } catch (error) {
+          const lifecycle = /^(BILI_V2_|MEMORY_|CHARACTER_)/.test(error?.code ?? '');
+          if (lifecycle) reportMemoryBlocked(error);
           const structured = typeof error?.code === 'string' && Boolean(error?.hint);
           pluginLog('API 失败：', structured ? error.code : error?.message ?? error);
-          try { json(res, structured ? 409 : 500, { ok: false, error: String(error?.message ?? error), ...(structured ? { code: error.code, hint: error.hint } : {}) }); } catch {}
+          const status = lifecycle ? 500 : (structured ? 409 : 500);
+          const payload = lifecycle
+            ? { ok: false, code: error.code, error: error.error || 'B站作业退役或身份切换未完成。', hint: error.hint || '查看记忆通知，确认旧作业与原回执后再重试。' }
+            : { ok: false, error: String(error?.message ?? error), ...(structured ? { code: error.code, hint: error.hint } : {}) };
+          try { json(res, status, payload); } catch {}
         }
       },
     }));
@@ -1235,7 +1313,7 @@ export function apply(ctx) {
         if (!id) throw new Error('缺少角色 id');
         const current = readCurrentCharacter();
         if (!current || current.id !== id) throw new Error('只能回档当前角色；先加载这个角色再回档');
-        return await companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(async () => {
+        return await biliMemoryHost.withTransition(() => companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(async () => {
         const transition = biliRoundController.beginTransition();
         try {
         await transition.ready;
@@ -1262,7 +1340,7 @@ export function apply(ctx) {
         json(res, 200, { ...restored, bridgeRestarted: wasRunning, scheduler: schedulerStatus });
         return;
         } finally { transition.finish(); }
-        })));
+        }))));
       }
       if (action === 'migrate') {
         json(res, 200, ensureCharacterSystem());
@@ -1270,7 +1348,7 @@ export function apply(ctx) {
       }
       if (action === 'delete') {
         if (!id) throw new Error('缺少角色 id');
-        json(res, 200, deleteCharacter(id));
+        json(res, 200, await biliMemoryHost.withTransition(() => deleteCharacter(id)));
         return;
       }
       json(res, 400, { ok: false, error: `未知 action：${action}` });
@@ -2875,10 +2953,10 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         });
       }
       if (id === 'bili') {
-        return biliRoundController.withTransition(() => {
-          const r = stopSchedulerNow();
+        return biliMemoryHost.withTransition(() => biliRoundController.withTransition(async () => {
+          const r = await stopSchedulerNow();
           return launchItem(id, true, { message: r.wasRunning ? 'B站生物钟已停止' : 'B站生物钟本来就没在跑', detail: r });
-        });
+        }));
       }
       if (id === 'pet') {
         const r = await petService.stop();
@@ -3308,7 +3386,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (req.method === 'GET' && pathname.endsWith('/qr/poll')) {
       const id = String(url.searchParams.get('id') ?? '').trim();
       if (!/^qr_[0-9a-f-]{36}$/i.test(id)) { json(res, 400, { ok: false, error: 'id 不合法' }); return; }
-      const result = await pollQrLogin(id);
+      const result = await pollQrLogin(id, { withCredentialTransition: operation => biliMemoryHost.withTransition(operation) });
       // ok:false 也是有效状态（wrong-account/failed），用 200 让前端按 status 处理。
       json(res, 200, result);
       return;
@@ -3403,43 +3481,44 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
     // 换 B站 号：把旧凭据/对齐归档后清掉，允许重新扫码绑定（2026-10-27 用户反馈"换号被卡死"）
     if (pathname.endsWith('/account/reset')) {
-      const target = body.target === 'owner' ? 'owner' : (body.target === 'both' ? 'both' : 'fish');
-      const archived = [];
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const destDir = path.join(BACKUP_DIR, `bili-switch-${stamp}`);
-      const archive = (file, label) => {
-        try {
-          if (!fs.existsSync(file)) return;
-          fs.mkdirSync(destDir, { recursive: true });
-          const dest = path.join(destDir, `${label}${path.extname(file) || '.json'}`);
-          fs.copyFileSync(file, dest);
-          archived.push(maskPath(dest));
-        } catch (error) {
-          pluginLog(`[换号] 归档失败 ${label}：${String(error?.message ?? error)}`);
+      return await biliMemoryHost.withTransition(async () => {
+        const target = body.target === 'owner' ? 'owner' : (body.target === 'both' ? 'both' : 'fish');
+        const archived = [];
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const destDir = path.join(BACKUP_DIR, `bili-switch-${stamp}-${randomUUID()}`);
+        const archive = (file, label, move = false) => {
+          try {
+            if (!fs.existsSync(file)) return;
+            fs.mkdirSync(destDir, { recursive: true });
+            const dest = path.join(destDir, `${label}${path.extname(file) || '.json'}`);
+            if (move) fs.renameSync(file, dest);
+            else fs.copyFileSync(file, dest, fs.constants.COPYFILE_EXCL);
+            archived.push(maskPath(dest));
+          } catch (error) {
+            throw Object.assign(new Error('旧账号文件归档未完成。'), { code: 'BILI_V2_ACCOUNT_ARCHIVE_FAILED', error: '旧账号文件归档未完成。', hint: '检查备份目录权限和已生成的归档，保留旧文件后重试换号。' });
+          }
+        };
+        const ownerCred = path.join(BILI_DIR, 'owner-credentials.json');
+        if (target === 'fish' || target === 'both') {
+          archive(BILI_CRED, 'fish-credentials', true);
+          archive(ALIGN_FILE, 'alignments');
         }
-      };
-      const ownerCred = path.join(BILI_DIR, 'owner-credentials.json');
-      if (target === 'fish' || target === 'both') {
-        archive(BILI_CRED, 'fish-credentials');
-        archive(ALIGN_FILE, 'alignments');
-        try { fs.rmSync(BILI_CRED, { force: true }); } catch {}
-      }
-      if (target === 'owner' || target === 'both') {
-        archive(ownerCred, 'owner-credentials');
-        try { fs.rmSync(ownerCred, { force: true }); } catch {}
-      }
-      // 清掉配置里对应的 mid，避免下一次扫码又被"不是当前小肥鱼/主人"挡住
-      try {
-        const bili = readBiliConfig().config ?? {};
-        if (target === 'fish' || target === 'both') bili.self = { mid: '', name: '' };
-        if (target === 'owner' || target === 'both') bili.owner = { mid: '', name: '' };
-        saveBiliConfig(bili);
-      } catch (error) {
-        pluginLog(`[换号] 清配置失败：${String(error?.message ?? error)}`);
-      }
-      pluginLog(`[换号] 已归档并清除 target=${target}；归档 ${archived.length} 个文件`);
-      json(res, 200, { ok: true, target, archived });
-      return;
+        if (target === 'owner' || target === 'both') {
+          archive(ownerCred, 'owner-credentials', true);
+        }
+        // 清掉配置里对应的 mid，避免下一次扫码又被"不是当前小肥鱼/主人"挡住
+        try {
+          const bili = readBiliConfig().config ?? {};
+          if (target === 'fish' || target === 'both') bili.self = { mid: '', name: '' };
+          if (target === 'owner' || target === 'both') bili.owner = { mid: '', name: '' };
+          saveBiliConfig(bili);
+        } catch (error) {
+          throw Object.assign(new Error('账号配置清理未完成。'), { code: 'BILI_V2_ACCOUNT_RESET_FAILED', error: '账号配置清理未完成。', hint: '核对旧账号归档和当前账号配置，修复写入后再重新扫码。' });
+        }
+        pluginLog(`[换号] 已归档并清除 target=${target}；归档 ${archived.length} 个文件`);
+        json(res, 200, { ok: true, target, archived });
+        return;
+      });
     }
     if (pathname.endsWith('/qr/cancel')) {
       const id = String(body.id ?? '').trim();
@@ -3452,24 +3531,26 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       const bili_jct = String(body.bili_jct ?? '').trim();
       const buvid3 = String(body.buvid3 ?? '').trim();
       if (!sessdata || !bili_jct) { json(res, 400, { ok: false, error: 'SESSDATA 和 bili_jct 必填' }); return; }
-      fs.mkdirSync(path.dirname(BILI_CRED), { recursive: true });
-      writeJsonAtomic(BILI_CRED, { sessdata, bili_jct, buvid3 });
-      try { fs.chmodSync(BILI_CRED, 0o600); } catch {}
-      let whoNow = null;
-      try {
-        const navRes = await fetch('https://api.bilibili.com/x/web-interface/nav', {
-          headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/', cookie: `SESSDATA=${sessdata}; bili_jct=${bili_jct}; buvid3=${buvid3}` },
-        });
-        const navJson = await navRes.json().catch(() => ({}));
-        if (navJson?.data?.isLogin && navJson.data.mid) {
-          whoNow = { mid: String(navJson.data.mid), name: String(navJson.data.uname ?? '') };
-          const bili = readBiliConfig().config;
-          bili.self = whoNow;
-          saveBiliConfig(bili);
-        }
-      } catch {}
-      json(res, 200, { ok: true, detail: whoNow ? `已写入 ✓ 当前登录：${whoNow.name}（mid ${whoNow.mid}）` : '已写入（但 nav 没确认成功 —— cookie 可能缺项或过期）', self: whoNow });
-      return;
+      return await biliMemoryHost.withTransition(async () => {
+        fs.mkdirSync(path.dirname(BILI_CRED), { recursive: true });
+        writeJsonAtomic(BILI_CRED, { sessdata, bili_jct, buvid3 });
+        try { fs.chmodSync(BILI_CRED, 0o600); } catch {}
+        let whoNow = null;
+        try {
+          const navRes = await fetch('https://api.bilibili.com/x/web-interface/nav', {
+            headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/', cookie: `SESSDATA=${sessdata}; bili_jct=${bili_jct}; buvid3=${buvid3}` },
+          });
+          const navJson = await navRes.json().catch(() => ({}));
+          if (navJson?.data?.isLogin && navJson.data.mid) {
+            whoNow = { mid: String(navJson.data.mid), name: String(navJson.data.uname ?? '') };
+            const bili = readBiliConfig().config;
+            bili.self = whoNow;
+            saveBiliConfig(bili);
+          }
+        } catch {}
+        json(res, 200, { ok: true, detail: whoNow ? `已写入 ✓ 当前登录：${whoNow.name}（mid ${whoNow.mid}）` : '已写入（但 nav 没确认成功 —— cookie 可能缺项或过期）', self: whoNow });
+        return;
+      });
     }
     if (action === 'notify-test') {
       const result = await runBili(['notify', '--test'], 60_000);
@@ -3792,6 +3873,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   route('prefix', API_PREFIX, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
+    if (pathname.startsWith(`${API_PREFIX}/memory-v2/`)) {
+      const ready = await memoryV2Ready;
+      if (!ready.ok) { json(res, 503, ready); return; }
+      if (await memoryV2.handleManagement(req, res, url)) return;
+    }
     if (pathname === `${API_PREFIX}/douyin/companion-sharing` || pathname === `${API_PREFIX}/douyin/companion-sharing-client`) {
       await sharingController.handle(req, res, url); return;
     }
@@ -3923,6 +4009,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     },
   }));
 
+  disposers.push(ctx.webServer.register({ kind: 'exact', path: memoryV2.apiPrefix,
+    handler: async (req, res) => {
+      const ready = await memoryV2Ready;
+      if (!ready.ok) { json(res, 503, ready); return; }
+      await memoryV2.handleApi(req, res, new URL(req.url, 'http://127.0.0.1'));
+    } }));
   disposers.push(ctx.webServer.register({ kind: 'prefix', path: perceptionApi.prefix,
     handler: (req, res) => perceptionApi.handle(req, res, new URL(req.url, 'http://127.0.0.1')) }));
   try { perceptionApi.writeHostFile(); } catch (error) { pluginLog('[感知] 服务发现文件不可写，请检查当前数据根权限'); }
@@ -3963,6 +4055,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
     clearInterval(companionTimer);
+    void memoryV2Ready.finally(async () => {
+      const retired = await biliMemoryHost.close();
+      if (!retired.ok) { reportMemoryBlocked(retired); return; }
+      await memoryV2.close();
+    }).catch(() => pluginLog('[记忆] 停止失败，请检查原操作回执'));
     void voiceManagement.dispose().catch(() => pluginLog('[语音管理] 后台任务尚未结束，请回原管理界面核对进度'));
     void companionSharing.dispose().catch(() => pluginLog('[伙伴对话] 停止回复失败，请打开对话核对已有记录'));
     void douyinCompanion.dispose().catch(() => pluginLog('[抖音陪伴] 停止活动失败，请检查中断状态'));

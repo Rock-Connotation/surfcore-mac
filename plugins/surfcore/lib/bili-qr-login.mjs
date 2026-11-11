@@ -545,7 +545,7 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
  * 轮询扫码结果。状态：waiting / scanned / confirmed / expired / wrong-account / failed。
  * 只有 confirmed 时才写 cookie 文件。
  */
-export async function pollQrLogin(id) {
+export async function pollQrLogin(id, { withCredentialTransition = operation => operation() } = {}) {
   const session = sessions.get(id);
   if (!session) return { ok: false, status: 'expired', error: '扫码会话不存在或已过期' };
   if (Date.now() > session.expiresAt) {
@@ -589,7 +589,9 @@ export async function pollQrLogin(id) {
             error: verdict.error,
           };
         }
-        const saved = session.target === 'fish' ? writeFishCredentials(cookies, account) : writeOwnerCredentials(cookies, account);
+        const saved = session.target === 'fish'
+          ? await withCredentialTransition(() => writeFishCredentials(cookies, account))
+          : writeOwnerCredentials(cookies, account);
         cleanupSession(id);
         return { ok: true, status: 'confirmed', account: saved, target: session.target };
       }
@@ -597,7 +599,7 @@ export async function pollQrLogin(id) {
     return { ok: true, status: scanned ? 'scanned' : 'waiting' };
   } catch (error) {
     cleanupSession(id);
-    return { ok: false, status: 'failed', error: String(error?.message ?? error) };
+    return { ok: false, status: 'failed', code: error?.code || 'bili.qr-save-failed', error: String(error?.message ?? error), hint: error?.hint || '检查登录保存与旧作业退役状态，确认后重新扫码。' };
   }
 }
 

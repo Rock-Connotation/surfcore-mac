@@ -125,6 +125,7 @@
 - **禁止 `git add -A` / `git add .` / `git commit -a`**；只 add 自己负责的明确路径。
 - 提交前核对 `git diff --cached --stat`；出现不是自己的文件 → `git restore --staged <file>`。
 - 禁止在别人可能正在写时执行 `git switch/checkout/reset/stash/clean`。
+- 合并验收后收工：默认按 [多会话工作流 §4.1](docs/guides/MULTI-SESSION-WORKFLOW.md#41-合并验收后的工作树清理默认执行) 清理已完成且无人使用的临时 worktree；已获长期授权，按该节核验、保全后执行。
 - `dev` 是集货区：功能分支完成并跑完测试后，用 `git merge --no-ff feat/<topic>` 合并；
   合并后从**合并后的 HEAD** 重新生成 `release/install-manifest.json`（不要手工解冲突）。
 - **运行时也串行**：QQ 桥接 / DSH 重启、B站 tick、`publish-dev` / 发布，同一时间只允许一个会话做；

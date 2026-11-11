@@ -46,6 +46,13 @@ const parsed = (content) => {
   try { const j = JSON.parse(String(content)); return String(j.content ?? j.text ?? content) } catch { return String(content ?? '') }
 }
 
+const exactMsgKey = (last) => {
+  const v = last?.msg_key
+  if (typeof v === 'string') return /^[1-9][0-9]*$/.test(v) ? v : undefined
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v > 0 ? String(v) : undefined
+  return undefined
+}
+
 async function fetchSessions() {
   const u = 'https://api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions?session_type=1&group_id=0&count=50&mobi_app=web'
   const r = await fetch(u, { headers: H })
@@ -67,6 +74,7 @@ if (ANY) {
   for (const s of r.list) {
     const talker = String(s.talker_id ?? '')
     const last = s.last_msg ?? {}
+    const msgKey = exactMsgKey(last)
     const ts = Number(last.timestamp ?? 0)
     const sender = String(last.sender_uid ?? '')
     if (!talker || talker === SELF) continue
@@ -80,6 +88,7 @@ if (ANY) {
       ts,
       unread: Number(s.unread_count ?? 0),
       isOwner: talker === OWNER,
+      ...(msgKey === undefined ? {} : { msgKey }),
     })
   }
   if (BASE) {
@@ -126,7 +135,8 @@ async function poll() {
   const text = parsed(last.content)
   const sender = Number(last.sender_uid ?? 0)
   const fromOwner = String(sender) === OWNER      // 只有主人发的才算
-  return { ok: true, ts, text, fromOwner, unread: Number(mine.unread_count ?? 0) }
+  const msgKey = exactMsgKey(last)
+  return { ok: true, ts, text, fromOwner, unread: Number(mine.unread_count ?? 0), ...(msgKey === undefined ? {} : { msgKey }) }
 }
 
 if (BASE) {
@@ -144,7 +154,7 @@ const lastSeen = Number(st.lastSeen ?? 0)
 const hit = r.ts > lastSeen && r.fromOwner
 if (hit) {
   saveState({ ...st, lastSeen: r.ts, at: new Date().toISOString() })
-  if (JSONOUT) console.log(JSON.stringify({ hit: true, mid: OWNER, name: OWNER_NAME, text: r.text, ts: r.ts }))
+  if (JSONOUT) console.log(JSON.stringify({ hit: true, mid: OWNER, name: OWNER_NAME, text: r.text, ts: r.ts, ...(r.msgKey === undefined ? {} : { msgKey: r.msgKey }) }))
   else console.log(`DM_HIT mid=${OWNER} name=${OWNER_NAME} ts=${r.ts} text=${r.text.replace(/\n/g, ' ').slice(0, 200)}`)
   process.exit(0)
 }

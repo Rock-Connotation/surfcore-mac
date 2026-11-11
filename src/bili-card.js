@@ -158,8 +158,10 @@ export function createBiliCardSender({
         await sendGroupSegments(id, [{ type: 'json', data: { data: cached.data } }]);
         return true;
       } catch (error) {
-        // B站小程序已下架时这里通常不会报错（SnowLuma 照样生成 ARK），
-        // 所以 miniapp 是 opt-in；真报错就退回文本，至少群友还能点。
+        if (error?.deliveryUnknown || /^(MEMORY_|CHARACTER_)/.test(error?.code ?? '')) {
+          log(`[B站分享] 小程序卡片发送未确认，已停止重发 ${key}：${error?.message ?? error}`);
+          return false;
+        }
         log(`[B站分享] 小程序卡片失败，改用链接文本 ${key}：${error?.message ?? error}`);
       }
     }

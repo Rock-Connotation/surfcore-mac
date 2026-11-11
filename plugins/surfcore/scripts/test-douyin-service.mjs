@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { createDouyinService } from '../lib/douyin-service.mjs';
 
 const SELF = '/aweme/v1/web/user/profile/self/', FEED = '/aweme/v1/web/tab/feed/';
@@ -142,4 +143,147 @@ await assert.rejects(gated.withTransition(async () => { throw new Error('must no
 config = {}; assert.equal((await gated.closeLogin(ctx())).ok, true);
 await gated.dispose();
 await assert.rejects(gated.withTransition(async () => {}), e => e.code === 'DOUYIN_STALE' && !!e.hint);
+// --- readOfficialIdentity: frozen official current-account getter (HY4-DOUYIN-IDENTITY) ---
+// Independent fake browser controls requestSeq / sessionId / close without touching the
+// existing readFeed/login harness above.
+const ID_OWNER = '123456';
+const ID_OWNER_KEY = createHash('sha256').update(`douyin:${ID_OWNER}`).digest('hex');
+const idStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-identity-test-'));
+let idRole = { id: 'idrole1', epoch: 1 };
+let idConfig = {}, idBrowsers = [];
+const idCtx = () => ({ characterId: idRole.id, characterEpoch: idRole.epoch });
+const idDir = path.join(idStateDir, 'characters', 'idrole1', 'douyin');
+fs.mkdirSync(idDir, { recursive: true });
+fs.writeFileSync(path.join(idDir, 'settings.json'), JSON.stringify({ enabled: true }));
+const idBindingBytes = JSON.stringify({ identity: { uid: ID_OWNER, secUid: 'sec', nickname: '测试', accountKey: ID_OWNER_KEY } });
+fs.writeFileSync(path.join(idDir, 'account.json'), idBindingBytes);
+const idSettingsBytes = fs.readFileSync(path.join(idDir, 'settings.json'), 'utf8');
+
+function idBrowserFactory(opts) {
+  let seq = 0, running = false;
+  fs.mkdirSync(opts.profileDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(opts.profileDir, 'profile-sentinel'), 'preserve');
+  const emit = (payload, pathname, n = ++seq, sessionId = 'identity-session') => {
+    seq = Math.max(seq, n);
+    opts.onResponse(payload, { pathname, status: 200, requestSeq: n, sessionId, requestId: `id${n}`, requestStartedAt: n });
+  };
+  const b = {
+    opts, emit, calls: { start: 0, reload: 0, loadRecommendations: 0, close: 0 },
+    get seq() { return seq; },
+    status: () => idConfig.broken ? { ok: false, code: 'BROKEN', error: '连接失败', hint: '关闭浏览器' } : ({ ok: true, running, requestSeq: seq }),
+    async start() {
+      running = true; b.calls.start++;
+      emit(idConfig.startPayload ?? self(idConfig.startUid ?? ID_OWNER), idConfig.startPath ?? SELF);
+      return idConfig.startResult ?? { ok: true };
+    },
+    async reload() {
+      b.calls.reload++;
+      const plan = idConfig.reloadPlan ?? 'fresh';
+      if (plan === 'none') return { ok: true };
+      if (plan === 'feedOnly') { emit(feed, FEED); return { ok: true }; }
+      if (plan === 'oldSeq') { emit(self(ID_OWNER), SELF, 1); return { ok: true }; }
+      if (plan === 'crossSession') { emit(self(ID_OWNER), SELF, seq + 1, 'other-session'); return { ok: true }; }
+      if (plan === 'switch') { emit(self('999999'), SELF); return { ok: true }; }
+      if (plan === 'switchAfter') { emit(self(ID_OWNER), SELF); emit(self('999999'), SELF); return { ok: true }; }
+      if (plan === 'logout') { emit({ status_code: 0, is_login: false }, SELF); return { ok: true }; }
+      if (plan === 'roleChange') { idRole = { id: 'idrole2', epoch: 2 }; emit(self(ID_OWNER), SELF); return { ok: true }; }
+      emit(self(ID_OWNER), SELF);
+      return { ok: true };
+    },
+    async loadRecommendations() { b.calls.loadRecommendations++; return this.reload(); },
+    async snapshot() { return { ok: true, title: '', text: '', url: 'https://www.douyin.com/' }; },
+    async close() { running = false; b.calls.close++; return idConfig.closeFail ? { ok: false, code: 'CLOSE', error: '关闭失败', hint: '手动关闭' } : { ok: true }; },
+  };
+  idBrowsers.push(b); return b;
+}
+const idSvc = createDouyinService({ stateDir: idStateDir, getCharacter: () => idRole, browserFactory: idBrowserFactory, waitMs: 30 });
+
+assert.equal(typeof idSvc.readOfficialIdentity, 'function', 'readOfficialIdentity must be exported');
+// 1. Success: exact minimal identity from a fresh SELF, nothing private, nothing written.
+idConfig = {};
+const idOk = await idSvc.readOfficialIdentity(idCtx());
+assert.equal(idOk.ok, true);
+assert.deepEqual(Object.keys(idOk).sort(), ['accountId', 'ok', 'verified']);
+assert.equal(idOk.verified, true);
+assert.equal(idOk.accountId, ID_OWNER_KEY);
+assert.match(idOk.accountId, /^[0-9a-f]{64}$/);
+for (const key of ['uid', 'secUid', 'nickname', 'accountKey', 'identity', 'cookie', 'raw']) assert.equal(Object.hasOwn(idOk, key), false);
+const idB1 = idBrowsers.at(-1);
+assert.equal(idB1.calls.start, 1);
+assert.equal(idB1.calls.reload, 1);
+assert.equal(idB1.calls.loadRecommendations, 0);
+assert.equal(idB1.calls.close, 1);
+assert.equal(fs.readFileSync(path.join(idDir, 'account.json'), 'utf8'), idBindingBytes);
+assert.equal(fs.readFileSync(path.join(idDir, 'settings.json'), 'utf8'), idSettingsBytes);
+assert.equal(fs.existsSync(path.join(idB1.opts.profileDir, 'profile-sentinel')), true);
+// 2. status() keeps its public projection: no raw identity leaks.
+const idStatus = await idSvc.status();
+assert.equal(idStatus.ok, true);
+assert.deepEqual(Object.keys(idStatus.account).sort(), ['configured', 'nickname', 'uidSuffix']);
+for (const key of ['uid', 'secUid', 'accountKey', 'accountId']) assert.equal(Object.hasOwn(idStatus.account, key), false);
+// 3. Stored binding alone is insufficient: no new SELF after cutoff.
+idConfig = { reloadPlan: 'none' };
+fail(await idSvc.readOfficialIdentity(idCtx()), 'DOUYIN_NEEDS_AUTH');
+// 4. Non-SELF response after cutoff is not proof.
+idConfig = { reloadPlan: 'feedOnly' };
+fail(await idSvc.readOfficialIdentity(idCtx()), 'DOUYIN_NEEDS_AUTH');
+// 5. Old-seq replay is not proof.
+idConfig = { reloadPlan: 'oldSeq' };
+fail(await idSvc.readOfficialIdentity(idCtx()), 'DOUYIN_NEEDS_AUTH');
+// 6. Cross-session SELF is not proof.
+idConfig = { reloadPlan: 'crossSession' };
+fail(await idSvc.readOfficialIdentity(idCtx()), 'DOUYIN_NEEDS_AUTH');
+// 7. Account switch on the fresh SELF is blocked.
+idConfig = { reloadPlan: 'switch' };
+fail(await idSvc.readOfficialIdentity(idCtx()), 'DOUYIN_ACCOUNT_CHANGED');
+// 8. Switch AFTER a valid fresh SELF is still blocked (late identityFailure overrides).
+idConfig = { reloadPlan: 'switchAfter' };
+fail(await idSvc.readOfficialIdentity(idCtx()), 'DOUYIN_ACCOUNT_CHANGED');
+// 9. Lost login on the fresh SELF is blocked.
+idConfig = { reloadPlan: 'logout' };
+const idLogout = await idSvc.readOfficialIdentity(idCtx());
+assert.equal(idLogout.ok, false); assert.notEqual(idLogout.verified, true); assert.ok(idLogout.code && idLogout.error && idLogout.hint);
+// 10. Mismatch on the initial SELF is blocked.
+idConfig = { startUid: '999999' };
+fail(await idSvc.readOfficialIdentity(idCtx()), 'DOUYIN_ACCOUNT_CHANGED');
+// 11. Non-SELF initial response is not proof.
+idConfig = { startPath: FEED, startPayload: feed };
+fail(await idSvc.readOfficialIdentity(idCtx()), 'DOUYIN_NEEDS_AUTH');
+// 12. Concurrent active operation is refused.
+idConfig = {};
+assert.equal((await idSvc.beginLogin(idCtx())).ok, true);
+fail(await idSvc.readOfficialIdentity(idCtx()), 'DOUYIN_BUSY');
+assert.equal((await idSvc.closeLogin(idCtx())).ok, true);
+// 13. Role/epoch change mid-op is refused.
+idConfig = { reloadPlan: 'roleChange' };
+const idRoleChanged = await idSvc.readOfficialIdentity(idCtx());
+assert.equal(idRoleChanged.ok, false); assert.notEqual(idRoleChanged.verified, true); assert.ok(idRoleChanged.hint);
+idRole = { id: 'idrole1', epoch: 1 };
+// 14. Transition gate is refused.
+idConfig = {};
+let idRelease;
+const idGate = idSvc.withTransition(async () => { await new Promise(resolve => { idRelease = resolve; }); });
+fail(await idSvc.readOfficialIdentity(idCtx()), 'DOUYIN_TRANSITION');
+idRelease(); await idGate;
+// 15. Browser start failure is surfaced.
+idConfig = { startResult: { ok: false, code: 'START_FAIL', error: '启动失败', hint: '检查浏览器' } };
+const idStartFail = await idSvc.readOfficialIdentity(idCtx());
+assert.equal(idStartFail.ok, false); assert.notEqual(idStartFail.verified, true); assert.ok(idStartFail.hint);
+// 16. Broken browser status is surfaced.
+idConfig = { broken: true };
+const idBroken = await idSvc.readOfficialIdentity(idCtx());
+assert.equal(idBroken.ok, false); assert.notEqual(idBroken.verified, true); assert.ok(idBroken.hint);
+// 17. Close failure is propagated and never becomes verified:true.
+idConfig = { closeFail: true };
+const idCloseFail = await idSvc.readOfficialIdentity(idCtx());
+assert.equal(idCloseFail.ok, false);
+assert.equal(idCloseFail.code, 'CLOSE');
+assert.notEqual(idCloseFail.verified, true);
+assert.ok(idCloseFail.error && idCloseFail.hint);
+idConfig = {};
+assert.equal((await idSvc.invalidate()).ok, true);
+// 18. Disposed service is refused.
+const idDisposedSvc = createDouyinService({ stateDir: idStateDir, getCharacter: () => idRole, browserFactory: idBrowserFactory, waitMs: 30 });
+assert.equal((await idDisposedSvc.dispose()).ok, true);
+fail(await idDisposedSvc.readOfficialIdentity(idCtx()), 'DOUYIN_STALE');
 console.log('douyin service: ok');
