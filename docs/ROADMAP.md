@@ -385,3 +385,16 @@ Context7已查询Download API、douyin-mcp-server和F2，并核对GitHub固定�
 | 从 guard 日志读 DSH token | DSH 0.1.7 起 token 只在内存 | 改离线铸造 Cookie |
 | 硬编码 `127.0.0.1:3080` | 端口会漂移（实测 48994/57981） | 统一 `discoverDshBaseUrl()` |
 | 用文本工具直接读会话日志判断损坏 | zstd 压缩，头部在压缩帧内 | 必须解码后再判断 |
+
+
+## 记忆 V2 P0–P4 工程实施与验收完成（2026-11-11）
+
+用户已确认按独立设计推进并完成 P0–P4 全面工程实施与独立验收。在隔离工作树（`feat/memory-v2`）中实现了：
+1. Core 核心层：事务存储、Spool 缓冲、生命周期调度、生长衰减内核、评估框架与只读迁移计划；
+2. 管理与 UI：支持恢复旧 session 原 ID 的独立管理 Worker、HTTP API、安全脱敏迁移预览与控制台面板；
+3. 四大渠道与 Source Runtime：
+   - QQ：原生 Ledger 语法账本、Native Owner 观察与主动取消、Source 原文接缝与私有 Host adapter、单次发送租约及鲜活身份防漂移屏障、真实桥接闭环；
+   - Bilibili：官方公开读取、来源集合细粒度审批、Feed/Debrief 原生双调用闭环、Core 召回及 finish 完整性校验、托管单轮正向 V2 接线与调度退役 ACK 传递；
+   - 抖音与桌宠：身份与记忆路由对齐；
+4. 全量质量门禁与测试基线：Memory V2 全套套件 47/47 脚本全部通过，`test:audit` 176/176 全绿，`test:regressions` 17/17 全绿；
+5. 保持默认 V1：生产切换与实际迁移需另外提供具体预览并经用户确认；桌面插件安装已获授权但保持 V1 默认生效。详见[工单](plans/2026-11-09-memory-v2.md)与[案例列表](cases/README.md)。

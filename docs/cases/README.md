@@ -6,6 +6,27 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-11 | [Bili 受控单轮所选模型正向 V2 接线与退役 ACK](2026-11-11-memory-v2-bili-manual-round.md) | 模型路由校验派生、V2 上下文纯净构建与调度器退役 ACK 闭环 | 验收通过，未安装 |
+| 2026-11-11 | [Memory V2 迁移盘点安全预览暴露与隔离区完整性](2026-11-11-memory-v2-migration-preview.md) | 管理面板 cleanPreview 安全透出统计指标，隔离区严格保留且未获批准不切生产 | 验收通过，未安装 |
+| 2026-11-11 | [QQ V2 原生来源运行时与 Bridge 联合闭环](2026-11-11-memory-v2-qq-source-runtime.md) | 来源包/Core召回/Native Owner/账本与单次租约闭环，普通4例与实际Native探针通过 | 阶段验收，未安装 |
+| 2026-11-11 | [Bili V2 Native 记忆召回与输出 Finish 完整性](2026-11-11-memory-v2-bili-native-recall.md) | 强制核验 Core prepared recall 文本与 manifest，输出 complete 严格要求合法 finish | 模块验收，未安装 |
+| 2026-11-11 | [QQ V2 Native 语法账本：全集路由与 tool-calls 完成](2026-11-11-memory-v2-qq-native-ledger.md) | 支持完整合法 Core 路由全集、正常 tool-calls 结束判定及非负 safe integer 块索引 | 模块验收，未安装 |
+| 2026-11-11 | [QQ Native owner：实际所有权与前置预算](2026-11-11-memory-v2-qq-native-owner.md) | owner独立SDK通过；来源/Bridge仍待接线 | 模块接受，未安装 |
+| 2026-11-11 | [Native Root 可重试退役](2026-11-11-memory-v2-native-retirement-ack.md) | 原资源失败重试、创建竞态、12例与实际SDK Root通过 | 阶段接受，未安装 |
+| 2026-11-11 | [Bili 凭据退役屏障](2026-11-11-memory-bili-credential-retirement.md) | 保存前ACK、换号归档可恢复、10例及通知回归通过 | 阶段接受，未安装 |
+| 2026-11-11 | [旧来源稳定标识记账](2026-11-11-memory-v2-legacy-registry.md) | SQLite不透明身份映射；原规划器22/39通过，未接生产观察/导入 | 模块接受，未安装 |
+| 2026-11-11 | [Memory Bili Host装配与接收观察](2026-11-11-memory-bili-host-wiring.md) | Source39与实际SDK2/30、index L2失败和旧单轮后端护栏；公开读取联合已通过 | 阶段验收，未安装 |
+| 2026-11-10 | [Bili Host组合入口：实施中](2026-11-10-bili-v2-host-composition.md) | ordinary与局部native工厂通过（合成预激活夹具）；index装配增量见11日case，公开读取联合已通过；全生命周期仍待 | 未完成 |
+| 2026-11-10 | [Bili V2 DM selector保真](2026-11-10-bili-v2-dm-trigger.md) | 真实CLI10项、19位msgKey原样、非法值省略且保留V1过滤 | 模块接受，生产组合待办 |
+| 2026-11-10 | [Memory V2 真实宿主加载](2026-11-10-memory-v2-native-environment.md) | 11真实模块、owner/privateRoot/close，以及经loader的完整来源2/2/30 | 模块接受，生产组合待办 |
+| 2026-11-10 | [Bili V2 原件与回复坐标](2026-11-10-bili-v2-trigger-projection.md) | sourceRoot保真、严格selector、同OID原件0与回复31的联合验证 | 未安装，Host接线待办 |
+| 2026-11-10 | [Memory V2 抖音鲜活身份接线](2026-11-10-memory-v2-douyin-identity.md) | 真实getter接线、固定忙碌提示、权限候选隔离；无身份缓存 | 未安装，联合门禁待办 |
+| 2026-11-10 | [Bili V2 退役上下文释放](2026-11-10-bili-v2-retirement.md) | 实际退役 ACK 后释放活跃引用，37/30 项与 2/2/30 native | 模块验收，生产组合待办 |
+| 2026-11-10 | [Bili V2 真实写命令](2026-11-10-bili-v2-write-workers.md) | comment/DM 实际 fork+IPC+official 10项；Host-only凭据与未知不重发 | 未安装 |
+| 2026-11-10 | [Memory V2 原ID恢复 UI](2026-11-10-memory-v2-admin-resume-ui.md) | 原文摘要保真、不可信回执查原ID并阻止重复提交；真实React双视口对比 | 隔离UI验收，生产组合待办 |
+| 2026-11-10 | [Bili V2 同凭据官方传输](2026-11-10-bili-v2-official-transport.md) | 76项；跨账号0 POST、晚关闭/取消0 fetch、精确ID与完整坐标 | 模块独立验收，生产组合待办 |
+| 2026-11-10 | [Bili V2 托管动态 worker](2026-11-10-bili-v2-managed-worker.md) | 固定意图、来源账号传递与官方回执 ID，普通/实际Host/完整来源分层验证 | 未安装，P0–P4续做 |
+| 2026-11-10 | [合成 ASR 测试音频清理](2026-11-10-synthetic-audio-cleanup.md) | 55 批逐内容压缩保全后移除，实测释放约 11.10 GiB | 无版本/生产变更 |
 | 2026-11-08 | [语音管理解除QQ依赖](2026-11-08-voice-management-independence.md) | Host共享管理、失败可行动、配置保持与并发归属 | 门禁/独立复核/常用原生通过，未配引擎/未发布 |
 | 2026-11-08 | [本地主线与worktree收口](2026-11-08-local-worktree-consolidation.md) | 合并历史、保全中间稿、42→1分支/工作树与磁盘回收 | 三门禁通过，本地未发布 |
 | 2026-11-07 | [自然分享与DSH本机接话组合](2026-11-07-companion-natural-sharing.md) | 追加对话、同源API、共享额度与幂等 | 门禁/独立复核/2观看1接话/常用重启通过，11/12 |
@@ -140,8 +161,17 @@
 > 更早的坑（更新检查误报、主题对比度、桌宠数据被删等）见 [`../PITFALLS.md`](../PITFALLS.md)；
 > 那份是"按坑记"，这里按"按 bug 记"，两者互补。
 
+- [2026-11-11 Memory V2 确切公开来源集合审批](2026-11-11-memory-v2-public-source-approval.md)：真实 Worker 权限与完整预览、同场景桌面/移动证据；Host/官方读取及双步 Native 已验，全局生命周期仍在办。
 - [macOS候选收口](2026-11-07-macos-readiness.md)：独立候选、审查与实机验收边界。
 
 - [QQ编号回答提示](2026-11-07-qq-answer-hint.md)：消除占位词歧义，真实处理函数验证精确选项。
 
 - [B站精确播放时间线](2026-11-07-bili-precise-timeline.md)：区分整数声明与精确范围，保留真实缺尾和转场护栏。
+
+- [Bili V2 关闭与显式重试](2026-11-10-bili-v2-close.md)：退休及订阅确认后释放 owner；42场景与实际 native 联合复验通过。
+- [Bili V2 视频文字元数据](2026-11-10-bili-v2-video-metadata.md)：固定 view / text-only、精确 ID、日期越界固定错误；helper run2 已验，生产接线待。
+
+- [Bili V2 官方公开读取与双步 Native](2026-11-11-memory-bili-official-public-read.md)：精确集合、元数据 text-only、审批排序及释放 ACK；feed/debrief 实际工厂各 3 模拟调用/45 tokens。
+- [QQ 私有 context、文本包与原件导出](2026-11-11-memory-v2-qq-source-plumbing.md)：完整 producer 分片/原 refs 私有导出、actor 保真的只读文本包与独立 QQ Host context。
+- [QQ Native owner 私有所有权](2026-11-11-memory-v2-qq-native-owner.md)：实际 Native agent 私有所有权、动态角色/模型/工具检查、真实预算前置 gate 与完整退役。
+- [QQ Native 输出观察与取消](2026-11-11-memory-v2-qq-native-observation.md)：实际流分阶段观察、原配置/请求/分片检查、工具 guard witness、等待实际取消后卸载确认。
