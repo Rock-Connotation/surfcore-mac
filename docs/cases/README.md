@@ -11,11 +11,11 @@
 | 2026-11-11 | [QQ V2 原生来源运行时与 Bridge 联合闭环](2026-11-11-memory-v2-qq-source-runtime.md) | 来源包/Core召回/Native Owner/账本与单次租约闭环，普通4例与实际Native探针通过 | 阶段验收，未安装 |
 | 2026-11-11 | [Bili V2 Native 记忆召回与输出 Finish 完整性](2026-11-11-memory-v2-bili-native-recall.md) | 强制核验 Core prepared recall 文本与 manifest，输出 complete 严格要求合法 finish | 模块验收，未安装 |
 | 2026-11-11 | [QQ V2 Native 语法账本：全集路由与 tool-calls 完成](2026-11-11-memory-v2-qq-native-ledger.md) | 支持完整合法 Core 路由全集、正常 tool-calls 结束判定及非负 safe integer 块索引 | 模块验收，未安装 |
-| 2026-11-11 | [QQ Native owner：实际所有权与前置预算](2026-11-11-memory-v2-qq-native-owner.md) | owner独立SDK通过；来源/Bridge仍待接线 | 模块接受，未安装 |
 | 2026-11-11 | [Native Root 可重试退役](2026-11-11-memory-v2-native-retirement-ack.md) | 原资源失败重试、创建竞态、12例与实际SDK Root通过 | 阶段接受，未安装 |
 | 2026-11-11 | [Bili 凭据退役屏障](2026-11-11-memory-bili-credential-retirement.md) | 保存前ACK、换号归档可恢复、10例及通知回归通过 | 阶段接受，未安装 |
 | 2026-11-11 | [旧来源稳定标识记账](2026-11-11-memory-v2-legacy-registry.md) | SQLite不透明身份映射；原规划器22/39通过，未接生产观察/导入 | 模块接受，未安装 |
 | 2026-11-11 | [Memory Bili Host装配与接收观察](2026-11-11-memory-bili-host-wiring.md) | Source39与实际SDK2/30、index L2失败和旧单轮后端护栏；公开读取联合已通过 | 阶段验收，未安装 |
+| 2026-11-11 | [Harness共享模型冷却修复](2026-11-11-harness-shared-throttle.md) | HY4额度429连带Sol，按模型隔离后原生原会话恢复 | 本机配置修复/未发布 |
 | 2026-11-10 | [Bili Host组合入口：实施中](2026-11-10-bili-v2-host-composition.md) | ordinary与局部native工厂通过（合成预激活夹具）；index装配增量见11日case，公开读取联合已通过；全生命周期仍待 | 未完成 |
 | 2026-11-10 | [Bili V2 DM selector保真](2026-11-10-bili-v2-dm-trigger.md) | 真实CLI10项、19位msgKey原样、非法值省略且保留V1过滤 | 模块接受，生产组合待办 |
 | 2026-11-10 | [Memory V2 真实宿主加载](2026-11-10-memory-v2-native-environment.md) | 11真实模块、owner/privateRoot/close，以及经loader的完整来源2/2/30 | 模块接受，生产组合待办 |

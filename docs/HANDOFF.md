@@ -55,6 +55,10 @@
 
 ---
 
+## 2026-11-11 Harness session-4473 连续失败已修复
+
+HY4频率额度到10:14:14；Billion Context 0.1.213默认凭据级hold连带Sol。备份后仅将用户配置network.throttle429Scope改model，运行时读回与实际函数5项红绿通过；10:05原生App原会话turn23 completed约7秒、回复“原会话回复正常”、工具0，无重启。独立dev基线Node24 audit187/187及diff-check通过。HY4本身未复测。Memory V2实际停在Official公共读取适配，原prod/test未变、新测试/契约未写；Source39/Bagg44/集合41及2fakecalls/30tokens原生来源回归已验，后续Host联合/单轮/QQ/生命周期/迁移/总门禁/提交与desktop安装未完成。业务工作树未改；本记录在独立fix/harness-throttle，完整逻辑与发布块见[case](cases/2026-11-11-harness-shared-throttle.md)。
+
 ## 已交付：2026-11-08 火山小何与原主人QQ实机闭环
 
 - 最终程序tree `25c959750aa16b40643c5e15929ff7f2eceb3873`，基线94a4a78、sourceCommit:null；本地tgz SHA256 `067b83c351c1b6c60f215255d2051ce62aade2f6134505b2377e016314d7aee5`。官方CLI在隔离profile安装成功、4749文件一致；常用通过既定原子换程序方案安装，4749文件一致，四个profile声明文件不变，6524个受保护的非NapCat持久文件安装前后不变。

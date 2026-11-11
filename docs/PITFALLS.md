@@ -4422,3 +4422,6 @@ Source runtime 原 finish 检查只要求 `kind` 为任意字符串，且 `compl
 根因：Native Ledger 使用对象引用全等性作为同一调用上下文防篡改依据，来源运行时未严格保全并复用传入的 `preparedConfig`；测试夹具未向 ctx 提供 webServer 端口。
 修法：在 `prepareInput` 与 `captureModelOutput` 优先使用调用方传入的 `preparedConfig` 引用并锁定在 state 中，确保各 phase 严格全等；在 index 测试夹具中补齐 `webServer` 端口映射。
 复验：`test-memory-v2-qq-source-runtime.mjs` 4 项普通与真实 Harness 2 calls / 30 tokens Native 周期全部 PASS；`test-memory-v2-bili-index.mjs` PASS；`run-memory-v2-tests.mjs` 47/47 全套 Memory V2 普通用例全部 PASS；全库 audit 176/176 与 17/17 协议回归全部通过。证据保存在 `_backups/memory-v2-coordinator/qq-source-runtime-independent/verification.json`。
+## 154. Harness session-4473 连续失败与 HY4 共享冷却（2026-11-11）
+
+同一Magpie origin+凭据被Billion Context默认credential粒度共同hold；先查Magpie原始429的模型与重置时间，不把bili_throttle_hold误当主模型额度耗尽。当前多供应商网关使用network.throttle429Scope=model保留各模型治理；旧credential hold仍须到期。实际函数复现旧红新绿，原生原会话Sol恢复，账号与代理保留。配置热读，无需重启公共Host。完整逻辑/回滚见[case](cases/2026-11-11-harness-shared-throttle.md)。
