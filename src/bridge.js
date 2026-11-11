@@ -86,6 +86,8 @@ import {
 } from './character-persona.js';
 import { composePersonaLayers, personaSceneFromKey } from './persona-layers.js';
 import { buildCharacterContext } from './core/context.js';
+import { createQQMemoryBridge } from './core/memory-v2-qq.js';
+import { deriveMemoryProviderRouteId } from './core/memory-v2-routing.js';
 import { isHardDirectWakeReason, hasStrictDirectUnread } from './wake-policy.js';
 import { DEFAULT_GROUP_POLICY, normalizeGroupPolicy, groupTier, shouldSkipTriggerForTier } from './group-policy.js';
 import { buildContextSnapshot, DEFAULT_SNAPSHOT_CAPS } from './context-snapshot.js';
@@ -1811,6 +1813,80 @@ async function main() {
   hardenStateDirAcl();
   acquireLock();
   loadState();
+  const qqMemory = createQQMemoryBridge({ stateDir: SURFCORE_DIR, getCharacter: readCurrentCharacter });
+  const memoryV2Failures = new Map();
+  const memoryV2Barriers = new Map();
+  const memoryV2SelectedRoutes = new Map();
+  state.memoryV2Retirements ??= {};
+  state.memoryV2Sessions ??= {};
+  function memoryV2Route() { return qqMemory.routing(); }
+  function usesMemoryV2() { const route = memoryV2Route(); return !route.ok || route.backend === 'v2'; }
+  function memoryV2Failure(key, result) {
+    const issue = { ok: false, code: result?.code ?? 'MEMORY_QQ_BLOCKED', error: result?.error ?? 'QQ memory authorization did not complete.', hint: result?.hint ?? 'Check Host memory diagnostics and original receipts; keep queued sources and retire old sessions.' };
+    memoryV2Failures.set(key, issue);
+    appendActivity(`${key} 记忆安全阻断 ${issue.code}：${issue.error} ${issue.hint}`);
+    return issue;
+  }
+  function validateMemoryV2ProviderRoute(key, sessionId, selected = null) {
+    if (!usesMemoryV2()) return { ok: true };
+    const expected = state.memoryV2Sessions[key]?.providerRouteId;
+    if (selected !== null) {
+      memoryV2SelectedRoutes.delete(sessionId);
+      const route = deriveMemoryProviderRouteId({ provider: selected?.provider, model: selected?.model });
+      if (!route.ok) return memoryV2Failure(key, route);
+      if (route.providerRouteId !== expected) return memoryV2Failure(key, { code: 'MEMORY_PROVIDER_ROUTE_MISMATCH', error: 'The actual DSH model route is not the authorized memory route.', hint: 'Explicitly approve the exact provider/model and start a fresh request; fallback does not inherit a grant.' });
+      memoryV2SelectedRoutes.set(sessionId, route.providerRouteId);
+    }
+    if (!sessionId || !expected || memoryV2SelectedRoutes.get(sessionId) !== expected) return memoryV2Failure(key, { code: 'MEMORY_PROVIDER_ROUTE_REQUIRED', error: 'No exact observed DSH model route is authorized for this request.', hint: 'Select and approve the exact provider/model, then prepare a fresh QQ reply.' });
+    return { ok: true };
+  }
+  async function requireMemoryV2SessionSafety(key, sessionId) {
+    if (!usesMemoryV2()) return;
+    const proof = await qqMemory.validateSessionSafety({ sessionId, preset: modePreset(key, currentMode, cfg) });
+    if (!proof.ok || !isCurrentSession(key, sessionId)) {
+      const issue = memoryV2Failure(key, proof.ok ? { code: 'MEMORY_SESSION_STALE', error: 'The QQ session changed during its native safety check.', hint: 'Prepare a fresh authorized reply after retiring the old session.' } : proof);
+      await retireMemoryV2Session(key); await qqMemory.retire(key); throw Object.assign(new Error(issue.error), issue);
+    }
+  }
+  async function beginMemoryV2Send(key) {
+    if (!usesMemoryV2()) return null;
+    await requireMemoryV2SessionSafety(key, state.sessions[key]);
+    const route = validateMemoryV2ProviderRoute(key, state.sessions[key]);
+    if (!route.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); throw Object.assign(new Error(route.error), route); }
+    const result = await qqMemory.authorizeSend({ key, loginAccountId: selfUserId });
+    if (!result.ok) throw Object.assign(new Error(result.error), memoryV2Failure(key, result));
+    await requireMemoryV2SessionSafety(key, state.sessions[key]);
+    const after = validateMemoryV2ProviderRoute(key, state.sessions[key]);
+    if (!after.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); throw Object.assign(new Error(after.error), after); }
+    return result.lease;
+  }
+  async function finishMemoryV2Send(lease, key, body, data, deliveryState = null) {
+    if (!lease) return;
+    const messageId = data?.message_id ?? data?.data?.message_id ?? null;
+    const result = await qqMemory.recordSent(lease, { text: typeof body === 'string' ? body : JSON.stringify(body), messageId: messageId === null ? null : String(messageId), deliveryState: deliveryState ?? (messageId === null ? 'delivery_unknown' : 'delivered') });
+    if (!result.ok) return memoryV2Failure(key, result);
+    return result;
+  }
+  async function retireMemoryV2Session(key) {
+    if (memoryV2Barriers.has(key)) return memoryV2Barriers.get(key);
+    const operation = (async () => {
+      const sessionId = state.sessions[key];
+      if (sessionId) {
+        state.memoryV2Retirements[sessionId] = { key, pending: true };
+        retireSession(key, { stop: false, preserveMemorySource: true });
+        saveState();
+      }
+      const retired = Object.entries(state.memoryV2Retirements).filter(([, item]) => item.key === key);
+      for (const [oldId] of retired) {
+        const result = await stopRetiredSessionWork(oldId, key, { verify: true });
+        if (!result.ok) return memoryV2Failure(key, result);
+        delete state.memoryV2Retirements[oldId]; saveState();
+      }
+      return { ok: true };
+    })();
+    memoryV2Barriers.set(key, operation);
+    try { return await operation; } finally { if (memoryV2Barriers.get(key) === operation) memoryV2Barriers.delete(key); }
+  }
 
   // 闸门事件中心：只记录“发生了什么 + 级别”；具体 UI 通知由插件读同一份文件。
   const gateEvents = createGateEventStore({ dir: SURFCORE_DIR, log: (...args) => log(...args) });
@@ -2431,6 +2507,7 @@ async function main() {
     let rejectSend;
     const sendPromise = new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; });
     sendChain = sendChain.then(async () => {
+      let memorySendLease = null, memorySendRecorded = false;
       try {
         if (assertSendAllowed) assertSendAllowed();
         // 语音条比图片大、要过一次 SILK 转码，给 60s 预算（文本/图片共用同一 sendChain，
@@ -2440,6 +2517,7 @@ async function main() {
         const params = kind === 'private'
           ? { user_id: Number(id), message: [recordSegment] }
           : { group_id: Number(id), message: [recordSegment] };
+        memorySendLease = await beginMemoryV2Send(key);
         const res = await fetch(`${httpUrl}/${action}`, {
           method: 'POST',
           headers: {
@@ -2450,12 +2528,15 @@ async function main() {
           signal: AbortSignal.timeout(60000)
         });
         const body = await res.json().catch(() => ({}));
+        await finishMemoryV2Send(memorySendLease, key, '[QQ语音]', res.ok && body.status === 'ok' && body.retcode === 0 ? body.data : null);
+        memorySendRecorded = true;
         if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
           const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口）' : '';
           throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}${hint}`);
         }
         resolveSend(body.data);
       } catch (error) {
+        if (memorySendLease && !memorySendRecorded) await finishMemoryV2Send(memorySendLease, key, '[QQ语音]', null, 'delivery_unknown');
         rejectSend(error);
       }
     });
@@ -2629,10 +2710,12 @@ async function main() {
       sendReject = reject;
     });
     sendChain = sendChain.then(async () => {
+      let memorySendLease = null, memorySendRecorded = false;
       try {
         // 真人发表情前通常会有短暂停顿，避免“文字刚发完表情立刻跟上”的机械感。
         await sleep(randInt(800, 2000));
         assertSendAllowed();
+        memorySendLease = await beginMemoryV2Send(key);
         const res = await fetch(`${httpUrl}/${action}`, {
           method: 'POST',
           headers: {
@@ -2643,12 +2726,15 @@ async function main() {
           signal: AbortSignal.timeout(15000)
         });
         const body = await res.json().catch(() => ({}));
+        await finishMemoryV2Send(memorySendLease, key, '[QQ表情]', res.ok && body.status === 'ok' && body.retcode === 0 ? body.data : null);
+        memorySendRecorded = true;
         if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
           const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口，请检查 config.json 的 snowluma.httpUrl 是否为 OneBot HTTP API 地址）' : '';
           throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}${hint}`);
         }
         sendResolve(body.data);
       } catch (error) {
+        if (memorySendLease && !memorySendRecorded) await finishMemoryV2Send(memorySendLease, key, '[QQ表情]', null, 'delivery_unknown');
         sendReject(error);
       }
     });
@@ -2920,6 +3006,7 @@ async function main() {
   }
 
   async function runSlangExtraction(key) {
+    if (usesMemoryV2()) return memoryV2Failure(key, { code: 'MEMORY_DERIVATION_UNAVAILABLE', error: 'Legacy slang extraction has no authorized source manifest.', hint: 'Keep this source in V2 and use an authorized derivation workflow.' });
     if (cfg.slang?.enabled === false) return;
     if (!dshReady) return;
     if (learnerBudgetBlock()) return;
@@ -2999,6 +3086,7 @@ async function main() {
   }
 
   async function runSlangResearch(candidates) {
+    if (usesMemoryV2()) return { ok: false, code: 'MEMORY_DERIVATION_UNAVAILABLE', error: 'Legacy research has no authorized source manifest.', hint: 'Use a fresh authorized V2 request.' };
     if (!candidates || !candidates.length) return;
     if (cfg.slang?.enabled === false) return;
     if (!dshReady) return;
@@ -3344,7 +3432,7 @@ async function main() {
   const reverse = new Map(); // sessionId -> conv key
   for (const [key, sessionId] of Object.entries(state.sessions)) reverse.set(sessionId, key);
   // 新版 DSH 事件流需要显式 follow；启动时为已持久化的 QQ 会话补上。
-  for (const sessionId of Object.values(state.sessions)) api.events.follow(sessionId);
+  if (memoryV2Route().ok && memoryV2Route().backend === 'v1') for (const [key, sessionId] of Object.entries(state.sessions)) if (!state.memoryV2Sessions[key] && !state.memoryV2Retirements[sessionId]) api.events.follow(sessionId);
   const sessionPromises = new Map(); // key -> create promise（防并发重复创建）
   const promptQueues = new Map(); // key -> { queue: [], running: false }：每个 QQ 会话串行投递 DSH prompt，保证 turn 顺序
 
@@ -3414,6 +3502,7 @@ async function main() {
    * 重连时该帧会重新下发，账本内部按 (turn, step, retry) + seq 做幂等折叠，不会翻倍。
    */
   function recordSessionSnapshot(sessionId, snapshot) {
+    if (usesMemoryV2()) return;
     try {
       if (!snapshot) return;
       const selection = snapshot.projections?.values?.modelSelection;
@@ -3655,11 +3744,16 @@ async function main() {
   }
 
   function sessionPolicy(key) {
+    if (usesMemoryV2()) {
+      const route = memoryV2Route();
+      const role = readCurrentCharacter();
+      return JSON.stringify([currentMode, modePreset(key, currentMode, cfg) ?? '', role?.id, role?.epoch, route.descriptor ?? route, state.memoryV2Sessions[key] ?? null]);
+    }
     return JSON.stringify([currentMode, modePreset(key, currentMode, cfg) ?? '', currentMode === 'closed-agent' ? cfg.ownerQQ : null]);
   }
 
   function isCurrentSession(key, sessionId) {
-    return isSessionAllowedInCurrentMode(key) && state.sessions[key] === sessionId
+    return (!usesMemoryV2() || qqMemory.status(key).active) && isSessionAllowedInCurrentMode(key) && state.sessions[key] === sessionId
       && state.sessionPolicies[key] === sessionPolicy(key);
   }
 
@@ -3669,12 +3763,16 @@ async function main() {
    * workspace-reset / reset，以及控制台的二代状态重置）—— 少一处就会留下
    * 「DSH 还在烧 token、桥接已经收不到也发不出」的静默黑洞。
    */
-  function stopRetiredSessionWork(sessionId, key = '') {
-    void (async () => {
-      try { await withTimeout(api.stopSessionWork(sessionId), DSH_CONTROL_TIMEOUT_MS, 'stopSessionWork'); }
-      catch (error) { log(`⚠️ 停止旧会话失败 ${key}：${error?.message ?? error}；本地映射已撤销，请在 DSH 检查旧任务`); }
-      try { await withTimeout(api.workspace.archiveSession({ sessionId }), DSH_CONTROL_TIMEOUT_MS, 'archiveSession'); }
-      catch (error) { log(`归档失效会话失败 ${key}: ${error?.message ?? error}`); }
+  function stopRetiredSessionWork(sessionId, key = '', { verify = false } = {}) {
+    return (async () => {
+      let stopped, failure;
+      try {
+        stopped = await withTimeout(api.stopSessionWork(sessionId, { verify }), DSH_CONTROL_TIMEOUT_MS, 'stopSessionWork');
+        if (verify && (stopped?.queueEmpty !== true || stopped?.cancelled !== true)) throw new Error('Host did not confirm queue cancellation.');
+      } catch (error) { failure = error; log(`⚠️ 停止旧会话失败 ${key}：${error?.message ?? error}`); }
+      try { unwrap(await withTimeout(api.workspace.archiveSession({ sessionId }), DSH_CONTROL_TIMEOUT_MS, 'archiveSession'), 'archiveSession'); }
+      catch (error) { failure ??= error; log(`归档失效会话失败 ${key}: ${error?.message ?? error}`); }
+      return failure ? { ok: false, code: 'MEMORY_SESSION_RETIRE_PENDING', error: 'Old DSH work has no confirmed retirement acknowledgment.', hint: 'Check and stop the old DSH session, then retry; new QQ prompts remain blocked.' } : { ok: true, queueEmpty: stopped?.queueEmpty === true, archived: true };
     })();
   }
 
@@ -3698,19 +3796,29 @@ async function main() {
     markReadCalledKeys.delete(key);
   }
 
-  function retireSession(key) {
+  function retireSession(key, { stop = true, preserveMemorySource = false } = {}) {
     const sessionId = state.sessions[key];
     delete state.sessions[key];
     delete state.sessionPolicies[key];
     // 按 key 记账的内存态在**有映射和无映射时都要清**：一条被移出白名单、
     // 但从未成功建过会话的 key 同样会留下限流时间戳与失败标记。
     forgetConversationCaches(key);
+    if (usesMemoryV2() || state.memoryV2Sessions[key] || state.memoryV2Retirements[sessionId]) {
+      recentChat.delete(key);
+      social.recentMessages.delete(key); social.pendingSummaries.delete(key); social.silentContext.delete(key);
+      const conversation = socialV2.conversations.get(key);
+      if (conversation) { conversation.recentMessages = []; conversation.unread = []; conversation.modelSeenSeqs = new Set(); conversation.activeTopics = []; conversation.pendingThoughts = []; conversation.memberImpressions = {}; conversation.closure = null; conversation.lastHistoryCatchup = null; }
+      messageMediaStore.delete(key); seenForwardIds.delete(key);
+      delete state.memoryV2Sessions[key];
+      if (!preserveMemorySource) void qqMemory.retire(key);
+      if (sessionId) { state.memoryV2Retirements[sessionId] = { key, pending: true }; saveState(); }
+    }
     if (!sessionId) return;
     reverse.delete(sessionId);
     collectors.delete(sessionId);
     sessionModels.delete(sessionId);
     modelAppliedSessions.delete(sessionId);
-    modelAppliedKeys.delete(sessionId);
+    modelAppliedKeys.delete(sessionId); memoryV2SelectedRoutes.delete(sessionId);
     sendToolSucceededSessions.delete(sessionId);
     pendingSendToolCalls.delete(sessionId);
     v2TurnStartAt.delete(sessionId);
@@ -3738,7 +3846,7 @@ async function main() {
     }
     saveState();
     saveSocialV2State();
-    stopRetiredSessionWork(sessionId, key);
+    if (stop) void stopRetiredSessionWork(sessionId, key);
     log(`会话权限已变化，停用旧映射 ${key} -> ${sessionId}`);
   }
 
@@ -4289,7 +4397,7 @@ async function main() {
         log(`[history] QQ 账号会话已上线（${source}），检查离线期间的历史消息`);
         void runHistoryCatchUp(`online:${source}`).catch((error) => log(`[history] 上线补历史异常：${error?.message ?? error}`));
       }
-      void outbox.flush(`account-online:${source}`).catch((error) => log(`[outbox] 上线补发异常：${error?.message ?? error}`));
+      if (!usesMemoryV2()) void outbox.flush(`account-online:${source}`).catch((error) => log(`[outbox] 上线补发异常：${error?.message ?? error}`));
     }
   }
 
@@ -4376,6 +4484,43 @@ async function main() {
     }
     snowlumaHealth.goodCheckedAt = Date.now();
     reportSnowlumaHealth();
+  }
+
+  function memoryQQIdentityFailure(code, error) {
+    return { ok: false, code, error, hint: '请先确认 SnowLuma 在线和当前官方 QQ 账号；需授权记忆处理时，在 QQ 设置选择明确的 provider/model 后重试。' };
+  }
+
+  async function readOfficialMemoryQQIdentity() {
+    const snapshot = () => JSON.stringify({ httpUrl: cfg.snowluma?.httpUrl, accessToken: cfg.snowluma?.accessToken,
+      allow: cfg.allow, provider: cfg.dsh?.provider, model: cfg.dsh?.model, followDefaultModel: cfg.dsh?.followDefaultModel });
+    const before = snapshot(), signal = AbortSignal.timeout(2500);
+    const decimal = value => typeof value === 'string' && /^[1-9][0-9]{0,19}$/.test(value);
+    const account = value => typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : value;
+    try {
+      const httpUrl = String(cfg.snowluma?.httpUrl ?? '').replace(/\/+$/, '');
+      if (!httpUrl) return memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_UNAVAILABLE', '尚未配置官方 OneBot 查询地址。');
+      const read = async action => {
+        const response = await fetch(`${httpUrl}/${action}`, { method: 'POST', redirect: 'error', signal,
+          headers: { 'content-type': 'application/json', ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}) }, body: '{}' });
+        const body = await response.json();
+        if (!response.ok || body?.status !== 'ok' || body?.retcode !== 0 || !body.data || typeof body.data !== 'object' || Array.isArray(body.data)) throw new Error('Invalid official OneBot response');
+        return body.data;
+      };
+      const login = await read('get_login_info'), status = await read('get_status');
+      if (status.online !== true) return memoryQQIdentityFailure('MEMORY_QQ_OFFLINE', '官方 QQ 当前不在线或未能确认在线状态。');
+      const accountId = account(login.user_id);
+      if (!decimal(accountId)) return memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_INVALID', '官方登录查询没有返回有效 QQ 账号。');
+      const confirmed = await read('get_login_info');
+      if (account(confirmed.user_id) !== accountId) return memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_CHANGED', '官方 QQ 账号在本次身份查询期间发生变化。');
+      if (before !== snapshot()) return memoryQQIdentityFailure('MEMORY_QQ_CONFIG_CHANGED', 'QQ 配置在身份查询期间发生变化。');
+      const groups = cfg.allow?.groups, privates = cfg.allow?.private;
+      if (!Array.isArray(groups) || !Array.isArray(privates) || [...groups, ...privates].some(value => !decimal(value))) return memoryQQIdentityFailure('MEMORY_QQ_ALLOWLIST_INVALID', '当前 QQ 白名单不是有效的官方账号列表。');
+      const result = { ok: true, verified: true, accountId, allowedGroups: [...new Set(groups)], allowedPrivates: [...new Set(privates)] };
+      if (cfg.dsh?.followDefaultModel === false && deriveMemoryProviderRouteId({ provider: cfg.dsh.provider, model: cfg.dsh.model }).ok) result.route = { provider: cfg.dsh.provider, model: cfg.dsh.model };
+      return result;
+    } catch {
+      return memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_UNAVAILABLE', '官方 OneBot 身份查询失败或超时，未确认当前 QQ 账号。');
+    }
   }
 
   function startSnowlumaWatch() {
@@ -4531,13 +4676,14 @@ async function main() {
       // 127.0.0.1 时，浏览器会把 evil.com:3100 当作同源，Origin 校验随之失效；卡住 Host
       // 这一层后，这类请求在进入任何业务分支之前就被拒掉。
       // 反代/端口转发场景会被一并拒绝——这是有意的（要远程访问请用 SSH 隧道并自行承担）。
+      const memoryIdentityRequest = url.pathname === '/api/memory-v2/identity';
       const hostHeader = String(req.headers.host ?? '');
       // 用**实际绑定端口**而不是配置值：测试夹具用 consolePort: 0 让系统分配端口，
       // 配置里那个 0 不是请求里的 Host 端口。请求必然发生在 listen 之后，所以这里拿得到。
       const boundPort = server.address()?.port ?? port;
       const allowedHosts = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`, `[::1]:${boundPort}`];
       if (!allowedHosts.includes(hostHeader.toLowerCase())) {
-        sendJson({ ok: false, error: `Host 头不被允许（${hostHeader || '缺失'}）：控制台只接受本机回环访问` }, 403);
+        sendJson(memoryIdentityRequest ? memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_FORBIDDEN', '身份查询只接受本机控制台 Host。') : { ok: false, error: `Host 头不被允许（${hostHeader || '缺失'}）：控制台只接受本机回环访问` }, 403);
         return;
       }
       // 控制台鉴权：所有请求需带 x-console-token 或 ?token=
@@ -4556,9 +4702,19 @@ async function main() {
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
           res.end('<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>const t=prompt(\'请输入控制台访问令牌\');if(t)location.href=\'/?token=\'+encodeURIComponent(t);</script>');
         } else {
-          sendJson({ ok: false, error: '未授权：请提供控制台访问令牌' }, 401);
+          sendJson(memoryIdentityRequest ? memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_UNAUTHORIZED', '身份查询需要有效的控制台访问令牌。') : { ok: false, error: '未授权：请提供控制台访问令牌' }, 401);
         }
         return;
+      }
+      if (memoryIdentityRequest) {
+        let originMatches = req.headers.origin === undefined;
+        try { if (!originMatches) originMatches = new URL(String(req.headers.origin)).origin === `http://${hostHeader.toLowerCase()}`; } catch {}
+        if (req.headers['x-agent-token'] !== undefined || req.headers['x-agent-call'] !== undefined || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket?.remoteAddress) || !originMatches) {
+          sendJson(memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_FORBIDDEN', '官方身份只允许同源回环控制台读取，智能体请求不能访问。'), 403); return;
+        }
+        if (req.method !== 'GET') { sendJson(memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_METHOD', '官方身份查询只接受 GET。'), 405); return; }
+        const identity = await readOfficialMemoryQQIdentity();
+        sendJson(identity, identity.ok ? 200 : 503); return;
       }
       // 智能体调用隔离（集中关卡）。
       //
@@ -4672,6 +4828,16 @@ async function main() {
             return;
           }
         }
+        if (usesMemoryV2() && req.headers['x-agent-token']) {
+          const token = String(req.headers['x-agent-token']);
+          const entry = [...socialV2.conversations.entries()].find(([, item]) => item.agentToken === token);
+          if (!entry) { sendJson(memoryV2Failure('', { code: 'MEMORY_CONTEXT_REQUIRED', error: 'The QQ session token has no current memory request.', hint: 'Wake a fresh authorized QQ session.' }), 403); return; }
+          const validated = await qqMemory.validate(entry[0]);
+          if (!validated.ok) { sendJson(memoryV2Failure(entry[0], validated), 403); return; }
+          if (/^\/api\/images\//.test(url.pathname) || (url.pathname.startsWith('/api/socialV2/') && !/^\/api\/socialV2\/(?:send-message|send-burst|send-poke|send-sticker|send-voice|check-send|mark-read|feedback)$/.test(url.pathname))) {
+            sendJson({ ok: false, code: 'MEMORY_HISTORY_UNAVAILABLE', error: 'This legacy surface has no authorized V2 source manifest.', hint: 'Use only the current prepared context; request an approved source import for older history.' }, 403); return;
+          }
+        }
         // 只读降级：黑话库/表情库在启动时加载失败时，写接口必须**明确失败**。
         // 旧行为是 save 函数里只打一行日志就 return，而接口照样回 {ok:true}：
         // 控制台显示"✅ 已保存"，实际只改在内存里，重启后全部消失。
@@ -4709,6 +4875,8 @@ async function main() {
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/status') {
+        const memoryV2 = { ...memoryV2Route(), failures: [...memoryV2Failures.entries()].map(([key, failure]) => ({ key, ...failure })), retirementPending: Object.keys(state.memoryV2Retirements).length };
+        if (usesMemoryV2()) { sendJson({ ok: true, memoryV2, mode: currentMode, dshReady }); return; }
           const rs = readRoleState();
           // 带 agent token 的调用来自 QQ 群里的 AI：只能拿到它自己该知道的运行状态。
           // activity 是**全局**收发摘要（含其它群的发言片段与告警），ownerQQ/白名单属于管理信息，
@@ -7216,12 +7384,14 @@ async function main() {
               blocked.statusCode = 403;
               throw blocked;
             }
+            const memoryPokeLease = await beginMemoryV2Send(key);
             if (kind === 'group') {
               await bot.raw('group_poke', { group_id: id, user_id: Number(targetUserId) });
             } else {
               // 私聊拍一拍：send_poke 自动路由到当前私聊对象
               await bot.raw('send_poke', { user_id: id });
             }
+            await finishMemoryV2Send(memoryPokeLease, key, '[拍一拍]', null, 'delivered');
             st.lastActionAt = now;
             st.lastAiReplyAt = now;
             st.wakeConfig.noActionCount = 0;
@@ -9370,7 +9540,7 @@ async function main() {
           lastSendFailed.set(key, true);
           noteSendFailure(key, error);
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
-          if (isConnectionSendError(error) && outbox.push(kind, id, part)) {
+          if (!usesMemoryV2() && isConnectionSendError(error) && outbox.push(kind, id, part)) {
             log(`[outbox] 暂存待补发 1 条（${key}），累计 ${outbox.stats().count} 条`);
           }
         })
@@ -9610,6 +9780,7 @@ async function main() {
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
     const sendKey = `${kind}:${id}`;
     let res;
+    const memorySendLease = await beginMemoryV2Send(sendKey);
     try {
       res = await fetch(`${httpUrl}/${action}`, {
         method: 'POST',
@@ -9621,21 +9792,23 @@ async function main() {
         signal: AbortSignal.timeout(15000)
       });
     } catch (error) {
+      await finishMemoryV2Send(memorySendLease, sendKey, rawMessage, null, 'delivery_unknown');
       noteSendFailure(sendKey, error);
-      if (!fromOutbox && isConnectionSendError(error)) {
-        if (outbox.push(kind, id, rawMessage, { replyToMessageId, atUserId })) {
+      if (!usesMemoryV2() && !fromOutbox && isConnectionSendError(error)) {
+        if (!usesMemoryV2() && outbox.push(kind, id, rawMessage, { replyToMessageId, atUserId })) {
           log(`[outbox] 暂存待补发 1 条（${kind}:${id}），累计 ${outbox.stats().count} 条`);
         }
       }
       throw error;
     }
     const body = await res.json().catch(() => ({}));
+    await finishMemoryV2Send(memorySendLease, sendKey, rawMessage, res.ok && body.status === 'ok' && body.retcode === 0 ? body.data : null);
     if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
       const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口，请检查 config.json 的 snowluma.httpUrl 是否为 OneBot HTTP API 地址）' : '';
       const error = new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}${hint}`);
       noteSendFailure(sendKey, error);
       if (!fromOutbox && isConnectionSendError(error)) {
-        if (outbox.push(kind, id, rawMessage, { replyToMessageId, atUserId })) {
+        if (!usesMemoryV2() && outbox.push(kind, id, rawMessage, { replyToMessageId, atUserId })) {
           log(`[outbox] 暂存待补发 1 条（${kind}:${id}），累计 ${outbox.stats().count} 条`);
         }
       }
@@ -9650,11 +9823,12 @@ async function main() {
     file: path.join(STATE_DIR, 'outbox.json'),
     isConnectionError: isConnectionSendError,
     send: async (entry) => {
+      if (usesMemoryV2()) throw Object.assign(new Error('Legacy outbox entries have no V2 input references.'), { code: 'MEMORY_HISTORY_UNAVAILABLE' });
       await onebotSend(entry.kind, entry.id, entry.text, entry.replyToMessageId, entry.atUserId, { fromOutbox: true });
     },
     log,
   });
-  void outbox.flush('startup').catch((error) => log(`[outbox] 启动补发异常：${error?.message ?? error}`));
+  if (!usesMemoryV2()) void outbox.flush('startup').catch((error) => log(`[outbox] 启动补发异常：${error?.message ?? error}`));
 
   // 直接发任意 OneBot 消息段（卡片/分享卡用）。文本发送仍走 sendToQQ，
   // 这样限速、审计和会话守卫不被绕过。
@@ -9663,18 +9837,52 @@ async function main() {
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
     const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-    const res = await fetch(`${httpUrl}/${action}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
-      },
-      body: JSON.stringify(params),
-      signal: AbortSignal.timeout(20000)
-    });
+    const memorySendLease = await beginMemoryV2Send(`${kind}:${id}`);
+    const deliveryUnknown = { code: 'MEMORY_QQ_DELIVERY_UNKNOWN', error: 'QQ 消息发送结果未知。', hint: '先检查原消息是否送达及记忆回执，再决定是否手动重试。' };
+    let res;
+    try {
+      res = await fetch(`${httpUrl}/${action}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
+        },
+        body: JSON.stringify(params),
+        signal: AbortSignal.timeout(20000)
+      });
+    } catch (error) {
+      if (memorySendLease) memoryV2Failure(`${kind}:${id}`, deliveryUnknown);
+      try {
+        await finishMemoryV2Send(memorySendLease, `${kind}:${id}`, '[QQ消息卡片]', null, 'delivery_unknown');
+      } catch (failure) {
+        throw Object.assign(new Error(failure?.message ?? String(failure), { cause: failure }), { deliveryUnknown: true, code: failure?.code ?? deliveryUnknown.code, hint: failure?.hint ?? deliveryUnknown.hint });
+      }
+      throw Object.assign(new Error(error?.message ?? String(error), { cause: error }), { ...deliveryUnknown, deliveryUnknown: true });
+    }
     const body = await res.json().catch(() => ({}));
-    if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
-      throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}`);
+    const messageId = body?.data?.message_id ?? body?.data?.data?.message_id;
+    const validMessageId = (typeof messageId === 'number' && Number.isSafeInteger(messageId) && messageId !== 0)
+      || (typeof messageId === 'string' && /^-?[1-9]\d*$/.test(messageId));
+    let receipt;
+    try {
+      receipt = await finishMemoryV2Send(memorySendLease, `${kind}:${id}`, '[QQ消息卡片]', res.ok && body?.status === 'ok' && body?.retcode === 0 && validMessageId ? body.data : null);
+    } catch (failure) {
+      const issue = { code: 'MEMORY_QQ_RECEIPT_FAILED', error: 'QQ 消息回执保存未完成。', hint: '检查原消息与原回执，保留原角色后再恢复。' };
+      if (memorySendLease) memoryV2Failure(`${kind}:${id}`, issue);
+      throw Object.assign(new Error(failure?.message ?? String(failure), { cause: failure }), issue, { deliveryUnknown: true });
+    }
+    if (receipt?.ok === false) throw Object.assign(new Error(receipt.error), receipt);
+    if (!res.ok || body?.status !== 'ok' || body?.retcode !== 0) {
+      const error = new Error(`OneBot ${action} 失败: ${body?.wording || body?.retcode || res.status}`);
+      if (!res.ok || body?.status !== 'failed' || !Number.isInteger(body?.retcode) || body.retcode === 0) {
+        if (memorySendLease) memoryV2Failure(`${kind}:${id}`, deliveryUnknown);
+        throw Object.assign(error, deliveryUnknown, { deliveryUnknown: true });
+      }
+      throw error;
+    }
+    if (!validMessageId) {
+      if (memorySendLease) memoryV2Failure(`${kind}:${id}`, deliveryUnknown);
+      throw Object.assign(new Error(deliveryUnknown.error), deliveryUnknown, { deliveryUnknown: true });
     }
     return body.data;
   }
@@ -10401,6 +10609,15 @@ async function main() {
         // 不传 reasoningEffort 时 DSH 用模型自己的默认档位；支持强度的模型照旧带管理员设置。
         if (!modelsWithoutEffort.has(effortKey)) request.reasoningEffort = effort;
         const result = unwrap(await api.sessions.selectModel(request), 'session.selectModel');
+        if (usesMemoryV2()) {
+          const key = reverse.get(sessionId);
+          const actual = result?.selected;
+          const proof = deriveMemoryProviderRouteId({ provider: actual?.provider, model: actual?.model });
+          if (!proof.ok) throw Object.assign(new Error(proof.error), proof);
+          if (actual.provider !== provider || actual.model !== model) throw Object.assign(new Error('DSH did not acknowledge the exact requested model route.'), { code: 'MEMORY_PROVIDER_ROUTE_MISMATCH' });
+          const route = validateMemoryV2ProviderRoute(key, sessionId, actual);
+          if (!route.ok) throw Object.assign(new Error(route.error), route);
+        }
         modelAppliedSessions.set(sessionId, modelSelectionEpoch);
         modelAppliedKeys.set(sessionId, selectionKey);
         const selectedProvider = String(result.selected.provider || provider);
@@ -10426,6 +10643,11 @@ async function main() {
         });
         return 'applied';
       } catch (error) {
+        if (usesMemoryV2() && String(error?.code ?? '').startsWith('MEMORY_PROVIDER_')) {
+          const key = reverse.get(sessionId);
+          if (key) { await retireMemoryV2Session(key); await qqMemory.retire(key); }
+          throw error;
+        }
         lastError = error;
         const message = String(error?.message ?? error);
         // 第一次失败若是不支持这个思考强度，去掉该参数重试；模型不认 efforts 时传了只会被拒。
@@ -10437,7 +10659,7 @@ async function main() {
         log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${message}`);
         // 配置里的默认 provider/model 可能属于旧 DSH（如 deepseek-official 在 rc.5 已不存在）。
         // 只在 DSH 明确说模型不可用时，从真实目录挑一个可用项重试一次。
-        if (cfg.dsh?.allowModelFallback !== false && !fallbackTried && /model-unavailable|select an available model|unknown model|model.*(?:not available|not found|unavailable)/i.test(message)) {
+        if (!usesMemoryV2() && cfg.dsh?.allowModelFallback !== false && !fallbackTried && /model-unavailable|select an available model|unknown model|model.*(?:not available|not found|unavailable)/i.test(message)) {
           fallbackTried = true;
           try {
             if (!modelCatalogInFlight) {
@@ -10482,6 +10704,12 @@ async function main() {
   }
 
   async function ensureSession(key) {
+    if (usesMemoryV2()) {
+      if (currentMode === 'closed-agent') throw Object.assign(new Error('V2 memory requires a restricted QQ preset.'), { code: 'MEMORY_PRESET_UNSAFE' });
+      const admitted = await qqMemory.validate(key, { prepared: true });
+      if (!admitted.ok) throw Object.assign(new Error(admitted.error), admitted);
+    }
+    if (usesMemoryV2() && (!qqMemory.status(key).active || Object.values(state.memoryV2Retirements).some(item => item.key === key))) throw Object.assign(new Error('QQ memory/session retirement is not authorized.'), { code: 'MEMORY_SESSION_RETIRE_PENDING', hint: 'Prepare fresh authorized input and complete the old-session retirement barrier.' });
     const epoch = sessionEpoch;
     const policy = sessionPolicy(key);
     if (!isSessionAllowedInCurrentMode(key)) throw new Error(`当前模式不允许会话 ${key}`);
@@ -10492,6 +10720,7 @@ async function main() {
         retireSession(key);
       } else {
         const applied = await ensureChatModel(existing);
+         await requireMemoryV2SessionSafety(key, existing);
         // DSH 侧会话已不存在（DSH 重启、异常退出、归档竞态）：本地映射已经失效，
         // 必须退役并重建，否则每条消息都会对着一个不存在的会话重试 selectModel。
         if (applied === 'not-found') {
@@ -10561,6 +10790,7 @@ async function main() {
       reverse.set(sessionId, key);
       saveState();
       const applied = await ensureChatModel(sessionId);
+       await requireMemoryV2SessionSafety(key, sessionId);
       if (epoch !== sessionEpoch || !isCurrentSession(key, sessionId)) {
         if (state.sessions[key] === sessionId) retireSession(key);
         throw new Error('会话创建期间已重置或权限已变化');
@@ -12252,6 +12482,7 @@ async function main() {
   }
 
   async function runPurposeOnce({ force = false, preview = false } = {}) {
+    if (usesMemoryV2()) return memoryV2Failure('purpose', { code: 'MEMORY_SOURCE_UNREFERENCED', error: 'Legacy purpose input has no V2 evidence references.', hint: 'Use an authorized current QQ conversation.' });
     const owner = purposeOwnerId();
     if (!owner) return { ok: false, reason: 'no-owner', error: '未配置管理员 QQ（ownerQQ）' };
     if (cfg.purpose?.enabled === false && !preview && !force) return { ok: false, reason: 'disabled' };
@@ -12788,6 +13019,39 @@ async function main() {
 
   // 实际的 DSH prompt 投递（不再直接对外暴露，统一走 promptQueues 串行队列）。
   async function deliverPromptNow(key, promptText, opts = {}) {
+    if (usesMemoryV2()) {
+      try {
+      const role = readCurrentCharacter();
+      if (!isSessionAllowedInCurrentMode(key)) return memoryV2Failure(key, { code: 'MEMORY_AUDIENCE_DENIED', error: 'This QQ conversation is not allowed.', hint: 'Check the current channel allowlist.' });
+      if (!dshReady) return memoryV2Failure(key, { code: 'MEMORY_DSH_UNAVAILABLE', error: 'DSH is unavailable; the durable source remains queued.', hint: 'Restore DSH and submit a fresh authorized request; old prompt strings are not replayed.' });
+      if (currentMode === 'closed-agent') return memoryV2Failure(key, { code: 'MEMORY_PRESET_UNSAFE', error: 'V2 QQ requires a restricted QQ tool surface.', hint: 'Use a restricted QQ conversation preset; a full local-tool owner session cannot admit V2 memory.' });
+      const retired = await retireMemoryV2Session(key);
+      if (!retired.ok) return retired;
+      const prepared = await qqMemory.prepareReply({ key });
+      if (!prepared.ok) return memoryV2Failure(key, prepared);
+      const current = readCurrentCharacter();
+      if (!role || current?.id !== role.id || current?.epoch !== role.epoch) return memoryV2Failure(key, { code: 'CHARACTER_EPOCH_STALE', error: 'The character changed during QQ preparation.', hint: 'Retire the request and capture the current role again.' });
+      state.memoryV2Sessions[key] = prepared.sessionStamp; saveState();
+      const sessionId = await ensureSession(key);
+      const modelRoute = validateMemoryV2ProviderRoute(key, sessionId);
+      if (!modelRoute.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); return modelRoute; }
+      const validated = await qqMemory.validate(key, { prepared: true });
+      if (!validated.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); return memoryV2Failure(key, validated); }
+      const token = currentMode === 'reserved2' ? getSocialV2State(key).agentToken : '';
+      const protocol = token ? `\n\n当前QQ会话：${key}；会话令牌：${token}。只使用本次已提供材料；历史/轻量记忆工具无来源引用时不可用。需要回复时使用当前QQ发送工具。` : '';
+      const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: prepared.text + protocol }] });
+      await requireMemoryV2SessionSafety(key, sessionId);
+      const after = await qqMemory.validate(key);
+      if (!after.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); return memoryV2Failure(key, after); }
+      if (!accepted.result?.ok) return memoryV2Failure(key, { code: 'MEMORY_PROMPT_REJECTED', error: 'DSH did not accept the authorized QQ prompt.', hint: 'Inspect the DSH session and submit a fresh request.' });
+      if (accepted.result.value?.command?.text && !opts.silent && currentMode !== 'reserved2') await auditAndSend(key, mdToPlain(accepted.result.value.command.text));
+      memoryV2Failures.delete(key);
+      return { ok: true, sessionId, providerAdmissionCoverage: 'submission-observed' };
+      } catch (error) {
+        await retireMemoryV2Session(key); await qqMemory.retire(key);
+        return memoryV2Failure(key, { code: error?.code ?? 'MEMORY_PROMPT_FAILED', error: 'The authorized QQ prompt could not be submitted.', hint: 'Check the restricted QQ preset and DSH status, then use a fresh input; old context remains blocked.' });
+      }
+    }
     if (!isSessionAllowedInCurrentMode(key)) throw new Error(`当前模式不允许会话 ${key}`);
     // Recheck queued wakes at dispatch time: no model call while paused/disabled
     // and no reserved2 prompt leaking into an ordinary chat after a mode switch.
@@ -13430,29 +13694,7 @@ async function main() {
   async function sendGroupWithAt(key, qq, text) {
     const [kind, id] = key.split(':');
     if (kind !== 'group') return sendToQQ(key, text);
-    const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-    const body = {
-      group_id: Number(id),
-      message: [
-        { type: 'at', data: { qq: String(qq) } },
-        { type: 'text', data: { text: ` ${text}` } }
-      ]
-    };
-    const res = await fetch(`${httpUrl}/send_group_msg`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(20000)
-    });
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok || payload.status !== 'ok' || payload.retcode !== 0) {
-      throw new Error(`发送失败: ${payload.wording || payload.retcode || res.status}`);
-    }
-    lastSendFailed.delete(key);
-    return payload.data;
+    return onebotSend('group', Number(id), text, null, qq);
   }
 
   async function checkProactiveAt() {
@@ -15070,6 +15312,7 @@ async function main() {
   }
 
   function appendHistoryCatchupV2(key, candidates, { trigger = 'online', watermark = 0, maxAgeMs, fetched = 0 } = {}) {
+    if (usesMemoryV2()) return { ok: false, code: 'MEMORY_HISTORY_UNAVAILABLE', error: 'Legacy history has no authorized V2 source references.', hint: 'Import original platform sources through the approved producer workflow.' };
     const st = getSocialV2State(key);
     const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
     const unreadLimit = Number(cfg.socialV2?.context?.unreadLimit) || 30;
@@ -15387,6 +15630,7 @@ async function main() {
   }
 
   function recordMemoryInboxEvent({ key: conversationKey, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf }) {
+    if (usesMemoryV2()) return;
     try {
       const text = redactSensitiveText(String(plainContent || textContent || '').trim());
       if (!text || text.startsWith('/')) return;
@@ -15415,6 +15659,7 @@ async function main() {
 
   // 她自己的发言：写进记忆 inbox；插件会尽量并进最近一条主人记录（一问一答）。
   function recordSelfMemoryEvent(key, text) {
+    if (usesMemoryV2()) return;
     try {
       const body = String(text ?? '').trim();
       if (!body) return;
@@ -15438,6 +15683,7 @@ async function main() {
 
   // QQ 消息 → DSH prompt
   async function handleIncoming(kind, id, event, cfg) {
+    const ingressCharacter = readCurrentCharacter();
     const key = convKey(kind, id);
     // 群画像：成员数缓存用于小群/大群分层；失败不影响消息处理。
     if (kind === 'group') void ensureGroupMeta(id);
@@ -15526,7 +15772,10 @@ async function main() {
     }
     // 记忆卡原料：在静默/审批/命令等分支之前记录，避免「主人说的话没进记忆」。
     noteSecretInInbound(key, plainContent || textContent, isOwner);
-    recordMemoryInboxEvent({ key, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf });
+    if (usesMemoryV2()) {
+      const recorded = await qqMemory.captureSource({ key, loginAccountId: String(event.self_id ?? selfUserId), actorAccountId: String(event.user_id ?? ''), objectId: String(event.message_id ?? event.msg_id ?? event.message_seq ?? ''), direction: 'inbound', text: String(plainContent || textContent), occurredAt: Number.isFinite(Number(event.time)) ? new Date(Number(event.time) * 1000).toISOString() : null, expectedCharacter: ingressCharacter });
+      if (!recorded.ok) { memoryV2Failure(key, recorded); return; }
+    } else recordMemoryInboxEvent({ key, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf });
     if (kind === 'group') {
       recordFishWindow(key, displayName, event.user_id, { isOwner });
     }
@@ -15853,6 +16102,8 @@ async function main() {
         isOwner,
       });
     }
+
+    if (usesMemoryV2()) { await deliverPrompt(key, '', { media: [] }); return; }
 
     // 群聊里带发送者信息，私聊不用；角色提示注入到消息开头（agent 可见）；
     // 管理员消息带身份标记（供 agent 识别，但其权限仍受工具面硬限制）
@@ -16401,6 +16652,14 @@ async function main() {
             // 花掉的钱都是真的，都必须入账（归属由 resolveKey 决定）。
             recordSessionUsage(frame.sessionId, frame.event);
             const key = reverse.get(frame.sessionId);
+            if (key && memoryV2Route().backend !== 'v1') {
+              const selected = frame.event?.type === 'model/selection' ? frame.event.data ?? {} : null;
+              const route = validateMemoryV2ProviderRoute(key, frame.sessionId, selected);
+              if (!route.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); continue; }
+              const admission = await qqMemory.validate(key);
+              if (!admission.ok) { memoryV2Failure(key, admission); await retireMemoryV2Session(key); await qqMemory.retire(key); continue; }
+              try { await requireMemoryV2SessionSafety(key, frame.sessionId); } catch { continue; }
+            }
             if (key) {
               try {
                 const wakeId = sessionWakeIds.get(frame.sessionId) ?? '';
@@ -16930,6 +17189,23 @@ async function main() {
     accessToken: cfg.snowluma.accessToken || undefined,
     reconnect: true
   });
+
+  const savedV2Keys = [...Object.keys(state.memoryV2Sessions), ...Object.values(state.memoryV2Retirements).map(item => item.key)];
+  for (const key of new Set([...(memoryV2Route().backend !== 'v1' ? Object.keys(state.sessions) : []), ...savedV2Keys])) {
+    const retired = await retireMemoryV2Session(key); if (!retired.ok) memoryV2Failure(key, retired);
+  }
+
+  for (const [method, kind] of [['sendPrivateMessage', 'private'], ['sendGroupMessage', 'group']]) {
+    const send = bot[method].bind(bot);
+    bot[method] = async (id, body) => {
+      const key = `${kind}:${id}`, lease = await beginMemoryV2Send(key);
+      let result;
+      try { result = await send(id, body); }
+      catch (error) { await finishMemoryV2Send(lease, key, body, null, 'delivery_unknown'); throw error; }
+      await finishMemoryV2Send(lease, key, body, result);
+      return result;
+    };
+  }
 
   bot.onPrivateMessage(async (event) => {
     // 统一按字符串比较：网关可能把 id 序列化成 number/string 混用，

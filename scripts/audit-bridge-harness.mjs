@@ -1,3 +1,6 @@
+import { deriveMemoryProviderRouteId } from '../src/core/memory-v2-routing.js';
+import { createQQMemoryBridge } from '../src/core/memory-v2-qq.js';
+import { buildCharacterContext } from '../src/core/context.js';
 // Execute the real bridge initialization/functions against temporary files and fake peers.
 // No production config, QQ connection, DSH process, or persistent home is accessed.
 import fs from 'node:fs';
@@ -162,7 +165,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
       prompt: async (params) => { calls.prompts.push(params); return success({}); },
     },
     respond: async () => success({}),
-    stopSessionWork: async (sessionId) => { calls.cancelled.push(sessionId); return { removed: 0 }; },
+    stopSessionWork: async (sessionId, { verify = false } = {}) => { calls.cancelled.push(sessionId); return verify ? { removed: 0, queueEmpty: true, cancelled: true } : { removed: 0 }; },
     cancelTurn: async (sessionId) => { calls.cancelled.push({ cancelTurn: sessionId }); return { ok: true }; },
     callUnary: async (method, params) => { calls.cancelled.push({ method, params }); return success({ accepted: true }); },
   };
@@ -198,7 +201,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
-    ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
+    qqMemory, retireMemoryV2Session, memoryV2Failures, memoryV2Route, validateMemoryV2ProviderRoute, beginMemoryV2Send, finishMemoryV2Send, setSelfUserId(value) { selfUserId = Number(value); },
+    ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, deliverPromptNow, drainPromptQueue,
     pumpMux, pending, registerPending, handlePendingAnswer,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
     getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
@@ -277,6 +281,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...dshHealth,
     synthesizeToFile, createVoiceManagement,
     ...tokenBudget,
+    createQQMemoryBridge, buildCharacterContext, deriveMemoryProviderRouteId,
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
