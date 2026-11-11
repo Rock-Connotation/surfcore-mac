@@ -4261,3 +4261,8 @@ controller专项通过不等于Host总路由可达：sharing/module误置Bili子
 ## 2026-11-08：火山实际流式WAV使用双未知长度和LIST
 
 真实小何2.0响应HTTP200且结束码20000000，音频RIFF/data长度均0xffffffff，fmt为16字节PCM24kHz，另有LIST26 INFO/ISFT。旧完整WAV/多完整段夹具不覆盖此格式，导致真实音频被误判截断；仅在官方结束帧后按有界实际字节修复双未知长度，校验PCM/采样率/块边界/样本对齐，完整LIST保留。缺结束帧、单未知长度、坏LIST、压缩或不对齐仍拒绝。真实自检响应离线重放和14项红绿锁住后再实装，原生0.99秒→容器base64→QQ读回→手机播放通过。鉴权401和WAV解析是两个先后缺陷，不能因首次401忽略后续音频边界。
+
+
+## 2026-11-11 HY4限流为什么连主会话Sol一起失败
+
+同一Magpie origin+凭据被Billion Context默认credential粒度共同hold；先查Magpie原始429的模型与重置时间，不把bili_throttle_hold误当主模型额度耗尽。当前多供应商网关使用network.throttle429Scope=model保留各模型治理；旧credential hold仍须到期。实际函数复现旧红新绿，原生原会话Sol恢复，账号与代理保留。配置热读，无需重启公共Host。完整逻辑/回滚见[case](cases/2026-11-11-harness-shared-throttle.md)。
