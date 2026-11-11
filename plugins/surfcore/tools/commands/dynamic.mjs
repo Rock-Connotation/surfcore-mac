@@ -1,3 +1,4 @@
+import { biliV2Fetch, BILI_V2_ENDPOINTS } from '../lib/bili-v2-dispatch.mjs'
 // One-shot dynamic (动态) test: post -> list -> remove. Same boundary as the
 // comment tool: credentials come from the local drop box, nothing is echoed.
 //
@@ -15,6 +16,7 @@ import { interactEnabled } from '../lib/interact.mjs'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 import { publishDynamic, existingDynamicAction } from '../lib/dynamic-receipt.mjs'
 
+const managedWrite = process.env.SURFCORE_BILI_V2_WORKER === '1' || typeof process.send === 'function'
 const argv = process.argv.slice(2)
 const mode = argv[0]
 const args = new Map()
@@ -154,9 +156,12 @@ if (mode === 'post') {
       meta: { app_meta: { from: 'create.dynamic.web', mobi_app: 'web' } },
     },
   })
-  try { qs = await wbi({ csrf: String(cred.bili_jct) }) } catch { report({ ok: false, code: 'BILI_DYNAMIC_PREPARE_FAILED', error: '无法准备发布请求，未发送。', hint: '检查网络和账号绑定后重新准备。', actionId }, 1) }
-  if (!qs) report({ ok: false, code: 'BILI_DYNAMIC_PREPARE_FAILED', error: '平台签名材料缺失，未发送。', hint: '检查网络和账号绑定后重新准备。', actionId }, 1)
-  const url = `https://api.bilibili.com/x/dynamic/feed/create/dyn?${qs}`
+  let url = BILI_V2_ENDPOINTS.dynamic
+  if (!managedWrite) {
+    try { qs = await wbi({ csrf: String(cred.bili_jct) }) } catch { report({ ok: false, code: 'BILI_DYNAMIC_PREPARE_FAILED', error: '无法准备发布请求，未发送。', hint: '检查网络和账号绑定后重新准备。', actionId }, 1) }
+    if (!qs) report({ ok: false, code: 'BILI_DYNAMIC_PREPARE_FAILED', error: '平台签名材料缺失，未发送。', hint: '检查网络和账号绑定后重新准备。', actionId }, 1)
+    url += `?${qs}`
+  }
   console.log('\n=== 将要发布 ===')
   console.log(`  POST ${url.replace(encodeURIComponent(String(cred.bili_jct)), '***csrf***').slice(0, 120)}…`)
   console.log(`  content-type: application/json    cookie: SESSDATA=***; bili_jct=***; buvid3=***`)
@@ -169,9 +174,9 @@ if (mode === 'post') {
     identity: (value) => assertOutboundIdentitySafe(value, { surface: 'B站 动态' }),
     quota: () => biliStateDir() === stateDir && gate({ type: 'dynamic', target: 'dynamic', auto }),
     expectedIdentity: verifyRole,
-    send: () => fetch(url, {
+    send: () => biliV2Fetch('dynamic', url, {
       method: 'POST',
-      headers: { 'user-agent': UA, referer: REF, origin: 'https://t.bilibili.com', 'content-type': 'application/json', cookie: cookieHeader },
+      headers: managedWrite ? { 'content-type': 'application/json' } : { 'user-agent': UA, referer: REF, origin: 'https://t.bilibili.com', 'content-type': 'application/json', cookie: cookieHeader },
       body,
     }),
   })

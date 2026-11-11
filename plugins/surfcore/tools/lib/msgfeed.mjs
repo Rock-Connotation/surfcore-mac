@@ -91,6 +91,7 @@ export async function pullFeed(kind, { headers, pages = 1 }) {
         oid: idFromUri(uri) || exactId(it.item?.subject_id),
         root: coords.root,
         parent: coords.parent,
+        sourceRoot: exactId(it.item?.root_id),
         // 保留 source/target 的原始 id：调用方需要区分“来消息那条”和“被回复那条”。
         sourceId: coords.sourceId,
         targetId: coords.targetId,

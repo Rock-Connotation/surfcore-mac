@@ -1,3 +1,16 @@
+import { biliV2Fetch } from '../lib/bili-v2-dispatch.mjs'
+const MANAGED_WRITE = process.env.SURFCORE_BILI_V2_WORKER === '1' || typeof process.send === 'function'
+const managedResult = (value) => {
+  if (!MANAGED_WRITE) return
+  process.stdout.write('\n' + JSON.stringify({ __biliV2WriteResult: true, ...value }) + '\n')
+}
+const dispatchFailure = (error) => ({
+  ok: false,
+  code: typeof error?.code === 'string' ? error.code : 'BILI_V2_DISPATCH_UNKNOWN',
+  error: typeof error?.error === 'string' ? error.error : String(error?.message || 'Bili V2 Host dispatch did not complete.'),
+  hint: typeof error?.hint === 'string' ? error.hint : 'Inspect the original action receipt before retrying.',
+  unknown: error?.unknown === true,
+})
 // Post ONE bilibili comment on the user's behalf. Explicitly single-shot.
 //
 //   node bili-comment.mjs --oid <aid> --bvid <BV...> --message "@昵称 正文" --dry
@@ -336,10 +349,11 @@ if (FISH_GATHER) {
   console.log('  [额度] 这条聚拢回复占**主动评论额度**（不是回复额度）；别人再回这层楼才占回复额度 ✓')
 }
 
-const params = { type, oid: String(oid), message, plat: '1', csrf: String(cred.bili_jct) }
+const params = { type, oid: String(oid), message, plat: '1' }
+if (!MANAGED_WRITE) params.csrf = String(cred.bili_jct)
 if (root) params.root = String(root)
 if (parent) params.parent = String(parent)
-const signed = await wbiSign(params)
+const signed = MANAGED_WRITE ? null : await wbiSign(params)
 const body = new URLSearchParams(params).toString()
 const url = signed
   ? `https://api.bilibili.com/x/v2/reply/add?w_rid=${signed.w_rid}&wts=${signed.wts}`
@@ -442,22 +456,32 @@ try {
 }
 // 判重（--once-per-person）已在入口处检查，这里直接发
 console.log('\n[go] 发送中…')
-const res = await fetch(url, {
-  method: 'POST',
-  headers: {
-    'user-agent': UA,
-    referer,
-    origin: 'https://www.bilibili.com',
-    'content-type': 'application/x-www-form-urlencoded',
-    cookie: cookieHeader,
-  },
-  body,
-})
+let res
+try {
+  res = await biliV2Fetch('comment', url, {
+    method: 'POST',
+    headers: MANAGED_WRITE
+      ? { 'content-type': 'application/x-www-form-urlencoded' }
+      : {
+          'user-agent': UA,
+          referer,
+          origin: 'https://www.bilibili.com',
+          'content-type': 'application/x-www-form-urlencoded',
+          cookie: cookieHeader,
+        },
+    body,
+  })
+} catch (error) {
+  if (!MANAGED_WRITE) throw error
+  managedResult({ action: 'comment', ...dispatchFailure(error) })
+  process.exit(6)
+}
 const out = await res.json().catch(async () => ({ raw: await res.text() }))
 console.log(`  HTTP ${res.status}`)
 console.log(`  code=${out.code} message=${out.message ?? ''}`)
 if (out.code === 0) {
   const rpid = out.data?.rpid_str ?? out.data?.rpid
+  managedResult({ action: 'comment', ok: true, http: res.status, code: 0, target: { oid: String(oid), type: String(type), root: String(root || '0'), parent: String(parent || '0') }, text: message, receipt: { rpid: rpid == null ? null : String(rpid) } })
   console.log(`  ✅ 已发布，评论 rpid=${rpid}`)
   // 鱼群保护：这条如果是“聚拢”到某条鱼楼的回复，记一笔，避免下次又回同一条。
   if (fishPlan?.ok && fishPlan.gatherTarget && parent
@@ -558,6 +582,7 @@ if (out.code === 0) {
     12002: '评论区已关闭',
   }
   if (hints[String(out.code)]) console.log(`  提示：${hints[String(out.code)]}`)
+  managedResult({ action: 'comment', ok: false, code: 'BILI_PLATFORM_REJECTED', platformCode: out.code, error: 'Platform rejected the request; inspect the original receipt.', hint: String(out.message || hints[String(out.code)] || 'Do not retry under another role.') })
 }
 
 // P0-6（Kimi 评审 #6）：走到这里 = 没发成功。给非 0 退出码，
