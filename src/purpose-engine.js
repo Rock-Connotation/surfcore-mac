@@ -515,6 +515,8 @@ export function collectMaterials({
   now = Date.now(),
   config = DEFAULT_PURPOSE_CONFIG,
   ownerUin = '',
+  targetPlatform = 'qq',
+  targetConversationKey = '',
   roleName = '',
   conversations = [],
   biliEntries = [],
@@ -653,12 +655,28 @@ export function collectMaterials({
   // ④ 记忆卡：近期/高重要度/高情绪的经历，给她「想起一件事」的材料。
   const memoryWindowStart = now - 30 * DAY;
   const memories = [];
+  const targetConv = targetConversationKey || ownerKey;
   for (const record of Array.isArray(memoryRecords) ? memoryRecords : []) {
     if (!record || typeof record !== 'object') continue;
-    const rawAt = Number(record.lastSeenAt ?? record.createdAt ?? 0);
+    if (record.revoked === true || record.status === 'revoked' || record.corrected === true || record.clarity === 'forgotten') continue;
+    if (record.sensitive) continue;
+    if (!record.visibilityClassification && record.scope === 'restricted') continue;
+    if (record.visibilityClassification && Array.isArray(record.allowedContexts)) {
+      const contexts = new Set([targetPlatform, targetConv, targetConv ? `${targetPlatform}:${targetConv}` : ''].filter(Boolean));
+      if (!record.allowedContexts.some((allowed) => contexts.has(allowed))) continue;
+      if (record.visibilityClassification === 'private') {
+        const key = String(record.conversationKey ?? '');
+        if (key && targetConv && key !== targetConv) continue;
+      }
+    }
+    if (record.private || record.visibilityClassification === 'private') {
+      const key = String(record.conversationKey ?? '');
+      if (key && targetConv && key !== targetConv) continue;
+    }
+    const rawAt = Number(record.lastSeenAt ?? record.createdAt ?? record.timestamp ?? 0);
     const at = Number.isFinite(rawAt) && rawAt > 0
       ? rawAt
-      : Date.parse(String(record.lastSeenAt ?? record.createdAt ?? ''));
+      : Date.parse(String(record.lastSeenAt ?? record.createdAt ?? record.timestamp ?? ''));
     if (!Number.isFinite(at)) continue;
     // 钉住/锚点/初次相遇是「人格与记忆卡」的骨架：即使超过 30 天也要能成为动机素材。
     const salient = Boolean(record.pinned || record.anchor || record.isInitial || record.firstMet);
@@ -666,16 +684,44 @@ export function collectMaterials({
     const importance = Number(record.importance) || 0;
     const emotional = Number(record.emotional) || 0;
     if (!(salient || importance >= 35 || emotional >= 6)) continue;
-    const text = clip(`${record.title ? `${record.title}：` : ''}${record.text ?? ''}`, 220);
+    const textBody = record.text ?? record.content ?? '';
+    const text = clip(`${record.title ? `${record.title}：` : ''}${textBody}`, 220);
     if (!text) continue;
+
+    const rawSubj = String(record.attributionSubject ?? '').trim();
+    const attributionSubject = ['self', 'user', 'external'].includes(rawSubj)
+      ? rawSubj
+      : (record.isSelf ? 'self' : (record.source === 'qq-owner' || record.scope === 'owner' || (record.title && String(record.title).includes('主人')) ? 'user' : 'external'));
+    const attributionCertainty = ['observed', 'reported', 'inferred'].includes(record.attributionCertainty)
+      ? record.attributionCertainty
+      : 'observed';
+    const who = attributionSubject === 'self'
+      ? '你'
+      : (attributionSubject === 'user' ? '主人' : (record.who || record.speaker || '他人'));
+
     memories.push({
       id: `mem:${record.id ?? text}`,
       source: 'memory',
       kind: 'memory',
       at: at || now,
-      who: '记忆',
+      who,
       text,
-      meta: { importance, emotional, pinned: Boolean(record.pinned), anchor: Boolean(record.anchor), initial: Boolean(record.isInitial) },
+      title: record.title || '',
+      attributionSubject,
+      attributionCertainty,
+      evidenceRefs: Array.isArray(record.evidenceRefs) ? record.evidenceRefs : [],
+      sourceChannel: String(record.sourceChannel || record.platform || record.source || 'memory'),
+      visibilityClassification: String(record.visibilityClassification || ''),
+      allowedContexts: Array.isArray(record.allowedContexts) ? record.allowedContexts : [],
+      meta: {
+        importance,
+        emotional,
+        pinned: Boolean(record.pinned),
+        anchor: Boolean(record.anchor),
+        initial: Boolean(record.isInitial),
+        attributionSubject,
+        attributionCertainty,
+      },
       weight: importance / 100 + emotional / 20 + (salient ? 0.5 : 0),
     });
   }
@@ -1060,9 +1106,14 @@ function detectStance(text) {
   return 'mention';
 }
 
-function subjectOf(material) {
+export function subjectOf(material) {
   if (material?.kind === 'owner') return 'owner';
-  if (material?.kind === 'self' || material?.kind === 'thought' || material?.kind === 'memory') return 'self';
+  if (material?.kind === 'self' || material?.kind === 'thought') return 'self';
+  if (material?.kind === 'memory') {
+    if (material.attributionSubject === 'self') return 'self';
+    if (material.attributionSubject === 'user') return 'owner';
+    return 'member';
+  }
   if (material?.kind === 'member') return 'member';
   if (material?.kind === 'video' || material?.kind === 'dynamic') return 'media';
   return 'media';
@@ -1994,16 +2045,25 @@ function relTime(at, now = Date.now()) {
 
 export function formatMaterialLine(material, now = Date.now()) {
   if (!material) return '';
-  const prefix = material.source === 'bili'
-    ? ({ video: 'B站·视频', dynamic: 'B站·动态', thought: 'B站·想法' }[material.kind] ?? 'B站')
-    : material.kind === 'owner' ? 'QQ·主人'
-      : material.kind === 'self' ? 'QQ·你'
-        : material.kind === 'member' ? 'QQ·群友'
-          : material.kind === 'memory' ? '记忆'
-            : '心里';
+  let prefix = '心里';
+  if (material.source === 'bili') {
+    prefix = ({ video: 'B站·视频', dynamic: 'B站·动态', thought: 'B站·想法' }[material.kind] ?? 'B站');
+  } else if (material.kind === 'owner') {
+    prefix = 'QQ·主人';
+  } else if (material.kind === 'self') {
+    prefix = 'QQ·你';
+  } else if (material.kind === 'member') {
+    prefix = 'QQ·群友';
+  } else if (material.kind === 'memory') {
+    const subj = material.attributionSubject === 'self'
+      ? '你'
+      : (material.attributionSubject === 'user' ? '主人' : (material.attributionSubject === 'external' ? '他人' : ''));
+    prefix = subj ? `记忆·${subj}` : '记忆';
+  }
   const title = material.title ? `《${material.title}》` : '';
   const quote = material.quote ? `（你当时评论：「${clip(material.quote, 60)}」）` : '';
-  const who = material.kind === 'member' && material.who ? `${material.who}：` : '';
+  const who = material.kind === 'member' && material.who ? `${material.who}：`
+    : (material.kind === 'memory' && material.who && material.attributionSubject === 'external' ? `${material.who}：` : '');
   return `- [${prefix}·${relTime(material.at, now)}] ${who}${title}${clip(material.text, 140)}${quote}`;
 }
 

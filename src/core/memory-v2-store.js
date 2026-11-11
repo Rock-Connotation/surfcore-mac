@@ -273,20 +273,37 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
       const payload = parse(row.payload);
       if (payload.expiresAt && Date.parse(payload.expiresAt) <= now()) continue;
       if (options.personId && administration.identity(ctx.characterId, payload).personId !== options.personId) continue;
-      authorized.push({ identity: administration.identity(ctx.characterId, payload), type: hit.recordType, id: hit.recordId, revision: hit.revision, payloadDigest: row.payloadDigest, content: payload.content, subject: payload.subject ?? '', certainty: payload.certainty ?? 'unknown', attribution: payload.attribution ?? 'statement', coverage: payload.coverage ?? {}, textCompleteness: payload.textCompleteness ?? 'complete', roots: parse(row.roots), policyIds: parse(row.policies), validFrom: payload.validFrom ?? null, validTo: payload.validTo ?? null, overlap: hit.overlap });
+      authorized.push({ identity: administration.identity(ctx.characterId, payload), type: hit.recordType, id: hit.recordId, revision: hit.revision, payloadDigest: row.payloadDigest, content: payload.content, subject: payload.subject ?? '', certainty: payload.certainty ?? 'unknown', attribution: payload.attribution ?? 'statement', coverage: payload.coverage ?? {}, textCompleteness: payload.textCompleteness ?? 'complete', roots: parse(row.roots), policyIds: parse(row.policies), validFrom: payload.validFrom ?? null, validTo: payload.validTo ?? null, occurredAt: payload.occurredAt ?? null, observedAt: payload.observedAt ?? null, recordedAt: payload.recordedAt ?? null, overlap: hit.overlap });
     }
-    authorized.sort((a, b) => b.overlap - a.overlap || (a.type === b.type ? a.id.localeCompare(b.id) : a.type === 'memory' ? -1 : 1));
+    authorized.sort((a, b) => {
+      if (b.overlap !== a.overlap) return b.overlap - a.overlap;
+      const timeA = Date.parse(a.occurredAt ?? a.recordedAt ?? a.observedAt ?? a.validFrom ?? '') || 0;
+      const timeB = Date.parse(b.occurredAt ?? b.recordedAt ?? b.observedAt ?? b.validFrom ?? '') || 0;
+      if (timeA !== timeB) return timeB - timeA;
+      if (a.type !== b.type) return a.type === 'memory' ? -1 : 1;
+      return a.id.localeCompare(b.id);
+    });
     return { ok: true, records: authorized.slice(0, limit), candidateCount: Math.min(authorized.length, 80), ranking: 'authorized-lexical-overlap', tokenAccounting: 'estimated' };
   }
   function prepareMemoryContext(ctx, query, budget = {}) {
     const found = searchMemory(ctx, query);
     const maxChars = Math.min(1800, Number.isInteger(budget.memory) ? Math.max(0, budget.memory) : 1800, Number.isInteger(budget.total) ? Math.max(0, budget.total) : 6000);
+    const allowExcerpt = Boolean(budget.allowExcerpt);
     const selected = [], roots = new Set(); let text = '';
     for (const item of found.records) {
       if (selected.length === 8) break;
       if (!administration.isHot(role(ctx.characterId), item.type, item.id, item.revision)) continue;
-      if (item.textCompleteness !== 'complete' || item.content.length > 320 || item.roots.some((root) => roots.has(root))) continue;
-      const line = `[${item.type}:${item.id}@${item.revision};${item.certainty};${item.subject};coverage=${canonical(item.coverage)}${item.identity.state === 'confirmed' ? `;identity=${canonical(item.identity)}` : ''}] ${item.content}`;
+      if (item.textCompleteness !== 'complete' || (!allowExcerpt && item.content.length > 320) || item.roots.some((root) => roots.has(root))) continue;
+      let displayContent = item.content;
+      if (displayContent.length > 320) {
+        displayContent = `${displayContent.slice(0, 310)}…`;
+      }
+      const timeParts = [];
+      if (item.validFrom || item.validTo) timeParts.push(`valid=${item.validFrom ?? '*'}..${item.validTo ?? '*'}`);
+      if (item.occurredAt) timeParts.push(`occurredAt=${item.occurredAt}`);
+      else if (item.recordedAt) timeParts.push(`recordedAt=${item.recordedAt}`);
+      const timeTag = timeParts.length > 0 ? `;${timeParts.join(';')}` : '';
+      const line = `[${item.type}:${item.id}@${item.revision};${item.certainty};${item.subject}${timeTag};coverage=${canonical(item.coverage)}${item.identity.state === 'confirmed' ? `;identity=${canonical(item.identity)}` : ''}] ${displayContent}`;
       if ((text ? text.length + 1 : 0) + line.length > maxChars) continue;
       text += `${text ? '\n' : ''}${line}`; selected.push(item); item.roots.forEach((root) => roots.add(root));
     }

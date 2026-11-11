@@ -14,6 +14,70 @@
 
 ## 待发布
 
+### 批次 2026-11-11 22:10 · Phase A-E 本地 Agent 审查、副作用防御与执行能力建设
+<!-- release-batch: start=2026-11-11T18:00+08:00 end=2026-11-11T22:10+08:00 -->
+
+**建议**：**0.9.0（minor）**
+
+**改了什么**：
+- **阶段 A 漏洞堵漏与生命周期**：
+  - `src/memory-card.js` & `src/purpose-engine.js`：目的材料受众严格过滤，他人愿望归属主体为 `member`，永不扩大为鱼自身经历；
+  - `src/interaction-lifecycle.js` & `src/bridge.js`：交互取消状态结构化判定（`confirmed` / `rejected` / `timeout` / `unknown`），杜绝误报停止；
+  - `src/perception/process.js`：进程两阶段有界终止（SIGTERM + SIGKILL），未释放进程进入 `getUnreleasedProcesses()` 隔离。
+- **阶段 B Memory V2 检索排序与闭环**：
+  - `src/core/memory-v2-store.js`：词法重合度并列时按发生/记录时间倒序（最新优先）；有效时间区间（`validFrom..validTo`）格式化输出；有界摘录受 `budget.allowExcerpt` 严格门禁；
+  - `src/core/memory-v2-qq.js`：Preset 安全检查严格采用 fail-closed 门禁（仅允许安全预设）。
+- **阶段 C QQ → Mac 网页研究与任务账本**：
+  - `src/task-ledger.js`：持久化任务工单账本，管理步骤、来源、产物 SHA256 与外部交付回执；
+  - `src/task-harness.js`：独立准入守门，硬性阻断群聊与非主人请求；受控网页正文清洗与引用源存证；本地 Markdown 报告落盘与字节/哈希校验；
+  - `src/bridge.js`：入站前置拦截 `任务：...`、`调研：...`、`研究：...`、`任务状态`、`取消任务` 指令；回传私聊严格确认回执，失败/未知记录为 `delivery_unknown`，绝不虚假声称成功。
+- **阶段 D 本地执行拓展（文件整理、终端、Mac 原生应用）**：
+  - `src/task-harness.js`：
+    - `executeFilePlan`：文件整理计划前置校验；严格拦截系统目录（`/System`、`/usr`、`/bin`、`/etc` 等）；删除文件强制备份隔离至 `state/_quarantine/`；
+    - `executeCommandStep`：危险破坏性指令过滤；子进程有界超时（SIGTERM + SIGKILL）；超长输出截断保留头尾；
+    - `executeMacAppStep`：原生 macOS 应用控制 Seam（支持 `open -a`、`osascript` AppleScript 与 `shortcuts` 快捷指令）。
+- **阶段 E 统一生活与自主日常活动**：
+  - `runAutonomousIdleActivity`：自主低风险日常活动（记忆梳理、思维反思日志）透明记入账本，不外发广播，不篡改长期记忆。
+
+**验证**：
+```text
+node scripts/test-phase-a-verification.mjs
+node scripts/test-phase-bc-verification.mjs
+node scripts/test-phase-de-verification.mjs
+npm run test:regressions
+npm run test:audit
+```
+
+**交付交接块（可直接转发给发布会话）**：
+```text
+改了哪些文件：
+- 新增：src/interaction-lifecycle.js, src/task-ledger.js, src/task-harness.js
+- 新增验证套件：scripts/test-phase-a-verification.mjs, scripts/test-phase-bc-verification.mjs, scripts/test-phase-de-verification.mjs
+- 核心修改：src/memory-card.js, src/purpose-engine.js, src/bridge.js, src/perception/process.js, src/perception/service.js, src/core/memory-v2-store.js, plugins/surfcore/lib/index.js, scripts/audit-bridge-harness.mjs, scripts/verify-dsh-020-adaptation.mjs
+- 案例与交接：docs/cases/2026-11-11-phase-a-remediation.md, docs/cases/2026-11-11-phase-bcde-memory-v2-task-harness-and-mac-execution.md, docs/cases/README.md, docs/HANDOFF.md, docs/COORDINATION.md, docs/RELEASE-QUEUE.md
+测过什么、结果如何：
+- node scripts/test-phase-a-verification.mjs (PASS)
+- node scripts/test-phase-bc-verification.mjs (PASS)
+- node scripts/test-phase-de-verification.mjs (PASS)
+- npm run test:regressions (17/17 PASS)
+- npm run test:memory-v2 (47/47 PASS)
+- npm run test:audit (191/191 PASS)
+建议版本：0.9.1 (patch) 或 0.10.0 (minor)
+case 文档路径：docs/cases/2026-11-11-phase-a-remediation.md, docs/cases/2026-11-11-phase-bcde-memory-v2-task-harness-and-mac-execution.md
+改动层级：新增独立深模块（task-ledger, task-harness, interaction-lifecycle），现有 bridge/memory-v2 接口 100% 向后兼容
+完整逻辑与爆炸半径：
+- 链路：OneBot WS -> bridge:handleIncoming -> taskHarness.checkAdmission -> taskLedger -> executeResearch/Synthesis/FilePlan/Command/MacApp -> executeDeliveryStep -> sendToQQ
+- 机制：硬性拒绝群聊与非主人电脑执行提权；文件与命令执行前置全路径系统级白名单校验；删除操作必走隔离区；交付状态严格跟踪
+- 爆炸半径：进程数 1 (+临时受限子进程)；不碰生产密钥，不破坏历史数据，保持 V1 为生产默认后端
+失败路径：
+- 群聊触发电脑任务：明确拒绝 code=ADMISSION_GROUP_DENIED，提示切换私聊
+- 非主人触发：明确拒绝 code=ADMISSION_OWNER_REQUIRED
+- 越界/系统路径：明确拒绝 code=ADMISSION_PATH_RESTRICTED
+- 破坏性命令：明确阻断 code=COMMAND_SECURITY_BLOCKED
+- 发送失败：准确记录 status=delivery_unknown，不向用户虚假宣称成功
+还有什么没验证：真机真实群聊并发实测（由志愿者与发布后实机回归验证）。
+```
+
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
