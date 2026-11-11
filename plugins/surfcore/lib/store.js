@@ -24,6 +24,8 @@ import { adminFromSources, normalizeAdmin } from '../../../src/admin-identity.js
 import { DEFAULT_MEMORY_CARD_CONFIG, normalizeMemoryCardConfig } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
 import { normalizeCardMode } from '../../../src/share-mode.js';
 import { normalizeClockText, normalizeWindow } from '../tools/lib/time-window.mjs';
+import { assertVoiceSelectionUnchanged, transactQqConfig } from '../../../src/qq-config-transaction.js';
+import { fileStamp } from '../../../src/config-stamps.js';
 
 export const MASK = '********';
 
@@ -625,13 +627,21 @@ export function readAll() {
   };
 }
 
-export function saveQqConfig(incoming) {
-  const current = readQqConfig().config;
-  const restored = restoreMaskedSecrets(incoming, current);
-  const next = normalizeQqConfig(deepMerge(current, restored));
-  const backup = backupFile(QQ_CONFIG, 'qq-config');
-  writeJsonAtomic(QQ_CONFIG, next);
-  return { config: redactForUi(next), backup };
+export function saveQqConfig(incoming, { expectedStamp } = {}) {
+  const tx = transactQqConfig(QQ_CONFIG, draft => {
+    if (expectedStamp !== undefined && String(expectedStamp) !== fileStamp(QQ_CONFIG))
+      throw Object.assign(new Error('QQ 配置已被其他操作修改。'), { code: 'CONFIG_STALE', hint: '保留未保存草稿，重新读取后处理冲突。' });
+    const current = deepMerge(exampleDefaults(), draft);
+    const restored = restoreMaskedSecrets(incoming, current);
+    const next = normalizeQqConfig(deepMerge(current, restored));
+    assertVoiceSelectionUnchanged(draft, next);
+    const backup = backupFile(QQ_CONFIG, 'qq-config');
+    if (fs.existsSync(QQ_CONFIG) && !backup) throw Object.assign(new Error('QQ 配置备份失败。'), { code: 'QQ_CONFIG_BACKUP_FAILED', hint: '检查备份目录权限后重试。' });
+    for (const key of Object.keys(draft)) delete draft[key];
+    for (const [key, value] of Object.entries(next)) Object.defineProperty(draft, key, { value, enumerable: true, configurable: true, writable: true });
+    return { config: redactForUi(next), backup };
+  });
+  return tx.result;
 }
 
 export function saveBiliConfig(incoming) {

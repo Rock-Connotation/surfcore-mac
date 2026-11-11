@@ -12,12 +12,14 @@
  *   · 醒来后立刻标记 `woke` → 下一次 tick 自动排下一趟（多窗口 × 多次 ✓）
  *   · 设置页一保存 → 调 `invalidate()` 清掉旧计划 → 下一次 tick 按新配置重算 ✓（改完立刻生效 ✓）
  *
- * 为什么用"她自己的会话"：`sessionId` 固定（默认 bili-whale）→ 跨天保留她的上下文，
+ * V1 为什么用"她自己的会话"：`sessionId` 固定（默认 bili-whale）→ 跨天保留她的上下文，
  *   而不是每天开一个新会话、每天忘光 ✗。
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import crypto from 'node:crypto'
+import { readMemoryRouting } from '../../../src/core/memory-v2-routing.js'
 import { execFile } from 'node:child_process'
 // 收件箱读取复用工具链的实现（避免在插件里再抄一份 B站 接口 ✓）
 import { pullFeed, makeHeaders } from '../tools/lib/msgfeed.mjs'
@@ -194,6 +196,25 @@ function identityContextLines() {
 
 /** Same Bili persona/memory composition, bound to one role revision. */
 export function biliContextForRound(request) {
+  const routing = readMemoryRouting({ stateDir: QQ_STATE_DIR })
+  if (!routing.ok) return {
+    ok: false, code: routing.code || 'BILI_V2_ROUTING_UNAVAILABLE',
+    error: '当前单轮入口不能使用旧记忆上下文。',
+    hint: '打开记忆页核对当前V2来源审批和受管理任务；此入口不会降级读取V1记忆。', text: '', sections: [],
+  }
+  if (routing.backend === 'v2' || request?.memoryBackend === 'v2') {
+    if (!request?.v2 && !request?.biliMemoryHost && !request?.memoryContext && !request?.preparedMemory) {
+      return {
+        ok: false, code: 'BILI_V2_MANAGED_ROUND_REQUIRED',
+        error: '当前单轮入口不能使用旧记忆上下文。',
+        hint: '打开记忆页核对当前V2来源审批和受管理任务；此入口不会降级读取V1记忆。', text: '', sections: [],
+      }
+    }
+    const includeMemory = request?.includeMemory ?? Boolean(request?.memoryContext && request?.preparedMemory);
+    const checked = buildCharacterContext({ ...request, scene: 'bili', audience: { channel: 'bili', ...(request?.audience || {}) }, memoryBackend: 'v2', includeMemory })
+    if (!checked.ok) return checked
+    return { ...checked, text: checked.text || (Array.isArray(checked.sections) ? checked.sections.map(s => s.text).join('\n\n') : '') }
+  }
   const checked = buildCharacterContext({ ...request, scene: 'bili', audience: { channel: 'bili' } })
   if (!checked.ok) return checked
   return { ...checked, text: identityContextLines().join('\n\n') }
@@ -480,6 +501,9 @@ export function startScheduler(ctx, opts) {
     workspaceTitle = 'B站生物钟',
     agentPreset = '',  // 空 = 自动选 DSH 的 standard/default preset
     sessionId = 'bili-whale',
+    memoryV2 = null,
+    biliV2Agent = null,
+    onMemoryBlocked = () => {},
     tokenBudget = null, // 每日 token 额度服务（插件注入；单测可不传）
     log = () => {},
   } = opts
@@ -516,7 +540,36 @@ export function startScheduler(ctx, opts) {
     }
     return false
   }
-  async function promptBili(args, signal, where = '叫醒') {
+  function v2Unsupported() {
+    const error = Object.assign(new Error('B站 V2 原生适配未就绪。'), { ok: false, code: 'BILI_V2_UNSUPPORTED', error: 'B站 V2 原生适配未就绪。', hint: '连接可信来源、模型路由及原生工具适配后重试；不会复用旧会话。' })
+    onMemoryBlocked(error)
+    throw error
+  }
+  function memoryRouting() {
+    let route
+    try { route = memoryV2?.getRouting ? memoryV2.getRouting() : readMemoryRouting({ stateDir: QQ_STATE_DIR }) } catch { route = { ok: false } }
+    if (!route?.ok || !['v1', 'v2'].includes(route.backend)) {
+      const error = Object.assign(new Error('B站记忆路由不可用。'), { ok: false, code: route?.code || 'BILI_V2_ROUTING_UNAVAILABLE', error: 'B站记忆路由不可用。', hint: route?.hint || '恢复 Host 记忆路由后重试；不会切回旧上下文。' })
+      onMemoryBlocked(error)
+      throw error
+    }
+    return route.backend
+  }
+  async function promptBili(buildArgs, signal, where = '叫醒', input) {
+    if (memoryRouting() === 'v2') {
+      if (!biliV2Agent?.enqueue || !input) v2Unsupported()
+      const requestId = 'bili-v2-' + crypto.createHash('sha256').update(JSON.stringify({ quotaDay: today(), where, input })).digest('hex')
+      try {
+        const result = await biliV2Agent.enqueue({ requestId, input, signal })
+        if (result?.ok !== true) throw Object.assign(new Error(result?.error || 'B站 V2 已拒绝本轮。'), result)
+        return result
+      } catch (error) {
+        const failure = Object.assign(new Error('B站 V2 本轮未获准。'), { ok: false, code: error?.code || 'BILI_V2_JOB_FAILED', error: 'B站 V2 本轮未获准。', hint: error?.hint || '检查 Host 来源、当前角色与原作业回执；不要自动重试发送。', unknown: error?.unknown === true })
+        onMemoryBlocked(failure)
+        throw failure
+      }
+    }
+    const args = typeof buildArgs === 'function' ? buildArgs() : buildArgs
     if (tokenBudget?.block) {
       try {
         const gate = await tokenBudget.block('bili')
@@ -550,6 +603,7 @@ export function startScheduler(ctx, opts) {
 
   // 每次调用都重读 config：设置页把 agent.sandbox 改成 workspace-write 后，下一 tick 生效。
   function ensurePermission(where = 'tick') {
+    if (memoryRouting() === 'v2') return { ok: true }
     const target = String(config().agent?.sandbox || 'danger-full-access')
     const result = applySessionPermission(ctx, sessionId, target, (message) => log(message))
     if (!result.ok && result.reason !== 'session-not-active' && result.reason !== 'permission-services-unavailable') {
@@ -566,6 +620,7 @@ export function startScheduler(ctx, opts) {
       permissionListenerOff = ctx.on('session/created', (session) => {
         if (!session || session.id !== sessionId) return
         try {
+          if (memoryRouting() === 'v2') return
           const target = String(config().agent?.sandbox || 'danger-full-access')
           applySessionPermissionTo(ctx, session, target, (message) => log(message))
         } catch (error) {
@@ -664,6 +719,10 @@ export function startScheduler(ctx, opts) {
   }
 
   async function ensureSession() {
+    if (memoryRouting() === 'v2') {
+      if (!biliV2Agent?.enqueue) v2Unsupported()
+      return
+    }
     if (sessionReady) return
     try {
       // 2026-10-20：已经存在就别再 create —— create 对"非空白"的已有会话会**新建一个空壳会话** ✗
@@ -743,7 +802,7 @@ export function startScheduler(ctx, opts) {
       try {
         await ensureSession()
         await promptBili(
-          {
+          () => ({
             requestId: `bili-whale-skip-${Date.now()}`,
             sessionId,
             mode: 'queue',
@@ -769,9 +828,7 @@ export function startScheduler(ctx, opts) {
                 ]),
               ].join('\n'),
             }],
-          },
-          new AbortController().signal,
-        )
+          }), new AbortController().signal, '叫醒', { kind: 'night-skip', snapshot: structuredClone(st) })
         const slots = Array.isArray(st.slots) ? st.slots : []
         if (st.slotId) markScheduleSlot(st, st.slotId, 'skipped', nowMin())
         writeState({
@@ -804,14 +861,12 @@ export function startScheduler(ctx, opts) {
       try {
         await ensureSession()
         await promptBili(
-          {
+          () => ({
             requestId: `bili-whale-${Date.now()}`,
             sessionId,
             mode: 'queue',
             content: [{ type: 'text', text: wakePrompt(st, TOOL_CMD) }],
-          },
-          new AbortController().signal,
-        )
+          }), new AbortController().signal, '叫醒', { kind: 'night-wake', snapshot: structuredClone(st) })
         const slots = Array.isArray(st.slots) ? st.slots : []
         if (st.slotId) markScheduleSlot(st, st.slotId, 'fired', nowMin())
         writeState({
@@ -907,7 +962,7 @@ export function startScheduler(ctx, opts) {
             : `· ${who} 说：${String(it.text ?? "").slice(0, 300)}\n  → 回：\`dm --to ${it.mid} --msg "…" --dry\` → \`--go\`（≤200 字 · 一人一天 3 条 · 一天共 12 条 · **只能回不能主动发** ✓）`
         })
         await ensureSession()
-        await promptBili({
+        await promptBili(() => ({
           requestId: `bili-whale-dm-${Date.now()}`,
           sessionId,
           mode: "queue",
@@ -927,7 +982,7 @@ export function startScheduler(ctx, opts) {
               "4) 回完把对方说的写进日记「偏好校准」✓",
             ].join("\n"),
           }],
-        }, new AbortController().signal)   // 2026-10-19 修：prompt 的第二个参数是 signal ✗ 漏传会 TypeError
+        }), new AbortController().signal, '叫醒', { kind: 'dm-notification', snapshot: structuredClone(j), items: structuredClone(items), coverage: 'notification-only' })   // 2026-10-19 修：prompt 的第二个参数是 signal ✗ 漏传会 TypeError
       } catch (e) {
         try { fs.appendFileSync(path.join(platformDir(), "dm-tick-err.log"), new Date().toISOString() + " " + (e?.stack ?? e) + "\n") } catch {}
       }
@@ -967,7 +1022,7 @@ export function startScheduler(ctx, opts) {
       const limits = limitsNow()
       await ensureSession()
       await promptBili(
-        {
+        () => ({
           requestId: `bili-whale-listen-${Date.now()}`,
           sessionId,
           mode: 'queue',
@@ -995,9 +1050,7 @@ export function startScheduler(ctx, opts) {
               '5) 别贪多：这一批处理完就停 ✓（**只有设置页「同一个人最多只回一条」= 开时**才加 --once-per-person ✓；关掉就别加 ✗）',
             ].join('\n'),
           }],
-        },
-        new AbortController().signal,
-      )
+        }), new AbortController().signal, '叫醒', { kind: 'comment-notification', items: structuredClone(fresh), coverage: 'notification-only' })
       writeL({ lastSeen: Math.max(...fresh.map((x) => Number(x.t))) })
       log(`[bili-whale] 监听命中 ${fresh.length} 条（${who}）→ 已叫醒`)
     } catch (e) {
@@ -1086,7 +1139,7 @@ export function startScheduler(ctx, opts) {
         ;(async () => {
           try {
             await ensureSession()
-            await promptBili({
+            await promptBili(() => ({
               requestId: `bili-whale-live-${Date.now()}`,
               sessionId,
               mode: 'queue',
@@ -1104,7 +1157,7 @@ export function startScheduler(ctx, opts) {
                   '   发弹幕：`node bili.mjs danmaku send --msg "…" --reply-mid <对方mid> --reply-name <对方昵称>` → `--dry` → `--go` ✓（**不用审核 ✓ 也不用报备 ✗ 2026-10-18 主人定**）',
                 ].join('\n'),
               }],
-            }, new AbortController().signal)
+            }), new AbortController().signal, '叫醒', { kind: 'live-notification', room: structuredClone(room), stdout: out, coverage: 'transport-output' })
             log(`[bili-whale] 直播间命中 → 已叫醒 · ${lines.slice(0, 80)}`)
           } catch (e) {
             log(`[bili-whale] 直播间叫醒失败：${String(e.message).slice(0, 120)}`)
@@ -1167,7 +1220,7 @@ export function startScheduler(ctx, opts) {
         if (n > 0) {
           try {
             await ensureSession()
-            await promptBili({
+            await promptBili(() => ({
               requestId: `bili-whale-review-${Date.now()}`,
               sessionId,
               mode: 'queue',
@@ -1184,7 +1237,7 @@ export function startScheduler(ctx, opts) {
                   toolLine(),
                 ].join('\n'),
               }],
-            }, new AbortController().signal)
+            }), new AbortController().signal, '叫醒', { kind: 'attack-review', pendingCount: n })
             log(`[bili-whale] 23:00 待审提醒（${n} 条）`)
           } catch (e) { log(`[bili-whale] 待审提醒失败：${String(e.message).slice(0, 100)}`) }
           return
@@ -1205,7 +1258,7 @@ export function startScheduler(ctx, opts) {
           try { fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2)) } catch {}
           try {
             await ensureSession()
-            await promptBili({
+            await promptBili(() => ({
               requestId: `bili-whale-ta-${Date.now()}`,
               sessionId,
               mode: 'queue',
@@ -1221,7 +1274,7 @@ export function startScheduler(ctx, opts) {
                   toolLine(),
                 ].join('\n'),
               }],
-            }, new AbortController().signal)
+            }), new AbortController().signal, '叫醒', { kind: 'ta-nudge', used, limit: L.taDaily })
             log(`[bili-whale] 搭话催进度：${used}/${L.taDaily}`)
           } catch (e) { log(`[bili-whale] 搭话提醒失败：${String(e.message).slice(0, 100)}`) }
           return
@@ -1247,7 +1300,7 @@ export function startScheduler(ctx, opts) {
       const inSlot = inSlotNow
       try {
         await ensureSession()
-        await promptBili({
+        await promptBili(() => ({
           requestId: `bili-whale-daily-${kind}-${Date.now()}`,
           sessionId,
           mode: 'queue',
@@ -1280,7 +1333,7 @@ export function startScheduler(ctx, opts) {
               toolLine(),
             ].join('\n'),
           }],
-        }, new AbortController().signal)
+        }), new AbortController().signal, '叫醒', { kind: 'daily-nudge', kindKey: kind, inSlot, definition: structuredClone(k), pin: pinOf(kind), note: noteOf(kind) })
         log(`[bili-whale] 动态提醒 · ${kind}（${inSlot ? '到点' : '补发'}）`)
       } catch (e) {
         log(`[bili-whale] 动态提醒失败：${String(e.message).slice(0, 120)}`)
@@ -1329,7 +1382,10 @@ export function startScheduler(ctx, opts) {
     /** 切角色时用：停定时器 + 取消当前 DSH 会话的在途回合，避免旧人格继续跑。 */
     async retire() {
       this.stop();
+      let v2Retired = { ok: true, retired: true };
+      if (biliV2Agent?.retire) v2Retired = await biliV2Agent.retire();
       try { await ctx.sessionController?.cancel?.({ sessionId }) } catch (error) { log(`[bili-whale] 取消旧会话失败：${error?.message ?? error}`) }
+      return v2Retired;
     },
     tick,
     listenTick,

@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -23,13 +24,36 @@ fs.writeFileSync(path.join(stateDir, 'config.json'), `${JSON.stringify({
   platforms: { start: { qq: false, bili: false } },
 }, null, 2)}\n`, 'utf8');
 
+const qqRoot = path.join(tmp, 'qq-fixture');
+fs.mkdirSync(path.join(qqRoot, 'src'), { recursive: true });
+fs.writeFileSync(path.join(qqRoot, 'src', 'bridge.js'), '');
+fs.writeFileSync(path.join(qqRoot, 'config.json'), '{}');
+process.env.SURFCORE_ROOT = qqRoot;
 process.env.DSH_HOME = tmp;
 process.env.USERPROFILE = tmp;
 process.env.SURFCORE_SKIP_AUTOSTART = '1';
 process.env.SURFCORE_DISABLE_CHARACTER_MIGRATION = '1';
 process.env.SURFCORE_DISABLE_MEMORY_TIMER = '1';
 
-const { apply } = await import('../lib/index.js');
+const originalConnect = net.connect;
+const originalFetch = globalThis.fetch;
+const statusProbes = [];
+const unexpectedNetwork = [];
+net.connect = (options) => {
+  statusProbes.push({ host: options.host, port: options.port });
+  if (options.host !== '127.0.0.1' || ![3100, 8765, 8767, 9880].includes(options.port)) {
+    unexpectedNetwork.push('unexpected TCP target');
+  }
+  const socket = new EventEmitter();
+  socket.setTimeout = () => socket;
+  socket.destroy = () => socket;
+  process.nextTick(() => socket.emit('error', Object.assign(new Error('fixture bridge unavailable'), { code: 'ECONNREFUSED' })));
+  return socket;
+};
+globalThis.fetch = async () => {
+  unexpectedNetwork.push('unexpected fetch');
+  throw new Error('network disabled in voice management Host fixture');
+};
 
 const routes = [];
 const effects = [];
@@ -77,9 +101,22 @@ async function invoke(route, method, url, body) {
 }
 
 try {
+  const { apply } = await import('../lib/index.js');
   apply(ctx);
   const api = routes.find((route) => route.path === '/dsh-surfcore/api');
   assert.ok(api, 'API 路由没有注册');
+
+  if (fs.constants.O_NOFOLLOW) {
+  const savedKey = await invoke(api, 'POST', '/dsh-surfcore/api/voice/volc-config', { provider: 'volc', apiKey: 'host-fixture-key' });
+  assert.equal(savedKey.data.ok, true);
+  assert(!JSON.stringify(savedKey).includes('host-fixture-key'));
+  const keyStatus = await invoke(api, 'GET', '/dsh-surfcore/api/voice/volc-config');
+  assert.equal(keyStatus.data.hasKey, true);
+  assert(!JSON.stringify(keyStatus).includes('host-fixture-key'));
+  const invalidKey = await invoke(api, 'POST', '/dsh-surfcore/api/voice/volc-config', { provider: 'volc', apiKey: 'bad' + String.fromCharCode(10) + 'key' });
+  assert.equal(invalidKey.data.code, 'VOICE_VOLC_KEY_INVALID');
+  assert(invalidKey.data.hint);
+  }
 
   const packs = await invoke(api, 'GET', '/dsh-surfcore/api/voice/packs');
   assert.equal(packs.status, 200, '关闭QQ时语音管理必须在Host直接可读，不能fetch3100失败');
@@ -98,6 +135,30 @@ try {
   assert.equal(unknown.status,404); assert(unknown.data.code && unknown.data.hint);
   const check = await invoke(api, 'POST', '/dsh-surfcore/api/voice/tts-check', {});
   assert.equal(check.data.code, 'VOICE_TTS_DISABLED');assert(check.data.hint);
+  if (fs.constants.O_NOFOLLOW) {
+    const beforeSelect = await invoke(api, 'GET', '/dsh-surfcore/api/config');
+    const selected = await invoke(api, 'POST', '/dsh-surfcore/api/voice/volc-config', { provider: 'volc', activate: true });
+    assert.equal(selected.data.ok, true); assert.equal(selected.data.route, 'cloud'); assert.equal(selected.data.ttsEnabled, true);
+    assert.equal(selected.data.beforeStamp, beforeSelect.data.stamps.qq);
+    const afterSelect = await invoke(api, 'GET', '/dsh-surfcore/api/config');
+    assert.equal(selected.data.afterStamp, afterSelect.data.stamps.qq);
+    const selectedDraft = structuredClone(beforeSelect.data.qq); selectedDraft.socialV2 ||= {}; selectedDraft.socialV2.voice ||= {};
+    selectedDraft.socialV2.voice.tts = afterSelect.data.qq.socialV2.voice.tts;
+    selectedDraft.socialV2.voice.enabled = true; selectedDraft.fixtureDraft = 'kept';
+    const master = await invoke(api, 'POST', '/dsh-surfcore/api/config', { qq: selectedDraft, baseStamp: { ...beforeSelect.data.stamps, qq: selected.data.afterStamp } });
+    assert.equal(master.data.ok, true, JSON.stringify(master.data)); assert.equal(master.data.qq.fixtureDraft, 'kept');
+    const loaded = await invoke(api, 'GET', '/dsh-surfcore/api/config');
+    const quota = await invoke(api, 'POST', '/dsh-surfcore/api/voice/volc-config', { monthlyQuota: 5000 });
+    assert.equal(quota.data.monthlyLimit, 5000); assert.equal(quota.data.beforeStamp, loaded.data.stamps.qq);
+    const refreshed = await invoke(api, 'GET', '/dsh-surfcore/api/config');
+    assert.equal(quota.data.afterStamp, refreshed.data.stamps.qq);
+    const draft = structuredClone(refreshed.data.qq); draft.socialV2.voice.enabled = true; draft.testDraft = 'preserved';
+    const savedConfig = await invoke(api, 'POST', '/dsh-surfcore/api/config', { qq: draft, baseStamp: { ...loaded.data.stamps, qq: quota.data.afterStamp } });
+    assert.equal(savedConfig.data.ok, true, JSON.stringify(savedConfig.data));
+    assert.equal(savedConfig.data.qq.socialV2.voice.enabled, true); assert.equal(savedConfig.data.qq.testDraft, 'preserved');
+    const savedRules = await invoke(api, 'GET', '/dsh-surfcore/api/voice/rules');
+    assert.equal(savedRules.data.aiEnabled, true); assert.equal(savedRules.data.route, 'cloud');
+  }
   const malformedReq=fakeReq('POST','/dsh-surfcore/api/voice/send',null);malformedReq.headers.origin='https://foreign.invalid';const forbidden=fakeRes();await api.handler(malformedReq,forbidden);assert.equal(forbidden.statusCode,403);
   const stopped = await invoke(api,'POST','/dsh-surfcore/api/bridge',{action:'stop-selected',components:['voice']});
   assert.equal(stopped.data.ok,true);
@@ -109,7 +170,18 @@ try {
   assert.equal(deniedStop.data.ok,false,'unknown management state must never be reported stopped');
   assert.equal(deniedStop.data.items[0].code,'VOICE_MANAGEMENT_BUSY');assert(deniedStop.data.items[0].hint);
   fs.unlinkSync(ownerLock);
-  console.log('voice management actual Host route: QQ-off reads, launch state, guarded start/check/stop passed');
+  const latest = await invoke(api, 'GET', '/dsh-surfcore/api/config');
+  const staleMissing = await invoke(api, 'POST', '/dsh-surfcore/api/config', { qq: { fixtureDraft: 'must-not-save' }, baseStamp: { ...latest.data.stamps, qq: '', strict: true } });
+  assert.equal(staleMissing.status, 409); assert.equal(staleMissing.data.code, 'CONFIG_STALE'); assert(staleMissing.data.hint);
+  const legacy = await invoke(api, 'POST', '/dsh-surfcore/api/config', { qq: { legacyFixture: true }, baseStamp: { ...latest.data.stamps, qq: '' } });
+  assert.equal(legacy.data.ok, true); assert.equal(legacy.data.qq.legacyFixture, true);
+  const budgetLock = path.join(path.dirname(QQ_CONFIG), 'state', 'volc-voice-budget.lock'); fs.mkdirSync(budgetLock);
+  const blockedConfig = await invoke(api, 'GET', '/dsh-surfcore/api/config');
+  assert.equal(blockedConfig.status, 409); assert.equal(blockedConfig.data.code, 'VOICE_VOLC_BUDGET_BUSY'); assert(blockedConfig.data.hint);
+  fs.rmdirSync(budgetLock);
+  assert.ok(statusProbes.some(probe => probe.port === 3100), 'Host overview must probe fixture bridge availability');
+  assert.deepEqual(unexpectedNetwork, [], 'fixture must not attempt fetch or probe another network target');
+  console.log('voice management actual Host route: QQ-off reads, launch state, guarded start/check/stop passed (network isolated)');
 
 } finally {
   for (const fn of effects) {
@@ -118,5 +190,7 @@ try {
       if (typeof dispose === 'function') dispose();
     } catch {}
   }
+  net.connect = originalConnect;
+  globalThis.fetch = originalFetch;
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
 }

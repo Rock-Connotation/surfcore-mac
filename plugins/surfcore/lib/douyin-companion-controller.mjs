@@ -42,11 +42,15 @@ export function createCompanionController({ engine, getCharacter, readiness }) {
     if (page || !['GET', 'POST'].includes(req.method)) { json(res, 405, fail('COMPANION_METHOD', '请求方法不支持。', '使用小白鲸日记页的按钮。')); return true; }
     const context = capture();
     if (!context) { json(res, 409, fail('COMPANION_CHARACTER_REQUIRED', '当前没有活动角色。', '在角色页载入已确认的伙伴后再开始。')); return true; }
+    let held;
     try {
       if (req.method === 'GET') {
-        const value = await engine.status(context); const ready = await readiness(context);
+        const value = held = await engine.status(context); const ready = await readiness(context);
         if (!matches(context)) { json(res, 409, stale()); return true; }
         if (!value.ok) { json(res, 409, value); return true; }
+        const checked = engine.validateResponse ? await engine.validateResponse(context, value) : { ok: true };
+        if (!matches(context)) { json(res, 409, stale()); return true; }
+        if (!checked?.ok) { json(res, 409, checked); return true; }
         const role = getCharacter();
         json(res, 200, { ok: true, character: { id: role.id, epoch: role.epoch, name: role.name }, value, readiness: ready }); return true;
       }
@@ -59,11 +63,13 @@ export function createCompanionController({ engine, getCharacter, readiness }) {
       else if (body.action === 'cancel') result = await engine.cancel(context);
       else if (body.action === 'configure' && typeof body.enabled === 'boolean') result = await engine.configure(context, { enabled: body.enabled });
       else result = fail('COMPANION_ACTION', '不支持这项陪伴操作。', '使用开始一轮、取消、启用或暂停按钮。');
+      held = result;
+      if (result?.ok && engine.validateResponse) { const checked = await engine.validateResponse(context, result); if (!checked?.ok) result = checked; }
       if (!matches(context)) result = stale();
       json(res, result?.ok ? 200 : 409, result ?? fail('COMPANION_RESULT', '操作未返回状态。', '刷新状态并检查现有活动，不要重复启动。'));
     } catch {
       json(res, 409, fail('COMPANION_OPERATION_FAILED', '本次陪伴请求未完成。', '刷新状态并核对已有活动和额度，不要重复启动。'));
-    }
+    } finally { engine.releaseResponse?.(held); }
     return true;
   }
   return { handle };

@@ -11,8 +11,17 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
+const originalConnect = net.connect, originalFetch = globalThis.fetch;
+net.connect = () => {
+  const socket = new EventEmitter(); socket.setTimeout = () => socket; socket.destroy = () => socket;
+  queueMicrotask(() => socket.emit('error', new Error('offline fixture'))); return socket;
+};
+globalThis.fetch = async () => { throw new Error('offline fixture'); };
+
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-platform-host-'));
 const stateDir = path.join(tmp, 'surfcore');
@@ -23,13 +32,36 @@ fs.writeFileSync(path.join(stateDir, 'config.json'), `${JSON.stringify({
   platforms: { start: { qq: false, bili: false } },
 }, null, 2)}\n`, 'utf8');
 
+const qqRoot = path.join(tmp, 'qq-fixture');
+fs.mkdirSync(path.join(qqRoot, 'src'), {recursive:true});
+fs.writeFileSync(path.join(qqRoot, 'src/bridge.js'), '');
+fs.writeFileSync(path.join(qqRoot, 'config.json'), '{}');
+process.env.SURFCORE_ROOT = qqRoot;
 process.env.DSH_HOME = tmp;
 process.env.USERPROFILE = tmp;
 process.env.SURFCORE_SKIP_AUTOSTART = '1';
 process.env.SURFCORE_DISABLE_CHARACTER_MIGRATION = '1';
 process.env.SURFCORE_DISABLE_MEMORY_TIMER = '1';
 
-const { apply } = await import('../lib/index.js');
+const originalConnect = net.connect;
+const originalFetch = globalThis.fetch;
+const probes = [];
+const unexpectedNetwork = [];
+net.connect = (options) => {
+  probes.push({ host: options.host, port: options.port });
+  if (options.host !== '127.0.0.1' || ![3100, 8765, 8767, 9880].includes(options.port)) {
+    unexpectedNetwork.push('unexpected TCP target');
+  }
+  const socket = new EventEmitter();
+  socket.setTimeout = () => socket;
+  socket.destroy = () => socket;
+  process.nextTick(() => socket.emit('error', Object.assign(new Error('fixture service unavailable'), { code: 'ECONNREFUSED' })));
+  return socket;
+};
+globalThis.fetch = async () => {
+  unexpectedNetwork.push('unexpected fetch');
+  throw new Error('network disabled in platform Host fixture');
+};
 
 const routes = [];
 const effects = [];
@@ -59,6 +91,7 @@ function fakeRes() {
 }
 function fakeReq(method, url, body) {
   const req = new EventEmitter();
+  req.socket = { remoteAddress: '127.0.0.1' };
   req.method = method;
   req.url = url;
   req.headers = { host: '127.0.0.1:58750', ...(body ? { 'content-type': 'application/json' } : {}) };
@@ -77,10 +110,33 @@ async function invoke(route, method, url, body) {
 }
 
 try {
+  const { createCharacter, switchCharacter } = await import('../../../src/character-persona.js');
+  const alpha = createCharacter({ id: 'fixture-alpha', name: 'Fixture Alpha' });
+  assert.equal(alpha.ok, true);
+  switchCharacter(alpha.character.id);
+  const { apply } = await import('../lib/index.js');
   apply(ctx);
   const api = routes.find((route) => route.path === '/dsh-surfcore/api');
   assert.ok(api, 'API 路由没有注册');
 
+  const memory = await invoke(api, 'GET', '/dsh-surfcore/api/memory-v2/status');
+  assert.equal(memory.status, 200, JSON.stringify(memory));
+  assert.equal(memory.data.ok, true, JSON.stringify(memory));
+  assert.equal(memory.data.character.id, alpha.character.id);
+  assert.equal(memory.data.backend, 'v1');
+  assert.equal(memory.data.capabilities.activation, false);
+  const rpc = routes.find(route => route.path === '/dsh-surfcore/memory-v2-api');
+  assert.ok(rpc, 'The separately authenticated channel RPC endpoint must be registered.');
+  const rejectedRpc = await invoke(rpc, 'POST', '/dsh-surfcore/memory-v2-api', {});
+  assert.equal(rejectedRpc.data.ok, false);
+  assert.ok(rejectedRpc.data.code && rejectedRpc.data.hint);
+  const get = ctx.get;
+  ctx.get = name => name === 'connection' ? null : get(name);
+  const rejectedMemory = await invoke(api, 'GET', '/dsh-surfcore/api/memory-v2/status');
+  assert.equal(rejectedMemory.data.ok, false);
+  assert.equal(rejectedMemory.data.code, 'MEMORY_ADMIN_REQUIRED');
+  assert.ok(rejectedMemory.data.hint);
+  ctx.get = get;
   const overview = await invoke(api, 'GET', '/dsh-surfcore/api/overview');
   assert.equal(overview.status, 200);
   assert.deepEqual(overview.data.platformStart, { qq: false, bili: false },
@@ -134,13 +190,18 @@ try {
   const onDisk = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8'));
   assert.deepEqual(onDisk.platforms.start, { qq: true, bili: true });
 
-  console.log('platform-start host wiring OK');
+  assert.ok(probes.some(probe => probe.port === 3100), 'Host must query the fixture bridge status');
+  assert.deepEqual(unexpectedNetwork, [], 'fixture must never reach real network services');
+  console.log('platform-start host wiring OK (network isolated)');
 } finally {
+  net.connect = originalConnect; globalThis.fetch = originalFetch;
   for (const fn of effects) {
     try {
       const dispose = fn();
       if (typeof dispose === 'function') dispose();
     } catch {}
   }
+  net.connect = originalConnect;
+  globalThis.fetch = originalFetch;
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
 }

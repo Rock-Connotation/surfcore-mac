@@ -20,7 +20,7 @@ function storedText(value, max, optional = false) {
 }
 function validIso(value, optional = false) { return (optional && value == null) || (typeof value === 'string' && value.length <= 40 && !Number.isNaN(new Date(value).getTime())); }
 function validFailure(value, optional = false) {
-  return (optional && value == null) || (onlyKeys(value, ['code', 'error', 'hint']) && /^DOUYIN_[A-Z0-9_]{1,72}$/.test(value.code) && storedText(value.error, 240) && storedText(value.hint, 300));
+  return (optional && value == null) || (onlyKeys(value, ['code', 'error', 'hint']) && /^(?:DOUYIN|MEMORY|MODEL|COMPANION|CHARACTER|BUDGET)_[A-Z0-9_]{1,72}$/.test(value.code) && storedText(value.error, 240) && storedText(value.hint, 300));
 }
 function validSourceUrl(value) {
   try {
@@ -36,6 +36,27 @@ function validCoverage(value) {
     ['sparse', 'none'].includes(value.visualCoverage) && Number.isSafeInteger(value.frameSamples) && value.frameSamples >= 0 && value.frameSamples <= 3 &&
     Number.isSafeInteger(value.warningCount) && value.warningCount >= 0 && value.warningCount <= 100 && typeof value.acceptanceQualified === 'boolean';
 }
+const provenanceId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_:@./-]{0,255}$/.test(value);
+function validRefs(refs, cap) {
+  return Array.isArray(refs) && refs.length <= cap && refs.every(ref => onlyKeys(ref, ['type', 'id', 'revision', 'payloadDigest']) &&
+    ['event', 'memory'].includes(ref.type) && provenanceId(ref.id) && Number.isSafeInteger(ref.revision) && ref.revision >= 1 && /^[a-f0-9]{64}$/.test(ref.payloadDigest));
+}
+function validReceipt(receipt) {
+  return onlyKeys(receipt, ['phase', 'ok', 'operationId', 'acceptance', 'sourceState', 'selectionState', 'indexState', 'operationState', 'retry', 'commitSequence', 'eventIds', 'eventRefs', 'nextOffset']) &&
+    ['source', 'model-input', 'reflection'].includes(receipt.phase) && receipt.ok === true && provenanceId(receipt.operationId) && receipt.acceptance === 'volatile' &&
+    receipt.sourceState === 'committed' && receipt.selectionState === 'not_selected' && receipt.indexState === 'ready' && receipt.operationState === 'completed' && receipt.retry === 'none' &&
+    Number.isSafeInteger(receipt.commitSequence) && receipt.commitSequence >= 1 && (receipt.nextOffset === null || (Number.isSafeInteger(receipt.nextOffset) && receipt.nextOffset >= 0)) &&
+    Array.isArray(receipt.eventIds) && receipt.eventIds.length >= 1 && receipt.eventIds.length <= 32 && receipt.eventIds.every(provenanceId) && new Set(receipt.eventIds).size === receipt.eventIds.length &&
+    validRefs(receipt.eventRefs, 32) && receipt.eventRefs.length === receipt.eventIds.length && new Set(receipt.eventRefs.map(ref => ref.id)).size === receipt.eventRefs.length &&
+    receipt.eventRefs.every(ref => ref.type === 'event' && ref.revision === 1 && receipt.eventIds.includes(ref.id));
+}
+function validProvenance(value, refsCap, receiptsCap) {
+  if (value.memoryV2Refs === undefined && value.memoryV2Receipts === undefined && value.memoryV2Receipt === undefined) return true;
+  const refs = value.memoryV2Refs, receipts = value.memoryV2Receipts;
+  return validRefs(refs, refsCap) && refs.length > 0 && Array.isArray(receipts) && receipts.length > 0 && receipts.length <= receiptsCap && receipts.every(validReceipt) &&
+    receipts.every(receipt => receipt.eventRefs.every(ref => refs.some(actual => actual.type === ref.type && actual.id === ref.id && actual.revision === ref.revision && actual.payloadDigest === ref.payloadDigest))) &&
+    (value.memoryV2Receipt === undefined || (validReceipt(value.memoryV2Receipt) && JSON.stringify(value.memoryV2Receipt) === JSON.stringify(receipts.at(-1))));
+}
 function validateLedger(value) {
   check(onlyKeys(value, ['version', 'acceptanceCalls', 'roles', 'jobs']) && value.version === 1 && Number.isSafeInteger(value.acceptanceCalls) && value.acceptanceCalls >= 0 && value.acceptanceCalls <= 12 && isRecord(value.roles) && isRecord(value.jobs), 'DOUYIN_STATE_INVALID', '陪伴账本格式无法识别，未重置数据。', '保留账本原件并检查本机状态目录后再试。');
   for (const [key, role] of Object.entries(value.roles)) {
@@ -48,18 +69,18 @@ function validateLedger(value) {
     }
   }
   for (const [id, job] of Object.entries(value.jobs)) {
-    check(onlyKeys(job, ['jobId', 'mode', 'state', 'phase', 'characterId', 'characterEpoch', 'createdAt', 'updatedAt', 'completedAt', 'calls', 'acceptanceQualified', 'scheduleDate', 'scheduleWindow', 'items', 'code', 'error', 'hint']) &&
-      job.jobId === id && /^douyin-[0-9a-f-]{36}$/.test(id) && ['acceptance', 'daily'].includes(job.mode) && ['queued', 'running', 'completed', 'partial', 'failed', 'cancelled', 'interrupted'].includes(job.state) &&
+    check(onlyKeys(job, ['jobId', 'mode', 'state', 'phase', 'characterId', 'characterEpoch', 'createdAt', 'updatedAt', 'completedAt', 'calls', 'acceptanceQualified', 'scheduleDate', 'scheduleWindow', 'items', 'code', 'error', 'hint', 'memoryV2Refs', 'memoryV2Receipts', 'memoryV2Receipt']) &&
+      validProvenance(job, 64, 12) && job.jobId === id && /^douyin-[0-9a-f-]{36}$/.test(id) && ['acceptance', 'daily'].includes(job.mode) && ['queued', 'running', 'completed', 'partial', 'failed', 'cancelled', 'interrupted'].includes(job.state) &&
       ['queued', 'readiness', 'feed', 'context', 'perceive', 'model', 'memory', 'finished', 'failed', 'cancelled', 'interrupted'].includes(job.phase) && storedText(job.characterId, 160) && Number.isSafeInteger(job.characterEpoch) && job.characterEpoch >= 0 &&
       validIso(job.createdAt) && validIso(job.updatedAt) && validIso(job.completedAt, true) && Number.isSafeInteger(job.calls) && job.calls >= 0 && job.calls <= 4 && typeof job.acceptanceQualified === 'boolean' &&
       (job.scheduleDate === null || /^\d{4}-\d{2}-\d{2}$/.test(job.scheduleDate)) && (job.scheduleWindow === null || ['12:30', '20:30'].includes(job.scheduleWindow)) && Array.isArray(job.items) && job.items.length <= 2 &&
-      (job.code == null || /^DOUYIN_[A-Z0-9_]{1,72}$/.test(job.code)) && storedText(job.error, 240, true) && storedText(job.hint, 300, true),
+      (job.code == null || /^(?:DOUYIN|MEMORY|MODEL|COMPANION|CHARACTER|BUDGET)_[A-Z0-9_]{1,72}$/.test(job.code)) && storedText(job.error, 240, true) && storedText(job.hint, 300, true),
     'DOUYIN_STATE_INVALID', '陪伴作业账本格式无法识别，未重置数据。', '保留账本原件并检查本机状态目录后再试.');
-    for (const item of job.items) check(onlyKeys(item, ['id', 'url', 'title', 'durationMs', 'occurredAt', 'state', 'memorySaved', 'partial', 'coverage', 'feeling', 'reason', 'summary', 'draft', 'code', 'error', 'hint']) &&
-      storedText(item.id, 160) && validSourceUrl(item.url) && storedText(item.title, 240) && Number.isSafeInteger(item.durationMs) && item.durationMs > 0 && item.durationMs <= 120_000 && validIso(item.occurredAt, true) &&
+    for (const item of job.items) check(onlyKeys(item, ['id', 'url', 'title', 'durationMs', 'occurredAt', 'state', 'memorySaved', 'partial', 'coverage', 'feeling', 'reason', 'summary', 'draft', 'code', 'error', 'hint', 'memoryV2Refs', 'memoryV2Receipts', 'memoryV2Receipt']) &&
+      validProvenance(item, 32, 6) && storedText(item.id, 160) && validSourceUrl(item.url) && storedText(item.title, 240) && Number.isSafeInteger(item.durationMs) && item.durationMs > 0 && item.durationMs <= 120_000 && validIso(item.occurredAt, true) &&
       ['skipped', 'partial', 'completed'].includes(item.state) && typeof item.memorySaved === 'boolean' && typeof item.partial === 'boolean' && validCoverage(item.coverage) &&
       (item.feeling == null || ['like', 'mixed', 'neutral', 'dislike'].includes(item.feeling)) && storedText(item.reason, 240, true) && storedText(item.summary, 500, true) && storedText(item.draft, 300, true) &&
-      (item.code == null || /^DOUYIN_[A-Z0-9_]{1,72}$/.test(item.code)) && storedText(item.error, 240, true) && storedText(item.hint, 300, true),
+      (item.code == null || /^(?:DOUYIN|MEMORY|MODEL|COMPANION|CHARACTER|BUDGET)_[A-Z0-9_]{1,72}$/.test(item.code)) && storedText(item.error, 240, true) && storedText(item.hint, 300, true),
     'DOUYIN_STATE_INVALID', '陪伴结果账本格式无法识别，未重置数据。', '保留账本原件并检查本机状态目录后再试.');
   }
   return value;

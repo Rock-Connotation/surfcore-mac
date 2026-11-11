@@ -13,8 +13,8 @@ const jobs = [
   { jobId: 'own', characterId: 'app', characterEpoch: 4, state: 'completed' },
   { jobId: 'other', characterId: 'other', characterEpoch: 2, state: 'running' },
 ];
-const make = () => createBiliRoundController({
-  ctx: { get: () => ({ listProviders: () => [{ id: 'magpie' }], listModels: async () => { duringCatalog?.(); return [{ id: 'workbuddy/hy4free', name: 'Hy4' }]; } }) },
+const make = (extraLlm = {}) => createBiliRoundController({
+  ctx: { get: () => ({ listProviders: () => [{ id: 'magpie' }], listModels: async () => { duringCatalog?.(); return [{ id: 'workbuddy/hy4free', name: 'Hy4' }]; }, ...extraLlm }) },
   stateDir: '/unused-test-only', perception: {}, getCharacter: () => role,
   readConfig: () => cfg, saveConfig: value => { cfg = { night: { ...cfg.night, ...value.night } }; },
   platformEnabled: () => enabled, legacyRunning: () => legacy,
@@ -23,7 +23,7 @@ const make = () => createBiliRoundController({
   createRound: () => ({
     status: async () => ({ jobs, activeJobId: 'other' }),
     getJob: async id => jobs.find(j => j.jobId === id),
-    start: async () => { starts++; return { ok: true, jobId: 'new' }; },
+    start: async (opts) => { starts++; return { ok: true, jobId: 'new', providerRouteId: opts?.providerRouteId }; },
     reviewPartial: async () => { partials++; return { ok: true, jobId: 'own', state: 'running' }; },
     cancel: async () => { cancels++; return { ok: true }; }, dispose: async () => {},
   }),
@@ -45,7 +45,10 @@ r = await call(fresh, 'POST', { action: 'start' }); assert.equal(r.body.code, 'B
 enabled = true;
 r = await call(fresh, 'POST', { action: 'start', provider: 'magpie', model: 'other', maxTokens: 2000 });
 assert.equal(r.body.code, 'BILI_ROUND_MODEL_UNAVAILABLE'); assert.ok(r.body.hint); assert.equal(starts, 0);
-r = await call(fresh, 'POST', { action: 'start', provider: 'magpie', model: 'workbuddy/hy4free', maxTokens: 2000 }); assert.equal(r.code, 200); assert.equal(starts, 1);
+r = await call(fresh, 'POST', { action: 'start', provider: 'magpie', model: 'workbuddy/hy4free', maxTokens: 2000 }); assert.equal(r.code, 200); assert.equal(starts, 1); assert.ok(r.body.providerRouteId);
+const badResolver = make({ resolveModelInfo: async () => { throw new Error('Synthetic network error'); } });
+const badR = await call(badResolver, 'POST', { action: 'start', provider: 'magpie', model: 'workbuddy/hy4free', maxTokens: 2000 });
+assert.equal(badR.body.code, 'BILI_ROUND_MODEL_UNAVAILABLE'); assert.ok(badR.body.hint);
 r = await call(fresh, 'GET'); assert.deepEqual(r.body.value.jobs.map(j => j.jobId), ['own']); assert.equal(r.body.value.activeJobId, null);
 r = await call(fresh, 'GET', null, '?jobId=other'); assert.equal(r.body.code, 'ROUND_FORBIDDEN'); assert.ok(r.body.hint);
 r = await call(fresh, 'POST', { action: 'cancel', jobId: 'other' }); assert.equal(r.body.code, 'ROUND_FORBIDDEN'); assert.equal(cancels, 0);

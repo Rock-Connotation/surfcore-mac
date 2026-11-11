@@ -174,12 +174,12 @@ step/start → assistant/message → tool/call(mcp__snowluma__qq_wait_for_messag
 - 同一会话连续**空等**（arrived=false）最多 2 次；第 3 次直接返回 stopped: true, reason: consecutive-wait-limit 并在 message 里要求收尾；
 - 等待到新消息（arrived=true）就清零计数，正常「等回复」不受影响；
 - 短等待（timeoutMs < 5s，测试/探针常用）不参与计数，避免挡掉「等待中权限被撤销」的 403 语义；
-- 静默满足时响应带 shouldSleep: true + 
+- 静默满足时响应带 shouldSleep: true +
 extStep，明确告诉模型去 qq_set_wake_config 收尾。
 
 **验证**：
 pm run test:wait、
-pm run test:audit 全绿；桥接重启后 /api/status 仍 
+pm run test:audit 全绿；桥接重启后 /api/status 仍
 eady=true。
 
 ---
@@ -3203,7 +3203,7 @@ delivered 17 次（¥1.80），未交付 31 次（¥0.89）；keyword 12 次 0 �
 connectDesktopWelcome (lib/main.js) → Object.start。
 
 **根因（双因素，均在 rc.5 客户端）**
-- **A（401）**：connectDesktopWelcome 用 Chromium 
+- **A（401）**：connectDesktopWelcome 用 Chromium
 et.fetch 跟随 303，**303 新铸的 Set-Cookie 没有回传**，
   落点 401 → 抛错。用 undici 走同样流程则 200（cookie 本身有效）。
 - **B（431，本机实际命中）**：会话 jar 里 dsh-auth-* token **每次启动铸一枚、30 天有效、按 127.0.0.1 域名跨端口共享**，
@@ -3223,12 +3223,13 @@ et.fetch 跟随 303，**303 新铸的 Set-Cookie 没有回传**，
 
 **教训 / 下次注意**
 1. DSH 升级会覆盖 pp.asar，这两个补丁和本项目自己的会话护栏补丁**都会消失**；升级后先看崩溃日志签名，
-   再决定要不要重打（护栏补丁重打命令仍是 
+   再决定要不要重打（护栏补丁重打命令仍是
 ode scripts/patch-dsh-session-guard.mjs --apply-in-place）。
 2. 「Disable third-party plugins」只摘 bundle、不清 cookie jar，对这类崩溃无效，还会把 surfcore 从 profile 里摘掉
-   （需要 
+   （需要
 ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
-3. 复现/取证工具在豆包工作区：epro-host-auth.mjs、measure-cookie.mjs、limit-test.mjs、welcome-debug.log。
+3. 复现/取证工具在豆包工作区：
+epro-host-auth.mjs、measure-cookie.mjs、limit-test.mjs、welcome-debug.log。
 4. 频繁整体重启会加速 token 累积（每次启动一枚）；桥接/插件问题不需要重启整个 DSH。
 
 ## DSH 升级后 QQ 会话没有 qq_* 工具（能收不能发）
@@ -4219,6 +4220,218 @@ controller专项通过不等于Host总路由可达：sharing/module误置Bili子
 分支引用本身很小；本轮空间主要来自重复ASR音频。git ancestry不识别摘取提交，先比patch-id，集成时混入文档改动者再逐blob核对源码/测试，确认等价后才收拢历史，不能拿ours策略掩盖未知改动。脏中间态与ignored设计/账号/验收资料须独立保全；大夹具压缩后逐文件SHA及源稳定性复核，不能以“已合并”直接丢目录。App若从临时树启动，先正常Quit并从保留主目录启动、读回cwd再删旧树。离线npm ci --ignore-scripts会跳过仓库已有SnowLuma ESM补丁，需备份后单独执行patch-snowluma-sdk并复测；仅修改依赖，不把SDK解析失败当作业务合并缺陷。详见2026-11-08本地主线case，当前唯一目录/main，私有资料另存，不发布。
 
 
+## 2026-11-08：火山入口与付费前参数校验
+
+仅设置 provider 不会选择云端路线或启用合成，旧包切换在Mac还会尝试Windows运行时。火山需独立显式启用合成并保留发送总闸；月额度独立保存并显示实际生效值，不显示旧包余额。操作者及AI都必须先校验音量与响度，再预留预算并请求合成，避免无效参数消耗额度。独立管理写盘后主设置版本戳变旧；先复制未保存草稿，再重新读取。
+
+## 2026-11-08：付费合成必须先预留预算
+
+语音发送限流仅在发送成功后计数，不能约束已发生的付费合成；并发、失败重试和 dry-run 都可能先烧额度。火山直连接口在网络前跨进程持久预留并计入失败；自检共用账本，dry-run 不合成。旧包装包日志不含直连请求，页面须明确实际用量不可用，不能显示旧剩余额度。账本损坏和锁遗留必须拒绝，不能重置逃过硬限。
+
+## 2026-11-08：完整 WAV 不等于火山合成结束
+
+官方V3 HTTP同一接口以 code=20000000 表示合成完成；只看到格式完整的音频后EOF仍可能丢失后续内容。必须收到结束帧且WAV结构完整才落盘；结束帧后的数据拒绝。官方还提醒流式WAV可能多次返回头部；仅能合并完整且同格式的PCM WAV段，未知长度或复杂头仍拒绝，不能声称实机兼容。
+
+## 2026-11-08：QQ 配置并发会覆盖语音选择
+
+主设置、桥接、自愈、恢复及启动初始化不能各自读旧快照整份回写；本版写入在同一锁内读取、合并或拒绝冲突，通用入口不直接改provider/路线/版本。语音独立保存返回前后内容戳，页面三方合并无冲突草稿后刷新戳；同字段冲突或外部再次写入时保留草稿并要求重新处理。手工编辑和旧版本进程不遵守锁，不可并发操作。
+
+## 2026-11-08：云服务双向切换均需拦住旧桥接
+
+仅拦截缓存火山配置的桥接不够：旧voxd桥接在切到火山后也可能继续调用旧云。两条云路线发起请求前须在共享锁下复核provider和选择版本，切换或切回后旧桥接要求重启；火山错误日志只能写白名单码和固定脱敏文案。QQ控制台自检必须区分合成成功与发送开关/目标等前置条件。本版内置QQ配置写入使用同一事务锁，通用入口不能直接变更语音选择；手工编辑和旧版本进程不遵守锁，应避免并发修改。
+
+## 2026-11-08：旧云包激活不能保留火山 provider
+
+旧激活逻辑只写 route=cloud，未清除 cloudProvider=volc；旧包启动成功后仍可能调用付费火山。旧云激活必须在与火山预算共用的跨进程锁下，先备份配置，再原子写入voxd选择；失败不可报告成功。旧桥接可能缓存火山配置，火山请求在预留和发起前复核磁盘选择，已发起请求不取消。切换需重启桥接，备份可能含敏感配置，应保留并受限访问。
+
+## 2026-11-08：火山直连不能当成旧云端包装服务
+
+火山2.0使用独立API Key、固定官方HTTPS端点及分片JSON音频；不能先请求旧 /v1/health 再调用 /v1/speak/file。请求必须有大小和时间边界，失败不泄露密钥或上游正文，不自动切到付费provider。容器读不到宿主路径；仅显式选择内联才发送受限音频字节，默认路径不变。离线测试不等于真实合成和发送。
+
 ## 2026-11-08：语音管理不能依赖QQ消息泵
 
 列表/规则/概览/独立启停及试听元数据都需同一个Host管理入口；只替换页面GET仍会在隐藏读者处失败。共享配置必须显式绑定同一configFile，坏JSON拒绝写入，未配置自检在网络之前停止。缓存按语音包配置复用，刷新await前后要复查实例/key/revision，防并发重建丢进度。迟到settle不得释放新操作的锁；死owner锁不可rename抢占，采用确定后继与完整记录原子排他发布。重载保留后台任务但退休句柄不能再合成，未知状态不能报告停止成功。实际Host旧502→新200、两OS进程与迟到回执反例见2026-11-08语音case。
+
+
+## 2026-11-08：本地插件安装会被其它依赖声明阻塞
+
+常用profile在旧备份后已变更，官方离线`plugin add`仍重新解析整个profile；无关billion-context声明0.1.213尚不可用，导致SurfCore安装失败。不要用旧package/lock覆盖最新profile，也不要把CLI尝试当安装成功。本轮备份完整程序/最新声明和数据后，只原子换入已隔离实装校验的本地候选，4751程序一致；保留旧目录与tgz回滚。此法不更新包管理声明，后续包管理重装可覆盖候选，正式发布仍走正常Git对象制品/CLI。火山首次真实请求401，不能把fixture通过写成真实TTS上线；先让用户核对新版API Key，失败预留保留。
+
+
+## 2026-11-08：火山实际流式WAV使用双未知长度和LIST
+
+真实小何2.0响应HTTP200且结束码20000000，音频RIFF/data长度均0xffffffff，fmt为16字节PCM24kHz，另有LIST26 INFO/ISFT。旧完整WAV/多完整段夹具不覆盖此格式，导致真实音频被误判截断；仅在官方结束帧后按有界实际字节修复双未知长度，校验PCM/采样率/块边界/样本对齐，完整LIST保留。缺结束帧、单未知长度、坏LIST、压缩或不对齐仍拒绝。真实自检响应离线重放和14项红绿锁住后再实装，原生0.99秒→容器base64→QQ读回→手机播放通过。鉴权401和WAV解析是两个先后缺陷，不能因首次401忽略后续音频边界。
+
+## #127（2026-11-10，P1）独立记忆测试通过不代表主入口或原生契约贯通
+
+**现象**：Memory V2 模块已通过测试，主插件却未创建 runtime；接线后出现 `ERR_HTTP_HEADERS_SENT`、管理认证失败，以及 B站首次 provider 前 `BILI_V2_SESSION_UNSAFE`。
+
+**根因**：RPC 与管理 handler 返回 void 且 prefix 不同；普通 API prefix 根本覆盖不到 `/dsh-surfcore/memory-v2-api`。入口 fake request 缺真实 socket peer；旧 fake Session 返回空数组，而实际 `toolHistory()` 是 `{tools:[],updates:[]}`。预设名称也不能证明没有祖先 AGENTS、context 或额外工具。
+
+**处置**：组合器精确 prefix 分派并单独注册受限 RPC；管理继续实际 owner-auth/default-deny；仅修夹具 peer 和原生历史结构，不降低鉴权与空历史检查。B站使用实际独立 root、scoped 工具、owner LLM hook、真实取消/idle/卸载 ACK。来源完整性仍需单独侧账本与 worker 验证。
+
+**验证**：`test-platform-start-host.mjs`、`test-memory-v2-runtime.mjs`（21项）、QQ integration、B站双实际 Host fixture flags（35项）、native-root（11项）均有独立日志。详见 [case](cases/2026-11-10-memory-v2-integration.md)。fakeSourceValidatorOnly 不得标成来源生产就绪；最终组合门禁尚未执行。
+
+**预防**：先闭合真实入口→controller→worker，再扩渠道；两个并发子代理封顶，接口先冻结。原生随机 message ID、sessionId 或 brand 都不能单独证明全部消息来源。未知提交保留原操作ID，查询不可替代显式继续，也不可换UUID重做。
+
+## #128（2026-11-10，P1）首次请求绑定升级兼容floor会使刚确认的备份摘要失效
+
+真实链路为backup preview → admin.bindRequest → lifecycle.backup。首个持久六字段绑定把marker下限1升级2，原预览直接摘要当前floor，因此控制修订与源数据均未变也得到 `MEMORY_PREVIEW_STALE`。只测恢复新端点的定向组会遗漏这个旧链路；完整管理套件真实复现，绕过HTTP的Worker probe确认唯一差异。
+
+修法：备份预览的floor代表将生成备份的读者要求，取现存下限与当前内核要求2的较大值；预览只读。提交先校验完整切面和原摘要，再持久升级floor并写备份意图。首次绑定不会重写已确认语义，实际源变化仍拒绝；不降低兼容标记、不删除摘要字段，也不自动替用户确认新范围。旧下限1仍可读，新备份至少要求2。
+
+回归：`ELECTRON_RUN_AS_NODE=1 "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" scripts/test-memory-v2-lifecycle.mjs --first-binding-only`。断言原预览不写marker、首次绑定前后摘要一致、备份manifest为2、随后源变更仍为MEMORY_PREVIEW_STALE。完整管理35、生命周期28通过；证据与覆盖前备份在 `_backups/memory-v2-coordinator/first-binding-backup/`。仅隔离夹具验证，没有生产迁移或常用Host写入。
+
+
+## #129（2026-11-10，P1）真实 Host 工具排序与来源证明的注册顺序不同
+
+`SystemPrompt.assemble()` 默认按名称code-unit排序，`ToolHistoryProjection`保存相同顺序；来源验证器若以注册顺序hash请求清单，四份工具定义完全相同也会在reserve之前报 `MEMORY_NATIVE_INPUT_UNPROVEN`，再归一为 `MODEL_NOT_AUTHORIZED`，providerCalls为0。普通fixture手工拼注册顺序会掩盖它。
+
+修复只对预期请求清单按真实Host规则排序，注册定义仍按原顺序严格比对；不忽略顺序/字段、不拿实际请求反推预期、不放宽ACL。真实非空history进入普通RED/GREEN，额外/重复/改schema/history update继续拒绝。真实native随后暴露fixture遗漏await：`budget.status()`是Promise，应await后检查30tokens，不能降低账单断言。
+
+复验：`SURFCORE_BILI_SOURCES_NATIVE=1 ELECTRON_RUN_AS_NODE=1 "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" --expose-internals plugins/surfcore/scripts/test-memory-v2-bili-sources.mjs`。协调者独立exit0，28普通、provider2/source2/30tokens、usage后撤销阻断正文；原始模型输出与写回执非observed root。证据 `_backups/memory-v2-coordinator/hy4-source-native-independent.log`；本机仅隔离fake provider/official transport，无实际付费或平台发送。
+
+## #130 · 2026-11-10 · 官方 transport 单模块通过不代表生产来源可准入
+
+- 现象：Bili source 与 official transport 普通测试可通过，但生产 runtime 未实现 Bili resolveIdentity/approvedConversations；接上 transport 仍无法捕获来源。修复应补 Host 官方账号、精确 route、typed target 对应的身份与可审批会话；不能用模块测试的假 identity 绕开组合器。
+- 身份候选不是授权。当前默认 V1/shadow 关闭时，即使明确 configure_policy，合法 capture 仍应返回 MEMORY_SHADOW_DISABLED；不要为让身份测试变绿擅自开启 shadow/V2。错误账号/未知目标则更早拒绝。
+- 回归：`node plugins/surfcore/scripts/test-memory-v2-runtime.mjs`；应保留 `backend:v1`、`biliIdentity:official-state approval candidates; capture remains shadow-disabled`、`noProviderCalled:true`。原始 RED/GREEN 在 `_backups/memory-v2-coordinator/bili-runtime-seam-20261110/`。
+
+
+## 131. ASR 合成测试产物按批次累积，不是用户语音数据
+
+`test-perception-service.mjs` 每轮可留下约354 MiB的 lavfi 正弦波及正规化副本。2026-11-10 用户授权清理；55批完整压缩并验证10852文件/链接后移除，实测空间增加约11.10 GiB。占用/路径/链接或mtime不符须保留；不可对整个 `_backups` 使用统一删除。真实验收包、回滚模型、凭据和配置单独保留。此前磁盘不足的 job.json 已随完整测试批次移入仓库外归档，恢复路径和SHA见[案例](cases/2026-11-10-synthetic-audio-cleanup.md)。空间恢复后重跑原失败门禁，不改断言或磁盘门槛。
+
+
+## 132. 简化 native tool fixture 不等于真实 Bili 命令契约
+
+真实 dynamic CLI 要求预计官方账号、动作 ID 仅字母数字下划线连字符；托管 worker 必须交固定 endpoint 与业务载荷，不能附加 WBI query/Cookie。预计账号从已验证 source 私有 state 传入，禁止由 job 声明取代。Host 回执白名单需保留官方 `dyn_id_str`，否则成功发送会失去确认编号。保留 unmanaged V1 签名及所有身份/额度/重复动作闸；回归真实 fork+IPC，不仅用简化脚本。完整证据与未完成范围见 [案例](cases/2026-11-10-bili-v2-managed-worker.md)。
+
+
+## 133. 异步凭据验证通过之后仍要在实际网络边界检查关闭/取消
+
+Bili official run3 的同凭据快照阻止串户，但 assertStable 在 await getCredentials 前检查取消，await 后可能已close；原独立探针实证close期间仍GET1次并返回成功。只在共享 guardedFetch 的最后await之后调用既有ensureOpen(ctx.signal)，即可覆盖所有官方GET与最终POST；4项 first GET/final POST × close/abort反例要求没有后续fetch且错误code/hint可见。不要用假fetch是否尊重signal来掩盖Host仍调用了网络边界。证据与剩余生产范围见[案例](cases/2026-11-10-bili-v2-official-transport.md)。
+
+
+## 134. 恢复必须保留原文字节，不可信确认回执必须提供原编号核对入口
+
+core admin用原始content校验actualPayloadDigest，management只用trim判空、不裁剪；UI不能提交trim后的替代正文。确认已发出但返回不同operationId时，不可只显示错误并解除锁定：保留原ID待核对、显示实际receipt按钮、核对前禁用新mutation，GET原ID后才解锁。反例须断言实际按钮/查询路径/无重复POST，不只检查错误文字。两条独立RED、11组普通断言与同场景真实React happy/conflict双视口Before/After见[案例](cases/2026-11-10-memory-v2-admin-resume-ui.md)。
+
+
+## 135. 队列清空、agent 卸载不等于包装层已释放原始上下文
+
+Bili 的 jobs/states/handles 缓存必须在实际 ACK 后逐任务释放；不能删拒绝登记或关闭整个共享 root 充数。等待创建完成再退役，释放期间旧证明立即拒绝，晚到 capture 需释放新 handle；同 job 并发释放计数一次。保留无正文累计验收计数并单列活跃量，真实 SessionStore 该 ID 也应消失。见[完整案例](cases/2026-11-10-bili-v2-retirement.md)。
+
+## 136. 真实 CLI 的 WBI/凭据路径必须与 Host 固定意图协议对齐
+
+comment/DM 与 dynamic 一样：managed 分支只交固定 URL、业务载荷与 content-type，Host 从同凭据快照生成 CSRF。不要放宽固定 endpoint 校验。Host 拒绝/unknown 必须保留 code/error/hint，未知发送不能自动重发；真实 fork+IPC 测试与 V1 保持测试不可由简化脚本替代。见[案例](cases/2026-11-10-bili-v2-write-workers.md)。
+
+### #137 官方 ID 不可用 String 掩盖精度或缺字段（2026-11-10）
+
+`Number('9000000000000000001')` 已丢精度，即使 selector 与它转字符串后的值相同也不能认证原件。官方所有 ID 读取统一拒绝非安全数值；十进制字符串原样保留。评论 type/oid/root/parent 必须在官方原件中实际存在，不能用 selector 默认补成 full。两种独立 RED（原来错误返回 ok:true）与最终76项、写worker10项见 `_backups/memory-v2-coordinator/bili-official-exact-identifiers-20261110/`。
+
+### #138 平台身份忙碌提示也必须经过 Host 安全文案边界（2026-11-10）
+
+生产 reader 调用实时官方 getter，不能读公开绑定后缀或缓存。直接抛 DOUYIN 自由错误会被 Memory Host 清洗为泛化失败；本次仅映射 DOUYIN 服务实际使用的 `DOUYIN_BUSY` 为固定 `MEMORY_IDENTITY_BUSY`，固定等待提示不泄漏任意平台 error/hint，回执优先级保持。其他渠道候选不因抖音忙而消失。详见对应 case 与 runtime/Host13组/Douyin service 证据。
+
+
+### #139 Cordis 服务代理不是 owner 身份凭据（2026-11-10）
+
+`ctx.get('llm')` 可返回不同 traceable proxy；直接相等的失败诊断还可能触发 `cannot get property "href" without inject`。固定 resource file URL 经真实 loader 导入，核对实际 Context/同root/保留owner与不同privateRoot；不修改Host baseUrl。父端9项及完整来源2/2/30联通见 native-environment case。
+
+### #140 通知的回复坐标不是原件坐标（2026-11-10）
+
+原root0/source31/target0经replyCoordinates成为回复root31/parent31；原评论仍root0/parent0。保留sourceRoot，严格selector投影后用官方GET认证，缺字段/不安全整数拒绝，不靠摘要补full。已验同OID合法，变OID拒绝；见trigger-projection case。
+
+
+### #141 Host解析模型后，NAV期间仍可能切换路由（2026-11-10）
+
+仅在resolveModelInfo后核对选择不足：官方NAV也有await，期间切换模型会使旧route返回verified。Host普通回归已RED（预期false却得到true），在NAV后再核对精确provider/model后GREEN。每个实际job的凭据比较闭包也核对原角色/代次/route，使现有official guardedFetch每次请求前继承拒绝。只接受实际currentSelection+resolveModelInfo，不借QQ/companion默认。普通8场景通过，factory native/Worker/预算联合与index/scheduler/UI生产接线未完成，不可拿旧手工组合2/2/30代替。证据和回滚见docs/cases/2026-11-10-bili-v2-host-composition.md。
+
+
+## 142. 私有 Source 的冻结 job 副本不能拿对象身份直接对接 Host 原 job
+
+- 现象：普通 Host mock GREEN，真实 SDK/Memory Worker 组合在审批后仍 `BILI_V2_SESSION_UNBOUND`，provider 前停止。
+- 根因：Source 用 `freeze(clone(job))` 防突变，Host 原对象检查是另一层契约；直接混用必然拒绝合法来源回调。
+- 修法：只在私有来源桥接完整校验规范摘要并换回 retained 原 job；保留其他入口的原对象身份、角色/generation/route 和原 signal 检查。不能删全局身份检查来让测试通过。
+- 证据：Host case 的 native-third RED / native-source-binding GREEN，实际 1 call/15 tokens、活跃 job/source 0；隔离预激活库，不证明生产切换。
+
+
+## 143. 安全整数秒值不等于 Date 可表示的秒值
+
+- 视频元数据 helper 用 safe-positive pubdate 后直接 toISOString，MAX_SAFE_INTEGER 仍会抛 RangeError: Invalid time value，破坏结构化失败契约。
+- 用 ECMA-262 TimeClip 最大秒值8640000000000做可表示性上界；最大值成功，越界一秒和MAX_SAFE_INTEGER固定 ORIGINAL_INCOMPLETE，GET仍一次，不用当前时间补齐原件。
+- 父端23旧用例与新增4用例共27 GREEN，再独立3边界验证。case：2026-11-10-bili-v2-video-metadata.md。没有真实网络或生产接线证明。
+
+
+## #144 Bili V2 关闭不能在 finally 中提前丢失未确认退休
+
+现象：空闲关闭残留 LLM/tool 两个订阅；退休 ACK 失败后 owner 仍被释放，closed 又使显式重试成为空操作。修法：关闭开始置 shuttingDown、共享 closeTask，依次等待 retire/hook/guard/preset，成功后才同步 owner.close 并 closed；未 ACK disposer 留待显式重试，不能重放作业。Node24 的42场景和父端实际 Host/Source native 均通过；失败 ACK 用隔离 fixture 模拟。真实生产装配仍待验收，保持 V1。证据：_backups/memory-v2-coordinator/bili-close-independent/；完整逻辑与交接：docs/cases/2026-11-10-bili-v2-close.md。
+
+
+## #145 确切来源批准不要叠加物理对象 policy，也不要沿用删除统计
+
+Core 对 audience 精确匹配且要求唯一 policy；仅因同为公开内容不能跨对象复用。为完整角色/epoch/账号/精确模型+来源集合派生独立处理alias，来源与输出共用单独审批grant；原sourceKey/原文不变。候选与最终预览都显示完整ID清单，缺/变元数据要可见拒绝；不要在共享授权预览里沿用删除清理计数。派生helper对数组描述符、own __proto__、Proxy需独立反例，不能把基础34例通过当成无getter执行；此缺口已退回第二轮，未验收。复现及分阶段证据见 docs/cases/2026-11-11-memory-v2-public-source-approval.md。
+
+
+## #146 接收观察不能冒充官方原件，旧单轮不能默认读取V1
+
+现象：scheduler的摘要缺第三方完整原件；旧 `biliContextForRound` 未传memoryBackend，`buildCharacterContext` 默认v1，选V2仍可能读旧卡。机制：接收事实与原件覆盖范围不同；旧入口绕过了渠道Memory适配与后端路由。修法：Host逐job保存64KiB内接收观察，`observed-receiver`加精确hash/账户重验证，必须恰好携带一份对应proof；官方成员仍独立重读验证。index只从固定feed --json --no-remember提BV，审批前不标记picked；失败写现有L2 gate事件，固定机器码和下一步，不转储provider正文。旧单轮在路由非v1、无控制库或显式V2时先结构化拒绝，不把默认拒绝误记为正向适配完成。video record恰好10键；摄取身份请求在顶层展开完整selector，action仍read，prompt/live/send无selector；event hash加入已验证conversation，避免跨集合receipt冲突。
+
+复验：Node24运行 plugins/surfcore/scripts/test-memory-v2-bili-round-fence.mjs、test-memory-v2-bili-index.mjs；Source39普通+实际SDK2/30，Host接收观察实际工厂2/30。证据 _backups/memory-v2-coordinator/bili-host-public-read/ 与 bili-video-source-independent/；完整逻辑与未验清单在 docs/cases/2026-11-11-memory-bili-host-wiring.md。均无外网/平台写入、无生产激活或安装；官方公共读取和全局生命周期仍待联合验收。
+
+
+## 147. 单视频普通测试不能替代多来源实际 Native 验收（2026-11-11）
+
+Memory 真实释放回执是 {ok:true}，不能在 Host 错写成只认 true；官方受控读入口位于 transport.read。多视频审批的 audiences 必须与 Core validatePolicy 的规范化排序一致，不能把 selector 顺序当权限顺序。使用实际 SDK Root、DefaultModel、Worker、Budget，在隔离 DSH_HOME 中验证工具结果进入下一次请求；fake provider 与 official GET 不等于生产切换证明。数字 BV 会被既有共享隐私规则遮盖，来源证明应核对真实物理 sourceKey/私有绑定，不能为了 fixture 放松脱敏。复现命令与 RED/GREEN 见 docs/cases/2026-11-11-memory-bili-official-public-read.md；无 CLI 派生、真实付费或外发。
+
+
+## 148. 禁止用禁止新调用状态代替 Native 退役确认（2026-11-11）
+
+closed应立即阻止新调用，retired必须等待原agent创建/卸载、工具、preset/hook、fibers和root全部确认。清理前移除disposer、失败后再次close直接返回、反转共享清理数组都会破坏重试。失败项连同依赖保留；初始化失败也必须保留私有清理能力。12例RED/GREEN与实际SDK证据见 docs/cases/2026-11-11-memory-v2-native-retirement-ack.md。
+
+## 149. 凭据与稳定映射都必须守住真实确认边界（2026-11-11）
+
+扫码等待不是写盘点，fish账号验证后保存前才进入旧作业退役屏障；换号旧字节先归档，失败返回code/error/hint。稳定stream映射只记账Host已验证的不透明段身份，路径/inode/hash及测试给定标识不能生成历史权限；COMMIT回执未知查同库原映射，不自动重建或推进检查点。详见11日凭据和登记case。
+
+
+## 150. 私有 Native owner 的安全谓词必须检查实际 agent，失败也要结构化（2026-11-11）
+
+sessionId/preset/远程cancel accepted不能替代实际注册表、SDK品牌与卸载确认。定义快照仅比较自有属性会漏掉共享原型上的execute/render替换；需同时钉住解析后的执行回调。tools展开和getCharacter/Native检查异常发生在结构化guard之外，会绕过code/error/hint；本次以6条RED负例复现，修复后16普通例与实际SDK复验通过。owner只证明当前私有Native所有权；sourceAuthority=true的fixture不能证明真实QQ来源、历史、附件或ACL，不得直接接入生产。见 docs/cases/2026-11-11-memory-v2-qq-native-owner.md。
+
+
+## 151. QQ Native 语法账本必须支持 Core 路由全集、tool-calls 完成与安全整数稀疏索引（2026-11-11）
+
+第一轮 Parent 实际复现合法 route（含空格、标点、中文及 512 code units）被账本窄正则拦截；安装中 SDK 正常 tool use 输出 `{kind:'tool-calls'}` 被拒；大数字 index 导致误判。
+根因：账本使用了过窄的 `identity` 正则而非 `deriveMemoryProviderRouteId`；SDK 将普通工具调用映射为 `tool-calls` 而非 `stop`；dsh-llm assembler 使用 Map/encountered list 而非按 index 分配稀疏大数组。
+修法：改用 `deriveMemoryProviderRouteId`；接受 `tool-calls` 和 `stop` 作为正常 finish reason 并拒绝 `aborted/error/max-tokens`；支持非负 safe integer 且排除 `-0`。
+复验：普通 26 场景及合法 route loader 通过；真实已安装 SDK 隔离 Native probe 两次假调用/30 tokens、2 gates、1 toolCall、denied=[] 通过。证据保存在 `_backups/memory-v2-coordinator/qq-native-ledger-independent/verification.json`。
+
+
+## 152. Bili 来源输出观察必须严格校验 finish chunk 与合法完成类型（2026-11-11）
+
+Source runtime 原 finish 检查只要求 `kind` 为任意字符串，且 `complete` 未强制检查是否收到 finish chunk，正常耗尽的 error/aborted/truncated 输出可能被当作 complete 提交。
+根因：缺乏 finish 完整性约束与终态标记；测试 helper `f.output` 缺少 finish 事件导致严格校验时阻断。
+修法：要求 finish chunk 的 reason.kind 必须严格为 `['stop', 'tool-calls']`，排除异常截断与错误；在 complete 前强制校验 `candidate.finish === true`；修正测试 helper 并添加负例用例；对真实 Native cycle 添加环境开关守护。
+复验：`test-memory-v2-bili-sources.mjs` 40 场景全过；`test-memory-v2-bili-native-recall.mjs` 6 个普通隔离场景及 Electron 真实已安装 SDK Native cycle 验证全部 PASS（2次调用/30 tokens/0 外网/0 平台写入）。证据保存在 `_backups/memory-v2-coordinator/bili-native-recall-independent/verification.json`。
+
+
+## 153. QQ Native 来源运行时与账本的 preparedConfig 必须保持引用全等，发现服务必须有回环端口（2026-11-11）
+
+现象：QQ Native 来源运行时在 `prepareInput` 中若重新创建 `preparedConfig`，会导致 Native Ledger 在 `captureModelOutput` 校验 `candidate.preparedConfig === preparedConfig` 时引用不全等抛出 `QQ_NATIVE_LEDGER_OUTPUT_UNPROVEN`；此外在 index 测试中若 `ctx.get('webServer')` 缺少端口，`localOrigin` 会抛错导致 discovery 文件无法生成返回 503 `MEMORY_DISCOVERY_FAILED`。
+根因：Native Ledger 使用对象引用全等性作为同一调用上下文防篡改依据，来源运行时未严格保全并复用传入的 `preparedConfig`；测试夹具未向 ctx 提供 webServer 端口。
+修法：在 `prepareInput` 与 `captureModelOutput` 优先使用调用方传入的 `preparedConfig` 引用并锁定在 state 中，确保各 phase 严格全等；在 index 测试夹具中补齐 `webServer` 端口映射。
+复验：`test-memory-v2-qq-source-runtime.mjs` 4 项普通与真实 Harness 2 calls / 30 tokens Native 周期全部 PASS；`test-memory-v2-bili-index.mjs` PASS；`run-memory-v2-tests.mjs` 47/47 全套 Memory V2 普通用例全部 PASS；全库 audit 176/176 与 17/17 协议回归全部通过。证据保存在 `_backups/memory-v2-coordinator/qq-source-runtime-independent/verification.json`。
+## 154. Harness session-4473 连续失败与 HY4 共享冷却（2026-11-11）
+
+同一Magpie origin+凭据被Billion Context默认credential粒度共同hold；先查Magpie原始429的模型与重置时间，不把bili_throttle_hold误当主模型额度耗尽。当前多供应商网关使用network.throttle429Scope=model保留各模型治理；旧credential hold仍须到期。实际函数复现旧红新绿，原生原会话Sol恢复，账号与代理保留。配置热读，无需重启公共Host。完整逻辑/回滚见[case](cases/2026-11-11-harness-shared-throttle.md)。
+
+
+## 155. QQ“不说话”要逐层验证，语音次数不等于合成字数（2026-11-10）
+
+OneBot容器运行不代表HTTP/WS已监听；账号在线不代表群白名单已授权；群消息已唤醒不代表语音触发允许群友。不能把模型说“额度耗尽”当成实际失败回执。500条/本地日按网关接受成功计数，900000字/UTC月按发起合成预留，失败合成仍可能消费额度。所有群在同一持久账本内同时检查群计数和总计数，0群限额只表示不另加群限制。未知回执必须凭证据对账，缺历史账不能清零。desktop profile由Electron专管时走App插件管理服务；不要用旧profile声明覆盖当前状态。安装器给重启提示后仍须读回运行接口，不能据提示假定新模块未生效。Node归属拒绝时核对实际二进制，使用任务范围的DSH_NODE指向该真实运行时后再走原归属检查，不能直接kill。详见11月10日语音case。
+
+
+## 156. QQ绑定的会话被归档会在模型调用前blocked（2026-11-10）
+
+App0.2.2-rc.1的ArchivedSessionGate会拒绝归档会话及其后代的agent/pre-step；旧代码注释“archiveSession只隐藏”不能用于该版本的运行判断。群@已到达、OneBot在线、dshReady和模型选择成功仍可能完全不回复。先用官方只读workspace/follow查目标是否归档，session/page看turn/end的blocked，session/list核对running；不要凭桥接pendingWakeKey认定模型仍在生成，也不要因此放宽语音/白名单。需要保留历史时，备份后用官方unarchiveSession恢复这个绑定会话，再通过所有权检查重连桥接订阅；不删聊天、不重置整个profile、不绕过Host归档门。原群网关读回发送回执后才称恢复；完整证据及回滚见11月10日语音case的19:49段。本轮只做运行时恢复，未实现自动归档修复策略。

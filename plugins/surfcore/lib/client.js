@@ -2114,6 +2114,10 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       };
       const limitEvents = (gateData?.events ?? []).filter((ev) => ev.gate === "limit" || ev.gate === "timeout" || ev.evidence?.setting);
       return h("div", null,
+        overview?.adminProjectionFailure ? h("div", { className: "qbw-warnbox", role: "alert" },
+          h("b", null, overview.adminProjectionFailure.error), h("div", null, overview.adminProjectionFailure.hint)) : null,
+        bridge.snowluma?.configWriteFailure ? h("div", { className: "qbw-warnbox", role: "alert" },
+          h("b", null, bridge.snowluma.configWriteFailure.error), h("div", null, bridge.snowluma.configWriteFailure.hint)) : null,
         h(LimitReportCard, { events: limitEvents, goTab, onAck: ackGate, onMute: muteLimit }),
         // 今日唤醒额度用完 = 它不回消息的最常见原因；以前只在 state/bridge.log 里写一行。
         (() => {
@@ -4438,6 +4442,26 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h(Btn, { kind: "qbw-btn2", onClick: () => restore(b.name), disabled: !!busy || !ready }, "恢复")))) : null);
     }
 
+    function MemoryV2Panel({ initialStatus, roleKey, onStatus }) {
+      const [Component, setComponent] = useState(null);
+      const [error, setError] = useState("");
+      const [attempt, setAttempt] = useState(0);
+      useEffect(() => {
+        let active = true;
+        import("/dsh-surfcore/api/memory-v2/panel-client")
+          .then((module) => {
+            if (typeof module.createMemoryV2Panel !== "function") throw new Error("invalid memory panel module");
+            if (active) { setComponent(() => module.createMemoryV2Panel(React, { api, Btn, fmtTime })); setError(""); }
+          })
+          .catch(() => { if (active) setError("MEMORY_PANEL_NOT_READY：V2 管理入口尚未接通；可重载入口，或继续使用当前 V1 记忆卡。"); });
+        return () => { active = false; };
+      }, [attempt]);
+      if (Component) return h(Component, { initialStatus, roleKey, onStatus });
+      return h("div", { className: "qbw-card", role: error ? "alert" : "status" },
+        error || "正在加载 V2 记忆管理…",
+        error ? h(Btn, { kind: "qbw-btn2", onClick: () => { setError(""); setAttempt((n) => n + 1); } }, "重载 V2 入口") : null);
+    }
+
     // ── 记忆卡（角色的长期记忆）────────────────────────────────────────────
     // 和下面「双向脱敏同步」分开：那边是 QQ⇄B站 搬运，这边是她自己的记忆 +
     // 清晰度 / 遗忘 / 容量规则。容量 80/90/100% 时主界面还会弹窗提醒。
@@ -4821,13 +4845,14 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         const timer = setInterval(tick, 5000);
         return () => { alive = false; clearInterval(timer); };
       }, []);
+      if (st && st.provider === "volc") return h("div", { style: { marginTop: "10px", fontSize: "12px" } }, "火山直连实际用量不可用；本机只按预留字符执行硬限，账单和剩余额度请在火山控制台核对。");
       const cell = (label, value, hint) => h("div", { style: { minWidth: "110px" } },
         h("div", { style: { fontSize: "11px", opacity: 0.6 } }, label),
         h("div", { style: { fontSize: "15px", fontWeight: 600 } }, value),
         hint ? h("div", { style: { fontSize: "11px", opacity: 0.55 } }, hint) : null);
       return h("div", { style: { marginTop: "10px", padding: "10px", borderRadius: "8px", background: "rgba(127,127,127,.06)" } },
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" } },
-          h("strong", { style: { fontSize: "13px" } }, "云端用量"),
+          h("strong", { style: { fontSize: "13px" } }, "旧云包用量（不含火山直连）"),
           h("span", { style: { fontSize: "11px", opacity: 0.6 } }, "每 5 秒刷新")),
         err ? h("div", { style: { fontSize: "12px", color: "var(--qbw-err-text)" } }, err) : null,
         st ? h("div", { style: { display: "flex", gap: "20px", flexWrap: "wrap" } },
@@ -4835,18 +4860,101 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           cell("今日", st.todayChars + " 字", st.todayCalls + " 次"),
           cell("本月", st.monthChars + " 字", st.monthCalls + " 次"),
           cell("估算费用", st.monthCost == null ? "未设单价" : "¥" + st.monthCost, st.pricePerKChar ? "¥" + st.pricePerKChar + "/千字" : "在下方填"),
-          cell("剩余额度", st.remainChars == null ? "未设额度" : st.remainChars + " 字", st.monthlyQuota ? "额度 " + st.monthlyQuota : "在下方填")) : null,
+          cell("旧云包估算剩余", st.remainChars == null ? "未设额度" : st.remainChars + " 字", st.monthlyQuota ? "额度 " + st.monthlyQuota : "在下方填")) : null,
         h("div", { style: { display: "flex", gap: "10px", alignItems: "center", marginTop: "8px", flexWrap: "wrap", fontSize: "12px" } },
           "单价 ¥", h("input", { type: "number", step: "0.01", value: st ? st.pricePerKChar || "" : "", onChange: async (e) => {
-            await api("/voice/rules", { method: "POST", body: { pricePerKChar: Number(e.target.value) } }).catch(() => {});
+            try { await api("/voice/rules", { method: "POST", body: { pricePerKChar: Number(e.target.value) } }); }
+            catch (error) { setErr([error.code, error.message, error.hint].filter(Boolean).join(" · ")); }
           }, style: { width: "80px" } }), "/千字",
           "本月额度", h("input", { type: "number", value: st ? st.monthlyQuota || "" : "", onChange: async (e) => {
-            await api("/voice/rules", { method: "POST", body: { monthlyQuota: Number(e.target.value) } }).catch(() => {});
+            try { await api("/voice/rules", { method: "POST", body: { monthlyQuota: Number(e.target.value) } }); }
+            catch (error) { setErr([error.code, error.message, error.hint].filter(Boolean).join(" · ")); }
           }, style: { width: "100px" } }), "字"),
         h("div", { style: { fontSize: "11px", opacity: 0.55, marginTop: "6px" } },
-          "费用/额度是按你填的数字估算的（火山不提供余额查询）；字数来自本机实际合成日志。"));
+          "仅根据旧云包日志和手填数字估算，不包含火山直连用量，也不是云端余额。"));
     }
 
+
+    function planVoiceRebase({ base, draft, remote, baseStamp, beforeStamp, afterStamp, remoteStamp }) {
+      if (typeof baseStamp !== 'string' || baseStamp !== beforeStamp || !afterStamp || remoteStamp !== afterStamp) throw new Error('配置版本已变化，草稿未覆盖。');
+      const missing = Symbol('missing');
+      const equal = (a, b) => a === missing || b === missing ? a === b : JSON.stringify(a) === JSON.stringify(b);
+      const object = value => value && typeof value === 'object' && !Array.isArray(value);
+      const merge = (a, b, c) => {
+        if (equal(a, b)) return c;
+        if (equal(a, c) || equal(b, c)) return b;
+        if (object(a) && object(b) && object(c)) {
+          const out = {};
+          for (const key of new Set([...Object.keys(a), ...Object.keys(b), ...Object.keys(c)])) {
+            if (['__proto__', 'constructor', 'prototype'].includes(key)) throw new Error('配置草稿包含不支持的字段。');
+            const get = obj => Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : missing;
+            const value = merge(get(a), get(b), get(c));
+            if (value !== missing) Object.defineProperty(out, key, { value, enumerable: true, configurable: true, writable: true });
+          }
+          return out;
+        }
+        throw new Error('语音配置与未保存草稿发生冲突。');
+      };
+      return { draft: merge(base, draft, remote), saved: remote, stamp: remoteStamp };
+    }
+
+    function rebaseVoiceRules(base, draft, result) {
+      if (!base || !draft) throw new Error('触发规则尚未读取。');
+      for (const [key, value] of [['aiEnabled', result.ttsEnabled], ['route', result.route]]) {
+        if (draft[key] !== base[key] && draft[key] !== value) throw new Error('语音设置与未保存的触发规则冲突。');
+      }
+      return { ...draft, aiEnabled: result.ttsEnabled, route: result.route };
+    }
+
+    function VolcForm({ onChanged }) {
+      const [cfg, setCfg] = useState(null);
+      const [key, setKey] = useState("");
+      const [quota, setQuota] = useState("");
+      const [message, setMessage] = useState("");
+      const [busy, setBusy] = useState(false);
+      const apply = result => { setCfg(result); setQuota(String(result.monthlyLimit)); };
+      const read = async () => { try { apply(await api("/voice/volc-config")); } catch (e) { setMessage([e.code, e.message, e.hint].filter(Boolean).join(" · ")); } };
+      useEffect(() => { read(); }, []);
+      const save = async (provider, activate = false) => {
+        setBusy(true);
+        try {
+          const result = await api("/voice/volc-config", { method: "POST", body: { provider, apiKey: provider === "volc" ? key : "", activate } });
+          setKey(""); apply(result);
+          let synced = false;
+          try { synced = (await onChanged?.(result, { selectionChanged: true }))?.ok === true; } catch {}
+          setMessage(synced
+            ? (activate ? "已选择火山并启用合成；发送总闸需自行确认，QQ发送需重启桥接。" : "配置已保存；QQ发送需重启桥接。")
+            : "配置已保存，但未能安全刷新设置草稿；请先复制未保存内容，再点“重新读取”（会替换草稿）。");
+        } catch (e) { setMessage([e.code, e.message, e.hint].filter(Boolean).join(" · ")); }
+        finally { setBusy(false); }
+      };
+      const saveQuota = async () => {
+        const value = Number(quota);
+        if (!Number.isSafeInteger(value) || value < 1 || value > 900000) { setMessage("月上限需为1至900000之间的整数。"); return; }
+        setBusy(true);
+        try {
+          const result = await api("/voice/volc-config", { method: "POST", body: { monthlyQuota: value } });
+          apply(result);
+          let synced = false;
+          try { synced = (await onChanged?.(result, { selectionChanged: false }))?.ok === true; } catch {}
+          setMessage(synced ? "本机月上限已保存；实际用量请在火山控制台核对。" : "月上限已保存，但未能安全刷新设置草稿；请先复制未保存内容，再点“重新读取”（会替换草稿）。");
+        } catch (e) { setMessage([e.code, e.message, e.hint].filter(Boolean).join(" · ")); }
+        finally { setBusy(false); }
+      };
+      return h("div", { style: { marginTop: "14px", padding: "12px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px" } },
+        h("strong", null, "火山语音 2.0 · 小何"),
+        h("div", { style: { fontSize: "12px", marginTop: "6px" } }, "API Key 保存在本机受限文件中，输入后不会回显。自检会消耗额度；火山实际用量不可用，请到火山控制台核对。本机限制每分钟2次、每小时10次、每UTC月最多10万字；原云额度更低时仍从严执行。"),
+        h("input", { type: "password", value: key, autoComplete: "off", placeholder: cfg && cfg.hasKey ? "已保存，留空保持原密钥" : "输入火山 API Key", onChange: e => setKey(e.target.value), style: { width: "240px", marginTop: "8px" } }),
+        h("div", { style: { display: "flex", gap: "8px", marginTop: "8px", flexWrap: "wrap" } },
+          h(Btn, { disabled: busy, onClick: () => save("volc", true) }, "选择火山并启用合成"),
+          h(Btn, { kind: "qbw-btn2", disabled: busy, onClick: () => save("voxd") }, "使用原云端服务")),
+        h("div", { style: { display: "flex", gap: "8px", marginTop: "8px", alignItems: "center", flexWrap: "wrap" } },
+          h("label", { htmlFor: "volc-month-limit" }, "本机 UTC 月上限（字）"),
+          h("input", { id: "volc-month-limit", type: "number", min: 1, max: 900000, step: 1, value: quota, onChange: e => setQuota(e.target.value), style: { width: "110px" } }),
+          h(Btn, { kind: "qbw-btn2", disabled: busy || !cfg, onClick: saveQuota }, "保存月上限"),
+          cfg ? h("span", null, `当前生效：${cfg.monthlyLimit} 字`) : null),
+        message ? h("div", { role: "status", style: { marginTop: "8px", fontSize: "12px" } }, message) : null);
+    }
 
     // 云端密钥表单：始终可见，已配置也只打码显示，随时能改。
     function CloudForm({ toast }) {
@@ -4945,7 +5053,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           "密钥只写在本机包内的 config.toml，不上传任何服务器。安装包不预置任何密钥，AppID 和 Access Key 都要自己填（别人的填进去会花别人的额度）。"));
     }
 
-    function VoiceTab({ toast, qq, setQq, onSave, busy }) {
+    function VoiceTab({ toast, qq, setQq, onSave, onVoiceConfigSaved, busy }) {
       const [packs, setPacks] = useState([]);
       const [packsDir, setPacksDir] = useState("");
       const [dirInput, setDirInput] = useState("");
@@ -4954,6 +5062,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [ttsCheck, setTtsCheck] = useState(null);
       const [ttsChecking, setTtsChecking] = useState(false);
       const [rules, setRules] = useState(null);
+      const [rulesSaving, setRulesSaving] = useState(false);
+      const rulesBaseRef = useRef(null), rulesDraftRef = useRef(null);
+      rulesDraftRef.current = rules;
       const [err, setErr] = useState("");
       const [busyId, setBusyId] = useState("");
       const [pick, setPick] = useState("voice-local");
@@ -4972,7 +5083,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           setPacksDir(r.packsDir || "");
           setDirInput((prev) => prev || r.packsDir || "");
           setErr("");
-          setRules(await api("/voice/rules"));
+          const loadedRules = await api("/voice/rules");
+          rulesBaseRef.current = loadedRules; setRules(loadedRules);
           const run = (r.packs || []).find((p) => p.running);
           if (run) setPick(run.id);
         } catch (e) { setErr(voiceError(e)); }
@@ -5109,7 +5221,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             setSwitchMsg("已停止");
           } else {
             const r = await api("/voice/packs/activate", { method: "POST", body: { id: pick } });
-            setSwitchMsg(r.ok ? "已启动：" + (pick === "voice-cloud" ? "云端" : "本地") : ("启动失败：" + (r.error || "") + (r.hint ? ` — ${r.hint}` : "")));
+            setSwitchMsg(r.ok ? "已启动：" + (pick === "voice-cloud" ? "旧云端服务" : "本地") + "。切换已保存；QQ桥接需重启后生效，设置页若要保存其他修改请先复制草稿再重新读取。" : ("启动失败：" + (r.error || "") + (r.hint ? ` — ${r.hint}` : "")));
           }
           await load();
         } catch (e) { setSwitchMsg("失败：" + voiceError(e)); }
@@ -5187,8 +5299,33 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
 
       const fmt = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round(b / 1e6) + " MB");
       const saveRules = async () => {
-        try { await api("/voice/rules", { method: "POST", body: rules }); toast("✓ 触发规则已保存"); }
-        catch (e) { toast("✗ " + voiceError(e)); }
+        if (rulesSaving) return;
+        setRulesSaving(true);
+        const draft = rules, base = rulesBaseRef.current;
+        try {
+          const latest = await api("/voice/rules");
+          let submitted;
+          try {
+            submitted = planVoiceRebase({ base, draft, remote: latest, baseStamp: base?.configStamp,
+              beforeStamp: base?.configStamp, afterStamp: latest.configStamp, remoteStamp: latest.configStamp }).draft;
+          } catch {
+            throw Object.assign(new Error("语音规则与未保存草稿发生冲突。"), { code: "CONFIG_STALE", hint: "保留草稿，重新读取并核对冲突字段后再保存。" });
+          }
+          const result = await api("/voice/rules", { method: "POST", body: { ...submitted, baseStamp: latest.configStamp } });
+          const savedRules = { ...submitted, configStamp: result.afterStamp };
+          rulesBaseRef.current = savedRules;
+          setRules(prev => {
+            if (!prev) return prev;
+            const next = { ...savedRules };
+            for (const key of Object.keys(prev)) {
+              if (key !== "configStamp" && JSON.stringify(prev[key]) !== JSON.stringify(draft[key])) next[key] = prev[key];
+            }
+            return next;
+          });
+          const synced = onVoiceConfigSaved ? await onVoiceConfigSaved(result) : { ok: false };
+          toast(synced.ok ? "✓ 触发规则已保存" : "规则已保存，但主设置草稿未能安全同步；请先复制草稿再重新读取。");
+        } catch (e) { toast("✗ " + voiceError(e)); }
+        finally { setRulesSaving(false); }
       };
 
       const card = (p) => h("div", {
@@ -5406,6 +5543,24 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         h("div", { className: "qbw-hint", style: { marginTop: "10px" } },
           "⚠️ 改完语音总开关 / TTS / 发语音工具后，需要重启 DSH：工具列表在 MCP 进程启动时就固定了，不重启她还会说“没有语音入口”。"),
 
+        h(VolcForm, { onChanged: async (result, options) => {
+          const base = rulesBaseRef.current;
+          if (base && base.configStamp !== result.beforeStamp) return { ok: false };
+          try { if (base && options?.selectionChanged) rebaseVoiceRules(base, rulesDraftRef.current, result); }
+          catch { return { ok: false }; }
+          const synced = onVoiceConfigSaved ? await onVoiceConfigSaved(result) : { ok: false };
+          if (synced.ok && base) {
+            if (rulesBaseRef.current?.configStamp !== result.beforeStamp) return { ok: false };
+            let merged;
+            try { merged = options?.selectionChanged ? rebaseVoiceRules(base, rulesDraftRef.current, result) : rulesDraftRef.current; }
+            catch { return { ok: false }; }
+            if (merged) {
+              rulesBaseRef.current = { ...base, ...(options?.selectionChanged ? { aiEnabled: result.ttsEnabled, route: result.route } : {}), configStamp: result.afterStamp };
+              rulesDraftRef.current = { ...merged, configStamp: result.afterStamp }; setRules(rulesDraftRef.current);
+            }
+          }
+          return synced;
+        } }),
         cloud && cloud.installed ? h(CloudForm, { toast }) : null,
 
         importPick ? h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) setImportPick(null); } },
@@ -5490,14 +5645,29 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("label", { style: { display: "flex", gap: "6px", alignItems: "center", marginTop: "8px", fontSize: "13px" } },
             h("input", { type: "checkbox", checked: !!rules.aiEnabled, onChange: (e) => setRules({ ...rules, aiEnabled: e.target.checked }) }),
             "允许 AI 主动发语音（默认关；关着只有你手动试发才出声）"),
-          h("div", { style: { marginTop: "8px" } }, h(Btn, { onClick: saveRules }, "保存触发规则")),
+          h("div", { style: { marginTop: "16px" } },
+            h("strong", null, "分群语音规则"),
+            h("p", { style: { fontSize: "12px", lineHeight: "1.7", margin: "6px 0 10px" } },
+              "未配置的群沿用上方触发规则。日额度 0 表示该群不额外限额；所有会话仍共用每天 500 条成功发送及火山每月字符额度。"),
+            ...(rules.groupRules || []).map((rule, index) => {
+              const change = patch => setRules({ ...rules, groupRules: rules.groupRules.map((item, i) => i === index ? { ...item, ...patch } : item) });
+              return h("div", { key: index, style: { display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap", marginBottom: "10px", fontSize: "12px" } },
+                h("label", null, "群号", h("input", { "aria-label": "语音规则群号 " + (index + 1), inputMode: "numeric", value: rule.groupId, onChange: e => change({groupId:e.target.value}), style: { display: "block", width: "138px", marginTop: "4px" } })),
+                h("label", null, "谁可触发", h("select", { "aria-label": "群语音触发方式 " + (index + 1), value: rule.triggerWho, onChange: e => change({triggerWho:e.target.value}), style: { display: "block", width: "144px", marginTop: "4px" } },
+                  h("option", {value:"owner"}, "仅主人"), h("option", {value:"mention"}, "群友 @ 可触发"))),
+                h("label", null, "每日条数（0不限）", h("input", { "aria-label": "群语音日额度 " + (index + 1), type: "number", min: 0, max: 500, step: 1, value: rule.maxPerDay, onChange: e => change({maxPerDay:Number(e.target.value)}), style: {display:"block",width:"96px",marginTop:"4px"} })),
+                h(Btn, {kind:"qbw-btn2", disabled:rulesSaving, onClick:()=>setRules({...rules,groupRules:rules.groupRules.filter((_,i)=>i!==index)}), "aria-label":"删除语音群规则 " + (index + 1)}, "删除"));
+            }),
+            h(Btn, {kind:"qbw-btn2", disabled:rulesSaving, onClick:()=>setRules({...rules,groupRules:[...(rules.groupRules || []),{groupId:"",triggerWho:"owner",maxPerDay:0}]})}, "添加群规则")),
+          h("div", { style: { marginTop: "12px" } }, h(Btn, { onClick: saveRules, disabled:rulesSaving }, rulesSaving ? "保存中…" : "保存触发规则")),
           h("div", { style: { fontSize: "12px", opacity: 0.7, marginTop: "6px" } },
-            "仅主人可触发：群聊里最后一条消息必须是你发的（5 分钟内），且一条消息最多换一条语音。")) : null);
+            "仅主人：最近10分钟有主人请求；群友 @：最近10分钟真实 @ 过机器人。一条请求最多换一条语音；修改规则无需重启。")) : null);
     }
 
     function MemoryTab({ qq, unified, setUnified, overview, busy, setBusy, toast, reload }) {
       const [data, setData] = useState(null);
       const [card, setCard] = useState(null);
+      const [memoryV2Backend, setMemoryV2Backend] = useState(overview?.memoryV2?.backend || "v1");
       const [fullVersion, setFullVersion] = useState(0);
       const [err, setErr] = useState("");
       const load = useCallback(async () => {
@@ -5535,7 +5705,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       };
       const status = data?.status ?? overview?.memory ?? {};
       return h("div", null,
-        h(MemoryCardPanel, { view: "summary", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }),
+        h(MemoryV2Panel, { initialStatus: overview?.memoryV2, roleKey: overview?.character?.active?.id || overview?.character?.id || "", onStatus: (status) => setMemoryV2Backend(status.backend) }),
+        memoryV2Backend !== "v2" ? h(MemoryCardPanel, { view: "summary", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }) : null,
         h("div", { className: "qbw-group" }, "双向脱敏同步（QQ ⇄ B站）", h("small", null, "只搬运公开、脱敏后的近况；和上面的记忆卡不是一回事")),
         h("div", { className: "qbw-dangerbox" },
           h("b", null, "隐私红线（锁定，不可关）："),
@@ -5571,8 +5742,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h(Btn, { kind: "qbw-btn2", onClick: scan, disabled: !!busy }, "扫描身份候选"),
               h(Btn, { kind: "qbw-btn2", onClick: purge, disabled: !!busy }, busy === "purge" ? "清理中…" : "清空 QQ→B站 记忆")))),
         h(AdvancedSettings, { note: "记忆卡规则 / 最近记忆 / 全量卡 / 同步范围 / 注入预览 / 审计：展开后同样可改" },
-          h(MemoryCardPanel, { view: "details", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }),
-          h(FullMemoryCardPanel, { reloadKey: fullVersion, busy, toast }),
+          memoryV2Backend !== "v2" ? h(MemoryCardPanel, { view: "details", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }) : null,
+          memoryV2Backend !== "v2" ? h(FullMemoryCardPanel, { reloadKey: fullVersion, busy, toast }) : null,
           h(Section, { title: "同步范围与隐私参数", note: "QQ → B站", collapsible: false },
             h(Row, { label: "回看天数", hint: "只读最近 N 天的公开群消息" },
               h("input", { className: "qbw-input", type: "number", min: 1, max: 90, value: qqToBili.lookbackDays ?? 7, onChange: (e) => setQqToBili("lookbackDays", Number(e.target.value)) })),
@@ -6765,6 +6936,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [bili, setBili] = useState(null);
       const [unified, setUnified] = useState(null);
       const [saved, setSaved] = useState("");
+      const voiceDraftRef = useRef({});
+      voiceDraftRef.current = { qq, saved, configStamps };
       const [busy, setBusy] = useState("");
       // 关闭温柔模式时用户选择“同时丢弃上下文”：保存时一并重置 QQ 会话，并自动重启桥接。
       const [adminDiscardContext, setAdminDiscardContext] = useState(false);
@@ -6822,6 +6995,23 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           setSaved(JSON.stringify({ qq: r.qq ?? {}, bili: r.bili ?? {}, unified: r.unified ?? {} }));
         } catch (e) { setErr(`读取配置失败：${e.message}`); }
       }, []);
+      const onVoiceConfigSaved = async result => {
+        try {
+          const first = voiceDraftRef.current;
+          if (!first.saved || !first.qq || !first.configStamps?.qq) return { ok: false };
+          const current = await api('/config');
+          const latest = voiceDraftRef.current;
+          if (latest.configStamps?.qq !== first.configStamps.qq || !latest.saved || !latest.qq) return { ok: false };
+          const base = JSON.parse(latest.saved);
+          const plan = planVoiceRebase({ base: base.qq, draft: latest.qq, remote: current.qq,
+            baseStamp: latest.configStamps.qq, beforeStamp: latest.configStamps.qq, afterStamp: result.afterStamp, remoteStamp: current.stamps?.qq });
+          const savedNext = JSON.stringify({ ...base, qq: plan.saved });
+          const stampsNext = { ...latest.configStamps, qq: plan.stamp };
+          voiceDraftRef.current = { qq: plan.draft, saved: savedNext, configStamps: stampsNext };
+          setQq(plan.draft); setSaved(savedNext); setConfigStamps(stampsNext);
+          return { ok: true };
+        } catch { return { ok: false }; }
+      };
       useEffect(() => { loadOverview(); loadConfig(); loadBudget(); }, [loadOverview, loadConfig, loadBudget]);
 
       // 额度页开着时每 30 秒对一次用量；80% 提醒由服务端保证「每天只给第一次」。
@@ -6891,7 +7081,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           }
           let r;
           try {
-            r = await api("/config", { method: "POST", body: { qq: normalizedQq, bili, unified: normalizedUnified, restartBridge: shouldRestart, resetSessions, baseStamp: configStamps } });
+            r = await api("/config", { method: "POST", body: { qq: normalizedQq, bili, unified: normalizedUnified, restartBridge: shouldRestart, resetSessions, baseStamp: configStamps ? { ...configStamps, strict: true } : null } });
           } catch (e) {
             // 409：配置在加载后被别处改过。不要盲目覆盖 —— 提示重新读取。
             if (/CONFIG_STALE|已被别处修改/.test(String(e.message))) {
@@ -6918,7 +7108,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           setNotes(nextNotes);
           notify(`✓ 已保存${budgetDirty ? "（token 额度即时生效）" : ""}${resetSessions ? (resetDone ? "，已重置相关会话上下文" : "，没有可重置的在线会话") : ""}${r.bridge ? (r.bridge.ok ? "，桥接已重启" : "，桥接重启失败") : ""}${nextWarnings.length ? "（有提示）" : ""}`);
           await loadOverview();
-        } catch (e) { setErr(`保存失败：${e.message}`); setWarnings([]); setNotes([]); } finally { setBusy(""); }
+        } catch (e) { setErr(`保存失败：${[e.code, e.message, e.hint].filter(Boolean).join(" · ")}`); setWarnings([]); setNotes([]); } finally { setBusy(""); }
       };
       const reload = async () => { await loadOverview(); await loadConfig(); await loadBudget(); };
       const reset = () => {
@@ -6973,7 +7163,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "douyin") return h(DouyinTab);
         if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify });
         if (tab === "watch") return h(WatchTab, { busy, setBusy, toast: notify, goTab: setTab });
-        if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy });
+        if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, onVoiceConfigSaved, busy });
         if (tab === "pet") return h(PetTab, { toast: notify, unified, setUnified: setUnifiedPath });
         if (tab === "memory") return h(MemoryTab, { qq: normalizedQq, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload });
         if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
@@ -7108,7 +7298,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     exports.BILI_FIELDS = BILI_FIELDS;
     exports.QQ_BILI_SHARE_FIELDS = QQ_BILI_SHARE_FIELDS;
     // 仅供 Node 契约测试验证路径归一化；浏览器运行时不使用。
-    exports.__test = { pathKeys, setPath, PerceptionJobCard, PersonaEditor, CharactersTab, personaEditorKey, personaIdentityMatches };
+    exports.__test = { pathKeys, setPath, PerceptionJobCard, PersonaEditor, CharactersTab, personaEditorKey, personaIdentityMatches, MemoryCardPanel, MemoryV2Panel, CSS };
     return module.exports;
   },
 });

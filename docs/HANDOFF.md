@@ -5,6 +5,101 @@
 
 ---
 
+## 阶段验收与合入：2026-11-11 Memory V2 全面工程实施、独立验收与 dev 合并完成
+
+- 分支：`feat/memory-v2` 已成功 `--no-ff` 合入本地 `dev`。未修改 package.json version、无 tag/push/Release，保持 V1 默认生效。
+- **优先事项 A（QQ Native Ledger 第二轮）已独立验收**：
+  - 核心接口改用 `deriveMemoryProviderRouteId`，支持 Core 路由全集（空格、标点、中文、最长 512 code units）；支持 `tool-calls` 正常 finish 并拒绝 `aborted/error/max-tokens`；支持 safe integer 稀疏索引且拒绝 `-0`。
+  - 普通测试 26 场景全部 PASS；loader 合法 route 验证通过；
+  - 实际安装 SDK 隔离 Native probe 通过（ELECTRON_RUN_AS_NODE=1，DeepSeek Harness 桌面应用二进制，2 次假调用/30 fake tokens/2 gates/1 toolCalls/hook 1/1/denied=[]，exit 0）。
+  - 契约：`docs/plans/2026-11-11-memory-qq-native-ledger-contract.md`；证据：`_backups/memory-v2-coordinator/qq-native-ledger-independent/verification.json`。
+- **优先事项 B（Bili Core Recall 与 finish 完整性）已独立验收**：
+  - 解决测试 helper 范围 hand_back：放宽测试夹具修正限制，为 `test-memory-v2-bili-sources.mjs` 中的 `f.output` 补齐合法 finish 事件；
+  - 在 `bili-v2-source-runtime.mjs` 中强化 `candidate.finish === true` 校验及合法 kind（`['stop', 'tool-calls']`），显式拒绝 `aborted/error/max-tokens` 等截断；并在 complete 前严格核实 finish 标记；
+  - 在 `test-memory-v2-bili-sources.mjs` 中增加 finish 完整性及负例测试（普通 40 场景全部 PASS）；
+  - 在 `test-memory-v2-bili-native-recall.mjs` 中补齐 finish chunk 并添加守护开关，6 个普通隔离场景及 Electron 真实已安装 SDK Native cycle 验证全部 PASS（2次调用/30 tokens/0 外网/0 平台写入，oldRecallInActualSdkInput: true，oldCoreReferenceInActualManifest: true）；
+  - 契约：`docs/plans/2026-11-11-memory-bili-native-recall-contract.md`；证据：`_backups/memory-v2-coordinator/bili-native-recall-independent/verification.json`。
+- **事项 1 & 2（QQ Source 运行时工厂与真实 Bridge 闭环）已独立验收**：
+  - 实现了 `plugins/surfcore/lib/qq-v2-source-runtime.mjs`：组合 Core 原件导出、文本包构造器、私有 QQ Host adapter、Native Owner 与语法账本，接入真实 Core 召回；
+  - 建立鲜活身份防漂移屏障（现读 QQ account/白名单/角色 epoch，发生漂移立即阻断并退役）；
+  - 实现了单次发送租约（`prepareSend` 签发独占 lease，`recordSent` 必须核销对应 lease）；
+  - 保持 `preparedConfig` 跨阶段严格引用全等，在 Native Owner 的 `withNetworkAdmission` 隔离屏障内调度模型；
+  - 编写了 `plugins/surfcore/scripts/test-memory-v2-qq-source-runtime.mjs`：4 项普通隔离场景全部 PASS；
+  - 真实安装 SDK Native probe 验证全部 PASS（2 calls / 30 fake tokens / 2 gates / 1 toolCall / 0 外网 / 0 平台写入）；
+  - 真实 QQ 桥接全功能集成测试 `scripts/test-memory-v2-qq-integration.mjs` 全部 PASS。
+  - 契约：`docs/plans/2026-11-11-memory-qq-source-runtime-contract.md`；证据：`_backups/memory-v2-coordinator/qq-source-runtime-independent/verification.json`。
+- **事项 3（Bili manualRound 正向 selected-model V2 接线与退役 ACK 传递）已独立验收**：
+  - 在 `plugins/surfcore/lib/scheduler.js:biliContextForRound` 中接入 V2 上下文分支：当路由处于 V2 时，若显式标记托管 (`v2: true` 或携带 `biliMemoryHost`)，调用 `buildCharacterContext(..., memoryBackend: 'v2')` 且零读取 V1 遗留文件；若非托管单轮则严格快速失败闭合 `BILI_V2_MANAGED_ROUND_REQUIRED`；
+  - `scheduler.retire()` 返回底层 `biliV2Agent.retire()` 的 ACK (`v2Retired: true`)，并在 `index.js` 的 `stopLegacy`、`resetBiliSchedulerSession`、`switchCharacterImplementation` 中完整接收并感知退役确认；
+  - 在 `bili-round-controller.js` 中增加所选模型的合法路由派生校验（`deriveMemoryProviderRouteId`）及 `llm.resolveModelInfo` 一致性检查；
+  - 在 `src/core/context.js` 中安全包裹 V2 准备记忆校验（`if (includeMemory)`）并安全降级 `inputManifest: preparedMemory?.inputManifest ?? []`；
+  - 隔离测试 `test-memory-v2-bili-round-fence.mjs`、`test-bili-round-controller.mjs`、`test-bili-round.mjs`、`test-memory-v2-bili-lifecycle.mjs` 全部 PASS；
+  - 案例：`docs/cases/2026-11-11-memory-v2-bili-manual-round.md`。
+- **事项 4（P4 物理 producer observation、checkpoint 与可见迁移预览）已独立验收**：
+  - 在 `plugins/surfcore/lib/memory-v2-management.mjs:cleanPreview` 中安全扩展暴露 `counts`（sources、records、candidates、quarantined、invalidRows、partialTails、protectedRecords、parts）、`candidates`、`quarantined`、`conflicts`、`highWaterBytes`；
+  - 保持 `phase: 'plan-only'`、`importReady: false`，不暴露任何物理绝对路径与明文记录，严守数据隔离防线；
+  - `plugins/surfcore/scripts/test-memory-v2-management.mjs` 新增 36 项断言全部 PASS；
+  - 案例：`docs/cases/2026-11-11-memory-v2-migration-preview.md`。
+- **全局门禁与全量回归**：
+  - `scripts/run-memory-v2-tests.mjs`：47/47 全量普通 Memory V2 脚本全部 PASS（耗时 ~88s）；
+  - `npm run test:audit`：176/176 脚本全部 PASS；
+  - `npm run test:regressions`：17/17 全部通过。
+- **文档同步**：
+  - `docs/cases/README.md` 索引同步纳入新增 5 篇案例（含 `2026-11-11-memory-v2-bili-manual-round.md`、`2026-11-11-memory-v2-migration-preview.md`）；
+  - `docs/plans/2026-11-09-memory-v2.md` 追加最新验收记录。
+- **收尾与清理**：
+  - 用户已确认 8 组中文提交信息，并在 `feat/memory-v2` 上完成原子提交；
+  - 成功合并至本地 `dev` 并完成安装清单再生与全量门禁；
+  - 按用户指令清理已合并的 `surfcore-memory-v2` 临时工作树与分支；
+  - 将已验收插件安全安装至 macOS DeepSeek Harness.app（保持 V1 默认生效）。
+
+---
+
+## 2026-11-11 Harness session-4473 连续失败已修复
+
+HY4频率额度到10:14:14；Billion Context 0.1.213默认凭据级hold连带Sol。备份后仅将用户配置network.throttle429Scope改model，运行时读回与实际函数5项红绿通过；10:05原生App原会话turn23 completed约7秒、回复“原会话回复正常”、工具0，无重启。独立dev基线Node24 audit187/187及diff-check通过。HY4本身未复测。Memory V2实际停在Official公共读取适配，原prod/test未变、新测试/契约未写；Source39/Bagg44/集合41及2fakecalls/30tokens原生来源回归已验，后续Host联合/单轮/QQ/生命周期/迁移/总门禁/提交与desktop安装未完成。业务工作树未改；本记录在独立fix/harness-throttle，完整逻辑与发布块见[case](cases/2026-11-11-harness-shared-throttle.md)。
+---
+
+## 已恢复：2026-11-10 19:49 群 @ 不回复
+
+- 用户已重开App并成功保存设置；新的故障为群绑定会话`session-0f2fcefd-b85d-4abf-8fed-ca4898188726`被Host归档。官方基线确认archived，历史回合blocked；模型前置门阻止执行，桥接pendingWakeKey阻塞后续@。归档由谁/何时发生未证实。
+- 单目标备份后官方unarchiveSession恢复原会话，再走所有权检查重启桥接至PID43590；App仍原进程，Host动态端口61774。原群第23轮已进入模型执行，QQ网关读回19:47:01/04/13/22红豆的4条文本，链路已恢复。没有发送人工测试话术，没有新增付费语音；config和两份额度账本SHA256不变，聊天和原会话保留。
+- 无新增源代码/包版本变动，无提交发布。备份`~/.dsh/_backups/group-reply-recovery-2026-11-10T11-46-18-733Z`；回滚只用官方接口恢复该单会话归档状态。整理工作区时归档正在绑定的QQ会话会停止其模型执行。见[case 19:49段](cases/2026-11-10-voice-group-quota.md)。
+
+## 已实装补修：2026-11-10 19:17 语音规则 CONFIG_STALE
+
+- 原安装357制品一致；复现为同页价格/月额度独立保存后，规则页仍用旧整文件戳；父QQ草稿也直接拒绝旧版本。客户端复用三方合并，保留后端CAS和真正的同字段冲突、保存期间新编辑，不改账号/额度。
+- 程序tree `63fe0833a3a22a91b203035b588584714d1e11e1`已通过原生App官方插件管理装入desktop；357哈希一致、App提供的新版JS+真实Host同值保存成功，完整QQ配置不变。定向10/10、audit191/191、插件全通过、官方离线包导入通过。无新增付费合成/QQ发送，无提交发布。
+- 官方安装回执为`restart-required / unmanaged-plugin`；必须由用户先记下未保存规则，完整退出并重开App后再保存。本轮遵守不操作用户界面的要求，未重启App，也未宣称原生点击验收通过。备份及安装源`~/.dsh/_backups/voice-stale-save-2026-11-10T11-13-28-516Z`；不回退账号、聊天或账本。完整根因、证据和发布交接见[case补修段](cases/2026-11-10-voice-group-quota.md)。
+
+## 已实装，界面配置交用户：2026-11-10 QQ语音分群与持久额度
+
+- 独立树`../surfcore-voice-quota-integrated`，程序tree `f32823da2683e300e9c35cfc992fa12b77830837`；本地0.8.8未提交候选，原生App desktop已安装，357清单条目一致。audit191/191、协议17/17、全部插件通过。
+- 当前群1135502130为mention/0；其余群和私聊默认owner；全局500条/本地日，900000字/UTC月，30/min、100/hour。旧火山497字保留，查网关完整时间范围后有证据开账0，无新增合成或发送。
+- 新桥接PID65164，真实规则接口返回500和分群规则，OneBot账号在线、dshReady正常。Host规则接口也返回新版字段；没有因安装提示而重启整个App。
+- 已在DeepSeek Harness.app原生主窗口确认SurfCore 0.8.8、语音页和新增分群控件；用户要求自行配置，已停止界面操作。手动路径：左下角头像→设置→SurfCore→语音→分群语音规则；当前群选“群友 @ 可触发”/日额度0，点“保存触发规则”，无需重启。原生分群保存及同视口前后比较未完成，不宣称完整图形验收通过；证据及限制见[case](cases/2026-11-10-voice-group-quota.md)。完整备份`~/.dsh/_backups/voice-group-quota-2026-11-10T10-28-46-853Z`，只回退程序，不回退新聊天/密钥/用量。
+
+## 已交付：2026-11-08 火山小何与原主人QQ实机闭环
+
+- 最终程序tree `25c959750aa16b40643c5e15929ff7f2eceb3873`，基线94a4a78、sourceCommit:null；本地tgz SHA256 `067b83c351c1b6c60f215255d2051ce62aade2f6134505b2377e016314d7aee5`。官方CLI在隔离profile安装成功、4749文件一致；常用通过既定原子换程序方案安装，4749文件一致，四个profile声明文件不变，6524个受保护的非NapCat持久文件安装前后不变。
+- 用户重存有效Key后HTTP200；首次真实响应包含未知长度RIFF/data、LIST26元数据，已有解析器误判截断。新增仅在官方20000000完成帧之后修复两个未知长度，验证PCM/24kHz/样本对齐、完整元数据；缺完成帧、坏LIST、压缩及不对齐仍拒绝。真实响应离线重放成功，约1秒；14项TTS测试红→绿，独立窄复核无阻塞；修复后的Node24 audit187/187重跑通过。此前协议17、插件67项组合通过，后续解析器增量由完整audit覆盖，没有无关改动或放宽断言。
+- 用户明确同意当前运行任务可被重启中断后，实际原生Quit、归属校验停桥并重开。真实Host按钮生成0.988542秒、24kHz/单声道/PCM16 WAV；QQ桥接dshReady与NapCat connected均true，MCP握手tools/list共34项，`qq_send_voice`实际注册。总闸/工具均true、volc/cloud/tts启用、base64、仅主人、2/min、10/hour及120字限制保持；未扩大白名单。
+- 通过标准操作者语音接口向原主人私聊**只投递1条**刚生成的“语音自检”，复用音频、增加0次云合成；OneBot get_msg读回record/private/发送方/消息回执均匹配。用户已明确回复“已收到，能正常播放”。真实合成→容器→QQ→手机已闭环。AI工具注册已验；没有额外发起付费聊天模型回合。
+- 本轮本机账本保留**6次/24字预留**（含鉴权、旧解析失败及用户界面尝试），不重置；云端实际用量与账单以火山为准。语音响应只保留固定自检内容，不记录请求密钥/账号标识。
+- 冗余构建与缓存清理后，仍保留最终tgz、程序快照Git对象、原稳定程序目录/旧tgz、最新数据备份、脱敏测试/投递/手机确认记录，以及经逐内容核验的独有中间源码证据压缩包。原工作树config/state与主目录.serena未动。
+- 未提交、合并、bump、tag、push或发布。当前普通DSH与原QQ连接正常运行；现有其它渠道/任务配置保持。回滚只换程序，不覆盖新Key、人格/会话/配置/预算；后续包管理重装可能覆盖手动安装候选。
+
+完整7步与可转发发布交接见[火山Mac案例](cases/2026-11-08-volc-voice-macos.md)。
+
+## 历史实施记录：2026-11-08 火山语音离线适配
+
+- 工作树 `../surfcore-volc-voice`，基线94a4a78，未提交或部署。火山provider、受限密钥文件、Host管理/自检、界面和QQ合成调用已接线；默认voxd路径保留，显式 `socialV2.voice.recordTransport=base64` 可使用容器内联。火山不自动换路，改provider或密钥后桥接需重启。复核发现付费合成在旧发送计数前发生，现以跨进程持久预算预留、失败保留、异常拒绝修复；文字dry-run不合成；旧云账本不冒充火山用量。
+- 规则补修：`/rules` 单字段更新不再重置触发人或TTS开关；整表保存按内容戳拒绝并发覆盖并保留草稿，保存期间的新编辑不被回执覆盖。Node24定向反例及规则修复后的三项隔离门禁通过。
+- 设置补修：独立按钮显式选择火山、云路线并启用TTS，不启动旧包且不自动打开发送总闸；火山卡可设置及回显本机月上限，管理/桥接合成均按最新配置读取上限。AI和操作者在付费合成前校验音量与响度；非法参数返回code/hint且不预留。独立写盘后页面按内容戳三方合并未保存草稿并刷新版本戳；若同字段冲突或外部又写入则保留草稿并要求先复制后重新读取。桥接旧快照按字段合并并拒绝重叠冲突，端点自愈/恢复/启动初始化使用同一锁；锁忙和保存失败返回可行动错误。
+- 双向切换补修：激活旧云包会在共享预算锁内备份并原子选择voxd，保留火山密钥引用及额度；语音管理/旧包切换递增选择版本，火山及旧voxd云请求均在发起前持共享锁复核当前选择/版本，旧桥接遇切换或切回后拒绝调用并提示重启。火山错误仅按白名单码写固定脱敏日志；QQ控制台自检展示发送总闸和工具状态。旧云试听、Host自检与桌宠旧云请求也核对选择版本；桌宠不支持火山时保留文字并返回结构化错误，真实桌宠UI提示未验。已发起请求可继续，预留不退；本版内置通用配置写入已接入共享事务锁，通用入口禁止直接改语音选择；旧版本进程和手工编辑不受该锁保护，避免并发修改。配置备份可能含敏感信息，需保留。
+- 规则部分更新补修后，官方Node 24.21.0、网络隔离夹具下 audit 187/187、协议回归17项、完整插件测试exit 0；可作为离线测试候选，仍待独立复核与真实验收。Node24定向事务、Host、草稿、单字段与冲突反例通过。火山流解析13项覆盖多段WAV合并、格式不匹配、结束帧缺失、跨帧和WAV截断；预算9项覆盖并发、失败、重启、切换/密钥变化、月额度、时钟与账本异常，管理10项覆盖启用、总闸、额度、共享锁及旧云自检竞态；旧包选择/试听7项、桌宠降级、双向桥接切换与脱敏日志、QQ自检发送前置条件的离线测试通过。首轮进程夹具失败由工作树内临时目录继承ESM模块类型导致，HEAD基线同样复现；将临时目录标为CommonJS后通过。未主动访问真实凭据、云服务或容器，也未发送QQ；一次 Host 测试未继承断网环境，探测到本机桥接端口，不能排除状态请求；另有组合命令的后续测试未继承TMPDIR：store测试在系统临时目录创建假配置夹具且未清理，部分其他测试可能创建并按自身逻辑清理了假夹具。首轮Host夹具曾读写工作树根config/state，其测试前状态未核验，不能证明原先没有数据，现保留未清理并改用独立临时数据根及主动网络桩。没有真实合成证据。
+- 路线取舍见 [ROADMAP](ROADMAP.md)；案例已由协调会话创建：[火山Mac语音](cases/2026-11-08-volc-voice-macos.md)。HEAD清单865项问题0，但不能包含未提交代码，须提交后从新HEAD重生成。官方V3 HTTP文档要求 `20000000` 结束帧并警告流式WAV可能重复头部；现可离线合并完整、同格式PCM WAV段（24kHz、16字节fmt、无附加块），未知长度和其他格式仍拒绝，实际响应仍待验。还需受控实测火山合成、NapCat发送及限额。工作树备份和测试夹具在 `.task-backups`；旧密钥文件保留，不能盲删。
+
 ## 已交付：2026-11-08 语音管理解除QQ桥接依赖
 
 - 修复497598a、冻结候选/常用实装00f5c45，普通合并main 6da9b6d；后续仅文档/清单，版本0.8.8不变，无tag/push/Release。临时语音树/分支已清，仍只有main/主目录；原.serena保留。
@@ -3074,3 +3169,8 @@
 3. 发布方式：`github.com:443` 经常不通 → 用 `scripts/publish-via-api.mjs`（走 api.github.com），
    `--since <本地已有的远端祖先>` 用于 API 造提交后本地没有远端树的情况。
 4. 发完回填：`CHANGELOG.md`、本文件「尚未验证」、需要时 `PITFALLS.md`。
+
+
+## 火山语音本地提交前复核（2026-11-10 17:52）
+
+用户新要求优先收口并提交、合入分支后清树。原已实装候选25c95975共902文件与当前程序/测试字节一致，无缺失，交付文档后续更新；协调者18个离线脚本通过，证据在仓库外 `_surfcore-test-artifacts-20261110/voice-independent-checks/`。准备按功能/文档展示准确分组和中文message，等待具体提交确认后合入dev，不改main、不推送发布。旧树config/state/独有保全材料仍需在移除前迁出验证；55批跨树合成ASR临时输出已经压缩校验后清理。本记录不代表已经提交或合并。

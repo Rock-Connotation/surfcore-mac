@@ -18,6 +18,11 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
+| **记忆层 V2 2026-11-09** | `../surfcore-memory-v2`（已清理） | `feat/memory-v2`（已删） | P0–P4；来源/四渠道/事务/生命周期/迁移与门禁 | ✅ 完成：工程实施与验收全量通过，已合入本地 dev（2026-11-11）。QQ Native/Bridge闭环、Bili托管单轮与退役ACK、P4脱敏迁移预览全过；套件47/47、audit 187/187、regressions 17/17全绿；保持V1默认。已按用户确认清理临时树与分支。 |
+| **Harness请求修复 2026-11-11** | ../surfcore-harness-throttle | fix/harness-throttle；基线dev17c9b1f | 本机bili冷却配置/原生原会话验收/断点记录 | ✅ 完成：原生原会话回复成功、离线限流5项、Node24 audit187/187、diff-check通过；业务树未改、未提交/不安装V2/不发布 |
+| **QQ语音分群额度 2026-11-10** | `../surfcore-voice-quota-integrated` | `feat/voice-quota-integrated`，基线17c9b1f | 日500/月90万、CONFIG_STALE、群停答恢复及语气提示朗读修复 | 主代理完成，run 1；语气提示两provider过滤及桥接错误回归通过，audit191/协议17/插件/离线App包通过；20:08实装e319350a，357文件一致，桥接27748在线，配置/两账哈希不变；20:16查明收尾为PI_AI_ERROR/SSE坏JSON，原会话续跑与SDK离线验证通过，未改Host；无真实TTS/测试外发/UI/提交发布 |
+| **火山语音接手续作 2026-11-08** | `../surfcore-volc-voice` | `feat/volc-voice-mac`，基线94a4a78 | 冻结候选、常用安装、受控语音验收与废弃构建隔离 | ✅ 完成：最终tree25c95975，audit187/协议17/插件67/TTS14与窄复核通过；隔离/常用4749一致；修复真实流式WAV后原生合成0.99秒，MCP注册/仅主人QQ1条读回+手机播放确认；6次24字预留保留；废弃构建/缓存清理，源码/原程序/数据可回滚；普通DSH/QQ运行，不提交发布 |
+| **火山语音 2026-11-08** | `../surfcore-volc-voice` | `feat/volc-voice-mac`，基线94a4a78 | 火山TTS 2.0离线适配与Mac语音管理；仅指定工作树 | 火山provider、密钥管理/UI、QQ发送与可选容器内联已实现；QQ配置事务、草稿戳及规则部分更新补修后，Node24隔离audit 187/187、协议17项、完整插件通过；可冻结为离线测试候选，仍待独立复核和真实验收；路线已记ROADMAP，案例已补录终止帧与多WAV离线边界；提交后安装清单与实机未完成；未主动访问真实凭据、云API或容器，未发送QQ；一次Host测试可能请求本机桥接状态，首轮夹具曾读写树根config/state且原状态未核验，另有假夹具曾写系统临时目录；详见案例；未部署、提交或发布 |
 | **语音管理解耦 2026-11-08** | 主目录；临时voice-host树已清 | 已合main 6da9b6d，修复497598a/实装00f5c45；临时分支已删 | Host/旧桥接共享管理、UI/概览/启停及实机 | ✅ 完成：audit176/176、协议17、完整插件/独立V3及窄增量、349制品一致/6074持久不变；QQ关闭原生列表200/未配置失败明确，常用正常无debug启动；不选引擎、不新增模型/外发、不发布 |
 | **本地主线与磁盘收口 2026-11-08** | 主目录 | main，功能合并5c748d0 | 合并/保全/41工作树与分支清理 | ✅ 已完成；只保留main/1目录，221文件保全，ASR逐SHA压缩；三门禁通过，常用cwd已迁回，无远端/版本动作 |
 | **伙伴自然分享与聊天 UI 2026-11-07** | ../surfcore-sharing-ui | feat/sharing-ui；已合组合树 | 日记分享、侧栏未读、本机回复及生命周期 | **已合main，分支/worktree已清理**；历史交付记录：✅ worker完成；主线统一revision/初始定位补修、UI30/旧UI11/真实controller/独立V3与原生常用验收通过；实装f882468，无版本变更 |
@@ -121,3 +126,16 @@ commit：<hash>
 | 2026-11-02 15:55 | 修复 dev.10 本地改动卡更新：加「备份并覆盖」出口 + deterministic + 诊断，合并 d75dea8 |
 | 2026-11-02 16:08 | 用户要求“先不发”，等 bug 修复会话下次交接再决定 dev.11 |
 | 2026-11-03 04:05 | 发布 v0.8.7（0.8.6 以来全部 dev，74 commits / 105 files）；远端 main 90872a7，镜像 f849cc4；归档 678/0；main 已合回 dev |
+
+## 2026-11-10 合并 worktree 清理规则核验
+
+用户授权默认清理已完成并合并的临时 worktree，规则见多会话工作流 §4.1。本次未删除目录：
+
+| 路径 | 核验结果 | 处置 |
+| --- | --- | --- |
+| `/Users/shizihan/Daily/Github/surfcore-mac` | 主工作区，15 个未跟踪条目 | 保留 |
+| `/Users/shizihan/Daily/Github/surfcore-memory-v2` | 本会话，118 个 tracked/untracked 状态条目，仍实施中 | 保留 |
+| `/Users/shizihan/Daily/Github/surfcore-volc-voice` | 47 个未提交状态条目及 ignored 内容 | 保留 |
+| `/Users/shizihan/Daily/Github/surfcore-voice-quota-500` | 干净，但 reflog 显示 17:35:58 刚从 HEAD 新建；无交付/合并证据 | 保留新任务树 |
+
+这些分支 HEAD 均为 `94a4a78dcb48b1d7433f07754b9714d75da7e1e5`，祖先关系不能证明任务交付。以上数字是核验时快照，后续删除前必须重查。未清理备份、分支或其他会话内容；本次释放 0 字节。

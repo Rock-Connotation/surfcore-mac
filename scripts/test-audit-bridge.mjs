@@ -240,7 +240,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
   const path = await import('node:path');
   // 默认出厂配置是 voice.enabled=false（AI 不能发语音）；这里显式打开，
   // 才能测"打开之后"的各项闸门。关闭时的行为单独在下面钉一条。
-  const voiceOn = { socialV2: { voice: { enabled: true } } };
+  const voiceOn = { socialV2: { voice: { enabled: true, trigger: {who:'anyone'} } } };
   const h = await bridgeHarness({ config: voiceOn });
   try {
     // 语音库 fixture：临时 config 的 ROOT 之下，voice.dir 默认 'audio'
@@ -315,7 +315,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     );
 
     // 7) 限流：语音额度独立计数，超限拒绝
-    const h3 = await bridgeHarness({ config: { socialV2: { voice: { enabled: true, maxPerMinute: 1, maxPerHour: 2 } } } });
+    const h3 = await bridgeHarness({ config: { socialV2: { voice: { enabled: true, trigger: {who:'anyone'}, maxPerMinute: 1, maxPerHour: 2 } } } });
     try {
       const dir3 = path.join(h3.temp, 'audio');
       fs.mkdirSync(dir3, { recursive: true });
@@ -327,7 +327,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
         '同一分钟内第二条语音被限流（每分钟 1 条）'
       );
       // 额度只在发出后才记账：参数错误不应吃掉配额
-      const h4 = await bridgeHarness({ config: { socialV2: { voice: { enabled: true, maxPerMinute: 1, maxPerHour: 2 } } } });
+      const h4 = await bridgeHarness({ config: { socialV2: { voice: { enabled: true, trigger: {who:'anyone'}, maxPerMinute: 1, maxPerHour: 2 } } } });
       try {
         const dir4 = path.join(h4.temp, 'audio');
         fs.mkdirSync(dir4, { recursive: true });
@@ -356,7 +356,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     } finally { await h6.close(); }
 
     // 10) 音量：倍数会传给音频处理，并原样回报给调用方
-    const h7 = await bridgeHarness({ config: voiceOn });
+    const h7 = await bridgeHarness({ config: { ...voiceOn, socialV2: { ...voiceOn.socialV2, voice: { ...voiceOn.socialV2?.voice, maxPerMinute: 10 } } } });
     try {
       const dir7 = path.join(h7.temp, 'audio');
       fs.mkdirSync(dir7, { recursive: true });
@@ -397,7 +397,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
 {
   const fs = await import('node:fs');
   const path = await import('node:path');
-  const h = await bridgeHarness({ config: { socialV2: { voice: { enabled: true, allowAbsolutePath: true, maxPerMinute: 50, maxPerHour: 50 } } } });
+  const h = await bridgeHarness({ config: { socialV2: { voice: { enabled: true, trigger: {who:'anyone'}, allowAbsolutePath: true, maxPerMinute: 50, maxPerHour: 50 } } } });
   try {
     const libraryDir = path.join(h.temp, 'audio');
     const outsideDir = path.join(h.temp, 'outside');

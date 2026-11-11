@@ -1,6 +1,7 @@
 // Explicit rounds share Bili's Host and context, without starting a free-tool session.
 import { createBiliRoundService } from './bili-round.js';
 import { biliRoundPage } from './bili-round-page.js';
+import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
 
 const issue = (code, error, hint) => ({ ok: false, code, error, hint });
 export function createBiliRoundController({ ctx, stateDir, tokenBudget, runBili, perception, getCharacter,
@@ -94,7 +95,22 @@ export function createBiliRoundController({ ctx, stateDir, tokenBudget, runBili,
       if (!catalog.some(m => m.provider === body.provider && m.model === body.model)) {
         json(res, 400, issue('BILI_ROUND_MODEL_UNAVAILABLE', '所选模型不在当前 App 模型目录。', '检查该模型的连接和凭据后刷新目录。')); return true;
       }
-      const result = await round.start({ provider: body.provider, model: body.model, maxTokens: body.maxTokens });
+      const route = deriveMemoryProviderRouteId({ provider: body.provider, model: body.model });
+      if (!route.ok) {
+        json(res, 400, issue('BILI_ROUND_MODEL_UNAVAILABLE', '所选模型无法派生合法路由。', route.hint || '选择有效模型后重试。')); return true;
+      }
+      const llm = ctx.get('llm');
+      if (typeof llm?.resolveModelInfo === 'function') {
+        try {
+          const info = await llm.resolveModelInfo(body.provider, body.model);
+          if (!info || info.provider !== body.provider || info.id !== body.model) {
+            json(res, 400, issue('BILI_ROUND_MODEL_UNAVAILABLE', '所选模型元数据与提供方不一致。', '检查所选模型在 LLM 提供方中的配置。')); return true;
+          }
+        } catch {
+          json(res, 400, issue('BILI_ROUND_MODEL_UNAVAILABLE', '无法解析所选模型元数据。', '检查所选模型的网络连接和认证。')); return true;
+        }
+      }
+      const result = await round.start({ provider: body.provider, model: body.model, maxTokens: body.maxTokens, providerRouteId: route.providerRouteId });
       json(res, result.ok === false ? 409 : 200, result); return true;
     } catch (error) {
       json(res, 400, issue(error.code || 'BILI_ROUND_FAILED', '单轮请求未完成。', error.hint || '刷新状态并检查现有轮次，不要重复启动。'));

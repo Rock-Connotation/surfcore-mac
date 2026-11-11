@@ -1,3 +1,7 @@
+import { deriveMemoryProviderRouteId } from '../src/core/memory-v2-routing.js';
+import { createQQMemoryBridge } from '../src/core/memory-v2-qq.js';
+import { buildCharacterContext } from '../src/core/context.js';
+import { voiceGroupPolicies, voiceMentionBlock } from '../src/voice-group-policy.js';
 // Execute the real bridge initialization/functions against temporary files and fake peers.
 // No production config, QQ connection, DSH process, or persistent home is accessed.
 import fs from 'node:fs';
@@ -24,6 +28,12 @@ import * as allowlist from '../src/allowlist.js';
 import * as callname from '../src/callname.js';
 import * as personaIdentity from '../src/persona-identity.js';
 import { synthesizeToFile } from '../src/voice-tts.js';
+import { encodeVoiceRecord } from '../src/voice-record.js';
+import { readVolcKey } from '../src/voice-volc-key.js';
+import { startVoxdCloud } from '../src/voice-volc-budget.js';
+import { voiceSendBudget } from '../src/voice-send-budget.js';
+import { commitQqConfigPatch, transactQqConfig } from '../src/qq-config-transaction.js';
+import { persistSnowLumaEndpoint, persistToken } from '../src/snowluma-conn.js';
 import { createVoiceManagement } from '../src/voice-management.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as fishGuard from '../src/fish-guard.js';
@@ -83,11 +93,14 @@ function wavFixture() {
   return Buffer.concat([h, data]);
 }
 
-export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, history = {} } = {}) {
+export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, history = {}, synthesizeImpl = synthesizeToFile, voiceManagementImpl = createVoiceManagement } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
   const fixtureEnv = { DSH_HOME: path.join(temp, 'dsh'), HOME: temp };
   fs.mkdirSync(path.join(temp, 'src'));
   fs.mkdirSync(path.join(temp, 'state'));
+  const today = new Date();
+  const localDay = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+  fs.writeFileSync(path.join(temp, 'state/voice-send-budget.json'), JSON.stringify({version:2,day:localDay,count:0,lastAt:0,pending:null,reconciliations:[]}), {mode:0o600});
   const harnessConfig = {
     dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
     allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
@@ -162,7 +175,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
       prompt: async (params) => { calls.prompts.push(params); return success({}); },
     },
     respond: async () => success({}),
-    stopSessionWork: async (sessionId) => { calls.cancelled.push(sessionId); return { removed: 0 }; },
+    stopSessionWork: async (sessionId, { verify = false } = {}) => { calls.cancelled.push(sessionId); return verify ? { removed: 0, queueEmpty: true, cancelled: true } : { removed: 0 }; },
     cancelTurn: async (sessionId) => { calls.cancelled.push({ cancelTurn: sessionId }); return { ok: true }; },
     callUnary: async (method, params) => { calls.cancelled.push({ method, params }); return success({ accepted: true }); },
   };
@@ -198,7 +211,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
-    ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
+    qqMemory, retireMemoryV2Session, memoryV2Failures, memoryV2Route, validateMemoryV2ProviderRoute, beginMemoryV2Send, finishMemoryV2Send, setSelfUserId(value) { selfUserId = Number(value); },
+    ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, deliverPromptNow, drainPromptQueue,
     pumpMux, pending, registerPending, handlePendingAnswer,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
     getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
@@ -231,8 +245,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     runPurpose, purposeState, notePurposeTurnEnded, notePurposeOutbound, startPurposeLoop, warmPurposeState,
     // 对话收尾判断：测试可直接调内部函数（不连真 QQ）。
     closeConversationV2, assessClosureV2, closureConfigV2, closureSuppressesWake, noteClosureReopenV2,
-    voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText,
-    voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk,
+    voiceCfg, voiceTriggerBlock, voiceMentionAt, voiceOwnerAt, voiceLastSentAt, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText, readConfigObject, atomicWriteJson,
+    voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
     setMode(value) { currentMode = value; },
     getModelStatus() { return modelStatusState; },
     setReady(value) { dshReady = value; },
@@ -242,7 +256,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   bot.onPrivateMessage(async (event) => {`);
   const timers = new Set();
   const context = vm.createContext({
-    fs, os, path, http, crypto, fileURLToPath, URL, Buffer, AbortSignal, console: { log() {}, error() {} },
+    fs, os, path, http, crypto, fileURLToPath, URL, Buffer, AbortSignal, structuredClone, console: { log() {}, error() {} },
     fetch: fakeFetch,
     // 锁文件探测用（bridge.js 顶层的 consolePortInUse）；
     // 固定桩掉：测试不应该真去 netstat 宿主机。
@@ -275,8 +289,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...callname,
     ...personaIdentity,
     ...dshHealth,
-    synthesizeToFile, createVoiceManagement,
+    synthesizeToFile: synthesizeImpl, createVoiceManagement: voiceManagementImpl, encodeVoiceRecord, readVolcKey, startVoxdCloud, voiceSendBudget, commitQqConfigPatch, transactQqConfig, persistSnowLumaEndpoint, persistToken, voiceGroupPolicies, voiceMentionBlock,
     ...tokenBudget,
+    createQQMemoryBridge, buildCharacterContext, deriveMemoryProviderRouteId,
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,

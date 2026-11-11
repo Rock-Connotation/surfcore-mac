@@ -119,6 +119,36 @@ assert.equal(ark.prompt, '[分享] 测试 标题 带换行');
   assert.ok(logs.some((line) => line.includes('小程序卡片失败')));
 }
 
+// Ambiguous delivery or memory denial must not fall back to a second send.
+for (const failure of [
+  Object.assign(new Error('ambiguous'), { deliveryUnknown: true, code: 'MEMORY_QQ_DELIVERY_UNKNOWN' }),
+  Object.assign(new Error('policy denied'), { code: 'MEMORY_POLICY_DENIED' }),
+  Object.assign(new Error('retirement required'), { code: 'MEMORY_RETIREMENT_REQUIRED' }),
+  Object.assign(new Error('role changed'), { code: 'CHARACTER_EPOCH_STALE' }),
+]) {
+  let calls = 0;
+  const send = createBiliCardSender({
+    getShare: () => ({ cardMode: 'miniapp' }),
+    requestMiniArk: async () => ({ app: 'fixture', meta: {} }),
+    sendGroupSegments: async () => { calls++; throw failure; },
+  });
+  assert.equal(await send('group:1', { bvid: BV, title: 't', pic: 'https://i0.hdslb.com/c.jpg' }), false);
+  assert.equal(calls, 1, 'ambiguous or denied send must not be repeated');
+}
+{
+  const sent = [];
+  const send = createBiliCardSender({
+    getShare: () => ({ cardMode: 'miniapp' }),
+    requestMiniArk: async () => ({ app: 'fixture', meta: {} }),
+    sendGroupSegments: async (_id, segments) => {
+      sent.push(segments[0].type);
+      if (sent.length === 1) throw new Error('definitive application rejection');
+    },
+  });
+  assert.equal(await send('group:1', { bvid: BV, title: 't', pic: 'https://i0.hdslb.com/c.jpg' }), true);
+  assert.deepEqual(sent, ['json', 'text']);
+}
+
 // ── 7. 文本也发不出去 → false（不再发第二张卡）────────────────────────────
 {
   let calls = 0;

@@ -15,6 +15,12 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pet-chat-test-'));
 process.env.DSH_HOME = tmp;
 process.env.USERPROFILE = tmp;
 process.env.SURFCORE_DISABLE_CHARACTER_MIGRATION = '1';
+const qqRoot = path.join(tmp, 'qq-fixture');
+fs.mkdirSync(path.join(qqRoot, 'src'), { recursive: true });
+fs.writeFileSync(path.join(qqRoot, 'src', 'bridge.js'), '');
+const qqConfig = path.join(qqRoot, 'config.json');
+fs.writeFileSync(qqConfig, JSON.stringify({ socialV2: { voice: { tts: { enabled: true, route: 'cloud', cloudProvider: 'volc' } } } }));
+process.env.SURFCORE_ROOT = qqRoot;
 fs.mkdirSync(path.join(tmp, 'surfcore'), {recursive:true});
 fs.writeFileSync(path.join(tmp,'surfcore','config.json'),JSON.stringify({pet:{chat:{enabled:true}}}));
 const {
@@ -24,6 +30,7 @@ const {
   buildPetMemoryEvents,
   createPetChatService,
 } = await import('../lib/pet-chat.js');
+const { withVolcBudgetLock } = await import('../../../src/voice-volc-budget.js');
 
 // ── 语音文本 ────────────────────────────────────────────────────────────────
 assert.equal(clipForVoice('你好呀', 120), '你好呀');
@@ -102,6 +109,25 @@ try {
   const chat = await service.chat({ text: '在吗', modality: 'text' });
   assert.equal(chat.ok, false);
   assert.match(chat.error, /模型服务|就绪/);
+
+  const originalFetch = globalThis.fetch; let requests = 0;
+  globalThis.fetch = async () => {
+    requests++; assert.throws(() => withVolcBudgetLock(qqConfig, () => {}), e => e.code === 'VOICE_VOLC_BUDGET_BUSY');
+    return new Response(Buffer.alloc(48));
+  };
+  try {
+    const before = await service.poll({ since: null, waitMs: 0 });
+    const blocked = await service.proactive({ text: '你好', modality: 'voice' });
+    assert.equal(blocked.ok, true); assert.equal(blocked.voice.code, 'VOICE_PET_VOLC_UNSUPPORTED'); assert.ok(blocked.voice.hint);
+    assert.equal(requests, 0, '火山选择时桌宠不得调用旧云');
+    const event = await service.poll({ since: before.cursor, waitMs: 0 });
+    assert.equal(event.events.at(-1).voice.code, 'VOICE_PET_VOLC_UNSUPPORTED'); assert.ok(event.events.at(-1).voice.hint);
+    assert.match(service.status().lastError, /桌宠暂不支持火山语音/);
+    const cfg = JSON.parse(fs.readFileSync(qqConfig)); cfg.socialV2.voice.tts.cloudProvider = 'voxd';
+    fs.writeFileSync(qqConfig, JSON.stringify(cfg));
+    const allowed = await service.proactive({ text: '旧云测试', modality: 'voice' });
+    assert.equal(allowed.voice.ok, true); assert.equal(requests, 1); assert.equal(service.status().lastError, '');
+  } finally { globalThis.fetch = originalFetch; }
   console.log('pet-chat tests OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

@@ -1,0 +1,11 @@
+# Bili V2 official public-set read transport
+
+This implements the transport portion of the frozen public-source-set contract in `2026-11-10-memory-bili-host-contract.md`. Host preflight inspects 1–31 exact video locators with fresh NAV and the official view endpoint. It returns canonical BV, aid and author identifiers, without video bodies or approval claims. The accepted video metadata helper rejects unsafe numeric identifiers and invalid publication dates.
+
+For each job the transport rederives the entire public-source-set DTO using the actual character, epoch, provider route and fresh NAV account. It verifies the canonical selectors, aliases and dynamic output together. Each exact video or comment read selector is passed as top-level request fields and maps only to its own approved source alias. The output alias remains the public dynamic conversation; readable comments grant no comment write authority. Legacy physical scopes remain supported.
+
+Feed and debrief return bounded, approved locator JSON only. Hydration independently fetches official originals; videos carry text-only metadata, physical BV/aid and author, while comments retain their official coordinates and body. Revalidation refetches registered sources and rejects changed or revoked originals. These reads neither invoke CLI/media processing nor assert video or audio coverage. Errors provide `ok`, `code`, `error` and `hint` without returning credentials.
+
+A separate internal helper keeps safe descriptor copying and exact set verification out of the existing transport. The alternative of widening physical conversation access would weaken per-member approval and is not used. Rollback is to restore `plugins/surfcore/lib/bili-v2-official-transport.mjs` from the saved original and remove the newly introduced helper after preserving its contents; no user data migration is involved.
+
+Verification uses the unchanged 76-case official transport script and the focused public-read script with mocked official responses. The existing regression includes an isolated loopback redirect fixture. Real Host/native integration and any production provider/platform interaction are outside this transport check and remain the parent integration owner's responsibility.
