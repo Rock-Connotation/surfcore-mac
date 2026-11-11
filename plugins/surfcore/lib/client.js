@@ -4438,6 +4438,26 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h(Btn, { kind: "qbw-btn2", onClick: () => restore(b.name), disabled: !!busy || !ready }, "恢复")))) : null);
     }
 
+    function MemoryV2Panel({ initialStatus, roleKey, onStatus }) {
+      const [Component, setComponent] = useState(null);
+      const [error, setError] = useState("");
+      const [attempt, setAttempt] = useState(0);
+      useEffect(() => {
+        let active = true;
+        import("/dsh-surfcore/api/memory-v2/panel-client")
+          .then((module) => {
+            if (typeof module.createMemoryV2Panel !== "function") throw new Error("invalid memory panel module");
+            if (active) { setComponent(() => module.createMemoryV2Panel(React, { api, Btn, fmtTime })); setError(""); }
+          })
+          .catch(() => { if (active) setError("MEMORY_PANEL_NOT_READY：V2 管理入口尚未接通；可重载入口，或继续使用当前 V1 记忆卡。"); });
+        return () => { active = false; };
+      }, [attempt]);
+      if (Component) return h(Component, { initialStatus, roleKey, onStatus });
+      return h("div", { className: "qbw-card", role: error ? "alert" : "status" },
+        error || "正在加载 V2 记忆管理…",
+        error ? h(Btn, { kind: "qbw-btn2", onClick: () => { setError(""); setAttempt((n) => n + 1); } }, "重载 V2 入口") : null);
+    }
+
     // ── 记忆卡（角色的长期记忆）────────────────────────────────────────────
     // 和下面「双向脱敏同步」分开：那边是 QQ⇄B站 搬运，这边是她自己的记忆 +
     // 清晰度 / 遗忘 / 容量规则。容量 80/90/100% 时主界面还会弹窗提醒。
@@ -5498,6 +5518,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     function MemoryTab({ qq, unified, setUnified, overview, busy, setBusy, toast, reload }) {
       const [data, setData] = useState(null);
       const [card, setCard] = useState(null);
+      const [memoryV2Backend, setMemoryV2Backend] = useState(overview?.memoryV2?.backend || "v1");
       const [fullVersion, setFullVersion] = useState(0);
       const [err, setErr] = useState("");
       const load = useCallback(async () => {
@@ -5535,7 +5556,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       };
       const status = data?.status ?? overview?.memory ?? {};
       return h("div", null,
-        h(MemoryCardPanel, { view: "summary", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }),
+        h(MemoryV2Panel, { initialStatus: overview?.memoryV2, roleKey: overview?.character?.active?.id || overview?.character?.id || "", onStatus: (status) => setMemoryV2Backend(status.backend) }),
+        memoryV2Backend !== "v2" ? h(MemoryCardPanel, { view: "summary", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }) : null,
         h("div", { className: "qbw-group" }, "双向脱敏同步（QQ ⇄ B站）", h("small", null, "只搬运公开、脱敏后的近况；和上面的记忆卡不是一回事")),
         h("div", { className: "qbw-dangerbox" },
           h("b", null, "隐私红线（锁定，不可关）："),
@@ -5571,8 +5593,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h(Btn, { kind: "qbw-btn2", onClick: scan, disabled: !!busy }, "扫描身份候选"),
               h(Btn, { kind: "qbw-btn2", onClick: purge, disabled: !!busy }, busy === "purge" ? "清理中…" : "清空 QQ→B站 记忆")))),
         h(AdvancedSettings, { note: "记忆卡规则 / 最近记忆 / 全量卡 / 同步范围 / 注入预览 / 审计：展开后同样可改" },
-          h(MemoryCardPanel, { view: "details", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }),
-          h(FullMemoryCardPanel, { reloadKey: fullVersion, busy, toast }),
+          memoryV2Backend !== "v2" ? h(MemoryCardPanel, { view: "details", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }) : null,
+          memoryV2Backend !== "v2" ? h(FullMemoryCardPanel, { reloadKey: fullVersion, busy, toast }) : null,
           h(Section, { title: "同步范围与隐私参数", note: "QQ → B站", collapsible: false },
             h(Row, { label: "回看天数", hint: "只读最近 N 天的公开群消息" },
               h("input", { className: "qbw-input", type: "number", min: 1, max: 90, value: qqToBili.lookbackDays ?? 7, onChange: (e) => setQqToBili("lookbackDays", Number(e.target.value)) })),
@@ -7108,7 +7130,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     exports.BILI_FIELDS = BILI_FIELDS;
     exports.QQ_BILI_SHARE_FIELDS = QQ_BILI_SHARE_FIELDS;
     // 仅供 Node 契约测试验证路径归一化；浏览器运行时不使用。
-    exports.__test = { pathKeys, setPath, PerceptionJobCard, PersonaEditor, CharactersTab, personaEditorKey, personaIdentityMatches };
+    exports.__test = { pathKeys, setPath, PerceptionJobCard, PersonaEditor, CharactersTab, personaEditorKey, personaIdentityMatches, MemoryCardPanel, MemoryV2Panel, CSS };
     return module.exports;
   },
 });

@@ -480,12 +480,13 @@ export class NodeApiClient extends AbstractApiClient {
    * 退役会话前先移除 pending inbox，再取消正在运行的 turn。
    * DSH 的 session/cancel 保留 inbox，archiveSession 只隐藏会话，均不能代替清队列。
    */
-  async stopSessionWork(sessionId, { signal, timeoutMs = 8000 } = {}) {
+  async stopSessionWork(sessionId, { signal, timeoutMs = 8000, verify = false } = {}) {
     if (typeof sessionId !== 'string' || !sessionId) throw new Error('sessionId is required');
     const deadline = AbortSignal.timeout(timeoutMs);
     const sig = signal ? AbortSignal.any([signal, deadline]) : deadline;
     let removed = 0;
     let failure;
+    let sessionMissing = false;
     try {
       // 为取消当前 turn 留出时间，即使 control 流没有及时返回 baseline。
       const queueSignal = AbortSignal.any([sig, AbortSignal.timeout(Math.min(5000, timeoutMs))]);
@@ -504,12 +505,17 @@ export class NodeApiClient extends AbstractApiClient {
     }
     try {
       const response = await this.callUnary('session/cancel', { sessionId }, sig);
-      if (!response.result?.ok && response.result?.error?.code !== 'session/not-found') unwrap(response, 'session/cancel');
+      sessionMissing = response.result?.error?.code === 'session/not-found';
+      if (!response.result?.ok && !sessionMissing) unwrap(response, 'session/cancel');
     } catch (error) {
       failure ??= error;
     }
     if (failure) throw failure;
-    return { removed };
+    if (verify && !sessionMissing) {
+      const remaining = await this._readSessionQueue(sessionId, sig);
+      if (remaining.length) throw Object.assign(new Error('DSH queue is not empty after cancellation.'), { code: 'MEMORY_SESSION_RETIRE_PENDING' });
+    }
+    return verify ? { removed, queueEmpty: true, cancelled: true, sessionMissing } : { removed };
   }
 
   /**
