@@ -4435,3 +4435,20 @@ OneBot容器运行不代表HTTP/WS已监听；账号在线不代表群白名单�
 ## 156. QQ绑定的会话被归档会在模型调用前blocked（2026-11-10）
 
 App0.2.2-rc.1的ArchivedSessionGate会拒绝归档会话及其后代的agent/pre-step；旧代码注释“archiveSession只隐藏”不能用于该版本的运行判断。群@已到达、OneBot在线、dshReady和模型选择成功仍可能完全不回复。先用官方只读workspace/follow查目标是否归档，session/page看turn/end的blocked，session/list核对running；不要凭桥接pendingWakeKey认定模型仍在生成，也不要因此放宽语音/白名单。需要保留历史时，备份后用官方unarchiveSession恢复这个绑定会话，再通过所有权检查重连桥接订阅；不删聊天、不重置整个profile、不绕过Host归档门。原群网关读回发送回执后才称恢复；完整证据及回滚见11月10日语音case的19:49段。本轮只做运行时恢复，未实现自动归档修复策略。
+
+
+## QQ V2 桥接在线却不回复：发现文件和 Native 装配必须同源（2026-11-11）
+
+Host写`memory-v2/qq.json`而QQ默认读`qq-bridge.json`，会在模型前报`MEMORY_DISCOVERY_INVALID`。两者数据根相同，不要改根目录或chmod放宽。仅修文件名仍会被默认拒绝的session safety挡住：必须装配真实NativeOwner/来源账本/预算/发送租约，不能恒真guard或退V1。集成测试使用生产writer+生产QQ工厂，禁止两端在夹具里手工对齐另一份契约。`/api/status`在V2也要保留root/OneBot和失败，管理UI区分进程存活与可回复，否则既误导用户也破坏所有权启停检查。完整证据、回滚及发布块见[case](cases/2026-11-11-qq-v2-native-reply.md)。
+
+
+### QQ授权确认无回复：核对策略回读与预览过期
+
+桥接在线不代表授权已落盘。先读取当前角色revision/policies与原操作回执；过期预览（默认120秒）会在绑定业务请求前拒绝，因此无业务回执不能单凭推测认定具体错误。管理面板现在展示有效期、将失败/待核对结果滚入视口，共享控制成功后回读状态；保留服务端TTL与明确确认，不自动续期或批准。详见2026-11-11 QQ V2案例。
+
+
+### QQ Source生产适配器同步释放与测试隔离
+
+生产Memory Host的release同步返回对象，不能用adapter.release(...).catch假定Promise；使用await兼容同步/异步。QQ来源运行时和Core桥接清理已统一，真实同步适配器及原失败保留断言必须覆盖；测试不再人为async化release。
+
+任何导入character-persona/context/QQ Host的测试，须在模块初始化前隔离DSH_HOME；仅把记忆service stateDir指向fixture并不能保护真实角色目录。QQ source fixture改为先设隔离home再动态导入项目模块，总runner为每个子脚本隔离home。已有Alpha测试污染保留取证并按正式角色切换恢复，不允许用旧index/current覆盖用户新增数据。

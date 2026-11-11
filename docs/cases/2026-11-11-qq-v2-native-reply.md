@@ -71,3 +71,61 @@ case：docs/cases/2026-11-11-qq-v2-native-reply.md。
 失败：概览“回复受阻”+code+检查权限入口；缺finish/超时/撤销/漂移不发，未知发送不重发，均有失败断言。
 未验证：以case最终运行验收段为准；本轮无公开发布。
 ```
+
+### 2026-11-11 23:13 重启后续验收
+
+用户报告已重启。新App Host为新进程，但旧桥接PID36377仍是22:11启动的孤儿，dshReady=false且仍提供旧精简状态。原程序已原子移入备份，因此旧进程cwd也指向program-previous；第一次所有权检查拒绝后未强杀，随后用保存的atomic-install回执确定原目录，精确核对cwd、exe、argv、锁文件及3100监听归属，才SIGTERM单进程。Host监督器随后自动启动新桥接PID46440（23:13），正确加载新目录、连接新Host；OneBot connected/accountOnline/good及dshReady均true、发现失败消失。主代理额外CLI start返回owner-unverified，未重复启动或结束新进程。进一步只读核验确认该CLI环境选择用户目录Node，而真实Host选择App内置Node，路径不同使严格所有权校验拒绝；官方Host相同的start入口随后返回ok=true/already=true，证明原生管理环境的进程归属正确。
+
+原生App实际打开SurfCore概览可见新状态和PID；进入记忆→身份与权限、展开下拉确认4候选，选当前故障私聊生成预览，尚未执行。当前实际模型magpie / workbuddy/deepseek-v4.1-flash，policies仍0。已请求用户自行确认此私聊或明确授权代理确认，再从该QQ发送新消息；不批准群/其他私聊、不人工补发旧消息。真实模型及QQ发出回执继续待验。
+
+### 原生授权界面复验
+
+实际点击进入SurfCore→记忆→身份与权限，展开候选并选中当前故障私聊，选“仅此会话与所示精确模型”，生成“共享范围预览·尚未执行”，确认按钮留给用户。用户选择自行确认后发消息；其后误关界面，按用户新指令已重新打开同一预览，仍未代确认。
+
+新Host的真实qq scope接口对错误角色的typed qqReply返回CHARACTER_EPOCH_STALE，证明已装配Native回调且错误角色被拒；0模型/0QQ外发。真实QQ的最终验收仍依赖用户完成授权和新消息。
+
+授权预览重新打开后，额外用原生窗口截图确认：确认按钮最初在当前滚动区下方；已将蓝色“确认执行共享范围”滚到窗口中央。用户尚未执行批准时，实时只读轮询仍policies=0、无Native发送回执；未宣称真实回复完成。
+
+
+### 用户确认后仍未回复：审批结果可见性补修
+
+真实新入站已在桥接活动中出现，但仍为 MEMORY_POLICY_DENIED；Host revision=0/policies=0，原预览编号查询无已提交业务回执。确认没有落到策略表；现存证据不足以断定用户最后一次点击的具体 HTTP 错误，不归咎用户操作。
+
+源码确认预览 TTL 为120000ms；界面既不展示有效期，提交时又立即撤掉底部确认卡，失败只写顶部提示，当前滚动位置容易看不到。采用原控制器返回 expiresAt、面板展示期限并在本地过期时拒绝提交、错误/待核对/成功提示滚入可见区并聚焦、共享授权/撤回成功后读取真实状态。保留服务端 TTL/CAS/角色检查和未知结果只查原回执；不自动续期或批准。另一方案延长/取消 TTL，只能掩盖过期且放大陈旧预览风险，未采用。
+
+影响面：Host 管理控制器和其唯一管理面板；读取新状态不会花模型费用或发送QQ。面板文件由管理端按请求读取，但渲染器 ES 模块缓存须重新加载才能获得新UI；控制器新元数据须Host重新加载，旧Host仍可配合面板两分钟提示/错误可见性/提交后回读。不能把磁盘安装当作Host已加载。失败路径测试覆盖本地过期零提交、服务端过期错误code/hint、反馈滚动与焦点，以及真实策略状态回读；没有降低授权边界。代码回退用本次补修前备份，策略与新数据保留。
+
+当前原生CUA能读窗口，但点击连续报 noWindowsAvailable，已尝试重绑定名称/路径/bundle及重置会话；未用替代UI自动化绕过。已请求用户手动打开身份与权限页；仍待有效预览确认、策略落盘、实际模型完成和QQ ACK。
+
+发布交接补充：将本案例审批UI补修与QQ Native回复修复一并审阅；不改版本/不发布。有效期提示与失败可见性可以降低误判，但真实QQ回复尚未闭环，不能作为已恢复交付。
+
+
+审批补修最终门禁：官方Node24 audit192/192、完整插件npm test（含33个Memory V2插件脚本）exit0；补修前协议17通过且本次没有协议/桥接代码再变。git diff --check通过。2026-11-11 23:44，仅更新已安装程序中的panel、management和两份制品元数据，候选tree=e99b1863678279cda4d090c5314cc8fb16f13279；399项逐文件一致、4份受保护用户文件与账本前后哈希不变。备份 `~/.dsh/_backups/qq-approval-ui-20261111T154434674Z`。未重启Host或渲染器；旧Host控制器仍运行，新panel文件已可由按请求读取入口提供，但当前renderer模块缓存未重载。需用户保存草稿后重新加载窗口/应用，取得新界面，按原定单私聊/精确模型重新预览并确认；不要求批准群或其他会话。真实model/QQ发送仍未验收。
+
+
+### 继续确认后的真实错误已捕获
+
+用户再次报告已点击并保留页面。实时Host仍revision0/policies0；原生AX明确显示 MEMORY_PREVIEW_REQUIRED（记忆管理请求未完成），不再仅为过期猜测。预览由代理先生成，用户经聊天往返后才点击，超过两分钟TTL；旧renderer未加载新反馈代码，错误仍在顶部。停止重复同一手动交接方式：已核对官方身份路由仍magpie / workbuddy/deepseek-v4.1-flash，准备只针对私聊1558596500的新预览，并询问用户是否明确改为由代理即时完成同一范围。当前尚未获代确认同意，未提交授权。
+
+
+### 用户明确授权后的单私聊策略落盘
+
+用户明确回复“同意，由你立即完成上述范围”。立即现读官方QQ身份确认仍为magpie / workbuddy/deepseek-v4.1-flash，再现读角色alpha/epoch7、revision0、policies0；生成新operationId并同进程预览→提交，没有复用过期预览。原操作265f8813-7b3d-4545-adbf-3440da5b89df的提交与独立查询均ok=true/sourceState=committed/operationState=completed/controlRevision=1/appliedControlRevision=1/applied=true。状态回读revision1、恰好一条policy，范围只qq-private-1558596500/exact-model。完整非密钥回执保存在任务外部证据包authorized-private-grant-result.json。没有批准群、其他私聊或本机伙伴。桥接已读到controlRevision1、dshReady=true，当前角色来源仍0；已请求用户发授权后一条新消息，继续验收真实模型和QQ ACK。
+
+
+### 更正：新入站实际会话为2125387192
+
+授权后一条新消息（23:54:55）的真实活动key是private:2125387192；23:31:04那条同样为private:2125387192，而历史22:xx失败是private:1558596500。此前代理误将历史key当作当前新消息，授权对象选择错误；上文“当前故障私聊155…”及23:31归属应按本段纠正，不能据此宣称QQ恢复。现读官方登录账号787661104，允许私聊两项均存在；当前已批准的155权限并不覆盖212，因此政策拒绝符合安全契约。0来源/0模型/0发送。
+
+准备了撤回155的既有policy与仅批准212/exact-model的两项预览，均成功；已向用户说明对象错误并请求明确替换同意。未擅自新增212权限或撤回用户刚批准的权限；最终计划只保留实际发送账号的一条策略。
+
+
+### 2026-11-12 Native运行时与角色污染的继续根治
+
+正确账号212的授权已由用户批准，撤回155原操作35f91bae-61b6-4835-a562-7a7429e534f7确认applied/revision2，212新操作0c441a91-ddf7-4706-9a3b-435393c00991确认applied/revision3；历史撤销记录仍保留，因此policies数组长度不是有效授权数。面板提交后回读不再把历史策略总数称为已批准数量，展示修订并让用户核对逐项状态。
+
+新入站23:58:00已入库（sources1），随后Native返回QQ_SOURCE_RUNTIME_ERROR。查明Source Runtime使用adapter.release(...).catch，但生产Host release同步返回对象；异常清理和退休均可TypeError并掩盖原始错误。测试人为把release包装为async，遮蔽了生产契约。改为共用await清理，QQ Core客户端同类路径一起支持同步/异步释放；测试去掉async伪装，并新增准备失败原code/hint必须保留的断言。正式SDK隔离闭环重新通过：3 fake calls/45 fake tokens/1 productionHostReply/0 external network/0 real QQ writes。真实原始推理错误仍需新程序加载后核对，不能认为已完全恢复。
+
+另一项已证实的测试污染：该fixture在导入静态角色路径后，直接createCharacter/switchCharacter操作真实角色目录，未设DSH_HOME。角色指针目前alpha/epoch7（mtime20:17:35）；18:00备份已alpha/epoch5，污染早于本轮最新门禁；本轮23:43仍新增alpha-121到124。修复fixture在所有项目模块动态导入前设置独立DSH_HOME，MemoryV2总runner亦为每个子脚本建立隔离home；后续整个audit/npm test/协议均显式隔离。不得再以全绿掩盖用户目录写入风险。
+
+原角色独立只读取证：历史11-07 current.json实物id=app/小白鲸/epoch4；当前app元数据名=红豆。现app/persona.md3538字节，SHA256=293d556292ce3ab7fd6530b10f832e9945bac6ccfe748064d8e75a9cf31cb670，与18:00备份一致。只证明人格文件一致，不代表全部记忆已验证。采用正式角色切换产生新epoch，保留所有Alpha及新来源；不复制旧指针、不回滚epoch或整份index。恢复与重新审批仍需用户明确同意后执行。

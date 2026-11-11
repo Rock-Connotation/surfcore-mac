@@ -32,6 +32,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
   const directory = path.join(stateDir, 'memory-v2', 'qq-producer');
   const latest = new Map(), history = new Map(), active = new Map(), failures = new Map(), sendLeases = new WeakMap();
   let sourceChain = Promise.resolve(), observedV2 = false;
+  async function release(handle) { try { await client.release(handle); } catch {} }
   function routing() {
     try {
       const route = getRouting();
@@ -136,7 +137,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     } catch (error) {
       const result = record && !durableRecord ? problem('MEMORY_SPOOL_METADATA_FAILED', 'The QQ source queue has no confirmed durable metadata receipt.', 'Inspect protected producer segments and the original registration receipt before retrying; keep the original files.') : safeError(error); if (input.key) failures.set(input.key, result);
       return durableRecord ? { ...result, acceptance: 'queued_durable', sourceState: 'pending' } : { ...result, acceptance: 'rejected', sourceState: 'not_saved' };
-    } finally { if (captured?.handle) await client.release(captured.handle).catch(() => {}); }
+    } finally { if (captured?.handle) await release(captured.handle); }
   }
   function captureSource(input) {
     let role;
@@ -164,7 +165,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
           if (allowed?.ok) selected.push(entry);
           else if (['MEMORY_EVIDENCE_DENIED', 'MEMORY_SOURCE_STALE'].includes(allowed?.code)) unavailableHistory.push({ segmentId: entry.segmentId, code: allowed.code });
           else return allowed ?? problem('MEMORY_MANIFEST_BINDING_FAILED', 'Retained-history authorization did not complete.');
-        } finally { await client.release(probe.handle).catch(() => {}); }
+        } finally { await release(probe.handle); }
       }
       selected.push(current);
       const refs = selected.flatMap((entry) => entry.refs);
@@ -178,13 +179,13 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
       const currentText = sourceText(current), retrievalQuery = typeof query === 'string' ? redactContent(query, { scope: 'qq' }) : currentText;
       const prepared = await prepareContext({ characterId: role.id, characterEpoch: role.epoch, scene: 'qq', audience: { channel: 'qq', conversationKey: current.sourceStamp.conversationKey }, includeLife: false, includePurpose: false }, { adapter: client, handle: captured.handle, query: retrievalQuery }); checkRole(role);
       if (!prepared?.ok) return prepared ?? problem('MEMORY_PREPARATION_FAILED', 'QQ memory preparation did not complete.');
-      const previous = active.get(key); if (previous?.handle) await client.release(previous.handle).catch(() => {});
+      const previous = active.get(key); if (previous?.handle) await release(previous.handle);
       const packet = { handle: captured.handle, preparedHandle: prepared.preparedHandle, role, route: digest(route.descriptor ?? route), sourceStamp: captured.sourceStamp, inputManifest: prepared.inputManifest, source: current, selectedSources: structuredClone(selected) };
       active.set(key, packet); captured = null;
       const lines = selected.map((entry) => `${entry.sourceFacts.direction === 'outbound' ? '角色' : entry.sourceStamp.sourceAccountKey}：${sourceText(entry)}`);
       return { ...prepared, backend: 'v2', unavailableHistory, text: `${prepared.text}\n\n【已授权最近对话与当前输入】\n${lines.join('\n')}\n\n请根据当前输入回应；只使用本次已授权材料。`, sessionStamp: { ...packet.sourceStamp, routeGeneration: packet.route }, providerAdmissionCoverage: 'submission-observed' };
     } catch (error) { return safeError(error); }
-    finally { if (captured?.handle) await client.release(captured.handle).catch(() => {}); }
+    finally { if (captured?.handle) await release(captured.handle); }
   }
   async function validate(key, { prepared = false } = {}) {
     try {
@@ -283,7 +284,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
       const lease = Object.freeze({}); sendLeases.set(lease, { key, role, facts, captured, registered }); captured = null;
       return { ok: true, backend: 'v2', lease };
     } catch (error) { return safeError(error); }
-    finally { if (captured?.handle) await client.release(captured.handle).catch(() => {}); }
+    finally { if (captured?.handle) await release(captured.handle); }
   }
   function recordSent(lease, { text, messageId = null, deliveryState = 'delivery_unknown' } = {}) {
     const approved = sendLeases.get(lease);
@@ -292,7 +293,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     const task = sourceChain.then(() => recordSource({ key: approved.key, ...approved.facts, text, platformMessageId: messageId, deliveryState, expectedCharacter: approved.role }, approved));
     sourceChain = task.catch(() => {}); return task;
   }
-  async function retire(key, { preserveSources = false } = {}) { const packet = active.get(key); active.delete(key); if (!preserveSources) { latest.delete(key); history.delete(key); } if (packet?.handle) await client.release(packet.handle).catch(() => {}); }
+  async function retire(key, { preserveSources = false } = {}) { const packet = active.get(key); active.delete(key); if (!preserveSources) { latest.delete(key); history.delete(key); } if (packet?.handle) await release(packet.handle); }
   async function drainPending(key) {
     await sourceChain;
     const records = [];
@@ -313,7 +314,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
       }
       const captured = await client.capture(record.sourceStamp.conversationKey, { sourceFacts: record.sourceFacts });
       if (!captured.ok) { outcomes.push(captured); continue; }
-      try { outcomes.push(await flush(record, captured.handle)); } finally { await client.release(captured.handle).catch(() => {}); }
+      try { outcomes.push(await flush(record, captured.handle)); } finally { await release(captured.handle); }
     }
     return { ok: outcomes.every((result) => result.ok), outcomes };
   }

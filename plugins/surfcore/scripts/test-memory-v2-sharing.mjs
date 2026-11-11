@@ -229,14 +229,14 @@ const checks = [];
   try { const response = await f.reply(); assert.equal(bad(response.body).code, 'DOUYIN_CHAT_MODEL_METADATA_REQUIRED'); assert.equal(f.calls, 0); assert.equal(response.body.sourceState, 'committed'); checks.push('missing-trusted-metadata-fails-before-model'); }
   finally { await f.close(); }
 }
-{
+for (const retirementAcknowledged of [false, true]) {
   let entered, finish;
   const started = new Promise(resolve => { entered = resolve; });
   const f = await fixture({ model: async ({ signal }) => { entered(); return new Promise(resolve => { finish = () => resolve({ text: signal.aborted ? '取消后不得保存。' : '正常回复。', finishReason: 'stop' }); }); } });
   try {
     const pending = f.reply(); await started;
     let transitioned = false;
-    const transition = f.sharing.withTransition(() => { transitioned = true; return { ok: true }; });
+    const transition = f.sharing.withTransition(() => { transitioned = true; return { ok: true }; }, { retirementAcknowledged });
     await new Promise(resolve => setImmediate(resolve)); assert.equal(transitioned, false, 'barrier must await model settlement');
     finish(); bad((await pending).body); good(await transition); assert.equal(transitioned, true);
     assert.equal(f.sharingStore.read('alpha').filter(row => row.kind === 'answer').length, 0);

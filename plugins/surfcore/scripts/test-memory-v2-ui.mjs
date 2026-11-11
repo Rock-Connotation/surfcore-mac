@@ -26,6 +26,46 @@ function fixture(handle = async () => base()) {
 }
 
 // A server-side uncertain commit must retain the concrete preview identity, even after a double click.
+// Expired previews cannot submit; feedback is brought back into the user's viewport.
+{
+  const f = fixture(async (path, options) => path.includes('/status') ? base() : { ...f.preview(options.body), expiresAt: 1 });
+  await f.ready(); await f.click('预览备份');
+  assert.match(f.text(), /本预览有效至/);
+  let scrolled = 0, focused = 0;
+  f.nodes().find(n => n.props['aria-label'] === '记忆操作结果').props.ref.current = { scrollIntoView: () => scrolled++, focus: () => focused++ };
+  await f.click('确认执行备份');
+  assert.match(f.text(), /本次未提交.*MEMORY_PREVIEW_REQUIRED.*重新预览/s);
+  assert.equal(f.calls.filter(c => c.body?.action === 'backup').length, 0);
+  assert.equal(scrolled, 1); assert.equal(focused, 1);
+}
+// The server remains authoritative if its preview expires before the local clock does.
+{
+  const f = fixture(async (path, options) => path.includes('/status') ? base() : options.body.action === 'preview_backup'
+    ? { ...f.preview(options.body), expiresAt: Date.now() + 120000 }
+    : { ok: false, code: 'MEMORY_PREVIEW_REQUIRED', error: '预览已失效', hint: '重新预览并明确确认' });
+  await f.ready(); await f.click('预览备份'); await f.click('确认执行备份');
+  assert.match(f.text(), /预览已失效.*MEMORY_PREVIEW_REQUIRED.*重新预览并明确确认/s);
+  assert.equal(f.calls.filter(c => c.body?.action === 'backup').length, 1);
+  assert.equal(f.button('预览备份').props.disabled, false);
+}
+// Approval success refreshes actual policy state, rather than leaving a stale zero-policy screen.
+{
+  let committed = false;
+  const current = () => ({ ...base(), revision: committed ? 8 : 7, policies: committed ? [{ id: 'old', label: '已撤销' }, { id: 'p', label: '指定私聊共享' }] : [], approvedConversations: [{ id: 'private-one', label: '指定私聊', processorScopes: [{ id: 'exact-model', label: '指定模型' }] }] });
+  const f = fixture(async (path, options) => {
+    if (path.includes('/status')) return current();
+    if (options.body.payload.preview) return { ...f.preview(options.body), expiresAt: Date.now() + 120000 };
+    committed = true; return { ok: true, state: 'committed', operationId: options.body.operationId };
+  });
+  await f.ready(); await f.click('身份与权限');
+  f.nodes().filter(n => n.type === 'select')[0].props.onChange({ target: { value: 'private-one' } }); f.render();
+  f.nodes().filter(n => n.type === 'select')[1].props.onChange({ target: { value: 'exact-model' } }); f.render();
+  await f.click('预览共享范围'); await f.click('确认执行共享范围');
+  assert.match(f.text(), /已确认提交共享范围.*修订 8.*指定私聊共享/s);
+  assert.doesNotMatch(f.text(), /已批准共享 2 条/);
+  assert.equal(f.calls.filter(c => c.path.includes('/status')).length, 2);
+  assert.equal(f.calls.filter(c => c.body?.action === 'configure_policy' && !c.body.payload.preview).length, 1);
+}
 {
   let commit;
   const f = fixture(async (path, options) => {

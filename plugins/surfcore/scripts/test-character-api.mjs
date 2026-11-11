@@ -9,9 +9,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-character-api-'));
-const tempDsh = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-character-api-dsh-'));
+const tempDsh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-character-api-dsh-')));
 fs.mkdirSync(path.join(tempRoot, 'src'), { recursive: true });
 fs.mkdirSync(path.join(tempRoot, 'roles'), { recursive: true });
 fs.mkdirSync(path.join(tempDsh, 'surfcore'), { recursive: true });
@@ -31,9 +32,10 @@ const { apply } = await import('../lib/index.js');
 const store = await import('../../../src/character-persona.js');
 
 const routes = [];
+let modelCalls = 0;
 const ctx = {
   webServer: { register(route) { routes.push(route); return () => {}; } },
-  get(name) { return name === 'connection' ? { requestRejection: () => false } : null; },
+  get(name) { if (name === 'llm') return { resolveModelInfo: async (provider, id) => ({ provider, id }), prepareCall: async () => { modelCalls++; throw new Error('A denied read cannot call the model'); } }; if (name === 'webServer') return { protocol: 'http:', port: 58750 }; return name === 'connection' ? { requestRejection: () => false } : null; },
   effect(fn) { fn(); return () => {}; },
   sessionController: {
     inspect: async () => ({ events: [] }),
@@ -58,6 +60,7 @@ function fakeReq(method, url, body) {
   const req = new EventEmitter();
   req.method = method;
   req.url = url;
+  req.socket = { remoteAddress: '127.0.0.1' };
   req.headers = { host: '127.0.0.1:58750', ...(body ? { 'content-type': 'application/json' } : {}) };
   if (body) {
     process.nextTick(() => {
@@ -172,6 +175,27 @@ try {
   assert.equal(deleted.status, 200, JSON.stringify(deleted.data));
   const listAfterDelete = await invoke('GET', '/characters');
   assert.equal(listAfterDelete.data.characters.some((item) => item.id === createdA.data.character.id), false);
+
+  // A denied sidebar read must not permanently prevent a trusted character switch.
+  const memoryStatus = await invoke('GET', '/memory-v2/status');
+  assert.equal(memoryStatus.data.ok, true, JSON.stringify(memoryStatus.data));
+  const control = new DatabaseSync(path.join(tempDsh, 'surfcore', 'memory-control.sqlite'));
+  const { writeMemoryRouting } = await import('../../../src/core/memory-v2-routing.js');
+  control.prepare("UPDATE state SET activeBackend='v2',shadowEnabled=1 WHERE id=1").run();
+  assert.equal(writeMemoryRouting({ stateDir: path.join(tempDsh, 'surfcore'), status: { ...memoryStatus.data, activeBackend: 'v2' } }).ok, true);
+  const policiesBefore = control.prepare('SELECT * FROM policies ORDER BY policyId').all();
+  const deniedSidebar = await invoke('GET', '/douyin/companion-sharing');
+  assert.equal(deniedSidebar.data.code, 'MEMORY_POLICY_DENIED', JSON.stringify(deniedSidebar.data));
+  const switchedWithoutLocalGrant = await invoke('POST', '/characters', { action: 'load', id: createdB.data.character.id });
+  assert.equal(switchedWithoutLocalGrant.data.ok, true, JSON.stringify(switchedWithoutLocalGrant.data));
+  assert.equal(store.readCurrentCharacter().id, createdB.data.character.id);
+  assert.deepEqual(control.prepare('SELECT * FROM policies ORDER BY policyId').all(), policiesBefore);
+  assert.equal(modelCalls, 0);
+  const deniedAfterSwitch = await invoke('GET', '/douyin/companion-sharing');
+  assert.equal(deniedAfterSwitch.data.code, 'MEMORY_POLICY_DENIED', JSON.stringify(deniedAfterSwitch.data));
+  control.close();
+
+
 } finally {
   try { fs.rmSync(tempRoot, { recursive: true, force: true }); } catch {}
   try { fs.rmSync(tempDsh, { recursive: true, force: true }); } catch {}

@@ -231,7 +231,7 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
     if (old) ensure(old.action === action && old.actualDigest === actualDigest && canonical(old.payload) === canonical(payload), 'MEMORY_OPERATION_CONFLICT');
     if (old) ensure(canonical(old.cut) === canonical(cut), 'MEMORY_PREVIEW_STALE');
     if (isPreview) {
-      if (old) return { ok: true, revision: body.expectedRevision, payloadDigest: actualDigest, preview: old.preview };
+      if (old) return { ok: true, revision: body.expectedRevision, payloadDigest: actualDigest, preview: old.preview, expiresAt: old.expiresAt };
       ensure(previews.size + planning.size < 128, 'MEMORY_PREVIEW_LIMIT');
       const planningKey = canonical({ action, payload, cut });
       if (planning.has(body.operationId)) { ensure(planning.get(body.operationId) === planningKey, 'MEMORY_OPERATION_CONFLICT'); throw failure('MEMORY_PREVIEW_BUSY'); }
@@ -246,8 +246,9 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
         const after = checked(await wait(role, memoryService.getStatus()));
         ensure(after.revision === core.revision && after.storeGeneration === core.storeGeneration, 'MEMORY_PREVIEW_STALE');
         const visible = cleanPreview(planned, preview.preview);
-        previews.set(body.operationId, { cut, action, payload, actualDigest, planned, coreDigest: preview.previewDigest, preview: visible, expiresAt: now() + previewTtlMs });
-        return { ok: true, revision: body.expectedRevision, payloadDigest: actualDigest, preview: visible };
+        const expiresAt = now() + previewTtlMs;
+        previews.set(body.operationId, { cut, action, payload, actualDigest, planned, coreDigest: preview.previewDigest, preview: visible, expiresAt });
+        return { ok: true, revision: body.expectedRevision, payloadDigest: actualDigest, preview: visible, expiresAt };
       } finally { planning.delete(body.operationId); }
     }
     ensure(old && old.expiresAt > now(), 'MEMORY_PREVIEW_REQUIRED', '预览已失效或服务已重启；重新预览并明确确认，不会自动执行。');

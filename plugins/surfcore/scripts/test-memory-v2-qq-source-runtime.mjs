@@ -2,18 +2,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { createMemoryService } from '../../../src/core/memory-v2-service.js';
-import { createMemoryHost } from '../lib/memory-v2-host.mjs';
-import { createQQMemoryBridge } from '../../../src/core/memory-v2-qq.js';
-import { createQQV2SourceRuntime } from '../lib/qq-v2-source-runtime.mjs';
-import { createTokenBudgetService } from '../lib/token-budget.js';
-import { createQQV2NativeOwner } from '../lib/qq-v2-native-owner.mjs';
-import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
-import { createQQV2ReplyHost } from '../lib/qq-v2-reply-host.mjs';
-import { createNativeQQChannel } from '../../../src/core/qq-native-channel.js';
 
 const rootDir = path.resolve('_backups/memory-v2-qq-source-runtime', 'run-' + process.version + '-' + randomUUID());
 fs.mkdirSync(rootDir, { recursive: true, mode: 0o700 });
+// Set the fixture home before importing modules that capture character paths.
+process.env.DSH_HOME = path.join(rootDir, 'dsh-home');
+const { createMemoryService } = await import('../../../src/core/memory-v2-service.js');
+const { createMemoryHost } = await import('../lib/memory-v2-host.mjs');
+const { createQQMemoryBridge } = await import('../../../src/core/memory-v2-qq.js');
+const { createQQV2SourceRuntime } = await import('../lib/qq-v2-source-runtime.mjs');
+const { createTokenBudgetService } = await import('../lib/token-budget.js');
+const { createQQV2NativeOwner } = await import('../lib/qq-v2-native-owner.mjs');
+const { deriveMemoryProviderRouteId } = await import('../../../src/core/memory-v2-routing.js');
+const { createQQV2ReplyHost } = await import('../lib/qq-v2-reply-host.mjs');
+const { createNativeQQChannel } = await import('../../../src/core/qq-native-channel.js');
 
 const good = value => {
   assert.equal(value?.ok, true, JSON.stringify(value));
@@ -160,7 +162,6 @@ async function fixture(options = {}) {
       }
       return rawAdapter.capture(args[0]);
     },
-    release: async (...args) => rawAdapter.release(...args),
   });
 
   f.bridge = createQQMemoryBridge({
@@ -308,6 +309,20 @@ await test('positive QQ V2 source runtime end-to-end flow with recall', async ()
 });
 
 // 2. Identity and route drift negatives
+await test('synchronous Host release preserves the original preparation failure', async () => {
+  const f = await fixture(); let released = 0;
+  try {
+    good(await f.bridge.captureSource({ key: 'group:900', loginAccountId: '100', actorAccountId: '200', objectId: 'cleanup-source', text: 'Fresh complete source.' }));
+    good(await f.bridge.prepareReply({ key: 'group:900' }));
+    const runtime = createQQV2SourceRuntime({ bridge: f.bridge, adapter: { ...f.adapter,
+      prepare: async () => ({ ok: false, code: 'MEMORY_QUERY_INVALID', error: 'Fixture rejected preparation.', hint: 'Use the original preparation error.' }),
+      release: handle => { released++; return f.adapter.release(handle); },
+    }, getCharacter: f.getCharacter, getQQIdentity: f.getQQIdentity, corePersona: persona, nativeCodec: unitCodec, validateOwnedToolContext: f.validateOwnedToolContext });
+    const result = bad(await runtime.prepareReplyPrompt({ key: 'group:900', job: { jobId: 'cleanup-job', sessionId: 'cleanup-session', requestId: 'cleanup-request' } }), 'MEMORY_QUERY_INVALID');
+    assert.ok(result.hint); assert.equal(released, 1); good(await runtime.close());
+  } finally { await f.close(); }
+});
+
 await test('QQ live identity drift blocks admission and preparation', async () => {
   const f = await fixture();
   try {

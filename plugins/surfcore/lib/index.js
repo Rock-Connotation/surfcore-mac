@@ -281,14 +281,14 @@ export function apply(ctx) {
   // 闸门事件中心：桥接负责写，插件负责展示/确认；同一份文件、同一套分级。
   gateEvents = createGateEventStore({ dir: STATE_DIR, log: (message) => pluginLog(message) });
   function reportMemoryBlocked(result) {
-    const code = /^(BILI|MEMORY|CHARACTER)_[A-Z0-9_]+$/.test(result?.code ?? '') ? result.code : 'MEMORY_RUNTIME_FAILED';
+    const code = /^(BILI|QQ|MEMORY|CHARACTER|BUDGET)_[A-Z0-9_]+$/.test(result?.code ?? '') ? result.code : 'MEMORY_RUNTIME_FAILED';
     const error = '记忆渠道任务未完成。';
     let hint = '打开记忆页的“身份与权限”检查当前账号、模型和完整来源集合；先预览再审批，随后重试原任务。';
     if (/^(?:BILI_V2_ROUTE|MEMORY_PROVIDER)/.test(code)) hint = '在Host选择有效模型并恢复连接，再刷新记忆页的精确路由与来源审批。';
     else if (/^(?:BILI_OFFICIAL|BILI_VIDEO)/.test(code)) hint = '检查B站登录及官方来源是否仍可读取，再刷新确切来源集合；不要用通知摘要代替原件。';
     else if (/RETIRE|LIFECYCLE/.test(code)) hint = '先停止当前轮次并查询原操作回执；保留未确认的会话与owner，排除原因后显式重试退休。';
     else if (/^CHARACTER_/.test(code)) hint = '选择当前角色并刷新任务与来源列表后重试，不要沿用旧角色的审批。';
-    else if (/^(?:BILI_V2_CORE|BILI_V2_NATIVE|MEMORY_NATIVE)/.test(code)) hint = '核对当前角色核心人设、已安装Host SDK及原生来源证明，再刷新任务；不会改用旧上下文。';
+    else if (/^(?:BILI_V2_CORE|BILI_V2_NATIVE|MEMORY_NATIVE|QQ_NATIVE|QQ_SOURCE)/.test(code)) hint = '核对当前角色核心人设、已安装Host SDK及原生来源证明，再刷新任务；不会改用旧上下文。';
     pluginLog(`[记忆] ${code}：${error} ${hint}`);
     gateEvents?.record({ gate: 'memory-v2', kind: 'fault', event: code, action: 'blocked',
       reason: { code, message: error }, impact: '当前轮次尚未通过记忆与来源检查。', recommendation: hint,
@@ -639,7 +639,13 @@ export function apply(ctx) {
     if (current?.id === id) return { ok: true, already: true, current };
     const qqRetired = await qqReplyHost.retire();
     if (!qqRetired.ok) throw Object.assign(new Error(qqRetired.error), qqRetired);
-    return biliMemoryHost.withTransition(() => companionSharing.withTransition(() => douyinCompanion.withTransition(() => douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id))))));
+    // This private role switch acknowledges logical retirement after QQ/Bili retire,
+    // and Sharing itself aborts/drains its active request and releases retained views.
+    // New-role reads and inference still require their own fresh memory admission.
+    return biliMemoryHost.withTransition(() => companionSharing.withTransition(
+      () => douyinCompanion.withTransition(() => douyin.withTransition(() => biliRoundController.withTransition(() => switchCharacterImplementation(id)))),
+      { retirementAcknowledged: true },
+    ));
   }
   async function switchCharacterImplementation(id) {
     const current = readCurrentCharacter();
