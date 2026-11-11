@@ -129,3 +129,23 @@ case：docs/cases/2026-11-11-qq-v2-native-reply.md。
 另一项已证实的测试污染：该fixture在导入静态角色路径后，直接createCharacter/switchCharacter操作真实角色目录，未设DSH_HOME。角色指针目前alpha/epoch7（mtime20:17:35）；18:00备份已alpha/epoch5，污染早于本轮最新门禁；本轮23:43仍新增alpha-121到124。修复fixture在所有项目模块动态导入前设置独立DSH_HOME，MemoryV2总runner亦为每个子脚本建立隔离home；后续整个audit/npm test/协议均显式隔离。不得再以全绿掩盖用户目录写入风险。
 
 原角色独立只读取证：历史11-07 current.json实物id=app/小白鲸/epoch4；当前app元数据名=红豆。现app/persona.md3538字节，SHA256=293d556292ce3ab7fd6530b10f832e9945bac6ccfe748064d8e75a9cf31cb670，与18:00备份一致。只证明人格文件一致，不代表全部记忆已验证。采用正式角色切换产生新epoch，保留所有Alpha及新来源；不复制旧指针、不回滚epoch或整份index。恢复与重新审批仍需用户明确同意后执行。
+
+
+### 原角色正式恢复与切换闸门修复
+
+用户明确同意恢复app/红豆后，正式load最初返回MEMORY_POLICY_DENIED/retirementRequired。根因：本机伙伴status因缺local grant设置sticky blocked，角色切换调用没有提供已有的retirementAcknowledged，因此未运行切换，形成与QQ授权无关的死锁。独立只读审查确认仅在私有switchCharacterEverywhere调用传ACK安全：QQ/Bili退役先确认，Sharing仍先阻止新工作/abort并等待active.done/释放retained views，Douyin等内层transition继续执行；所有新角色capture/validate/network admission不变。其它配置/恢复/渠道transition不传ACK，默认屏障仍保留。ACK只证明逻辑来源/回调退役，不能声称所有底层provider flight物理结束（既有100ms清理上限）。
+
+回归红→绿：真实Host角色API fixture切V2且无任何policy，侧栏status确切MEMORY_POLICY_DENIED；正式load从失败变成功，策略完全不变、模型0；新角色status仍MEMORY_POLICY_DENIED。Sharing测试同时覆盖有/无ACK均等待实际模型回调settlement，迟到输出不保存；原始sticky/未知退役保护仍通过。测试fakeWebServer origin/loopback/realpath作真实管理前提，不放宽生产guard。
+
+候选tree98b17f0ca87981c20b6e63367f61a79600db1475，399项校验一致，旧程序备份qq-role-barrier-20261111T161926045Z。官方pluginManager setBundleEnabled false/true均application=applied，Host active；无需整App重启，最终依赖和bundle列表与原profile一致。再次正式load成功，当前app/红豆/epoch8（2026-11-11T16:19:41Z），bridgeRestarted=true，旧桥接状态2文件归档。没有覆盖旧current/index或删除Alpha。新桥接PID40161、3100监听、dshReady=true、revision3、QQ typed记忆status正常；等待原角色下新消息真实闭环。
+
+
+### 当前最终门禁与验收边界
+
+2026-11-12最新audit192/192退出0，协议17退出0；全插件npm test因浏览器findBrowser的版本probe偶发失败停在test-douyin-companion-ui，单独重跑同UI测试退出0；严格从失败后的下一命令续跑全部剩余命令（含33个Memory插件脚本）退出0，没有跳过断言/调低门槛。角色API红绿与有/无ACK Sharing等待/释放/迟到输出测试通过。实际当前角色app8、V2事件0，仍待用户切回后新消息；SDK假模型与假ACK不能替代真实QQ闭环。
+
+可直接转发的发布交接补充：候选98b17f0ca87981c20b6e63367f61a79600db1475（本地未提交树），修复QQ/Host scope不一致、Native生产组合与一次性发送回执、失败状态、审批TTL反馈/回读、同步release清理、测试用户目录隔离、正式角色切换的私有退役ACK。真实原角色已由用户批准恢复，无发布/版本更改。门禁与备份见本case；真实模型+QQ ACK待用户新入站，因此当前不作为已完成真实验收的发版依据。包管理器声明仍指向旧包，未来重装可覆盖本地程序候选；发布会话应从最终提交重新构建/走正式包安装，并保留最新用户配置/账本，不回滚用户新数据。
+
+## 最终续修结论 2026-11-12 01:49
+
+文字回复已由原角色app8真实验收，并有两次无管理唤醒的后续私聊；用户最终将QQ额度改为每日50亿Token/cny:null并明确新增仅群1135502130处理授权。后续Native语音/群@、白名单同页启用和重复许可L2全部修复实装，用户确认语音能播放、群有回复。最终tree3927fa47d90265e5ae6db33310935005efa75e90，400项一致，audit195/协议17/插件完整覆盖、真实SDK/官方离线制品与原生UI均已核对；详见2026-11-12-qq-native-voice-access.md的最终验收与交接块。本case前述待验/不改额度/未授权群仅表示当时边界，不能当作最终当前状态。

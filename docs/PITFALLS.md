@@ -4452,3 +4452,9 @@ Host写`memory-v2/qq.json`而QQ默认读`qq-bridge.json`，会在模型前报`ME
 生产Memory Host的release同步返回对象，不能用adapter.release(...).catch假定Promise；使用await兼容同步/异步。QQ来源运行时和Core桥接清理已统一，真实同步适配器及原失败保留断言必须覆盖；测试不再人为async化release。
 
 任何导入character-persona/context/QQ Host的测试，须在模块初始化前隔离DSH_HOME；仅把记忆service stateDir指向fixture并不能保护真实角色目录。QQ source fixture改为先设隔离home再动态导入项目模块，总runner为每个子脚本隔离home。已有Alpha测试污染保留取证并按正式角色切换恢复，不允许用旧index/current覆盖用户新增数据。
+
+## 2026-11-12：Native工具装配与白名单设置不能分裂
+
+QQ旧MCP注册qq_send_voice不代表私有NativeOwner拥有语音工具；Owner/Source toolSpecs必须同源，实际SDK注册使用JSON Schema，不能把参数DSL直接当schema。语音媒体传输不应内嵌旧会话记忆策略，否则Native新租约撞旧state.sessions且重复记账。退役先取消桥接TTS/排队发送再等待Owner，整轮只用一个截止期限。QQ白名单仅接入与Core处理许可分离时，必须在QQ页显示真实可处理状态并提供同入口预览确认；不要让用户保存成功后仍被静默拦截。状态应调用Core resolveAudience，admin policies摘要没有受众/模型明细，不能自行按policyId推断。QQ状态与configure预览仅查询QQ身份，不能等待其它平台。见本轮case。
+
+2026-11-12重复L2补充：dedupeKey只是字段，不等于store已去重。轮询同一许可缺失若每次产生新UUID，确认单条无法止住弹窗。共享store支持生产者显式语义去重，跨确认/重启复用相同事件；仅准确memory-v2许可拒绝归L1，其它真实安全失败保持级别。不得靠扩大授权、ack-all或关安全总闸解决。

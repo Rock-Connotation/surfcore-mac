@@ -1,3 +1,23 @@
+## 2026-11-12 01:49 QQ语音、群@、白名单入口与L2已真实验收
+
+- 最终本地候选tree `3927fa47d90265e5ae6db33310935005efa75e90`（未提交，分支fix/qq-reply-discovery基线748afe6）。常用desktop实装400项一致/0不符，官方SurfCore禁用→启用均applied；五份profile声明文件SHA未变，整App未重启。QQ正式入口重启后PID28234、dshReady=true、failures=[]。
+- 用户在01:46发两条新消息，DSH插件自动处理，无Codex管理唤醒：私聊语音ACK1105838883、群文字ACK1904687227，get_msg实际private/record和group/text，发送方787661104；群正文与Core规范化后完全一致（原始差别为一个空行，Core既有折叠规则）。真实WAV为PCM16/24kHz/单声道/5.423458秒，火山最近预留17:46:32Z与合成对应。用户明确确认“语音能正常播放，群里也回复了”。三笔真实模型调用均app/红豆/epoch8、WorkBuddy DeepSeek，总4190Token、金额未知；无自动重试。
+- 原生DSH已验证QQ白名单卡片显示群1135502130/私聊212当前模型许可已确认，155仍未确认；实际打开155只读预览后取消，页面“没有提交”，Core revision仍4。此前用户同意仅新增群的授权已提交；不扩大其它渠道。QQ预算仍每日50亿Token/cny:null，语音限额原值保留。
+- 重复L2根因：生产者把许可缺失归fault、store忽略dedupeKey每次新UUID。仅准确memory-v2/fault/blocked/MEMORY_POLICY_DENIED归L1并按完整语义持久去重，真实安全故障不降级。400条当前同类历史记录通过正式ack入口确认，保留原事件；新原生设置不再弹L2，最终可见L2/L3=0。未通过给本机伙伴/B站补授权消警。
+- 门禁：audit195/195、协议17；全插件各命令覆盖完成（初次并行Bili120ms夹具失败串行通过；续跑末尾Memory夹具因新增URL全局依赖失败，移除不必要解析后该用例及全部34Memory插件脚本通过）；NativeSDK离线5fakecalls/75faketokens/1voicefakeACK/0network；最终官方离线包消费安装/导入通过；独立源码复核无剩余阻断。语音迟到取消/预留回滚/畸形ACK/账本BUSY/回调失败已钉测试。
+- 回滚只换程序：`~/.dsh/_backups/qq-voice-access-2026-11-11T174009786Z/program-previous`；不恢复旧角色、配置、密钥、消息或预算。原包管理声明仍指旧包，未来重装可覆盖本地候选；发布会话应从最终提交构建正式包。主目录9eb4028及其它树保留，不提交、不改版本、不推送发布。
+- 完整七步、制品/证据与可转发交接块：[case](cases/2026-11-12-qq-native-voice-access.md)。外部证据包`../_surfcore-qq-reply-backups-20261111/FINAL-VOICE-ACCESS.json`、`voice-and-group-real-acceptance.json`、`installed-voice-access.json`、门禁日志。下面均是历史检查点，未验/待发消息等措辞按本段结论更新。
+
+## QQ当前检查点 2026-11-12 00:27：红豆已恢复，待最后新消息
+
+- 当前真实角色已通过正式API恢复为app/红豆/epoch8；原current/index未回退，全部Alpha和已保存来源保留。当前app V2 events=0，尚没有切回红豆之后的新入站。
+- 唯一有效QQ授权为实际发送账号2125387192、magpie / workbuddy/deepseek-v4.1-flash；误选1558596500已撤销。policy是全局精确audience/model域，正式切换没有新增授权或复制Alpha记忆。
+- 新程序tree98b17f0ca87981c20b6e63367f61a79600db1475已安装399项一致、官方SurfCore热重载applied；QQ桥接PID40161已正式重启，dshReady=true、无新QQ失败；typedQQ memory status ready V2。没有整App重启或发布。
+- 同步release的生产契约、测试DSH_HOME隔离、仅角色切换私有ACK均已修复。独立角色安全复核通过；原始请求会话匹配错误与预览超时已在case纠正。
+- 最终audit192/192、协议17、真实SDK离线3 fake calls/45 tokens/1 fakeACK/0network通过。全插件命令在浏览器probe偶发失败处停过，单独UI重跑0退出，后续所有命令及33个Memory插件脚本均通过；原始失败与续跑日志保留。
+- 用户已被请求从2125387192再发一条消息。不要再让用户审批其它会话；下一步追踪当前app8新入站→Native真实模型→QQ ACK，必要时修复新暴露原因。当前仍不宣称真实回复闭环。
+- 桥接状态有些activity为历史Alpha失败，必须看新消息时间+准确key。完整管理status可能被其它渠道身份探测拖慢，QQ typed status/bridge控制状态是独立可用证据；本机伙伴未授权提醒另在，不新增其授权掩盖。
+
 ## QQ重要更正：实际新入站来自2125387192
 
 23:54:55与23:31:04活动key均为private:2125387192；之前误认历史1558596500为本次会话，需纠正。现有revision1的唯一155策略已提交，但不覆盖实际发送账号212，故仍拒绝且0来源/0模型。已向用户明确解释错误，准备撤回155/改批212同一精确模型的预览，正在等待明确替换同意；不得擅自扩为两个私聊。
