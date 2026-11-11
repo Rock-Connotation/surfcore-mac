@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.8.8",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-11T08:26:00.301Z",
+  "generatedAt": "2026-11-11T08:39:33.437Z",
   "files": {
     ".gitattributes": "65b1023623fb87849b0d7e7a39141bd9d2662d98dcd55fefc9e8bf1683d2d934",
     ".gitignore": "b151eb21357da07aea0a56e986fe5906bd34f75148e39a03bc8eb9e9fa45821c",
@@ -814,7 +814,7 @@
     "scripts/test-memory-v2-admin.mjs": "75104fc7cdd0c384528bfd837968d2022a152e4344c0f489d2db807f463da6bc",
     "scripts/test-memory-v2-client.mjs": "0c807582fbb72f3bd86f4cf1ac30c1dffca0b9c86843d59e1dfce52766d00199",
     "scripts/test-memory-v2-context.mjs": "eb5df8a82e5801f64a1abbb602f35ce34387020cb97780d1c286695fbad5d04b",
-    "scripts/test-memory-v2-evaluation-kernel.mjs": "0fa33f2d2f9e41ccfb7c45391918a5db713007b356c96812dcff6bc4222ee2ed",
+    "scripts/test-memory-v2-evaluation-kernel.mjs": "9b6c4896fad8ec2592a3435369e674f68fcf0068bfe267c3d29710dfd21ecebf",
     "scripts/test-memory-v2-evaluation.mjs": "b295f2af5d4255e4f3cef5b8d8ff6bf71e5fdbe89aebcc2eef63c93448c92039",
     "scripts/test-memory-v2-host-runtime.mjs": "30bad7b4a2e3e8b21bfa378643e4d77757da01370f86cc244e7de0d8b9c9ffd3",
     "scripts/test-memory-v2-kernel.mjs": "284087f780d6f5dc422785f9e566c874d98f3da412f0402cd8abf39124ed6960",
