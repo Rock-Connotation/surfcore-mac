@@ -14,6 +14,42 @@
 
 ## 待发布
 
+### 批次 2026-11-12 20:10 · A6 失败可见性：ok:false 三件套静态检查 + P0 链路补齐
+<!-- release-batch: start=2026-11-12T18:30+08:00 end=2026-11-12T20:10+08:00 -->
+
+**建议**：**0.8.9（patch，工具与失败文案增强，无新功能面）**
+
+**改了什么**：
+- 新增 `scripts/lint-failures.mjs`（`npm run lint:failures`）：静态检查业务代码里每处 `ok:false` 是否带 `code`+`hint`；棘轮基线 `scripts/lint-failures-baseline.json` 记录存量债务 669 处（33 文件），只许降不许升，回潮退出码 1。
+- B站扫码（`plugins/surfcore/lib/bili-qr-login.mjs`）：`validateQrAccount` 失败分支加 `bili.qr-no-mid`/`bili.qr-wrong-account`，会话过期加 `bili.qr-session-gone`，全部带可执行 hint。
+- 更新链路（`plugins/surfcore/lib/updates.js`）：下载/校验/安装各失败点加 `download.*`/`apply.*` 稳定错误码 + hint（含「手动下载 zip 覆盖安装」兜底提示）。
+- 语音包（`src/voice-packs.js`）：卸载/取消导入/取消安装/端口占用加 `pack.*` 错误码 + hint。
+- TTS/语音（`src/voice-core.js`、`plugins/surfcore/lib/voice-health.js`）：内部探测与配置诊断豁免标注（reason 原文已可操作）。
+- 失败分支测试：`scripts/test-bili-qr-login.mjs` 断言 5 个失败分支 code 匹配 `/^bili\.qr-/` 且 hint 非空。
+
+**验证**：
+```text
+npm run lint:failures        # 退出 0；债务 669 处不超基线
+node scripts/test-bili-qr-login.mjs
+npm run test:audit           # 195/195
+# 篡改测试：临时删一处 hint → lint 退出 1 并报 file:line；还原后退出 0
+```
+
+**交付交接块（可直接转发给发布会话）**：
+```text
+改了哪些文件：
+- 新增：scripts/lint-failures.mjs, scripts/lint-failures-baseline.json
+- 修改：package.json（加 lint:failures 脚本）, plugins/surfcore/lib/bili-qr-login.mjs, plugins/surfcore/lib/updates.js, src/voice-packs.js, src/voice-core.js, plugins/surfcore/lib/voice-health.js, scripts/test-bili-qr-login.mjs
+- 文档：docs/cases/2026-11-12-a6-failure-visibility.md, docs/cases/README.md, docs/RELEASE-QUEUE.md, docs/COORDINATION.md
+测过什么、结果如何：
+- npm run lint:failures（PASS，基线 669 处债务、回潮检测经篡改测试验证）
+- node scripts/test-bili-qr-login.mjs（PASS，含新增 code/hint 断言）
+- npm run test:audit（PASS 195/195）
+影响谁、怎么回滚：
+- 仅失败响应新增字段（code/hint），不改控制流、不碰用户数据；git revert 本批提交即可整体回滚
+- 版本建议 0.8.9 patch；未 bump version、未打 tag、未发布
+```
+
 ### 批次 2026-11-11 22:10 · Phase A-E 本地 Agent 审查、副作用防御与执行能力建设
 <!-- release-batch: start=2026-11-11T18:00+08:00 end=2026-11-11T22:10+08:00 -->
 

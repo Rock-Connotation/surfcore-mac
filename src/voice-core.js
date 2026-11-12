@@ -154,7 +154,7 @@ export async function probeAudio(file, { ffprobePath = 'ffprobe', timeoutMs = 10
   for (const d of dirs) {
     try { fs.mkdirSync(d, { recursive: true }); fs.accessSync(d, fs.constants.W_OK); dir = d; break; } catch {}
   }
-  if (!dir) return { ok: false, reason: '没有可写的临时目录用于 ffprobe 输出' };
+  if (!dir) return { ok: false, reason: '没有可写的临时目录用于 ffprobe 输出' }; // failure-lint:ignore 内部探测步骤，inspectAudio 把 reason 降级为 warning 不中断
 
   const outFile = path.join(dir, `p-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
   const run = () => new Promise((resolve) => {
@@ -177,11 +177,11 @@ export async function probeAudio(file, { ffprobePath = 'ffprobe', timeoutMs = 10
 
   try {
     const res = await run();
-    if (res.error) return { ok: false, reason: res.error };
+    if (res.error) return { ok: false, reason: res.error }; // failure-lint:ignore 内部探测步骤，inspectAudio 把 reason 降级为 warning 不中断
     let raw = '';
     try { raw = fs.readFileSync(outFile, 'utf8'); }
-    catch (error) { return { ok: false, reason: `ffprobe 未产出结果（退出码 ${res.code}，${error?.message ?? error}）` }; }
-    if (!raw.trim()) return { ok: false, reason: `ffprobe 结果为空（退出码 ${res.code}）` };
+    catch (error) { return { ok: false, reason: `ffprobe 未产出结果（退出码 ${res.code}，${error?.message ?? error}）` }; } // failure-lint:ignore 内部探测步骤，inspectAudio 把 reason 降级为 warning 不中断
+    if (!raw.trim()) return { ok: false, reason: `ffprobe 结果为空（退出码 ${res.code}）` }; // failure-lint:ignore 内部探测步骤，inspectAudio 把 reason 降级为 warning 不中断
     const j = JSON.parse(raw);
     const streams = Array.isArray(j.streams) ? j.streams : [];
     const audio = streams.find((s) => s.codec_type === 'audio');
@@ -194,7 +194,7 @@ export async function probeAudio(file, { ffprobePath = 'ffprobe', timeoutMs = 10
       channels: Number(audio?.channels) || 0
     };
   } catch (error) {
-    return { ok: false, reason: `ffprobe 输出解析失败：${error?.message ?? error}` };
+    return { ok: false, reason: `ffprobe 输出解析失败：${error?.message ?? error}` }; // failure-lint:ignore 内部探测步骤，inspectAudio 把 reason 降级为 warning 不中断
   } finally {
     try { fs.unlinkSync(outFile); } catch {}
   }
@@ -208,10 +208,10 @@ export async function inspectAudio(file, {
 } = {}) {
   const warnings = [];
   let st;
-  try { st = fs.statSync(file); } catch (error) { return { ok: false, error: `文件不存在或不可读：${error?.message ?? error}` }; }
-  if (!st.isFile()) return { ok: false, error: '不是文件（目录？）' };
-  if (st.size === 0) return { ok: false, error: '文件为空' };
-  if (st.size > maxBytes) return { ok: false, size: st.size, error: `文件过大（${formatBytes(st.size)} > 上限 ${formatBytes(maxBytes)}）` };
+  try { st = fs.statSync(file); } catch (error) { return { ok: false, error: `文件不存在或不可读：${error?.message ?? error}` }; } // failure-lint:ignore 内部校验步骤，发送层把 error 原文抛给用户（含原因）
+  if (!st.isFile()) return { ok: false, error: '不是文件（目录？）' }; // failure-lint:ignore 内部校验步骤，发送层把 error 原文抛给用户（含原因）
+  if (st.size === 0) return { ok: false, error: '文件为空' }; // failure-lint:ignore 内部校验步骤，发送层把 error 原文抛给用户（含原因）
+  if (st.size > maxBytes) return { ok: false, size: st.size, error: `文件过大（${formatBytes(st.size)} > 上限 ${formatBytes(maxBytes)}）` }; // failure-lint:ignore 内部校验步骤，发送层把 error 原文抛给用户（含原因）
   if (!isAudioFile(file)) warnings.push(`扩展名 ${path.extname(file) || '(无)'} 不在常见音频列表内，将交给网关自行识别`);
 
   if (SILK_EXTS.has(path.extname(file).toLowerCase())) {
@@ -223,7 +223,7 @@ export async function inspectAudio(file, {
     return { ok: true, size: st.size, duration: null, codec: '', formatName: '', warnings };
   }
   if (p.duration > maxSeconds) {
-    return { ok: false, size: st.size, duration: p.duration, codec: p.codec, error: `时长 ${formatDuration(p.duration)} 超过上限 ${formatDuration(maxSeconds)}` };
+    return { ok: false, size: st.size, duration: p.duration, codec: p.codec, error: `时长 ${formatDuration(p.duration)} 超过上限 ${formatDuration(maxSeconds)}` }; // failure-lint:ignore 内部校验步骤，发送层把 error 原文抛给用户（含原因）
   }
   if (p.duration > 60) warnings.push(`时长 ${formatDuration(p.duration)} 较长，QQ 会显示为长语音`);
   if (!p.codec) warnings.push('没找到音频流，网关转码可能失败');
