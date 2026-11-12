@@ -67,11 +67,14 @@ test('Config 是可用的 schemastery schema，且带 volatile 字段', () => {
   assert.ok(volatileFields.includes('mode'), `mode 字段应带 volatile，实际：${volatileFields.join(', ')}`);
 });
 
-test('schema 接受全部规范/历史 mode 拼写，拒绝非法值', () => {
-  for (const mode of ['chat', 'closed-agent', 'reserved', 'reserved2', 'simulation']) {
+test('schema 接受全部有效 mode 拼写，拒绝非法值与已退役的一代 reserved', () => {
+  // V2-only（2026-11-12）：一代 reserved 已退役，枚举里不再有它 ——
+  // state/mode.json 或 DSH settings 里的旧值会校验失败/被 fail-closed 忽略，请改为 simulation。
+  for (const mode of ['chat', 'closed-agent', 'reserved2', 'simulation']) {
     assert.equal(resolveConfig(mod.Config({ mode })).mode, mode, `${mode} 应被接受`);
   }
   assert.throws(() => mod.Config({ mode: 'bogus' }), '非法 mode 必须被拒绝');
+  assert.throws(() => mod.Config({ mode: 'reserved' }), '已退役的一代 reserved 必须被拒绝（旧值请改为 simulation）');
 });
 
 test('不再调用 0.2.0 已删除的 ctx.settings.register', () => {

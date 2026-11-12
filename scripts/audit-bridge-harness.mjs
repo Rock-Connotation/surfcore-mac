@@ -226,7 +226,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     fishChatWindows, evaluateConversationFishGuard, fishGuardSendBlock, recordFishWindow,
     tokenGuardWakeBlock, tokenGuardSendBlock, bridgeDailyUsage, learnerBudgetBlock,
     buildWakePromptV2, buildWakeSnapshotV2, wakeFoldedNoticeV2, sendWakePromptV2, socialV2,
-    currentRoleHint, currentRoleHintV2, adminPromptLine, ownerMessageTag,
+    currentRoleHint, adminPromptLine, ownerMessageTag,
     memoryCardPromptBlock, recordMemoryInboxEvent, recordSelfMemoryEvent,
     refreshMode, modeAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
     // 人的黑名单（deny.users）：入站按发送者拦截，见 test-blacklist.mjs

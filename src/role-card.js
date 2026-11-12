@@ -1,19 +1,16 @@
-// 人格卡（roles/<名称>.md）的解析与「按仿真模式取用」。
+// 人格卡（roles/<名称>.md）的解析与「注入取用」。
 //
-// 为什么要分模式：
-//   一代仿真（reserved）用空格分条、用 [SILENT] 表示沉默；
-//   二代仿真（reserved2）必须用工具发言（qq_send_message 的数组分条），没有 [SILENT]。
-//   同一张人格卡被两种模式共用时，一代专属指令会与二代工具协议冲突。
-// 以前靠 currentRoleHintV2() 对正文做「逐行猜测 + 正则过滤」，既容易误伤又说不清边界。
-//
-// 现在改为显式标记：在标题里写模式，桥接只取当前模式适用的小节。
-//   ## 表情包体系 〔二代〕      → 只在 reserved2 注入
-//   ## 分条方式 〔一代〕        → 只在 reserved/chat 注入
-//   ## 你是谁                   → 两种模式都注入
+// V2-only（2026-11-12 一代仿真退役，不留兼容）：一代仿真（reserved）已删除，
+// 〔一代〕小节一律不注入；未标记与 〔二代〕 小节照常注入。
+// 仍识别 〔一代〕 标记只有一个目的：把老卡片里的一代专属小节干净地排除掉，
+// 并让 GEN1_ROLE_LINE_RE 的兜底过滤/警告仍有据可查。
+//   ## 表情包体系 〔二代〕      → 注入
+//   ## 分条方式 〔一代〕        → 一律不注入（V1 已退役）
+//   ## 你是谁                   → 注入
 // 标记会在注入前从标题里去掉，模型看到的始终是干净的小节标题。
-export const ROLE_INJECT_MODES = ['v1', 'v2'];
+export const ROLE_INJECT_MODES = ['v2'];
 
-// 模式标记：`〔二代〕` / `[v2]` / `（reserved2）` 等写法都认。
+// 模式标记：`〔二代〕` / `[v2]` / `（reserved2）` 等写法都认；〔一代〕 只用于排除。
 const MODE_TAGS = [
   { mode: 'v2', re: /[\[〔（(]\s*(?:二代|2\s*代|v2|reserved2)\s*[\]〕）)]/gi },
   { mode: 'v1', re: /[\[〔（(]\s*(?:一代|1\s*代|v1|reserved)\s*[\]〕）)]/gi },
@@ -39,6 +36,7 @@ function stripModeTags(heading) {
 /**
  * 按标题把人格卡拆成小节。
  * @returns {{mode: 'all'|'v1'|'v2', heading: string|null, lines: string[]}[]}
+ *   mode === 'v1' 的小节是退役的一代内容：调用方一律排除。
  */
 export function parseRoleSections(text) {
   const sections = [];
@@ -61,13 +59,11 @@ export function parseRoleSections(text) {
 }
 
 /**
- * 取出某次仿真真正要注入的人格文本（已去掉模式标记）。
- * @param {'v1'|'v2'} mode
+ * 取出真正要注入的人格文本（V2 视角：all + 〔二代〕，已去掉模式标记）。
  */
-export function selectRoleText(text, mode) {
-  const want = mode === 'v1' ? 'v1' : 'v2';
+export function selectRoleText(text) {
   return parseRoleSections(text)
-    .filter((section) => section.mode === 'all' || section.mode === want)
+    .filter((section) => section.mode === 'all' || section.mode === 'v2')
     .map((section) => section.lines.join('\n'))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
@@ -75,20 +71,18 @@ export function selectRoleText(text, mode) {
 }
 
 /**
- * 报告每个小节在当前模式下是否会被注入，供控制台预览。
- * @param {'v1'|'v2'} mode
+ * 报告每个小节是否会被注入，供控制台预览。
  */
-export function roleSectionReport(text, mode) {
-  const want = mode === 'v1' ? 'v1' : 'v2';
+export function roleSectionReport(text) {
   return parseRoleSections(text).map((section) => ({
     heading: section.heading ?? '(开头部分)',
     mode: section.mode,
-    injected: section.mode === 'all' || section.mode === want,
+    injected: section.mode === 'all' || section.mode === 'v2',
     chars: section.lines.join('\n').trim().length,
   }));
 }
 
-/** 统计各模式的字符数，用于控制台提示「去掉另一模式的专属小节后还剩多少」。 */
+/** 统计注入相关字符数，用于控制台提示与截断警告。 */
 export function roleCharStats(text) {
   const source = String(text ?? '');
   const sections = parseRoleSections(source);
@@ -96,13 +90,11 @@ export function roleCharStats(text) {
   return {
     total: source.length,
     common: sum(sections.filter((section) => section.mode === 'all')),
-    v1Only: sum(sections.filter((section) => section.mode === 'v1')),
     v2Only: sum(sections.filter((section) => section.mode === 'v2')),
-    v1: selectRoleText(source, 'v1').length,
-    v2: selectRoleText(source, 'v2').length,
+    injected: selectRoleText(source).length,
   };
 }
 
-// 一代仿真遗留指令：未加模式标记时，这些行在二代下会被兜底过滤。
-// 正确做法是给所在小节加上 〔一代〕 标记。
+// 一代仿真遗留指令：〔一代〕 小节会被排除；但没标记的正文里出现这些行时，
+// currentRoleHint 仍会按 GEN1 兜底逐行过滤，roleWarnings 也会提示清理。
 export const GEN1_ROLE_LINE_RE = /\[SILENT\]|空格分隔|按空格|用空格|空格分句|空格代表|自动转发|回复会自动|输出\s*\[SILENT\]/i;

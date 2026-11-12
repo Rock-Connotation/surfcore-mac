@@ -154,7 +154,6 @@ export function buildCharacterContext(request = {}) {
       daily: '',
       identity,
       personaMode: request.personaMode ?? 'full',
-      mode: request.mode ?? 'v2',
       maxChars: budget.persona,
       sceneId: scene,
       layerReserves: personaReserves,

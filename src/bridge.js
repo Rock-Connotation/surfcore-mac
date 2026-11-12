@@ -204,31 +204,42 @@ const memoryCardNotifyAt = new Map();
  * 模式拼写的**唯一**归一入口（输入边界）。
  *
  * `simulation` 是规范名（QSH_PLAN.md §2.1：对用户只暴露 `closed-agent` / `simulation`），
- * `chat` / `reserved` / `reserved2` 是历史拼写 —— 必须继续被**接受**（线上桥接持久化的全局值
+ * `chat` / `reserved2` 是历史拼写 —— 必须继续被**接受**（线上桥接持久化的全局值
  * 就是 `reserved2`），但进程内部一律用历史拼写存储与比较：`currentMode === 'reserved2'` 这类
  * 判断遍布发送闸门、定时器与 preset 解析，把规范名直接塞进 `currentMode` 会让它们全部变成假。
  *
+ * 一代仿真 `reserved` 已随 V1 退役（2026-11-12）：不再被接受，旧值落到 null 后
+ * fail-closed 保持当前模式，refreshMode 会打「请改为 simulation」的提示。
+ *
  * 旧写法是 `VALID_MODES = ['chat','closed-agent','reserved','reserved2']`，控制台那处还抄了
  * 一份同样的字面量数组。后果是：在 DSH 设置或 `state/mode.json` 里写 `simulation` 会被**静默
- * 忽略**，`currentMode` 保持上一次的值（进程刚起来时是 `chat`，即一代仿真 —— preset 与工具面
- * 都和二代不同，`v2ToolEnabled` 之类的闸门也不生效）。用户以为切到了仿真，实际跑的是另一套，
- * 而且没有任何日志。规范名与历史名必须在这里收敛成同一个内部值。
+ * 忽略**，`currentMode` 保持上一次的值，而且没有任何日志。规范名与历史名必须在这里收敛成同一个内部值。
  */
 const MODE_INPUT_ALIASES = Object.freeze({
   chat: 'chat',
-  reserved: 'reserved',
   reserved2: 'reserved2',
   simulation: 'reserved2',
   'closed-agent': 'closed-agent'
 });
+/** 已退役的模式名 → 给用户的迁移提示（fail-closed 时日志要说清下一步）。 */
+const RETIRED_MODE_NAMES = Object.freeze({
+  reserved: '一代仿真模式（reserved）已退役：请在 DSH 设置或 state/mode.json 里改为 "simulation"（即二代 reserved2）',
+});
 /** 内部合法模式集合（由别名表派生，避免"两份名单各自漂移"）。 */
 const VALID_MODES = Object.freeze([...new Set(Object.values(MODE_INPUT_ALIASES))]);
 
-/** 输入侧归一：返回内部拼写；无法识别返回 null，由调用方 fail-closed。 */
+/** 输入侧归一：返回内部拼写；无法识别（含已退役的 reserved）返回 null，由调用方 fail-closed。 */
 function normalizeModeInput(value) {
   if (typeof value !== 'string') return null;
   const key = value.trim();
+  if (Object.prototype.hasOwnProperty.call(RETIRED_MODE_NAMES, key)) return null;
   return Object.prototype.hasOwnProperty.call(MODE_INPUT_ALIASES, key) ? MODE_INPUT_ALIASES[key] : null;
+}
+
+/** 识别「因为退役而被拒」的模式名，让失败可见且可行动（AGENTS.md §1.7）。 */
+function retiredModeHint(value) {
+  if (typeof value !== 'string') return '';
+  return RETIRED_MODE_NAMES[value.trim()] ?? '';
 }
 
 /**
@@ -448,13 +459,12 @@ function firstMeaningfulLine(content) {
   return '';
 }
 
-function roleWarnings(content, mode = 'v2') {
+function roleWarnings(content) {
   const text = String(content ?? '');
   const warnings = [];
   const stats = roleCharStats(text);
-  const injected = mode === 'v1' ? stats.v1 : stats.v2;
-  if (injected > roleInjectMaxChars) {
-    warnings.push(`超出注入上限：当前模式实际注入 ${injected} 字符，只有前 ${roleInjectMaxChars} 字符会进入提示词（可在配置里调 role.maxInjectChars）`);
+  if (stats.injected > roleInjectMaxChars) {
+    warnings.push(`超出注入上限：实际注入 ${stats.injected} 字符，只有前 ${roleInjectMaxChars} 字符会进入提示词（可在配置里调 role.maxInjectChars）`);
   }
   // 只在「没有用模式标记分开」的小节上提示兜底过滤，避免对已正确标记的卡片误报。
   const untagged = parseRoleSections(text)
@@ -462,7 +472,7 @@ function roleWarnings(content, mode = 'v2') {
     .map((section) => section.lines.join('\n'))
     .join('\n');
   if (GEN1_ROLE_LINE_RE.test(untagged)) {
-    warnings.push('未标记的小节里含一代仿真专用指令（[SILENT] / 空格分句 / 自动转发…），二代下这些行会被兜底过滤——建议把它们移到带 〔一代〕 标记的小节里');
+    warnings.push('未标记的小节里含一代仿真专用指令（[SILENT] / 空格分句 / 自动转发…），一代已退役但没标记的行仍会被注入并干扰二代工具协议——建议删除这些行，或把所在小节标记为 〔一代〕 使其不再注入');
   }
   if (/回复示例/.test(untagged) && /[\u4e00-\u9fff]\s+[\u4e00-\u9fff]/.test(untagged)) {
     warnings.push('“回复示例”节里的中文空格会被自动改写成逗号（二代不用空格分条），建议直接写逗号，或把该节标记为 〔一代〕');
@@ -484,17 +494,15 @@ function roleSummaries() {
         lines: content.split('\n').length,
         mtime: stat.mtimeMs,
         excerpt: firstMeaningfulLine(content),
-        // 两种模式各自实际会注入多少（已按 〔一代〕/〔二代〕 标记筛过）
-        injectedV1: Math.min(stats.v1, roleInjectMaxChars),
-        injectedV2: Math.min(stats.v2, roleInjectMaxChars),
-        charsV1: stats.v1,
-        charsV2: stats.v2,
-        hasModeTags: stats.v1Only > 0 || stats.v2Only > 0,
-        truncated: stats.v1 > roleInjectMaxChars || stats.v2 > roleInjectMaxChars,
+        // 实际会注入多少（已按 〔一代〕/〔二代〕 标记排除一代小节）
+        injectedV2: Math.min(stats.injected, roleInjectMaxChars),
+        charsV2: stats.injected,
+        hasModeTags: stats.v2Only > 0,
+        truncated: stats.injected > roleInjectMaxChars,
         warnings: roleWarnings(content).length,
       };
     } catch {
-      return { name, bytes: 0, chars: 0, lines: 0, mtime: 0, excerpt: '', injectedV1: 0, injectedV2: 0, charsV1: 0, charsV2: 0, hasModeTags: false, truncated: false, warnings: 0 };
+      return { name, bytes: 0, chars: 0, lines: 0, mtime: 0, excerpt: '', injectedV2: 0, charsV2: 0, hasModeTags: false, truncated: false, warnings: 0 };
     }
   });
 }
@@ -533,14 +541,13 @@ function writeRoleContent(name, content) {
 //   人格提示词 = roles/<名称>.md，规定 AI 是谁、什么性格（人设与语气）
 // 仿真层改完需要重启 DSH 才生效（preset 由 DSH 在会话创建时装配）；
 // 人格层由桥接每条消息注入，保存即生效。
-// 两代仿真各自有独立的预设提示词：一代 qq-chat（空格分条 / [SILENT]），
-// 二代 qq-chat-v2（一切皆工具）。控制台可分别查看与修改。
-const PRESET_NAMES = { v1: 'qq-chat', v2: 'qq-chat-v2' };
+// 一代预设 qq-chat 已随 V1 退役删除（2026-11-12），只剩二代 qq-chat-v2。
+const QQ_CHAT_PRESET = 'qq-chat-v2';
 const PRESET_BACKUP_DIR = path.join(STATE_DIR, 'preset-backups');
 const PRESET_BACKUP_KEEP = 10;
 
 /**
- * 控制台的 preset 参数校验：只接受本项目这两个预置名（缺省 = 二代）。
+ * 控制台的 preset 参数校验：只接受本项目唯一的预置名（缺省 = 二代）。
  *
  * 为什么必须在拼路径**之前**校验：main() 里的 resolvePresetName() 在「DSH preset 清单为空」
  * （DSH 还没连上 / 正在启动）时会把调用方给的字符串**原样返回**。那四个 preset 控制台路由
@@ -550,8 +557,8 @@ const PRESET_BACKUP_KEEP = 10;
  */
 function knownPresetName(raw) {
   const name = String(raw ?? '').trim();
-  if (!name) return PRESET_NAMES.v2;
-  return Object.values(PRESET_NAMES).includes(name) ? name : null;
+  if (!name) return QQ_CHAT_PRESET;
+  return name === QQ_CHAT_PRESET ? name : null;
 }
 
 function presetSourceYaml(name) {
@@ -620,7 +627,7 @@ function presetStatus(name) {
   // （路径已经写在服务端日志里，排查时看日志即可）。
   return {
     preset: name,
-    label: name === PRESET_NAMES.v1 ? '一代仿真（reserved）' : '二代仿真（reserved2）',
+    label: '二代仿真（reserved2）',
     sourceFile: path.relative(ROOT, presetSourceYaml(name)),
     installed: fs.existsSync(installedPresetYaml(name)),
     requiresRestart: true,
@@ -917,7 +924,7 @@ function loadConfig() {
     snowluma: { wsUrl: 'ws://127.0.0.1:3001', accessToken: '', ...(file.snowluma ?? {}) },
     // 空 => 每个会话在 state/agents/<key> 下建独立工作目录
     sessionCwd: file.sessionCwd ?? '',
-    agentPreset: file.agentPreset ?? 'qq-chat',
+    agentPreset: file.agentPreset ?? 'qq-chat-v2',
     workspaceTitle: file.workspaceTitle ?? 'QQ 聊天',
     ownerQQ: normalizeOwnerQQ(file.ownerQQ),
     // 管理员身份（QQ ⇄ B站 同一个人）的投影：由合体插件在保存时写入；
@@ -957,7 +964,7 @@ function loadConfig() {
       extractCooldownMs: 5 * 60 * 1000,
       inferenceThresholds: [2, 4, 8],
       injectMax: 8,
-      learnerPreset: 'qq-chat',
+      learnerPreset: 'qq-chat-v2',
       workspaceTitle: 'QQ 黑话学习',
       autoResearch: true,
       ...(file.slang ?? {})
@@ -3925,7 +3932,7 @@ async function main() {
   let dshReady = false;
   let dshCheckStarted = false;
   let snowlumaWatchStarted = false; // SnowLuma 上游健康探测只启动一次（见 startSnowlumaWatch）
-  let currentMode = 'chat'; // chat | closed-agent | reserved（仿真模式，由 DSH settings / state/mode.json 驱动）
+  let currentMode = 'chat'; // chat | closed-agent | reserved2（仿真模式，由 DSH settings / state/mode.json 驱动；一代 reserved 已随 V1 退役）
   let lastMode = currentMode;
   // closed-agent 模式使用的 DSH agent preset：留空表示「用 DSH 自己声明的默认 preset」。
   // 旧版本这里硬编码 'router-standard'，但 DSH 0.1.5 已移除该 preset，硬编码会导致
@@ -3968,10 +3975,15 @@ async function main() {
         dshDefaultPreset = defaultPreset;
       }
       const ns = s.namespaces.find((n) => n.ns === 'qq-mode');
+      const rawModeFromDsh = settingFromDshNamespace(ns, 'mode');
       // 规范化后再比较：`simulation` 也走这里（见 MODE_INPUT_ALIASES）。
       // 读取必须 user 层优先：DSH 0.2.0-rc.2 写完 settings 后同进程内 value 不更新，
       // 只读 value 会让控制台切的模式被 5 秒轮询改回去（issue #22）。
-      const fromDsh = normalizeModeInput(settingFromDshNamespace(ns, 'mode'));
+      const fromDsh = normalizeModeInput(rawModeFromDsh);
+      if (!fromDsh) {
+        const hint = retiredModeHint(rawModeFromDsh);
+        if (hint) log(`⚠️ ${hint}（已忽略该值，保持当前模式 ${currentMode}）`);
+      }
       if (fromDsh) {
         currentMode = fromDsh;
         // DSH 设置页也可配置管理员 QQ；**留空表示不覆盖 config.json**
@@ -4003,6 +4015,10 @@ async function main() {
     } catch {}
     const local = readJsonSafe(path.join(STATE_DIR, 'mode.json'), null);
     const fromLocal = local ? normalizeModeInput(local.mode) : null;
+    if (!fromLocal) {
+      const hint = retiredModeHint(local?.mode);
+      if (hint) log(`⚠️ ${hint}（已忽略该值，保持当前模式 ${currentMode}）`);
+    }
     if (fromLocal) currentMode = fromLocal;
     if (typeof local?.closedAgentPreset === 'string' && local.closedAgentPreset) {
       closedAgentPreset = local.closedAgentPreset;
@@ -4029,7 +4045,7 @@ async function main() {
       // 封闭 agent 模式：仅 owner 私聊
       return key === `private:${String(cfg.ownerQQ ?? '')}`;
     }
-    // chat / reserved / reserved2（仿真模式，暂同 chat 白名单）
+    // chat / reserved2（二代仿真模式，暂同 chat 白名单）
     return allowed(kind, id, cfg);
   }
 
@@ -4038,7 +4054,7 @@ async function main() {
    *
    * strict=false（closed-agent，仅 owner 私聊）：名字不可用时回退到 DSH 默认 preset ——
    *   那里本来就用完整工具面，回退不构成提权。
-   * strict=true（chat / reserved / reserved2，会话可能属于 QQ 群）：名字不可用时返回 ''，
+   * strict=true（chat / reserved2，会话可能属于 QQ 群）：名字不可用时返回 ''，
    *   表示「没有可安全使用的 preset」，由调用方拒绝建会话（fail-closed）。
    *   **绝不能回退到 DSH 默认 preset（standard）**：standard 含 bash/文件读写等本地工具，
    *   一旦套在群聊会话上，群友即可驱动一个能操作本机的 agent（见 RULES.md「无本地工具」）。
@@ -4311,10 +4327,6 @@ async function main() {
         // DSH 恢复后，把离线期间攒下的黑话学习窗口补触发
         for (const key of [...slangWindows.keys()]) maybeQueueSlangExtraction(key);
       } else if (currentMode !== lastMode) {
-        if (lastMode === 'reserved' && currentMode !== 'reserved') {
-          cleanupSocialForModeChange();
-          log('桥接模式已离开一代仿真模式，清理社交状态');
-        }
         if (lastMode === 'reserved2' && currentMode !== 'reserved2') {
           clearAllSocialV2Timers();
           drainAllPromptQueues('模式切换，已取消排队中的投递');
@@ -5357,7 +5369,7 @@ async function main() {
           // 规范名与历史名都接受，落盘的始终是内部拼写（见 MODE_INPUT_ALIASES）。
           const requestedMode = normalizeModeInput(body.mode);
           if (!requestedMode) {
-            sendJson({ ok: false, error: `mode 必须是 ${VALID_MODES.join(' / ')}（simulation 为 reserved2 的规范名）` }, 400);
+            sendJson({ ok: false, code: 'MODE_INVALID', error: `mode 必须是 ${VALID_MODES.join(' / ')}（simulation 为 reserved2 的规范名）${retiredModeHint(String(body.mode ?? '')) ? `；${retiredModeHint(String(body.mode ?? ''))}` : ''}`, hint: '控制台模式按钮或 DSH 设置页选择一个有效模式' }, 400);
             return;
           }
           const existing = readJsonSafe(path.join(STATE_DIR, 'mode.json'), {});
@@ -5386,10 +5398,6 @@ async function main() {
           }
           // 下面这两个判断比较的是「模式真的变了吗」。必须用归一后的值：拿 `body.mode` 比，
           // 把 `simulation` 与 `reserved2` 当成两种模式，会在模式其实没变时清掉二代定时器与排队投递。
-          if (currentMode === 'reserved' && requestedMode !== 'reserved') {
-            cleanupSocialForModeChange();
-            log('控制台：模式离开一代仿真模式，清理社交状态');
-          }
           if (currentMode === 'reserved2' && requestedMode !== 'reserved2') {
             clearAllSocialV2Timers();
             drainAllPromptQueues('模式切换，已取消排队中的投递');
@@ -5465,8 +5473,8 @@ async function main() {
             warnings: roleWarnings(content),
             limits: { injectMaxChars: roleInjectMaxChars },
             stats: roleCharStats(content),
-            // 每个小节在各模式下是否会被注入，供控制台预览「这条规则到底生不生效」
-            sections: { v1: roleSectionReport(content, 'v1'), v2: roleSectionReport(content, 'v2') },
+            // 每个小节是否会被注入（V2-only：〔一代〕小节一律排除），供控制台预览「这条规则到底生不生效」
+            sections: roleSectionReport(content),
           });
           return;
         }
@@ -5541,10 +5549,10 @@ async function main() {
           return;
         }
 
-        // ── 仿真提示词（一代 / 二代各自的预设内置提示词）──────────────────────
+        // ── 仿真提示词（预设内置提示词；一代已随 V1 退役删除）─────────────────
         if (req.method === 'GET' && url.pathname === '/api/preset/sim-prompt') {
           const preset = knownPresetName(url.searchParams.get('preset'));
-          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(PRESET_NAMES).join(' / ')}）` }, 400); return; }
+          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${QQ_CHAT_PRESET}）` }, 400); return; }
           try {
             const { prefix } = readPresetPromptText(preset);
             sendJson({
@@ -5554,7 +5562,7 @@ async function main() {
               bytes: Buffer.byteLength(prefix, 'utf8'),
               warnings: presetPromptWarnings(prefix),
               status: presetStatus(preset),
-              presets: Object.values(PRESET_NAMES).map((n) => presetStatus(n)),
+              presets: [QQ_CHAT_PRESET].map((n) => presetStatus(n)),
             });
           } catch (error) {
             sendJson({ ok: false, error: error?.message ?? '读取预设失败', status: presetStatus(preset) }, 500);
@@ -5564,7 +5572,7 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/preset/sim-prompt') {
           const body = await readBody();
           const preset = knownPresetName(body.preset);
-          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(PRESET_NAMES).join(' / ')}）` }, 400); return; }
+          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${QQ_CHAT_PRESET}）` }, 400); return; }
           let nextText;
           try {
             const { text, prefix } = readPresetPromptText(preset);
@@ -5575,7 +5583,7 @@ async function main() {
               sendJson({ ok: true, unchanged: true, chars: prefix.length, warnings: presetPromptWarnings(prefix), synced: fs.existsSync(installedPresetYaml(preset)), requiresRestart: false, status: presetStatus(preset) });
               return;
             }
-            nextText = renderPresetPromptYaml(text, body.content, preset === PRESET_NAMES.v1 ? 'v1' : 'v2');
+            nextText = renderPresetPromptYaml(text, body.content);
           } catch (error) {
             sendJson({ ok: false, error: error?.message ?? '校验失败' }, 400);
             return;
@@ -5613,7 +5621,7 @@ async function main() {
         }
         if (req.method === 'GET' && url.pathname === '/api/preset/sim-prompt/backups') {
           const preset = knownPresetName(url.searchParams.get('preset'));
-          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(PRESET_NAMES).join(' / ')}）` }, 400); return; }
+          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${QQ_CHAT_PRESET}）` }, 400); return; }
           try {
             sendJson({ ok: true, backups: listPresetBackups(preset) });
           } catch (error) {
@@ -5624,7 +5632,7 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/preset/sim-prompt/restore') {
           const body = await readBody();
           const preset = knownPresetName(body.preset);
-          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(PRESET_NAMES).join(' / ')}）` }, 400); return; }
+          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${QQ_CHAT_PRESET}）` }, 400); return; }
           try {
             const requested = String(body.file ?? '').trim();
             const candidates = listPresetBackups(preset).map((b) => b.file);
@@ -5637,8 +5645,7 @@ async function main() {
             if (restoredPrefix === null) { sendJson({ ok: false, error: '备份内容不是有效的预设文件' }, 400); return; }
             // 还原路径必须与保存路径同样严格：旧备份可能来自安全基线加入之前，
             // 直接还原会把弱化版提示词（缺「你没有本地工具」等不变量）写回去。
-            // 不变量清单**按预设取**：一代本来就没有「你没有本地工具」这类工具面表述。
-            const blockers = presetPromptBlockers(restoredPrefix, preset === PRESET_NAMES.v1 ? 'v1' : 'v2');
+            const blockers = presetPromptBlockers(restoredPrefix);
             if (blockers.length) {
               sendJson({ ok: false, error: `该备份不满足当前的安全不变量，拒绝还原：${blockers.join('；')}` }, 400);
               return;
@@ -6894,7 +6901,7 @@ async function main() {
             })(),
             role: (() => {
               const personaMode = url.searchParams.get('mode') === 'full' ? 'full' : (key.startsWith('group:') ? 'tone' : 'full');
-              return { name: roleState.role ?? null, mode: personaMode, hint: currentMode === 'reserved2' ? currentRoleHintV2(key, personaMode) : currentRoleHint(key, personaMode) };
+              return { name: roleState.role ?? null, mode: personaMode, hint: currentRoleHint(key, personaMode) };
             })(),
             memoryCard: memoryCardPromptBlock(key),
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
@@ -9447,8 +9454,8 @@ async function main() {
             sendJson({ ok: false, error: 'reserved2 模式读取图片必须携带 agent token' }, 403);
             return;
           }
-          if (currentMode === 'chat' || currentMode === 'reserved') {
-            sendJson({ ok: false, error: '一代 chat/reserved 模式图片已自动内联，按需图片工具仅 reserved2 模式可用' }, 403);
+          if (currentMode === 'chat') {
+            sendJson({ ok: false, error: 'chat 模式图片已自动内联，按需图片工具仅 reserved2 模式可用' }, 403);
             return;
           }
           if (agentToken && !agentTokenOk(key, agentToken)) {
@@ -9594,8 +9601,8 @@ async function main() {
           const atUserId = body.atUserId ?? null;
           const key = isPrivate ? `private:${targetId}` : `group:${targetId}`;
           // 安全边界：发送工具只允许在 closed-agent（管理员私聊）或 reserved2（二代 AI 带会话令牌）下使用；
-          // chat/reserved 的自动转发已覆盖正常回复，MCP 发送工具不应成为 prompt injection 的越权出口。
-          if (currentMode === 'chat' || currentMode === 'reserved') {
+          // chat 的自动转发已覆盖正常回复，MCP 发送工具不应成为 prompt injection 的越权出口。
+          if (currentMode === 'chat') {
             sendJson({ ok: false, error: '发送工具仅限 closed-agent / reserved2 模式使用' }, 403);
             return;
           }
@@ -12790,23 +12797,6 @@ async function main() {
     social.pendingTimers.clear();
   }
 
-  // 离开仿真模式时清理全部社交运行时状态，避免旧定时器/状态残留。
-  function cleanupSocialForModeChange() {
-    cancelAllSocialTimers();
-    social.states.clear();
-    social.recentMessages.clear();
-    messageMediaStore.clear();
-    social.pendingSummaries.clear();
-    social.silentContext.clear();
-    social.silentTurns.clear();
-    social.exitingSessions.clear();
-    // 拒绝仍在排队中的 prompt，避免调用方 await 永远挂起
-    for (const [, entry] of promptQueues) {
-      for (const item of entry.queue) item.reject(new Error('模式切换，已取消排队中的投递'));
-    }
-    promptQueues.clear();
-  }
-
   function leaveActive(key) {
     cancelSocialTimers(key);
     social.states.delete(key);
@@ -12948,8 +12938,8 @@ async function main() {
     if (!core) {
       try { core = String(roleRawContent() ?? '').trim(); } catch {}
     }
-    const coreText = selectRoleText(core, 'v2');
-    const toneText = selectRoleText(readPersonaLayerText('tone'), 'v2');
+    const coreText = selectRoleText(core);
+    const toneText = selectRoleText(readPersonaLayerText('tone'));
     // 目的/主动搭话也要带语气层；tone 与 core 相同则只留一份。
     return [...new Set([coreText, toneText].filter(Boolean))].join('\n\n');
   }
@@ -14121,7 +14111,7 @@ async function main() {
     return buildPersonaIdentity({ name: personaNameFromCard(roleRawContent(), selfDisplayName || '这个角色'), owner });
   }
 
-  function roleHintForMode(mode, key = '', personaMode = 'full', opts = {}) {
+  function roleHint(key = '', personaMode = 'full', opts = {}) {
     const core = roleRawContent();
     const sceneId = personaSceneFromKey(key);
     const scene = sceneId ? readPersonaLayerText('scene', sceneId) : '';
@@ -14129,9 +14119,9 @@ async function main() {
     const tone = readPersonaLayerText('tone');
     const identity = personaIdentityText();
     const composed = composePersonaLayers({
-      core, scene, daily, tone, identity, personaMode, mode, maxChars: roleInjectMaxChars, sceneId,
+      core, scene, daily, tone, identity, personaMode, maxChars: roleInjectMaxChars, sceneId,
     });
-    const unified = CHARACTER_ID ? buildCharacterContext({ characterId: CHARACTER_ID, characterEpoch: CHARACTER_EPOCH, scene: sceneId, audience: { channel: 'qq', conversationKey: key }, identity, personaMode, mode, budget: { maxChars: roleInjectMaxChars }, includeMemory: false }) : null;
+    const unified = CHARACTER_ID ? buildCharacterContext({ characterId: CHARACTER_ID, characterEpoch: CHARACTER_EPOCH, scene: sceneId, audience: { channel: 'qq', conversationKey: key }, identity, personaMode, budget: { maxChars: roleInjectMaxChars }, includeMemory: false }) : null;
     const base = unified?.ok ? unified.text : (CHARACTER_ID ? '' : composed.text || '');
     // personaOnly：只要人格卡正文（唤醒提示词用）。管理员规则 / B站简报 / 记忆卡
     // 唤醒侧自己已经各拼过一遍，这里再拼会让同一段内容在一张纸条上出现两次。
@@ -14148,7 +14138,34 @@ async function main() {
     return [base, adminBlock, biliBrief, memoryBlock, voiceStatusLine()].filter(Boolean).join('\n\n');
   }
   function currentRoleHint(key = '', personaMode = 'full') {
-    return roleHintForMode('v1', key, personaMode);
+    // V2-only（一代已退役）：先按 〔一代〕/〔二代〕 标记排除一代小节；
+    // 下面的逐行过滤是给「没标记的老卡片」兜底。
+    const raw = roleHint(key, personaMode);
+    if (!raw) return '';
+    // 一代仿真模式专用指令整行过滤，避免污染二代工具协议。
+    // 用 role-card.js 导出的那份（文件顶部已 import）：这里原先又抄了一份同源正则，
+    // 两份"哪行算一代指令"的安全相关过滤器一旦漂移，就会出现"selectRoleText 认为是二代内容、
+    // 这里却把一代指令漏进二代提示词"这种只在特定角色卡上复现的错。
+    const lines = raw.split('\n');
+    const kept = [];
+    let inExampleSection = false;
+    for (const line of lines) {
+      if (/^##\s*.*回复示例/.test(line)) {
+        inExampleSection = true;
+        // 保留标题，但把“空格代表分条”的一代语义改写成二代语义
+        kept.push(line.replace(/（空格代表前后分两条消息回答）/, '（示例中已用逗号表示停顿；想分多条请用数组）'));
+        continue;
+      }
+      if (inExampleSection && /^##\s/.test(line)) {
+        inExampleSection = false;
+      }
+      if (inExampleSection) {
+        kept.push(convertExampleSpacesToComma(line));
+      } else if (!GEN1_ROLE_LINE_RE.test(line)) {
+        kept.push(line);
+      }
+    }
+    return kept.join('\n');
   }
 
   // ── 最近聊天上下文（chat 模式）────────────────────────────────────────────
@@ -14369,36 +14386,6 @@ async function main() {
     }
     if (!bad.length) return null;
     return `第 ${bad.join('，')} 条之间像是把同一句话拆开了；如果两条拼起来才完整，请合并成一条，或把断点移到完整句子的边界。`;
-  }
-
-  function currentRoleHintV2(key = '', personaMode = 'full') {
-    // 先按 〔二代〕/〔一代〕 标记筛小节；下面的逐行过滤只是给「没标记的老卡片」兜底。
-    const raw = roleHintForMode('v2', key, personaMode);
-    if (!raw) return '';
-    // 一代仿真模式专用指令整行过滤，避免污染二代工具协议。
-    // 用 role-card.js 导出的那份（文件顶部已 import）：这里原先又抄了一份同源正则，
-    // 两份"哪行算一代指令"的安全相关过滤器一旦漂移，就会出现"selectRoleText 认为是二代内容、
-    // 这里却把一代指令漏进二代提示词"这种只在特定角色卡上复现的错。
-    const lines = raw.split('\n');
-    const kept = [];
-    let inExampleSection = false;
-    for (const line of lines) {
-      if (/^##\s*.*回复示例/.test(line)) {
-        inExampleSection = true;
-        // 保留标题，但把“空格代表分条”的一代语义改写成二代语义
-        kept.push(line.replace(/（空格代表前后分两条消息回答）/, '（示例中已用逗号表示停顿；想分多条请用数组）'));
-        continue;
-      }
-      if (inExampleSection && /^##\s/.test(line)) {
-        inExampleSection = false;
-      }
-      if (inExampleSection) {
-        kept.push(convertExampleSpacesToComma(line));
-      } else if (!GEN1_ROLE_LINE_RE.test(line)) {
-        kept.push(line);
-      }
-    }
-    return kept.join('\n');
   }
 
   // QQ 群成员名片/昵称缓存：@ 段解析用，避免每条消息都调一次 OneBot API。
@@ -15176,7 +15163,7 @@ async function main() {
     const roleState = readRoleState();
     let card = '';
     try {
-      card = roleHintForMode('v2', key, 'full', { personaOnly: true });
+      card = roleHint(key, 'full', { personaOnly: true });
     } catch (error) {
       log(`唤醒人格卡组装失败（降级为指针）：${error?.message ?? error}`);
     }
@@ -16682,9 +16669,9 @@ async function main() {
       feedSlangWindow(key, event.sender?.card || event.sender?.nickname || String(event.user_id), plainContent);
     }
 
-    // 鱼群保护：chat / reserved 模式也走同一套判定（reserved2 在下面的分支里单独拦）。
+    // 鱼群保护：chat 模式也走同一套判定（reserved2 在下面的分支里单独拦）。
     if (kind === 'group' && !isOwner && cfg.fishGuard?.enabled !== false
-        && (currentMode === 'chat' || currentMode === 'reserved')) {
+        && currentMode === 'chat') {
       await ensureFishGroupName(id);
       const directed = !senderIsFish && (quoteTargetIsSelf || isDirectAddress(textContent, event, kind));
       const st = getSocialV2State(key);

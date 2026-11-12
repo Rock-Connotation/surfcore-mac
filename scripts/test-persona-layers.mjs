@@ -48,34 +48,32 @@ assert.equal(personaSceneFromKey(''), '');
   assert.ok(r.truncated);
 }
 
-// v1/v2 小节过滤仍然生效。
+// 〔一代〕 小节过滤仍然生效（V2-only：一代内容一律不注入，〔二代〕 与未标记小节照常注入）。
 {
   const core = '共同\n\n## 一代专用 〔一代〕\n一代内容\n\n## 二代专用 〔二代〕\n二代内容';
-  const v1 = composePersonaLayers({ core, mode: 'v1', maxChars: 6000 }).text;
-  const v2 = composePersonaLayers({ core, mode: 'v2', maxChars: 6000 }).text;
-  assert.ok(v1.includes('一代内容') && !v1.includes('二代内容'));
+  const v2 = composePersonaLayers({ core, maxChars: 6000 }).text;
   assert.ok(v2.includes('二代内容') && !v2.includes('一代内容'));
 }
 
 // 身份底座：tone 模式也必须带“我是谁、主人是谁”。
-const identityCompose = composePersonaLayers({ core: '核心XYZ', tone: '语气ABC', identity: '你是小咪；你的主人是主人。', personaMode: 'tone', mode: 'v2', maxChars: 6000 });
+const identityCompose = composePersonaLayers({ core: '核心XYZ', tone: '语气ABC', identity: '你是小咪；你的主人是主人。', personaMode: 'tone', maxChars: 6000 });
 assert.ok(identityCompose.text.includes('你是小咪') && identityCompose.text.includes('主人'));
 assert.ok(!identityCompose.text.includes('核心XYZ'), 'tone 模式仍不能加载核心正文');
 
 // tone 模式：只语气+场景+日常，不带核心；full 才带核心。
-const toneCompose = composePersonaLayers({ core: '核心XYZ', tone: '语气ABC', daily: '日常DEF', personaMode: 'tone', mode: 'v2', maxChars: 6000 });
+const toneCompose = composePersonaLayers({ core: '核心XYZ', tone: '语气ABC', daily: '日常DEF', personaMode: 'tone', maxChars: 6000 });
 assert.ok(toneCompose.text.includes('语气ABC'));
 assert.ok(!toneCompose.text.includes('核心XYZ'), 'tone 模式不能加载核心');
-const fullCompose = composePersonaLayers({ core: '核心XYZ', tone: '语气ABC', daily: '日常DEF', personaMode: 'full', mode: 'v2', maxChars: 6000 });
+const fullCompose = composePersonaLayers({ core: '核心XYZ', tone: '语气ABC', daily: '日常DEF', personaMode: 'full', maxChars: 6000 });
 assert.ok(fullCompose.text.includes('核心XYZ') && fullCompose.text.includes('语气ABC'));
-const fallbackCompose = composePersonaLayers({ core: '旧角色核心', personaMode: 'tone', mode: 'v2', maxChars: 6000 });
+const fallbackCompose = composePersonaLayers({ core: '旧角色核心', personaMode: 'tone', maxChars: 6000 });
 assert.ok(fallbackCompose.text.includes('旧角色核心'), '旧角色没有语气时回退核心，避免没卡');
 
 // tone 与 core 内容相同时，full 模式不能重复拼两段（旧角色/误复制）。
-const duplicateTone = composePersonaLayers({ core: '同一段正文', tone: '同一段正文', personaMode: 'full', mode: 'v2', maxChars: 6000 });
+const duplicateTone = composePersonaLayers({ core: '同一段正文', tone: '同一段正文', personaMode: 'full', maxChars: 6000 });
 assert.equal((duplicateTone.text.match(/同一段正文/g) || []).length, 1, 'identical tone/core 只能出现一次');
 assert.ok(!duplicateTone.text.includes('人格语气'), 'identical tone 不应生成语气段');
-const duplicateToneMode = composePersonaLayers({ core: '同一段正文', tone: '同一段正文', personaMode: 'tone', mode: 'v2', maxChars: 6000 });
+const duplicateToneMode = composePersonaLayers({ core: '同一段正文', tone: '同一段正文', personaMode: 'tone', maxChars: 6000 });
 assert.equal((duplicateToneMode.text.match(/同一段正文/g) || []).length, 1, 'tone 模式 identical 也只能出现一次');
 assert.ok(duplicateToneMode.text.includes('同一段正文'), 'tone 模式仍要保留正文');
 
@@ -85,18 +83,18 @@ assert.match(bridgeSource, /function purposePersonaText\(\)[\s\S]*?readPersonaLa
 
 // 回归（2026-10-31）：没拆分的旧角色 + 身份底座 → tone 模式也必须带上核心人设。
 const unsplitCompose = composePersonaLayers({
-  core: '旧角色核心正文', identity: '你是小咪；你的主人是雨雨。', personaMode: 'tone', mode: 'v2', maxChars: 6000,
+  core: '旧角色核心正文', identity: '你是小咪；你的主人是雨雨。', personaMode: 'tone', maxChars: 6000,
 });
 assert.ok(unsplitCompose.text.includes('旧角色核心正文'), '未拆分人格在 tone 模式必须注入核心，不能只剩身份底座');
 assert.ok(unsplitCompose.text.includes('你的主人是雨雨'), '身份底座也要在');
 // 已拆分：tone 模式仍按省 token 行为，不带核心。
 const splitCompose = composePersonaLayers({
-  core: '核心正文XYZ', tone: '语气ABC', identity: '你是小咪。', personaMode: 'tone', mode: 'v2', maxChars: 6000,
+  core: '核心正文XYZ', tone: '语气ABC', identity: '你是小咪。', personaMode: 'tone', maxChars: 6000,
 });
 assert.ok(!splitCompose.text.includes('核心正文XYZ'), '拆分后 tone 模式不带核心（省 token）');
 // 只拆了日常/场景、还没写语气：也要带核心（语气层才是核心的替代品）
 const dailyOnly = composePersonaLayers({
-  core: '核心正文ABC', daily: '日常DEF', identity: '你是小咪。', personaMode: 'tone', mode: 'v2', maxChars: 6000,
+  core: '核心正文ABC', daily: '日常DEF', identity: '你是小咪。', personaMode: 'tone', maxChars: 6000,
 });
 assert.ok(dailyOnly.text.includes('核心正文ABC'), '没有语气层时必须带核心（不能只剩日常）');
 
@@ -108,8 +106,7 @@ for (const [name, src] of [['bridge', bridge], ['scheduler', scheduler], ['pet',
   assert.ok(src.includes('composePersonaLayers'), `${name} 没有接人格分层组合`);
   assert.ok(src.includes('readPersonaLayerText'), `${name} 没有读人格分层文件`);
 }
-assert.ok(bridge.includes('currentRoleHintV2(key, personaMode)'), 'QQ qq_get_prompt 必须按会话 key + 人格模式选场景');
-assert.ok(bridge.includes('currentRoleHint(key, personaMode)'), 'QQ 角色提示必须按会话 key + 人格模式选场景');
+assert.ok(bridge.includes('currentRoleHint(key, personaMode)'), 'QQ qq_get_prompt 必须按会话 key + 人格模式选场景（V2-only，一代已退役）');
 assert.ok(bridge.includes('personaSceneFromKey'), 'QQ 没有按群聊/私聊选择场景');
 
 // 身份底座必须在三个平台都注入，且不依赖用户是否拆分人格（2026-10-31 用户要求）。

@@ -24,7 +24,7 @@ const bridge = fs.readFileSync(path.join(root, 'src/bridge.js'), 'utf8');
 assert.match(bridge, /function personaWakeBlockV2\(key\) \{/, '缺少 personaWakeBlockV2（唤醒侧随身身份证）');
 assert.match(
   bridge,
-  /roleHintForMode\('v2', key, 'full', \{ personaOnly: true \}\)/,
+  /roleHint\(key, 'full', \{ personaOnly: true \}\)/,
   '唤醒人格卡没有走统一的组装函数（会和 qq_get_prompt 分成两份手抄）',
 );
 assert.match(
@@ -52,7 +52,7 @@ const core = '测试用核心：喜欢下雨天，说话软。';
 const toneLayer = '测试用语气：句子短、爱用波浪号。';
 const daily = '测试用日常：今天在整理房间。';
 
-const full = composePersonaLayers({ core, daily, identity, personaMode: 'full', mode: 'v2', maxChars: 6000 });
+const full = composePersonaLayers({ core, daily, identity, personaMode: 'full', maxChars: 6000 });
 assert.match(full.text, /喜欢下雨天/, 'full 模式没有注入核心');
 assert.match(full.text, /你是小测/, 'full 模式没有注入身份底座');
 

@@ -51,18 +51,17 @@ function section(id, label, text) {
  * @param {string} [opts.tone] 语气
  * @param {string} [opts.identity] 身份底座（无论 tone/full 都带：我是谁、主人是谁）
  * @param {'full'|'tone'} [opts.personaMode] full=核心+语气+场景+日常；tone=语气+场景+日常
- * @param {'v1'|'v2'} [opts.mode] 仿真模式；每层分别过滤 〔一代〕/〔二代〕小节
  * @param {number} [opts.maxChars] 总预算；<=0 不限
  * @param {string} [opts.sceneId] 场景 ID（用于标题）
  */
 export function composePersonaLayers({
-  core = '', scene = '', daily = '', tone = '', identity = '', personaMode = 'full', mode = 'v2', maxChars = 6000, sceneId = '', layerReserves = null,
+  core = '', scene = '', daily = '', tone = '', identity = '', personaMode = 'full', maxChars = 6000, sceneId = '', layerReserves = null,
 } = {}) {
   const budget = Math.max(0, Math.round(Number(maxChars) || 0));
-  const coreText = selectRoleText(core, mode);
-  const toneText = selectRoleText(tone, mode);
-  const sceneText = selectRoleText(scene, mode);
-  const dailyText = selectRoleText(daily, mode);
+  const coreText = selectRoleText(core);
+  const toneText = selectRoleText(tone);
+  const sceneText = selectRoleText(scene);
+  const dailyText = selectRoleText(daily);
   // tone 模式不加载核心；只有旧角色既没有语气也没有场景/日常时，才回退核心，避免“没卡”。
   const identityText = String(identity ?? '').trim();
   const identitySection = identityText ? [section('identity', '身份底座', identityText)] : [];
