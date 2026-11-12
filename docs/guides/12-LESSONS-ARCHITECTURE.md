@@ -133,7 +133,7 @@ voxd :8765/8767 ← HTTP ← 桥接/桌宠         │ 三个 MCP server     │
 外部     DSH API、SnowLuma、voxd、文件系统
 ```
 
-耦合注意：插件用相对路径 import 仓库根 `src/`（38 个模块、96 处；`npm run doc-facts` 复核）；`src/memory-card.js` 带 `?rev=` 缓存破坏后缀，**同一字符串硬编码在 3 处**（`lib/memory-card.js`、`lib/pet-chat.js:27`、桥接对应引用），改了引擎不 bump rev → 热重载仍跑旧代码。
+耦合注意：插件用相对路径 import 仓库根 `src/`（40 个模块、97 处；`npm run doc-facts` 复核）；`src/memory-card.js` 带 `?rev=` 缓存破坏后缀，**同一字符串硬编码在 3 处**（`lib/memory-card.js`、`lib/pet-chat.js:27`、桥接对应引用），改了引擎不 bump rev → 热重载仍跑旧代码。
 
 ---
 
