@@ -1,3 +1,4 @@
+import { testHome } from './isolate-test-home.mjs';
 import assert from 'node:assert/strict';
 import { buildDouyinReflectionSystem, parseDouyinReflection } from '../lib/douyin-companion-reflection.mjs';
 

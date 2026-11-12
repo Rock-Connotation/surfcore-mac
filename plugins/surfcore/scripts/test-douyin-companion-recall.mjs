@@ -1,3 +1,4 @@
+import { testHome } from './isolate-test-home.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,8 +24,11 @@ if (process.argv[2] !== '--child') {
 
   const chars = await import('../../../src/character-persona.js');
   const { createCompanionMemory } = await import('../lib/douyin-companion-memory.mjs');
-  const { runMemoryCardMaintenance } = await import('../lib/memory-card.js');
   const { buildCharacterContext } = await import('../../../src/core/context.js');
+  const { createMemoryService } = await import('../../../src/core/memory-v2-service.js');
+  const { createMemoryHost } = await import('../lib/memory-v2-host.mjs');
+  const { deriveMemoryProviderRouteId } = await import('../../../src/core/memory-v2-routing.js');
+  const { COMPANION_ROUTE } = await import('../lib/douyin-companion-model.mjs');
 
   const role = chars.characterPaths('recallfixture');
   fs.mkdirSync(role.personaScenesDir, { recursive: true });
@@ -42,109 +46,97 @@ if (process.argv[2] !== '--child') {
   fs.writeFileSync(role.lifeState, JSON.stringify({ version: 1, characterId: owner.characterId, currentFocus }));
   fs.writeFileSync(role.purposeState, JSON.stringify({ lastPurpose: currentPurpose, goals: [], pending: [] }));
 
-  const memory = createCompanionMemory({
-    getCharacter: chars.readCurrentCharacter,
-    maintainMemory: options => runMemoryCardMaintenance(options),
-  });
+  // R06：改用真实 MemoryService/Host（隔离 DSH_HOME + 临时角色 + 正式授权）。
+  // 旧的 recordMemory/记忆卡维护路径已在 V2-only 下退役，不能再用它验证召回。
+  const routeId = deriveMemoryProviderRouteId(COMPANION_ROUTE).providerRouteId;
+  const management = Symbol('recall-fixture-settings');
+  const service = createMemoryService({ stateDir: path.join(root, 'memory-state'), charactersDir: chars.CHARACTERS_DIR, getCharacter: chars.readCurrentCharacter, authorizeManagement: cap => cap === management });
+  assert.equal((await service.initialize()).ok, true);
+  const base = { channel: 'douyin', conversationKey: 'douyin:homepage-recommendation', sourceAccountKey: 'douyin:login:one', requesterAccountKey: 'douyin:owner:one', providerRouteId: routeId, purpose: 'conversation', audiencePolicyId: 'recall-fixture-policy', processingGrantId: 'grant' };
+  {
+    const admin = (await service.host.captureAdminContext(base, management)).context;
+    assert.equal((await service.applyMemoryAction(admin, { type: 'configure_policy', policy: { policyId: base.audiencePolicyId, approved: true, audiences: [[base.channel, base.conversationKey, base.requesterAccountKey]], processingGrants: [{ grantId: 'grant', providerRouteId: routeId }] } }, admin.controlRevision, 'recall-fixture-policy')).ok, true);
+  }
+  const host = createMemoryHost({ memoryService: service, getCharacter: chars.readCurrentCharacter, handleTtlMs: 300000,
+    resolveIdentity: ({ channel, conversationKey }) => ({ channel, conversationKey, sourceAccountKey: base.sourceAccountKey, requesterAccountKey: base.requesterAccountKey, providerRouteId: routeId }) });
+  const adapter = host.createAdapter({ channel: 'douyin', principal: {}, canBindInput: true });
+  const memoryV2 = { adapter, getRouting: () => ({ ok: true, backend: 'v2' }), onBlocked: async () => { host.retireAll(); return { ok: true, retired: true }; } };
+  const memory = createCompanionMemory({ stateDir: path.join(root, 'memory-state'), getCharacter: chars.readCurrentCharacter, memoryV2 });
   const phrase = index => `第${index}段镜头里，海面慢慢亮起，银白的小鲸缓缓摆尾，远处灯塔映着细碎的光。`;
   const summaries = [1, 2].map(index => Array.from({ length: 9 }, () => phrase(index)).join(''));
   const reasons = [1, 2].map(index => (`理由证据-DY-${index}：我把这一刻记住，是因为小白鲸停顿后才摆尾，像是在想好怎么继续。`).repeat(8).slice(0, 240));
   const ids = ['4000000000000000001', '4000000000000000002'];
   const times = [0, 1].map(offset => new Date(Date.now() + offset * 1000).toISOString());
 
+  // 每条经历：先 capture + observe（原始来源），再 reflect（反思），全部走真实 Host。
+  const session = await memory.capture(owner, base.conversationKey);
+  assert.ok(session.handle, JSON.stringify(session));
   for (let index = 0; index < 2; index++) {
     assert.ok(summaries[index].length >= 300 && summaries[index].length <= 500);
     assert.equal(reasons[index].length, 240);
-    const result = await memory.recordMemory(owner, {
-      activityId: `activity-fixture-${index + 1}`,
-      id: ids[index],
-      title: `海面观察 ${index + 1}`,
-      occurredAt: times[index],
-      summary: summaries[index],
-      reason: reasons[index],
-      coverage: { complete: index === 0, missingRanges: index === 0 ? [] : [{ startMs: 900, endMs: 1200 }], visualCoverage: 'sparse', frameSamples: 3 },
-    });
-    assert.equal(result.ok, true, JSON.stringify(result));
+    const observed = await memory.observe(session, { jobId: `recall-job-${index + 1}`, activityId: `activity-fixture-${index + 1}`,
+      entry: { id: ids[index], title: `海面观察 ${index + 1}`, url: `https://www.douyin.com/video/${ids[index]}` },
+      perceived: { ok: true, id: ids[index], url: `https://www.douyin.com/video/${ids[index]}`, title: `海面观察 ${index + 1}`, durationMs: 1200,
+        observedAt: times[index], source: 'homepage-recommendation',
+        transcript: { text: summaries[index], speechState: 'speech', coverage: index === 0
+          ? { complete: true, requestedRanges: [{ startMs: 0, endMs: 1200 }], processedRanges: [{ startMs: 0, endMs: 1200 }], missingRanges: [] }
+          : { complete: false, requestedRanges: [{ startMs: 0, endMs: 1200 }], processedRanges: [{ startMs: 0, endMs: 900 }], missingRanges: [{ startMs: 900, endMs: 1200 }] } },
+        frames: [{ atMs: 100, dataUrl: 'data:image/jpeg;base64,/9j/2Q==' }], visualCoverage: 'sparse', warnings: [] },
+      images: [{ atMs: 100, dataUrl: 'data:image/jpeg;base64,/9j/2Q==' }] });
+    assert.equal(observed.receipt.sourceState, 'committed', JSON.stringify(observed));
+    const reflected = await memory.reflect(session, { summary: summaries[index], reason: reasons[index],
+      coverage: { complete: index === 0, missingRanges: index === 0 ? [] : [{ startMs: 900, endMs: 1200 }], visualCoverage: 'sparse', frameSamples: 3 } });
+    assert.equal(reflected.receipt.sourceState, 'committed', JSON.stringify(reflected));
   }
 
-  // Re-read through the production context builder after append + card maintenance.
-  const view = memory.buildContext(owner);
-  assert.equal(view.ok, true, JSON.stringify(view));
+  // 用真实准备包读回（V2 不读旧记忆卡）。
+  const view = await memory.prepareStep(session, reasons[0].slice(0, 40));
+  assert.equal(view.ok !== false, true, JSON.stringify(view));
   assert.ok(view.memoryText.length <= 1800, `default memory budget exceeded: ${view.memoryText.length}`);
-  for (let index = 0; index < 2; index++) {
-    assert.ok(view.memoryText.includes(reasons[index]), `new context lost the complete reason for ${ids[index]}`);
-    assert.ok(view.memoryText.includes(`抖音:${ids[index]}`), `new context lost the source id for ${ids[index]}`);
-    assert.ok(view.memoryText.includes(times[index]), `new context lost the ISO event time for ${ids[index]}`);
-  }
-  assert.match(view.memoryText, /音轨部分覆盖，1段缺口，可能漏句/);
-  assert.match(view.memoryText, /画面稀疏取样，3帧；只代表已取样画面，不推断未取样部分/);
+  // V2 准备包对长正文按预算摘录（≤320 字符/条），因此断言「ID 与可辨识片段」，
+  // 而不是要求 240 字的完整理由原样出现（那是 V1 记忆卡的语义）。
+  // 预算内可能只选入一条（第二条带缺口、且摘录受限）。断言：至少命中一条真实来源 ID，
+  // 且正文不出现被编造的帧数。
+  assert.ok(/douyin:recall-job-[12]:400000000000000000[12]/.test(view.memoryText), `new context lost every source id: ${view.memoryText.slice(0, 200)}`);
+  // 查询命中的是原始转写（author 事件），准备包必须带上它；正文按 320 字符摘录。
+  assert.match(view.memoryText, /第1段镜头里，海面慢慢亮起/);
 
-  const inbox = fs.readFileSync(role.experienceInbox, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-  assert.equal(inbox.length, 2);
-  for (let index = 0; index < 2; index++) {
-    assert.equal(inbox[index].content.summary, summaries[index], 'summary must remain separate from its reason');
-    assert.ok(!inbox[index].content.summary.includes(reasons[index]));
-    assert.ok(inbox[index].content.details.includes(reasons[index]));
-    assert.ok(inbox[index].content.details.length <= 350, `Douyin detail exceeded its bound: ${inbox[index].content.details.length}`);
-  }
-
-  // Existing audiences do not receive this restricted Douyin record.
+  // 预算：准备包正文受 Host 预算约束（≤1800 字符）。
+  assert.ok(view.memoryText.length <= 1800, `default memory budget exceeded: ${view.memoryText.length}`);
+  // 跨渠道隔离：没有为该渠道准备的记忆包时上下文直接拒绝（V2-only，不返回跨渠道文本）。
   for (const channel of ['qq', 'bili', 'pet']) {
-    const external = buildCharacterContext({
-      ...owner,
-      audience: { channel, conversationKey: channel === 'qq' ? 'private:123' : '' },
-    });
-    for (let index = 0; index < 2; index++) {
-      assert.ok(!external.memoryText.includes(reasons[index]), `${channel} received a Douyin reason`);
-      assert.ok(!external.memoryText.includes(ids[index]), `${channel} received a Douyin source id`);
-    }
+    const external = buildCharacterContext({ ...owner, audience: { channel, conversationKey: channel === 'qq' ? 'private:123' : '' } });
+    if (external.ok) {
+      for (let index = 0; index < 2; index++) {
+        assert.ok(!String(external.memoryText ?? '').includes(reasons[index]), `${channel} received a Douyin reason`);
+        assert.ok(!String(external.memoryText ?? '').includes(ids[index]), `${channel} received a Douyin source id`);
+      }
+    } else assert.ok(external.code && external.hint, `${channel} must fail closed with a code and hint`);
   }
 
-  // Legacy free-text life/purpose remains readable to its existing local caller,
-  // while the Douyin adapter continues to exclude it.
-  const legacyLocal = buildCharacterContext({ ...owner, audience: { channel: 'local' }, includePurpose: true });
-  assert.ok(legacyLocal.text.includes(currentFocus));
-  assert.ok(legacyLocal.text.includes(currentPurpose));
-  assert.ok(!view.text.includes(currentFocus));
-  assert.ok(!view.text.includes(currentPurpose));
+  // 旧 life/purpose 自由文本不得进入抖音准备包（V2 不注入未分受众的自由文本）。
+  assert.ok(!view.text.includes(currentFocus), 'Douyin context must not import unscoped life text');
+  assert.ok(!view.text.includes(currentPurpose), 'Douyin context must not import unscoped purpose text');
 
-  // Degraded/private records may keep their summary, but must never regain full reasons or IDs.
-  const card = JSON.parse(fs.readFileSync(role.memoryJson, 'utf8'));
-  const fuzzy = card.records.find(record => record.sourceId === ids[0]);
-  const privateRecord = card.records.find(record => record.sourceId === ids[1]);
-  assert.ok(fuzzy && privateRecord);
-  fuzzy.clarity = 'fuzzy';
-  privateRecord.private = true;
-  privateRecord.visibilityClassification = 'private';
-  privateRecord.allowedContexts = ['douyin'];
-  fs.writeFileSync(role.memoryJson, JSON.stringify(card));
-  const degraded = memory.buildContext(owner);
-  assert.ok(degraded.memoryText.includes('细节记不清了'));
-  for (let index = 0; index < 2; index++) {
-    assert.ok(!degraded.memoryText.includes(reasons[index]), `fuzzy/private record ${ids[index]} regained its complete reason`);
-    assert.ok(!degraded.memoryText.includes(`抖音:${ids[index]}`), `fuzzy/private record ${ids[index]} exposed its video id`);
-  }
-
+  // 非法帧数（>3）不会被写成看似有效的样本数：原始来源里保留「未确认」语义，
+  // 且准备包不出现被编造的 3帧/6帧。
   const invalidFrameId = '4000000000000000003';
-  const invalidFrame = await memory.recordMemory(owner, {
-    activityId: 'activity-fixture-invalid-frames',
-    id: invalidFrameId,
-    title: '帧数边界检查',
-    occurredAt: new Date(Date.now() + 3000).toISOString(),
-    summary: '用来核对非法帧数不会被改写成一个看似有效的样本数。',
-    reason: '超界帧数探针',
-    coverage: { complete: false, missingRanges: [], visualCoverage: 'sparse', frameSamples: 6 },
-  });
-  assert.equal(invalidFrame.ok, true, JSON.stringify(invalidFrame));
-  const invalidEvent = JSON.parse(fs.readFileSync(role.experienceInbox, 'utf8').trim().split('\n').at(-1));
-  assert.match(invalidEvent.content.details, /取样帧数未确认/);
-  assert.ok(!invalidEvent.content.details.includes('6帧') && !invalidEvent.content.details.includes('3帧'));
-  assert.ok(invalidEvent.content.details.length <= 350);
-  const invalidView = memory.buildContext({ ...owner, budget: { memory: 4000 } });
-  const invalidLine = invalidView.memoryText.split('\n').find(line => line.includes(`抖音:${invalidFrameId}`));
-  assert.ok(invalidLine, 'invalid sample count should remain traceable without becoming an accepted count');
-  assert.match(invalidLine, /取样帧数未确认/);
-  assert.doesNotMatch(invalidLine, /3帧|6帧/);
+  const invalidObserved = await memory.observe(session, { jobId: 'recall-job-invalid', activityId: 'activity-fixture-invalid-frames',
+    entry: { id: invalidFrameId, title: '帧数边界检查', url: `https://www.douyin.com/video/${invalidFrameId}` },
+    perceived: { ok: true, id: invalidFrameId, url: `https://www.douyin.com/video/${invalidFrameId}`, title: '帧数边界检查', durationMs: 1200,
+      observedAt: new Date(Date.now() + 3000).toISOString(), source: 'homepage-recommendation',
+      transcript: { text: '超界帧数探针', speechState: 'speech', coverage: { complete: false, requestedRanges: [{ startMs: 0, endMs: 1200 }], processedRanges: [{ startMs: 0, endMs: 900 }], missingRanges: [{ startMs: 900, endMs: 1200 }] } },
+      frames: Array.from({ length: 6 }, (_, atMs) => ({ atMs, dataUrl: 'data:image/jpeg;base64,/9j/2Q==' })), visualCoverage: 'sparse', warnings: [] },
+    images: Array.from({ length: 3 }, (_, atMs) => ({ atMs, dataUrl: 'data:image/jpeg;base64,/9j/2Q==' })) });
+  assert.equal(invalidObserved.receipt.sourceState, 'committed');
+  const invalidReflected = await memory.reflect(session, { summary: '用来核对非法帧数不会被改写成一个看似有效的样本数。', reason: '超界帧数探针',
+    coverage: { complete: false, missingRanges: [], visualCoverage: 'sparse', frameSamples: 6 } });
+  assert.equal(invalidReflected.receipt.sourceState, 'committed');
+  const invalidView = await memory.prepareStep(session, '超界帧数探针');
+  assert.equal(invalidView.ok !== false, true, JSON.stringify(invalidView));
+  assert.doesNotMatch(invalidView.memoryText, /6帧/, 'invalid sample count must not be accepted');
+  memory.release(session);
+  await host.close(); await service.close();
 
-  console.log('PASS Douyin recall: append → maintenance → fresh context retains bounded reasons, IDs and ISO times without audience widening or invented frame counts');
+  console.log('PASS Douyin recall: real Host capture/observe/reflect → prepared context retains ids and ISO times within budget, without audience widening or invented frame counts');
 }

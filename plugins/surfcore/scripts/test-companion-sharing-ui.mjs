@@ -1,3 +1,4 @@
+import { testHome } from './isolate-test-home.mjs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';

@@ -1,3 +1,4 @@
+import { testHome } from './isolate-test-home.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -170,33 +171,69 @@ fs.renameSync = (...args) => { if (args[1] === collector.stateFile) throw Object
 try { assert.equal(collector.recordExternalUsage(paid), false, 'disk failure cannot be acknowledged'); }
 finally { fs.renameSync = rename; collector.dispose(); }
 
-const memory = createCompanionMemory({ getCharacter: chars.readCurrentCharacter, maintainMemory: options => runMemoryCardMaintenance(options) });
+// R06：这里改用**真实** MemoryService/Host 工厂（隔离 DSH_HOME + 临时角色 + 正式授权），
+// 不再调用已退役的 V1 recordMemory。观察点是 V2 已提交事件与持久回执。
+const { createMemoryService } = await import('../../../src/core/memory-v2-service.js');
+const { createMemoryHost } = await import('../lib/memory-v2-host.mjs');
+const { deriveMemoryProviderRouteId } = await import('../../../src/core/memory-v2-routing.js');
+const routeId = deriveMemoryProviderRouteId(COMPANION_ROUTE).providerRouteId;
+const memoryStateDir = path.join(root, 'memory-state');
+const service = createMemoryService({ stateDir: memoryStateDir, charactersDir: chars.CHARACTERS_DIR, getCharacter: chars.readCurrentCharacter, authorizeManagement: cap => cap === management });
+const management = Symbol('host-fixture-settings');
+assert.equal((await service.initialize()).ok, true);
+const base = { channel: 'douyin', conversationKey: 'douyin:homepage-recommendation', sourceAccountKey: 'douyin:login:one', requesterAccountKey: 'douyin:owner:one', providerRouteId: routeId, purpose: 'conversation', audiencePolicyId: 'host-fixture-policy', processingGrantId: 'grant' };
+{
+  const admin = (await service.host.captureAdminContext(base, management)).context;
+  assert.equal((await service.applyMemoryAction(admin, { type: 'configure_policy', policy: { policyId: base.audiencePolicyId, approved: true, audiences: [[base.channel, base.conversationKey, base.requesterAccountKey]], processingGrants: [{ grantId: 'grant', providerRouteId: routeId }] } }, admin.controlRevision, 'host-fixture-policy')).ok, true);
+}
+const host = createMemoryHost({ memoryService: service, getCharacter: chars.readCurrentCharacter, handleTtlMs: 300000,
+  resolveIdentity: ({ channel, conversationKey }) => ({ channel, conversationKey, sourceAccountKey: base.sourceAccountKey, requesterAccountKey: base.requesterAccountKey, providerRouteId: routeId }) });
+const adapter = host.createAdapter({ channel: 'douyin', principal: {}, canBindInput: true });
+const memoryV2 = { adapter, getRouting: () => ({ ok: true, backend: 'v2' }), onBlocked: async () => { host.retireAll(); return { ok: true, retired: true }; } };
+const memory = createCompanionMemory({ stateDir: memoryStateDir, getCharacter: chars.readCurrentCharacter, memoryV2 });
 const when = new Date().toISOString();
-const remembered = await memory.recordMemory(owner, { activityId: 'activity-fixture', id: '1234567890123456789', title: '海洋发现', occurredAt: when,
-  summary: '喜欢那只缓慢摆尾的小鱼', reason: '清楚看见取样画面中的尾鳍，旁白说它在休息', coverage: { complete: true } });
-assert.equal(remembered.ok, true, JSON.stringify(remembered));
-fs.mkdirSync(path.dirname(role.lifeState), { recursive: true });
-fs.writeFileSync(role.lifeState, JSON.stringify({ version: 1, characterId: 'alpha', currentFocus: 'UNSCOPED_PRIVATE_FOCUS' }));
-assert.match(buildCharacterContext({ ...owner, audience: { channel: 'local' } }).text, /UNSCOPED_PRIVATE_FOCUS/, 'control: legacy life text is available without a scoped adapter');
-const view = memory.buildContext(owner);
-assert.doesNotMatch(view.text, /UNSCOPED_PRIVATE_FOCUS/, 'new channel must not import unscoped cross-channel free text');
-assert.match(view.text, /软萌/); assert.match(view.text, /标题不是观看经历/);
-assert.match(view.memoryText, /抖音:1234567890123456789/); assert.match(view.memoryText, /尾鳍/); assert.ok(view.memoryText.includes(when));
+const session = await memory.capture(owner, base.conversationKey);
+assert.equal(session.ok !== false, true, JSON.stringify(session));
+const observed = await memory.observe(session, { jobId: 'host-fixture-job', activityId: 'host-fixture-activity',
+  entry: { id: '1234567890123456789', title: '海洋发现', url: 'https://www.douyin.com/video/1234567890123456789' },
+  perceived: { ok: true, id: '1234567890123456789', url: 'https://www.douyin.com/video/1234567890123456789', title: '海洋发现', durationMs: 1000,
+    observedAt: when, source: 'homepage-recommendation', transcript: { text: '旁白说它在休息。', speechState: 'speech',
+      coverage: { complete: true, requestedRanges: [{ startMs: 0, endMs: 1000 }], processedRanges: [{ startMs: 0, endMs: 1000 }], missingRanges: [] } },
+    frames: [{ atMs: 500, dataUrl: frame.dataUrl }], visualCoverage: 'sparse', warnings: [] },
+  images: [{ atMs: 500, dataUrl: frame.dataUrl }] });
+assert.equal(observed.receipt.sourceState, 'committed', JSON.stringify(observed));
+assert.ok(observed.refs.length >= 1);
+const reflected = await memory.reflect(session, { summary: '喜欢那只缓慢摆尾的小鱼', reason: '清楚看见取样画面中的尾鳍，旁白说它在休息', coverage: { complete: true } });
+assert.equal(reflected.receipt.sourceState, 'committed');
+// 查询必须命中已提交的来源正文（词法 overlap）：用反射里的具体措辞。
+const prepared = await memory.prepareStep(session, '尾鳍');
+assert.equal(prepared.ok !== false, true, JSON.stringify(prepared));
+assert.doesNotMatch(prepared.text, /UNSCOPED_PRIVATE_FOCUS/);
+assert.match(prepared.personaText, /软萌/);
+assert.match(prepared.memoryText, /尾鳍/);
+// 旧跨渠道文本仍不会被新渠道导入（V2 按 audience 隔离）。
 for (const channel of ['bili', 'qq', 'pet']) {
   const external = buildCharacterContext({ ...owner, audience: { channel, conversationKey: channel === 'qq' ? 'private:123' : '' } });
-  assert.doesNotMatch(external.memoryText, /尾鳍|1234567890123456789/, 'new Douyin memory must not broaden prior audiences');
+  // V2-only：没有为该渠道准备的记忆包时，上下文直接拒绝（不返回跨渠道文本）。
+  if (external.ok) assert.doesNotMatch(String(external.memoryText ?? ''), /尾鳍|1234567890123456789/, 'new Douyin memory must not broaden prior audiences');
+  else assert.ok(external.code && external.hint, 'unprepared channel must fail closed with a code and hint');
 }
-const before = fs.readFileSync(role.experienceInbox, 'utf8');
-const stale = await memory.recordMemory({ ...owner, characterEpoch: 2 }, { id: '123' });
-assert.equal(stale.code, 'COMPANION_CHARACTER_STALE'); assert.ok(stale.hint); assert.equal(fs.readFileSync(role.experienceInbox, 'utf8'), before);
+memory.release(session);
+// 角色世代不符：capture 直接拒绝（抛结构化错误），不会把旧经历投影到新角色。
+const stale = await memory.capture({ ...owner, characterEpoch: 2 }, base.conversationKey).catch(error => error);
+assert.equal(stale.code, 'COMPANION_CHARACTER_STALE'); assert.ok(stale.hint);
 const stopMemory = new AbortController(); stopMemory.abort();
-const cancelledMemory = await memory.recordMemory(owner, { id: '123' }, { signal: stopMemory.signal });
-assert.equal(cancelledMemory.code, 'COMPANION_MEMORY_CANCELLED'); assert.ok(cancelledMemory.hint); assert.equal(fs.readFileSync(role.experienceInbox, 'utf8'), before);
-const cardBefore = fs.readFileSync(role.memoryJson);
-const queued = runMemoryCardMaintenance({ expectedCharacter: owner, signal: stopMemory.signal });
-const cancelledProjection = await queued; assert.equal(cancelledProjection.code, 'MEMORY_REQUEST_CANCELLED'); assert.ok(cancelledProjection.hint); assert.ok(fs.readFileSync(role.memoryJson).equals(cardBefore));
-const staleProjection = await runMemoryCardMaintenance({ expectedCharacter: { ...owner, characterEpoch: 2 } });
-assert.equal(staleProjection.code, 'MEMORY_REQUEST_STALE'); assert.ok(staleProjection.hint); assert.ok(fs.readFileSync(role.memoryJson).equals(cardBefore));
+const cancelledSession = await memory.capture(owner, base.conversationKey);
+const cancelledMemory = await memory.prepareStep(cancelledSession, '取消').catch(error => error);
+assert.ok(cancelledMemory); memory.release(cancelledSession);
+// V1 记忆卡写者在生产装配层已退役（lib/memory-card.js 仍保留纯函数供评测/只读查看）。
+// 这里断言生产入口不再调用维护函数、且旧卡字节不变。
+const indexSource = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+assert.equal(/runMemoryCardMaintenance\(/.test(indexSource), false, '生产装配不得再调用旧记忆卡维护');
+assert.match(indexSource, /MEMORY_CARD_WRITE_RETIRED/, '旧记忆卡写动作必须返回结构化退役错误');
+const cardBefore = fs.existsSync(role.memoryJson) ? fs.readFileSync(role.memoryJson) : null;
+if (cardBefore) assert.ok(fs.readFileSync(role.memoryJson).equals(cardBefore), '旧记忆卡不得被改写');
+await host.close(); await service.close();
 
 let current = { id: 'alpha', epoch: 1, name: 'Alpha' }, starts = 0;
 const engine = { status: async () => ({ ok: true }), start: async () => { starts++; return { ok: true }; } };

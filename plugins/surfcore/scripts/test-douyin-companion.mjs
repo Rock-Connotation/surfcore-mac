@@ -1,3 +1,4 @@
+import { testHome } from './isolate-test-home.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -5,34 +6,77 @@ import path from 'node:path';
 import { createDouyinCompanion } from '../lib/douyin-companion.mjs';
 
 import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
-import { CONTEXT_FIELDS, digest as memoryDigest } from '../../../src/core/memory-v2-contract.js';
+import { CONTEXT_FIELDS, SCHEMA_VERSION, digest as memoryDigest } from '../../../src/core/memory-v2-contract.js';
 import { COMPANION_ROUTE } from '../lib/douyin-companion-model.mjs';
+
+// R06：导入前必须隔离 DSH_HOME 并建立当前角色。
+// 以前本夹具没有设置 DSH_HOME，`prepareCharacterContext` 会读真实 ~/.dsh，
+// 于是命中 CHARACTER_EPOCH_STALE，整个作业卡在 perceive —— 这是夹具缺陷，不是生产链缺陷。
+const FIXTURE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-companion-home-'));
+process.env.DSH_HOME = FIXTURE_HOME;
+const chars = await import('../../../src/character-persona.js');
+function establishRole(role) {
+  const dir = path.join(chars.CHARACTERS_DIR, role.id);
+  fs.mkdirSync(path.join(dir, 'persona.scenes'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'persona.md'), '# Fixture persona\n\n本夹具角色的人格核心。');
+  fs.writeFileSync(path.join(dir, 'persona.scenes', 'douyin.md'), '抖音场景：简短回应。');
+  fs.writeFileSync(chars.CURRENT_FILE, JSON.stringify({ version: 1, id: role.id, epoch: role.epoch, name: role.id }));
+}
 
 // V2-only（2026-11-12）：抖音陪伴引擎无条件走 Host 适配器；本离线夹具没有真实
 // 控制库，注入一个最小可信适配器，让引擎的逐步链路可测。真实 V2 语义由
 // test-memory-v2-douyin.mjs 用真实 Host 覆盖。
-function fixtureMemoryV2({ getCharacter }) {
+function fixtureMemoryV2({ getCharacter, hooks = {}, records = [] }) {
   const routeId = deriveMemoryProviderRouteId(COMPANION_ROUTE).providerRouteId;
-  const baseContext = () => {
-    const role = getCharacter();
-    const ctx = Object.fromEntries(CONTEXT_FIELDS.map(key => [key, key]));
-    return { ...ctx, characterId: role.id, capturedEpoch: role.epoch, channel: 'douyin', conversationKey: 'douyin:homepage-recommendation', purpose: 'conversation', providerRouteId: routeId };
+  // 回执必须满足持久账本的完整契约（R06）：缺 ok/operationId/acceptance/selectionState/
+  // indexState/retry/nextOffset 会让对象在保存前就被判为 DOUYIN_STATE_INVALID，
+  // 而 catch 里又用同一个非法对象重试保存，于是磁盘停在 running/perceive。
+  const receiptOf = (handle, events, seq) => {
+    const eventIds = events.map((_, i) => `${handle}:${seq}:${i}`);
+    return {
+      ok: true, operationId: `${handle}:op:${seq}`, phase: seq, acceptance: 'volatile',
+      sourceState: 'committed', selectionState: 'not_selected', indexState: 'ready',
+      operationState: 'completed', retry: 'none', commitSequence: seq, nextOffset: null,
+      eventIds,
+      eventRefs: eventIds.map(id => ({ type: 'event', id, revision: 1, payloadDigest: 'a'.repeat(64) })),
+    };
   };
-  let handleSeq = 0;
+  let seq = 0;
+  const handles = new Map();
   const adapter = {
-    capture: async ({ conversationKey } = {}) => ({ ok: true, handle: `fixture-handle-${++handleSeq}`, sourceStamp: { ...baseContext(), conversationKey: conversationKey ?? baseContext().conversationKey, providerRouteId: routeId } }),
+    capture: async ({ conversationKey } = {}) => {
+      const handle = `fixture-handle-${++seq}`;
+      handles.set(handle, { conversationKey: conversationKey ?? 'douyin:homepage-recommendation', seq: 0 });
+      return { ok: true, handle, sourceStamp: { ...baseContext(), conversationKey: handles.get(handle).conversationKey, providerRouteId: routeId } };
+    },
     validate: async () => ({ ok: true }),
-    receipt: async () => ({ ok: true, operationState: 'completed' }),
-    ingest: async (handle, events) => ({ ok: true, receipt: { sourceState: 'committed', eventRefs: events.map((event, i) => ({ id: `${handle}:${i}`, type: 'event', payloadDigest: memoryDigest(event) })), eventIds: events.map((_, i) => `${handle}:${i}`), operationState: 'completed', commitSequence: 1 } }),
+    receipt: async (handle) => ({ ok: true, ...receiptOf(handle, [{}, {}], handles.get(handle)?.seq || 1) }),
+    ingest: async (handle, events) => {
+      if (typeof hooks.ingest === 'function') { const held = hooks.ingest({ handle, events }); if (held) return held; }
+      const entry = handles.get(handle) ?? { seq: 0 }; entry.seq += 1; handles.set(handle, entry);
+      const receipt = receiptOf(handle, events, entry.seq);
+      // 记录真实入库事件：断言从这里看「V2 reflection 已提交」，而不是旧 recordMemory 计数。
+      records.push({ handle, events, receipt });
+      return { ok: true, receipt, eventIds: receipt.eventIds, eventRefs: receipt.eventRefs, ...receipt };
+    },
     prepare: async (handle, query) => {
-      const prepared = { ...baseContext(), schemaVersion: 2, queryDigest: memoryDigest(query), expiresAt: Date.now() + 60_000, eventWatermark: 0, evidenceIds: [], inputManifest: [], text: `角色${baseContext().characterId}的记忆。`, budget: { estimated: true } };
+      const stamp = baseContext();
+      // 准备包必须带完整 CONTEXT_FIELDS（validatePrepared 逐字段比对），且 text ≤ 1800。
+      const prepared = { ...stamp, schemaVersion: SCHEMA_VERSION, queryDigest: memoryDigest(query), expiresAt: Date.now() + 60_000,
+        eventWatermark: 0, evidenceIds: [], inputManifest: [], text: `角色${stamp.characterId}的记忆。`, budget: { estimated: true } };
       return { ok: true, prepared, preparedHandle: `${handle}:prepared`, inputManifest: [] };
     },
-    verifyPrepared: async () => ({ ok: true }),
+    // 同步校验：生产要求 verifyPrepared 同步返回（异步会被判 MEMORY_PREPARED_UNTRUSTED）。
+    verifyPrepared: () => ({ ok: true }),
     bindActualInput: async () => ({ ok: true }),
     withNetworkAdmission: async (handle, dispatch) => dispatch(),
     release: async () => ({ ok: true }),
   };
+  function baseContext() {
+    const role = getCharacter();
+    const ctx = Object.fromEntries(CONTEXT_FIELDS.map(key => [key, key]));
+    return { ...ctx, characterId: role.id, capturedEpoch: role.epoch, channel: 'douyin', conversationKey: 'douyin:homepage-recommendation', purpose: 'conversation', providerRouteId: routeId };
+  }
   return { adapter, getRouting: () => ({ ok: true, backend: 'v2' }), onBlocked: async () => ({ ok: true, retired: true }) };
 }
 
@@ -56,12 +100,14 @@ function fixture(options = {}) {
   const stateDir = options.stateDir ?? makeRoot();
   const context = { characterId: 'role-a', characterEpoch: 1 };
   const role = options.role ?? { id: 'role-a', epoch: 1 };
+  // R06：导入前建立当前角色（隔离 home），否则准备包会因真实 ~/.dsh 的角色不一致而失败。
+  if (!options.skipRoleSetup) establishRole(role);
   const time = options.time ?? { value: new Date('2026-11-07T03:00:00.000Z') };
-  const calls = { models: [], memory: [], memoryWrites: [], shares: [], perceived: [], ready: 0, feeds: 0 };
+  const calls = { models: [], memory: [], memoryWrites: [], shares: [], perceived: [], ready: 0, feeds: 0, v2: [] };
   const api = createDouyinCompanion({
     stateDir,
     getCharacter: () => role,
-    memoryV2: options.memoryV2 ?? fixtureMemoryV2({ getCharacter: () => role }),
+    memoryV2: options.memoryV2 ?? fixtureMemoryV2({ getCharacter: () => role, hooks: options.hooks, records: calls.v2 }),
     now: () => time.value,
     callbackTimeoutMs: options.callbackTimeoutMs ?? 180_000,
     readiness: async () => { calls.ready++; return options.readiness ? options.readiness(calls) : { ok: true }; },
@@ -88,6 +134,11 @@ function fixture(options = {}) {
       };
     },
     buildContext: async ctx => options.buildContext ? options.buildContext(ctx) : ({ ok: true, text: `角色${ctx.characterId}的记忆。` }),
+    // 逐步模型请求元数据：引擎在 V2 路径要求可信同步回调（R06）。
+    getModelRequest: ({ jobId, activityId, characterId, characterEpoch, providerRouteId, model }) => ({
+      requestId: `${activityId}:model`, category: 'other', purpose: 'organize', jobId,
+      role: characterId, epoch: characterEpoch, providerRouteId, model, estimatedTokens: 100,
+    }),
     modelCall: async args => {
       calls.models.push(args);
       assert.equal(args.maxTokens, 8192);
@@ -151,23 +202,29 @@ async function startAndFinish(f, options) {
 {
   const f = fixture();
   const manual = await startAndFinish(f);
+  if (manual.state !== 'partial') console.log('DEBUG-MANUAL', JSON.stringify(manual, null, 1).slice(0, 2500));
   assert.equal(manual.state, 'partial'); // Sparse frames never claim full-video visual coverage.
   assert.equal(manual.acceptanceQualified, true);
   assert.equal(manual.items.length, 2);
   assert.equal(f.calls.models.length, 2);
   assert.equal(f.calls.perceived[0].item.mediaUserAgent, 'Mozilla/5.0 SurfCore-ephemeral-browser-UA');
-  assert.equal(f.calls.memory.length, 2);
   assert.equal(manual.items[0].url, 'https://www.douyin.com/video/video-1');
   assert.equal(manual.items[0].occurredAt, '2026-11-07T03:01:02.000Z');
   assert.equal(manual.items[0].coverage.visualCoverage, 'sparse');
   assert.equal(manual.items[0].memorySaved, true);
   assert.match(f.calls.models[0].system, /仅有 feeling、reason、summary、draft 四个字段/);
   assert.doesNotMatch(f.calls.models[0].system, /share、question/);
-  assert.equal(f.calls.memory[0].value.id, 'video-1');
-  assert.equal(Object.hasOwn(f.calls.memory[0].value, 'url'), false);
-  assert.equal(f.calls.memory[0].value.occurredAt, manual.items[0].occurredAt);
-  assert.equal(f.calls.memory[0].value.coverage.complete, true);
-  assert.equal(f.calls.memory[0].ctx.characterEpoch, 1);
+  // R06：观察点从旧 recordMemory 计数迁到 V2 已提交事件与持久回执。
+  // 每条素材至少产生 author/processing/model-input/reflection 四类事件，全部带合法回执。
+  const reflections = f.calls.v2.flatMap(record => record.events).filter(event => event.attribution === 'reflection');
+  assert.equal(reflections.length, 2, 'each item must commit exactly one V2 reflection');
+  assert.ok(f.calls.v2.every(record => record.receipt.sourceState === 'committed' && record.receipt.operationState === 'completed' && record.receipt.commitSequence >= 1));
+  assert.equal(manual.memoryV2Receipt.sourceState, 'committed');
+  assert.ok(Array.isArray(manual.memoryV2Refs) && manual.memoryV2Refs.length > 0);
+  for (const ref of manual.memoryV2Refs) { assert.equal(ref.type, 'event'); assert.equal(ref.revision, 1); assert.match(ref.payloadDigest, /^[a-f0-9]{64}$/); }
+  assert.equal(reflections[0].subject, 'role-a');
+  assert.equal(reflections[0].content.includes('https://'), false, 'reflection must not carry a raw URL');
+  assert.equal(f.calls.memory.length, 0, 'V2 路径不得再调用旧 recordMemory');
   const configured = await f.api.configure(f.context, { enabled: true });
   assert.equal(configured.ok, true);
   f.time.value = new Date('2026-11-07T04:30:00.000Z'); // Shanghai 12:30.
@@ -256,7 +313,7 @@ async function startAndFinish(f, options) {
   assert.equal(job.acceptanceQualified, true);
   assert.equal(job.items[0].durationMs, 1000);
   assert.equal(JSON.parse(f.calls.models[0].prompt).durationMs, 1000);
-  assert.equal(f.calls.memory[0].value.coverage.requestedRanges[0].endMs, 1000);
+  assert.equal(JSON.parse(f.calls.models[0].prompt).transcriptCoverage.requestedRanges[0].endMs, 1000);
   await f.api.dispose();
 
   const invalid = fixture({ feedItems: [recommendation('actual-too-long')], actualDurationMs: 120_001 });
@@ -270,11 +327,13 @@ async function startAndFinish(f, options) {
   await invalid.api.dispose();
 }
 
-// Memory callback timeout is bounded and leaves a visible item failure without a retry.
+// V2 记忆写入超时必须有界，且留下可见的条目失败；不会自动重试。
+// （V1 的 recordMemory 回调已不在 V2 路径上，故障注入点改为真实 adapter.ingest 边界。）
 {
-  const f = fixture({ feedItems: [recommendation()], callbackTimeoutMs: 1000, recordMemory: async () => new Promise(() => {}) });
+  const f = fixture({ feedItems: [recommendation()], callbackTimeoutMs: 1000,
+    hooks: { ingest: ({ events }) => events.some(event => event.attribution === 'reflection') ? new Promise(() => {}) : null } });
   const job = await startAndFinish(f);
-  assert.equal(job.state, 'partial');
+  assert.equal(job.state, 'failed');
   assert.equal(job.code, 'DOUYIN_MEMORY_TIMEOUT');
   assert.ok(job.error && job.hint);
   assert.equal(job.items[0].memorySaved, false);
@@ -362,13 +421,19 @@ async function startAndFinish(f, options) {
   await f.api.dispose();
 }
 
-// A delayed memory callback receives the job signal and cancellation returns without a late write.
+// A delayed V2 reflection ingest receives the job signal and cancellation returns without a late write.
 {
-  const f = fixture({ feedItems: [recommendation()], recordMemory: async (_ctx, _value, { signal }) => new Promise((resolve, reject) => {
-    signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-  }) });
+  // V1 的 recordMemory 回调已不在 V2 路径上；这里把「慢记忆写入」注入到真实 adapter.ingest 边界，
+  // 断言取消后不会留下迟到的写入，条目失败可见。
+  let reflectCalls = 0;
+  const f = fixture({ feedItems: [recommendation()],
+    hooks: { ingest: ({ events }) => {
+      if (!events.some(event => event.attribution === 'reflection')) return null;
+      reflectCalls += 1;
+      return new Promise(() => {});
+    } } });
   const started = await f.api.start(f.context);
-  while (!f.calls.memory.length) await wait(5);
+  while (!reflectCalls) await wait(5);
   const cancelled = await f.api.cancel(f.context);
   assert.equal(cancelled.state, 'cancelled');
   assert.equal(cancelled.code, 'DOUYIN_CANCELLED');
@@ -376,7 +441,7 @@ async function startAndFinish(f, options) {
   const job = await finishStored(f.stateDir, started.jobId);
   assert.equal(job.items[0].memorySaved, false);
   assert.equal(job.items[0].code, 'DOUYIN_CANCELLED');
-  assert.equal(f.calls.memoryWrites.length, 0);
+  assert.equal(f.calls.memory.length, 0, 'V2 路径不得再调用旧 recordMemory');
   await f.api.dispose();
 }
 
@@ -625,17 +690,14 @@ async function startAndFinish(f, options) {
   await f.api.dispose();
 }
 
-// The current persona section is a trusted style input; other context remains external memory data.
+// V2：人格与记忆都来自受信任的 Host 准备包（不再走旧的 buildContext 扁平文本）。
 {
   const f = fixture({ feedItems: [recommendation('video-persona-share')],
-    buildContext: async () => ({ ok: true, text: 'flattened text is not used when sections are available', sections: [
-      { kind: 'persona', text: '这是当前角色自己选择的冷静、简洁表达方式。' },
-      { kind: 'memory', text: '过去记忆：用户喜欢海洋纪录片。' },
-    ] }),
     modelCall: async args => {
       const payload = JSON.parse(args.prompt);
-      assert.equal(payload.persona, '这是当前角色自己选择的冷静、简洁表达方式。');
-      assert.equal(payload.context, '过去记忆：用户喜欢海洋纪录片。');
+      // 人格来自当前角色人格卡（经 V2 准备包），不是夹具自填的字符串。
+      assert.match(payload.persona, /本夹具角色的人格核心/);
+      assert.match(payload.context, /角色role-a的记忆/);
       assert.match(args.system, /persona字段来自本机当前角色/);
       assert.doesNotMatch(args.system, /少女鲸鱼娘伙伴/);
       return { text: sharingOutput({ share: '海洋纪录片里那些慢慢游过的镜头确实挺舒服。', question: '你最喜欢哪类海洋生物？' }), usage: {}, finishReason: 'stop' };
@@ -671,14 +733,16 @@ async function startAndFinish(f, options) {
   await f.api.dispose();
 }
 
-// Memory failure prevents any opening from being appended.
+// V2 记忆写入失败（adapter.ingest 拒绝）阻止任何开场被追加。
 {
   const f = fixture({ feedItems: [recommendation('video-no-memory')], modelCall: async () => ({ text: sharingOutput(), usage: {}, finishReason: 'stop' }),
-    recordMemory: async () => ({ ok: false, code: 'COMPANION_MEMORY_FAILED', error: 'memory unavailable', hint: 'restore memory' }),
+    hooks: { ingest: ({ events }) => events.some(event => event.attribution === 'reflection')
+      ? { ok: false, code: 'COMPANION_MEMORY_FAILED', error: 'memory unavailable', hint: 'restore memory' } : null },
     recordSharing: async () => ({ ok: true }) });
   const job = await startAndFinish(f);
   assert.equal(job.items[0].memorySaved, false);
   assert.equal(f.calls.shares.length, 0);
+  assert.ok(job.code && job.hint, '失败必须可见且带下一步');
   await f.api.dispose();
 }
 
