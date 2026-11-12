@@ -597,7 +597,7 @@ export function createVoicePacks(cfg, { programRoot = REPO_ROOT, configFile: exp
   function cancelImport(id) {
     const rec = activeImports.get(id);
     if (!rec || rec.phase === '完成' || rec.phase === '失败') {
-      return { ok: false, error: '没有进行中的导入', code: 'IMPORT_NOT_RUNNING' };
+      return { ok: false, error: '没有进行中的导入', code: 'IMPORT_NOT_RUNNING', hint: '先点「导入语音包」开始一次导入，再取消' };
     }
     rec.cancelled = true;
     rec.phase = '取消中';
@@ -906,16 +906,16 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
     // 端口还在 → 说明有进程占着目录，直接删会 EBUSY；给用户明确提示而不是抛原始错误。
     const m = manifests(cfg).find((x) => x.id === id);
     if (m && await probePort(m.port)) {
-      return { ok: false, error: '还有进程占着这个包（端口仍在监听）：先点「停止」，或重启 DSH 后再卸载' };
+      return { ok: false, code: 'pack.busy-port', error: '还有进程占着这个包（端口仍在监听）：先点「停止」，或重启 DSH 后再卸载', hint: '点包卡片上的「停止」等它退干净；重启 DSH 后再点「卸载」' };
     }
     try {
       await fsp.rm(dir, { recursive: true, force: true });
     } catch (error) {
       const msg = String(error?.message ?? error);
       if (/EBUSY|EPERM|resource busy/i.test(msg)) {
-        return { ok: false, error: '目录被占用（EBUSY）：可能有手动启动的 python/voxd 在跑，结束它再卸载' };
+        return { ok: false, code: 'pack.dir-busy', error: '目录被占用（EBUSY）：可能有手动启动的 python/voxd 在跑，结束它再卸载', hint: '在任务管理器里结束 python/voxd 进程，或重启电脑后再点「卸载」' };
       }
-      return { ok: false, error: msg };
+      return { ok: false, code: 'pack.remove-failed', error: msg, hint: '确认目录没有在资源管理器里打开后重试；仍失败就重启 DSH 再卸载' };
     }
     const state = await readState(cfg, dataPaths);
     if (state.packs?.[id]) {
@@ -1045,7 +1045,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
   /** 取消正在进行的安装：杀子进程树，标记失败。 */
   async function cancelInstall(id) {
     const rec = activeInstalls.get(id);
-    if (!rec) return { ok: false, error: '这个包没有正在进行的安装' };
+    if (!rec) return { ok: false, code: 'pack.install-not-running', error: '这个包没有正在进行的安装', hint: '先点「安装」开始一次安装，再取消' };
     rec.cancelled = true;
     try {
       if (rec.child?.pid) {
@@ -1113,7 +1113,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
         }
       }
     } catch {}
-    return { ok: false, error: '端口还在监听：可能有别的程序占着，或语音包里的进程需要管理员权限才能结束' };
+    return { ok: false, code: 'pack.port-stuck', error: '端口还在监听：可能有别的程序占着，或语音包里的进程需要管理员权限才能结束', hint: '先点「停止」再重试；仍失败就重启 DSH（必要时以管理员运行）后再停止/卸载' };
   }
 
   /** 写云端密钥：只改 config.toml 里那三行，其余原样保留。 */

@@ -64,21 +64,21 @@ function checkBrowser(candidate, { platform, fsApi = fs, probe = probeBrowser })
   const file = path.resolve(candidate.path);
   try {
     const stat = fsApi.statSync(file);
-    if (!stat.isFile()) return { ok: false, reason: '不是普通文件' };
+    if (!stat.isFile()) return { ok: false, reason: '不是普通文件' }; // failure-lint:ignore 内部候选探测，findBrowser 汇总 reason 后统一抛 code+hint
     if (platform !== 'win32') fsApi.accessSync(file, fs.constants.X_OK);
   } catch (error) {
-    return { ok: false, reason: error?.code === 'EACCES' ? '没有执行权限' : '文件不存在或不可执行' };
+    return { ok: false, reason: error?.code === 'EACCES' ? '没有执行权限' : '文件不存在或不可执行' }; // failure-lint:ignore 内部候选探测，findBrowser 汇总 reason 后统一抛 code+hint
   }
   const result = probe(file, { platform });
-  return result?.ok ? { ...candidate, executable: file, version: result.version } : { ok: false, reason: result?.reason || '启动版本探测失败' };
+  return result?.ok ? { ...candidate, executable: file, version: result.version } : { ok: false, reason: result?.reason || '启动版本探测失败' }; // failure-lint:ignore 内部候选探测，findBrowser 汇总 reason 后统一抛 code+hint
 }
 
 function probeBrowser(executable, { spawnSyncImpl = spawnSync } = {}) {
   const result = spawnSyncImpl(executable, ['--version'], {
     encoding: 'utf8', timeout: 3000, maxBuffer: 256 * 1024, windowsHide: true,
   });
-  if (result?.error) return { ok: false, reason: result.error.message };
-  if (result?.status !== 0) return { ok: false, reason: `版本探测退出码 ${result?.status ?? '未知'}` };
+  if (result?.error) return { ok: false, reason: result.error.message }; // failure-lint:ignore 内部探测步骤，checkBrowser/findBrowser 汇总后抛 code+hint
+  if (result?.status !== 0) return { ok: false, reason: `版本探测退出码 ${result?.status ?? '未知'}` }; // failure-lint:ignore 内部探测步骤，checkBrowser/findBrowser 汇总后抛 code+hint
   return { ok: true, version: String(result.stdout || result.stderr || '').trim().slice(0, 160) };
 }
 
@@ -386,18 +386,18 @@ function writeFishCredentials(cookies, account) {
  * 扫码账号归属校验（纯函数，单测覆盖）：
  *   · 主人目标：不能是鱼自己的号；配了 owner.mid 就必须完全一致；
  *   · 鱼目标：不能是主人的号；已有 self.mid 时不允许不声不响换号（新用户 self.mid 为空则放行）。
- * 返回 { ok:true } 或 { ok:false, status:'wrong-account', error }。
+ * 返回 { ok:true } 或 { ok:false, status:'wrong-account', code, error, hint }。
  */
 export function validateQrAccount({ target = 'owner', account = {}, selfMid = '', ownerMid = '', expectedMid = '', expectedName = '', allowSameAsOwner = false } = {}) {
   const mid = String(account?.mid ?? '');
-  if (!mid) return { ok: false, status: 'failed', error: '扫码后没读到 mid' };
+  if (!mid) return { ok: false, status: 'failed', code: 'bili.qr-no-mid', error: '扫码后没读到 mid', hint: '回到设置页重新点「扫码登录」；连续失败就改用「手动粘贴 cookie」' };
   const who = `${account.name || mid}（${mid}）`;
   if (target === 'owner') {
     if (selfMid && mid === selfMid) {
-      return { ok: false, status: 'wrong-account', error: `扫码的是小肥鱼自己的号（${who}），不是主人；请换主人的 B站 账号扫。` };
+      return { ok: false, status: 'wrong-account', code: 'bili.qr-wrong-account', error: `扫码的是小肥鱼自己的号（${who}），不是主人；请换主人的 B站 账号扫。`, hint: '换主人的 B站 账号重新扫码；号搞混了先点「清除旧 B站 凭据（归档）」' };
     }
     if (expectedMid && mid !== String(expectedMid)) {
-      return { ok: false, status: 'wrong-account', error: `扫码的是 ${who}，不是配置里的主人 ${expectedName || ''}（${expectedMid}）` };
+      return { ok: false, status: 'wrong-account', code: 'bili.qr-wrong-account', error: `扫码的是 ${who}，不是配置里的主人 ${expectedName || ''}（${expectedMid}）`, hint: '确认要用的主人账号后重新扫码；要换绑先点「清除旧 B站 凭据（归档）」' };
     }
     return { ok: true };
   }
@@ -405,7 +405,7 @@ export function validateQrAccount({ target = 'owner', account = {}, selfMid = ''
   // 允许显式勾选「与主人同一个号」后再扫，避免把「只有一个小号」的新用户卡死。
   const sameAccountConfigured = Boolean(selfMid && ownerMid && String(selfMid) === String(ownerMid));
   if (!allowSameAsOwner && !sameAccountConfigured && ownerMid && mid === ownerMid) {
-    return { ok: false, status: 'wrong-account', error: `扫码的是主人账号（${who}），不能当小肥鱼；请换小肥鱼的 B站 账号扫。如果你只有一个 B站 号（主人=小肥鱼），勾选「与主人同一个号」后重扫。` };
+    return { ok: false, status: 'wrong-account', code: 'bili.qr-wrong-account', error: `扫码的是主人账号（${who}），不能当小肥鱼；请换小肥鱼的 B站 账号扫。如果你只有一个 B站 号（主人=小肥鱼），勾选「与主人同一个号」后重扫。`, hint: '勾选「与主人同一个号」后重扫，或换小肥鱼自己的 B站 账号' };
   }
   const mustBe = expectedMid || selfMid;
   if (mustBe && mid !== String(mustBe)) {
@@ -413,7 +413,7 @@ export function validateQrAccount({ target = 'owner', account = {}, selfMid = ''
     // 否则会卡死：管理员卡片已改成新号、小肥鱼还指着旧号 → 永远报"不是当前小肥鱼"。
     // 只放行"换成本人同一个号"（主人号），不放行换成任意第三个号（防被换人）。
     if (allowSameAsOwner && ownerMid && mid === String(ownerMid)) return { ok: true, switched: true };
-    return { ok: false, status: 'wrong-account', error: `扫码的是 ${who}，不是当前小肥鱼 ${expectedName || ''}（${mustBe}）。要点：① 只想用同一个号（主人=小肥鱼）→ 勾选「与主人同一个号」再扫；② 要换到别的号 → 先点「清除旧 B站 凭据（归档）」再扫。` };
+    return { ok: false, status: 'wrong-account', code: 'bili.qr-wrong-account', error: `扫码的是 ${who}，不是当前小肥鱼 ${expectedName || ''}（${mustBe}）。要点：① 只想用同一个号（主人=小肥鱼）→ 勾选「与主人同一个号」再扫；② 要换到别的号 → 先点「清除旧 B站 凭据（归档）」再扫。`, hint: '按上面 ①/② 两个分支处理后重扫' };
   }
   return { ok: true };
 }
@@ -478,9 +478,9 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
 
   let sessionId = '';
   const browserFailure = new Promise((resolve) => {
-    browserProcess.once('error', (error) => resolve({ ok: false, error: new Error(`启动${browser.name}失败：${error.message}`) }));
+    browserProcess.once('error', (error) => resolve({ ok: false, error: new Error(`启动${browser.name}失败：${error.message}`) })); // failure-lint:ignore 内部启动竞速，外层 catch(L534) 统一补 code+hint
     browserProcess.once('exit', (code, signal) => resolve({
-      ok: false,
+      ok: false, // failure-lint:ignore 内部启动竞速，外层 catch(L534) 统一补 code+hint
       error: new Error(`${browser.name}在扫码准备完成前退出（${signal || code || '未知原因'}）`),
     }));
   });
@@ -491,7 +491,7 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
   try {
     const startResult = await Promise.race([
       waitJson(`http://127.0.0.1:${port}/json/version`, START_WAIT_MS)
-        .then(() => ({ ok: true }), (error) => ({ ok: false, error })),
+        .then(() => ({ ok: true }), (error) => ({ ok: false, error })), // failure-lint:ignore 内部启动竞速，重抛后外层 catch(L534) 统一补 code+hint
       browserFailure,
     ]);
     if (!startResult.ok) throw startResult.error;
@@ -547,7 +547,7 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
  */
 export async function pollQrLogin(id, { withCredentialTransition = operation => operation() } = {}) {
   const session = sessions.get(id);
-  if (!session) return { ok: false, status: 'expired', error: '扫码会话不存在或已过期' };
+  if (!session) return { ok: false, status: 'expired', code: 'bili.qr-session-gone', error: '扫码会话不存在或已过期', hint: '回到设置页点「扫码登录」重新开始' };
   if (Date.now() > session.expiresAt) {
     cleanupSession(id);
     return { ok: true, status: 'expired' };
@@ -584,6 +584,8 @@ export async function pollQrLogin(id, { withCredentialTransition = operation => 
           return {
             ok: false,
             status: verdict.status,
+            code: verdict.code,
+            hint: verdict.hint,
             account,
             expected: { mid: session.expectedMid, name: session.expectedName },
             error: verdict.error,
