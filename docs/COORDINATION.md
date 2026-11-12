@@ -18,6 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
+| **PRD 拍板修订 2026-11-12** | `../surfcore-prd-revision`（收工后清理） | `feat/prd-revision`，基线 dev 790c1d3 | PRD/IMPROVEMENTS/ARCHITECTURE 拍板修订（docs/product/ 四份）+ V1 清单盘点 + 设置分叉核查 + 合并 feat/prd-revision 与 feat/doc-facts 回 dev | ✅ 完成：纯文档批次；B 核查结论"无分叉"；V1 清单只盘不删；合并后主树 audit/lint/doc-facts/verify-ref 全过；case+交接块见 docs/cases/2026-11-12-prd-revision.md；未 bump/未发布 |
 | **A6 失败可见性 2026-11-12** | 工作树已清理（分支 `feat/a6-failure-visibility` 保留） | 已合入 dev（合并 480d720 + 清单 6447888） | lint-failures 静态检查+棘轮基线；B站扫码/更新/TTS/语音包 P0 链路补 code+hint；client.js catch 审计 | ✅ 完成：合并后主树 audit 195/195、lint 退出0（债务669入册）、verify-ref HEAD 一致；case+交接块见 docs/cases/2026-11-12-a6-failure-visibility.md；未 bump/未发布；产品拍板「默认只开QQ」待另立批次 |
 | **功能提交与安全清理 2026-11-12** | 主目录；两个临时worktree已移除 | `dev`；main保持9eb4028 | 四批功能提交、合并复核、无用目录清理 | ✅ 完成：audit195/协议17/完整插件/Memory49/Phase A–E全过；仅保留主树与dev/main；用户明确不备份，七目录及归档中间副本已删，真实运行数据未动；见清理case |
 | **本地 Agent 审查与实施 2026-11-11** | `/Users/shizihan/Daily/Github/surfcore-mac` | `refactor`（历史分支已删，成果已入main/dev），基线 `748afe6` | 阶段 A-E：目的受众/终态取消/V2时间与摘录/TaskHarness准入/任务账本/文件整理/受限命令/Mac原生应用/自主生活 | ✅ 完成：Phase A/B/C/D/E 全阶段实施与独立验收；audit 191/191、regressions 17/17、memory-v2 47/47全绿；保持V1默认、未发布 |
