@@ -1,10 +1,14 @@
-## 2026-11-12 V1 退役破坏式重构进行中（未达到合并条件）
+## 2026-11-13 V1 退役 R01–R10 收口（离线门禁进行中，未合并）
 
-工作树 `../surfcore-v1-retirement`，分支 `feat/v1-retirement`（基线 `5f27111`）。用户拍板「六项 v1 直接删、开发中不留向后兼容」正在实施：Memory 后端 V2-only、QQ 一代 preset/`reserved`/人格过滤层删除、B站 V1 会话/权限层删除、控制台与插件设置窗口一代入口删除、preset 只装 `qq-chat-v2`、`/api/social*` 四路由删除。
+工作树 `../surfcore-v1-retirement`，分支 `feat/v1-retirement`，基线 `76f666a`。按 2026-11-12 审查报告完成 R01–R10 实现：V2-only 生产准入（移除 shadow 门禁）、旧记忆卡生产写者退役、QQ 模式/旧配置只读预检与 closed-agent 能力差异、B站 DM pending/ack 与调度退役屏障、抖音/分享真实 V2 工厂与失败可见、人格编译共享、真实 V2 跨链路门禁、Memory 评测显式编排、当前 README/RULES/DSH_SETUP/UI 文案。
 
-提交：`28dd419`（S1）→ `5cd3456`（S2）→ `b26f9fc`（S3/S4）→ `eba9153`（清单），另有文档/钉子收口提交待补。此前运行 audit 194/194、lint 退出 0（债务 661≤669）、regressions 全过、memory-v2 47/47；这些结果不覆盖后续所有未提交修改。插件 npm test 未通过：`test-douyin-companion.mjs` 卡在 `job did not finish`，需修复并重跑。doc-facts 曾通过，verify-ref HEAD 曾为 0 问题，最终提交后均需重验。`test-console-ui` 用系统 Chrome 实跑：本批新增的 views/legacy IDs 断言已同步；4 个 FAIL 与基线 `5f27111` 完全相同（环境/基线漂移：提权命令、payload 契约、趋势图、404），非本批引入。
+**已完成**：R01–R10 全部实现，最终 HEAD `0bfbd01`（功能分支，清单 1091 项 / verify-ref HEAD 0 问题）。离线门禁：`npm ci` 退出 0；`test:audit` 195/195 退出 0；`test:regressions` 全过退出 0；完整 `npm --prefix plugins/surfcore test`（含 35 个插件 Memory 脚本）退出 0；`test:memory-v2` 48/48 退出 0；`lint:failures`/`doc-facts`/`build-agent-preset-patches --check` 退出 0；`release-manifest --verify-ref HEAD` 0 问题。`test:console-ui` 因 `npm ci` 后缺 Playwright 跳过（环境项，非产品回归）。新增 `test-v2-real-integration.mjs` 12 项真实 Host 门禁、调度退役 4 项、DM pending/ack 3 项、R07/R03 模式回归 4 项。
 
-**没验证**：真实 DSH 装配 `qq-chat-v2` patch、QQ 入站→V2 回复闭环、B站 V2 Host 真机 enqueue、旧 `~/.dsh` 里 `reserved` / v1 路由文件的手工迁移演练。**数据**：`~/.dsh` 原地保留未删。**残留**：bridge.js 惰性一代状态机（不可达）、QQ 出站 `auditAndSend` 双路径、Memory V2 面板 UI 的 v1 夹具值；详见 [case](cases/2026-11-12-v1-retirement.md)。**下一步**：发布/协调会话确认后合并 `feat/v1-retirement` 回 `dev`（`--no-ff`），从合并后 HEAD 重生成清单，真机回归，再定版本发版。未 bump/tag/发布/推公开仓库。**本会话未执行合并**：开工核对主树 `/Users/shizihan/Daily/Github/surfcore-mac` 仍有未跟踪目录 `2026-11-12/`（非本会话产物），按 AGENTS §1.9「脏文件不全是你的 → 停手」留给对应会话收走后再合并。
+**真实验收（未做）**：DSH 隔离 profile 实装同源、QQ 入站→Native→发送 ACK→记忆、B站真机唤醒/停止/角色切换、旧配置副本诊断。**数据**：真实 `~/.dsh` 只读保留；两次测试夹具误写已按 `index.json` 与角色快照恢复，现场在 `~/.dsh/_quarantine/incident-2026-11-12-test-wrote-real-dsh/`；新夹具首行 `isolate-test-home.mjs` 根治。
+
+**合并**：未执行。主树 `/Users/shizihan/Daily/Github/surfcore-mac` 仍有他人未跟踪目录 `2026-11-12/`，按 AGENTS §1.9 不清理、不合并到主工作区；本地 `dev`=`5f27111`（退役前基线）需由协调会话确认后再合。合并后从新 HEAD 重生成 `install-manifest.json` 并 `release-manifest --verify-ref HEAD` 要求 0 问题。**发布**：未获单独确认，不 bump/tag/Release/Pre-release。
+
+**回滚**：程序回滚 = `git revert` 本批提交；不恢复旧数据库/额度账本/`~/.dsh` 角色资料。详见 [case 收口续篇](cases/2026-11-12-v1-retirement.md)。
 
 ## 2026-11-12 功能收拢与清理完成
 

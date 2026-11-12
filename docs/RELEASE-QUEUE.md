@@ -14,9 +14,13 @@
 
 ## 待发布
 
-### 未完成：V1 退役破坏式重构（feat/v1-retirement）
+### 历史批次（勿用于发布）：V1 退役破坏式重构第一批
 
-**不得发布或合并**：插件测试未通过，QQ V1 出站链和其他 V1 残留仍未退役；下列历史测试结果不代表当前工作区已验收。
+> **2026-11-13 标记：本批次是 28dd419–76f666a 的历史快照，已被下方「R01–R10 收口」批次取代。**
+> 其中「不得发布或合并」「插件测试未通过」「建议删 routing.json」「默认仍是 V1」等措辞均已失效。
+> 保留原文只为移交史料；发布会话只使用紧随其后的当前批次。
+
+**当时状态**：插件测试未通过，QQ V1 出站链和其他 V1 残留仍未退役；下列历史测试结果不代表当前工作区已验收。
 <!-- release-batch: start=2026-11-12T16:55+08:00 end=2026-11-12T19:47+08:00 -->
 
 **建议**：**minor**（删除一代 preset / reserved 模式 / `/api/social*` 四个路由、preset 只装 `qq-chat-v2`，属用户可见的行为与接口变化；具体版本号只由发布会话定）。
@@ -58,6 +62,44 @@ node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
 残留：bridge.js 惰性一代状态机、QQ 出站 auditAndSend 双路径、Memory V2 面板 UI 的 v1 夹具值（详见 case）
 建议版本：minor（用户可见行为/接口变化；版本号由发布会话定）
 是否已 rebase/merge 最新 dev：未合并（主树 dev 有非本会话未跟踪 `2026-11-12/`，按 AGENTS §1.9 停手）；待对应会话收走后由协调/发布会话 --no-ff 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
+```
+
+### 当前批次 2026-11-13 · V1 退役 R01–R10 收口（待合并候选，未发布）
+
+<!-- release-batch: start=2026-11-12T21:00+08:00 end=2026-11-13T01:00+08:00 -->
+
+**状态**：代码收口完成；离线门禁以最终交付报告为准；真实链路未验；**未合并、未发布**。版本号未 bump，禁止自行 tag / Release / Pre-release。
+
+**覆盖范围**：`feat/v1-retirement`（基线 `76f666a`）之后的 R01–R10 收口提交。合并前以 `git log` 现读为准。
+
+**改了什么**：
+- R01 V2-only 生产准入移除历史 `shadowEnabled` 门禁；状态分离 `backend` / `readiness`。
+- R02 旧记忆卡定时维护、角色切换/回档/设置保存/感知投影与旧变更 API 全部退役；旧档案只读保留。
+- R03 `closed-agent` 明确不可用（API/UI/设置），owner 远程任务由独立 Task Harness 承接。
+- R04 B站 owner DM 保留 `mid/msgKey`；`dm-await` 命中只写 pending，`--ack` 才推进游标。
+- R05 scheduler 增加 generation / AbortController / 在途任务集合；retire 禁入→取消→限时等待→Host ACK；`stopSchedulerNow` 检查 `ok:false`。
+- R06 抖音主 / host / recall / sharing 系列迁到真实 MemoryService/Host 工厂，合法回执、同步验签、请求元数据、V2 reflection 与持久回执断言；预算/取消/重启/隐私语义保留。
+- R07 模式 absent/valid/retired/invalid/unreadable/unavailable 分离；新增只读配置预检 + 处理计划，禁止建议删 routing/控制库。
+- R08 当前前置失败作业在公开 status 中可见最小控制元数据，正文/标识/refs 仍受 proof 限制。
+- R09 QQ/B站 Native 共用 V2 人格编译入口，原 persona 文件不改。
+- R10 分享缺 V2 装配拒绝且零模型调用；删 v1 默认与旧 perform。
+- W5 `scripts/test-v2-real-integration.mjs` 真实 V2 跨链路 12 项门禁；Memory 评测 runner 显式编排 baseline→kernel；`test-v2-context-fixture` 恒真包标注仅纯函数；README/RULES/README.en/DSH_SETUP/UI 文案同步。
+
+**数据**：真实 `~/.dsh` 角色包、人格、记忆卡、全量档案、控制库、权限、删除屏障、预算及账本只读保留。两次测试夹具误写已恢复并留证于 `~/.dsh/_quarantine/incident-2026-11-12-test-wrote-real-dsh/`；新增 `isolate-test-home.mjs` 根治。
+
+**真实验收（未做，不能写成已验）**：隔离 DSH profile 实装同源、QQ 入站→Native→发送 ACK→记忆写回、B站真机唤醒/停止/角色切换、旧配置脱敏副本诊断。
+
+**交接块（可直接复制给发布会话）**：
+```text
+【合并请求】分支 feat/v1-retirement（R01–R10 收口，基线 76f666a）
+范围：V2-only 准入、旧卡写者退役、QQ 模式/预检/Task Harness 能力差异、B站 DM pending/ack 与调度退役屏障、抖音与分享真实 V2 工厂、失败可见、人格编译、真实 V2 跨链路门禁、当前文档与 case/HANDOFF。
+数据：真实 ~/.dsh 未改写（误写已恢复并留证）；本批不动原 routing/控制库/账本。
+离线门禁：以最终交付报告的命令、退出码、通过/失败/跳过为准；不得沿用历史 194/194 或 47/47。
+真实链路：未验；发布前须补隔离 DSH 实装、QQ 入站→ACK、B站唤醒/停止、旧配置副本诊断。
+合并：主树有非本会话未跟踪 2026-11-12/，按 AGENTS §1.9 不清理；由协调会话确认本地 dev 与工作树状态后 --no-ff 合并。
+合并后：从新 HEAD 的 git 对象重生成 release/install-manifest.json 并单独提交，再跑 node scripts/release-manifest.mjs --verify-ref HEAD 要求 0 问题；不手工拼哈希。
+发布：未获单独确认，不 bump/tag/Release/Pre-release；版本号只由发布会话定。
+回滚：只回滚程序提交，不恢复旧数据库/额度账本/用户角色资料。
 ```
 
 ### 批次 2026-11-12 · PRD 拍板修订 + 文档事实校验（含 doc-facts 合并）
