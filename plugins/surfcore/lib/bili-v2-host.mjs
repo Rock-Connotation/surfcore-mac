@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { characterPaths } from '../../../src/character-persona.js';
+import { compileV2Persona } from '../../../src/core/persona-v2-compile.js';
 import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
 import { createBiliV2AgentRuntime, biliV2InputDigest } from './bili-v2-agent.mjs';
 import { createBiliV2OfficialTransport } from './bili-v2-official-transport.mjs';
@@ -170,7 +170,11 @@ export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getChar
       try {
         const environment = await loadMemoryV2NativeEnvironment({ ctx, resourcesPath });
         live(ticket, capturedRole);
-        const corePersona = fs.readFileSync(characterPaths(capturedRole.id).persona, 'utf8');
+        // R09：与 QQ Reply Host 共用同一 V2 人格编译入口（排除〔一代〕小节与旧协议行）。
+        // 原 persona 文件只读不改；这里得到的字符串同时用于 Native root 与 Source 证明。
+        const compiled = compileV2Persona({ roleId: capturedRole.id, scene: 'bili', maxChars: 6000 });
+        if (compiled?.ok !== true) throw issue('BILI_V2_CORE_UNPROVEN', compiled?.hint || 'Restore the current approved core persona file.');
+        const corePersona = compiled.text;
         if (!corePersona || Buffer.byteLength(corePersona) > 64 * 1024) throw issue('BILI_V2_CORE_UNPROVEN', 'Restore the current approved core persona file.');
         root = await createIsolatedNativeRoot({ ...environment, corePersona, onStream: (options, next) => {
           if (!runtime?.getScope(options)) throw issue('BILI_V2_SESSION_UNBOUND', 'Wait for the retained runtime to bind this original native request.');

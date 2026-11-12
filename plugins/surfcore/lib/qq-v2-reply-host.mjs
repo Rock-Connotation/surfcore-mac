@@ -1,6 +1,5 @@
-import fs from 'node:fs';
-import { characterPaths } from '../../../src/character-persona.js';
 import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
+import { compileV2Persona } from '../../../src/core/persona-v2-compile.js';
 import { loadMemoryV2NativeEnvironment } from './memory-v2-native-environment.mjs';
 import { createQQV2NativeOwner } from './qq-v2-native-owner.mjs';
 import { createQQV2SourceRuntime } from './qq-v2-source-runtime.mjs';
@@ -22,7 +21,7 @@ export async function resolveQQV2ModelRoute(ctx, state = {}) {
 /** One private Native Owner per reply; no general Host tools or old DSH history. */
 export function createQQV2ReplyHost({ ctx, memoryV2, tokenBudget, getCharacter, getQQIdentity, callBridge, onBlocked = () => {}, resourcesPath = process.resourcesPath,
   loadEnvironment = loadMemoryV2NativeEnvironment, createOwner = createQQV2NativeOwner, createSource = createQQV2SourceRuntime,
-  readPersona = role => fs.readFileSync(characterPaths(role.id).persona, 'utf8'), timeoutMs = 180000 } = {}) {
+  compilePersona = compileV2Persona, timeoutMs = 180000 } = {}) {
   if (!ctx || !memoryV2?.adapter || typeof getCharacter !== 'function' || typeof getQQIdentity !== 'function' || typeof callBridge !== 'function' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 180000) throw new TypeError('QQ reply Host dependencies are required.');
   const pending = new Map(), receipts = new Map();
   let closed = false, transition = null, generation = 0;
@@ -53,8 +52,13 @@ export function createQQV2ReplyHost({ ctx, memoryV2, tokenBudget, getCharacter, 
       return { ...result, route };
     };
     try {
-      const account = await identity(), persona = readPersona(role);
-      if (typeof persona !== 'string' || !persona.trim() || Buffer.byteLength(persona) > 65536) throw Object.assign(new Error('Invalid persona'), fail('MEMORY_QQ_PERSONA_INVALID', '恢复当前角色的人格卡后重试。'));
+      const account = await identity();
+      // R09：真实 Native 输入必须经过 V2 人格编译（排除〔一代〕小节与旧协议行），
+      // 原 persona 文件只读不改；Source 证明与 Owner 共用同一份最终字符串。
+      const compiled = compilePersona({ roleId: role.id, sceneKey: req.key, maxChars: 6000 });
+      if (compiled?.ok !== true) throw Object.assign(new Error(compiled?.error || 'Invalid persona'), compiled?.ok === false ? compiled : fail('MEMORY_QQ_PERSONA_INVALID', '恢复当前角色的人格卡后重试。'));
+      const persona = compiled.text;
+      if (typeof persona !== 'string' || !persona.trim()) throw Object.assign(new Error('Invalid persona'), fail('MEMORY_QQ_PERSONA_INVALID', '人格编译结果为空；恢复当前角色的人格卡后重试。'));
       const env = await loadEnvironment({ ctx, resourcesPath }); live();
       const capabilities = await rpc('capabilities'); live();
       const toolSpecs = capabilities.voice?.enabled === true ? [{ name: 'qq_send_voice',
