@@ -4,6 +4,38 @@ import os from 'node:os';
 import path from 'node:path';
 import { createDouyinCompanion } from '../lib/douyin-companion.mjs';
 
+import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
+import { CONTEXT_FIELDS, digest as memoryDigest } from '../../../src/core/memory-v2-contract.js';
+import { COMPANION_ROUTE } from '../lib/douyin-companion-model.mjs';
+
+// V2-only（2026-11-12）：抖音陪伴引擎无条件走 Host 适配器；本离线夹具没有真实
+// 控制库，注入一个最小可信适配器，让引擎的逐步链路可测。真实 V2 语义由
+// test-memory-v2-douyin.mjs 用真实 Host 覆盖。
+function fixtureMemoryV2({ getCharacter }) {
+  const routeId = deriveMemoryProviderRouteId(COMPANION_ROUTE).providerRouteId;
+  const baseContext = () => {
+    const role = getCharacter();
+    const ctx = Object.fromEntries(CONTEXT_FIELDS.map(key => [key, key]));
+    return { ...ctx, characterId: role.id, capturedEpoch: role.epoch, channel: 'douyin', conversationKey: 'douyin:homepage-recommendation', purpose: 'conversation', providerRouteId: routeId };
+  };
+  let handleSeq = 0;
+  const adapter = {
+    capture: async ({ conversationKey } = {}) => ({ ok: true, handle: `fixture-handle-${++handleSeq}`, sourceStamp: { ...baseContext(), conversationKey: conversationKey ?? baseContext().conversationKey, providerRouteId: routeId } }),
+    validate: async () => ({ ok: true }),
+    receipt: async () => ({ ok: true, operationState: 'completed' }),
+    ingest: async (handle, events) => ({ ok: true, receipt: { sourceState: 'committed', eventRefs: events.map((event, i) => ({ id: `${handle}:${i}`, type: 'event', payloadDigest: memoryDigest(event) })), eventIds: events.map((_, i) => `${handle}:${i}`), operationState: 'completed', commitSequence: 1 } }),
+    prepare: async (handle, query) => {
+      const prepared = { ...baseContext(), schemaVersion: 2, queryDigest: memoryDigest(query), expiresAt: Date.now() + 60_000, eventWatermark: 0, evidenceIds: [], inputManifest: [], text: `角色${baseContext().characterId}的记忆。`, budget: { estimated: true } };
+      return { ok: true, prepared, preparedHandle: `${handle}:prepared`, inputManifest: [] };
+    },
+    verifyPrepared: async () => ({ ok: true }),
+    bindActualInput: async () => ({ ok: true }),
+    withNetworkAdmission: async (handle, dispatch) => dispatch(),
+    release: async () => ({ ok: true }),
+  };
+  return { adapter, getRouting: () => ({ ok: true, backend: 'v2' }), onBlocked: async () => ({ ok: true, retired: true }) };
+}
+
 const roots = [];
 const makeRoot = () => { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-companion-test-')); roots.push(root); return root; };
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -29,6 +61,7 @@ function fixture(options = {}) {
   const api = createDouyinCompanion({
     stateDir,
     getCharacter: () => role,
+    memoryV2: options.memoryV2 ?? fixtureMemoryV2({ getCharacter: () => role }),
     now: () => time.value,
     callbackTimeoutMs: options.callbackTimeoutMs ?? 180_000,
     readiness: async () => { calls.ready++; return options.readiness ? options.readiness(calls) : { ok: true }; },
