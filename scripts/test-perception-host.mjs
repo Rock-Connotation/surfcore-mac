@@ -11,6 +11,12 @@ process.env.DSH_HOME = path.join(evidence, 'dsh');
 const chars = await import('../src/character-persona.js');
 const { appendExperienceEvent } = await import('../src/core/experience.js');
 const { buildCharacterContext } = await import('../src/core/context.js');
+const { cardText, preparedMemoryView } = await import('./test-v2-context-fixture.mjs');
+// V2-only（2026-11-12）：context.js 不再直接读记忆卡，测试要把卡片文本包成 Host 准备包。
+const view = (channel, conversationKey = '') => {
+  const text = cardText({ memoryJson: path.join(stateDir, 'characters', chars.readCurrentCharacter().id, 'memory', 'memory-card.json') }, { channel, conversationKey });
+  return buildCharacterContext({ scene: channel, audience: { channel, conversationKey }, ...preparedMemoryView(text, { channel, conversationKey }) });
+};
 const { runMemoryCardMaintenance } = await import('../plugins/surfcore/lib/memory-card.js');
 const { createPerceptionService } = await import('../src/perception/index.js');
 const { createBiliPerceptionService } = await import('../plugins/surfcore/lib/bili-perception.js');
@@ -60,9 +66,9 @@ try {
   assert.equal(job.state, 'completed', JSON.stringify(job)); assert.equal(job.memoryState, 'completed', JSON.stringify(job));
   assert.equal(job.part.cid, '2'); assert.equal(job.coverage.complete, true); assert.equal(job.history.status, 'recorded');
   assert.ok(job.result.segments.length); assert.equal(job.request, undefined);
-  const context = buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' } });
+  const context = view('bili');
   assert.match(context.memoryText, /BV1Ab4y1N7cD P2/); assert.match(context.memoryText, /外部材料/);
-  const qq = buildCharacterContext({ scene: 'qq-group', audience: { channel: 'qq', conversationKey: 'group:123' } });
+  const qq = view('qq', 'group:123');
   assert.doesNotMatch(qq.memoryText, /BV1Ab4y1N7cD P2/);
   await runMemoryCardMaintenance({}); assert.equal(events.length, 1);
   console.log(JSON.stringify({ ok: true, scope: 'isolated HTTP + deterministic provider', jobId: job.jobId, cid: job.part.cid, coverage: job.coverage, memoryState: job.memoryState, nextContext: true, qqPrivate: true, evidence }));

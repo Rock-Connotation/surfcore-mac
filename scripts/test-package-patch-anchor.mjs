@@ -16,8 +16,13 @@ if (process.platform === 'win32') fs.writeFileSync(path.join(fakeBin, 'npm.cmd')
 else fs.writeFileSync(path.join(fakeBin, 'npm'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 const env = { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`, HOME: evidence, DSH_HOME: path.join(evidence, 'dsh-home') };
 const payload = path.join(evidence, 'build', 'package');
+// 制品必须按当前工作树构建（--tree）：HEAD 是已提交基线，不含本批未提交的 V1 退役改动。
+// 用 git object 而非工作区字节，仍然保证发布物与清单同源。
 const ref = process.env.SURFCORE_TEST_REF || 'HEAD';
-execFileSync(process.execPath, [path.join(root, 'scripts/build-plugin-package.mjs'), '--ref', ref, '--out', path.join(evidence, 'build')], { cwd: root, env, stdio: 'pipe', maxBuffer: 8 * 1024 * 1024 });
+const buildArgs = [path.join(root, 'scripts/build-plugin-package.mjs'), '--out', path.join(evidence, 'build')];
+if (process.env.SURFCORE_TEST_REF) buildArgs.push('--ref', ref);
+else buildArgs.push('--tree', execFileSync('git', ['-C', root, 'write-tree'], { encoding: 'utf8' }).trim());
+execFileSync(process.execPath, buildArgs, { cwd: root, env, stdio: 'pipe', maxBuffer: 8 * 1024 * 1024 });
 const meta = JSON.parse(fs.readFileSync(path.join(payload, 'package.json'), 'utf8'));
 const patchRelative = meta.dsh.bundle.patch[0];
 assert.equal(patchRelative, './plugins/surfcore/cordis.patch.yml');

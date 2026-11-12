@@ -46,10 +46,10 @@ await test('#22 refreshMode 采纳控制台刚写入的 user 层（否则 5 秒�
 
     // 老行为兜底：从没在控制台写过（user 为空）时仍读 value。
     h.api.settings.describe = async () => ({
-      result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'reserved' }, user: {} }] } }
+      result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'reserved2' }, user: {} }] } }
     });
     await h.refreshMode();
-    assert.equal(h.getMode(), 'reserved');
+    assert.equal(h.getMode(), 'reserved2');
 
     // ownerQQ：user 层空串表示「不覆盖 config.json」。
     h.cfg.ownerQQ = 20002;

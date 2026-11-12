@@ -3,7 +3,7 @@
  *
  * 为什么合体后还要这一条 loader entry：
  *   QQ 桥接（<仓库路径>\src\bridge.js）通过 DSH settings 读写 `qq-mode`
- *   命名空间来切换 chat / closed-agent / reserved / reserved2。DSH 0.2.x 的命名空间
+ *   命名空间来切换 chat / closed-agent / reserved2（simulation 为规范名）。一代 reserved 已随 V1 退役。DSH 0.2.x 的命名空间
  *   由「loader entry id + 该 entry 的 Config」推导：
  *     ① entry id 必须精确等于 `qq-mode`   —— 见 cordis.patch.yml 的 `- id: qq-mode`
  *     ② 插件模块必须导出 `Config`          —— 本文件
@@ -25,10 +25,10 @@ export const name = 'surfcore/qq-mode';
 export const inject = ['settings'];
 
 export const Config = z.object({
+  // 一代 reserved 已随 V1 退役（2026-11-12）；旧值请改为 simulation（即 reserved2）。
   mode: z.union([
     z.const('chat'),
     z.const('closed-agent'),
-    z.const('reserved'),
     z.const('reserved2'),
     z.const('simulation'),
   ]).default('reserved2').extra('volatile', true),

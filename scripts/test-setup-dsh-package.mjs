@@ -28,7 +28,7 @@ fs.writeFileSync(profilePkg, packageBefore);
 const patch = path.join(profile, 'cordis.patch.yml');
 fs.writeFileSync(patch, '# provider sentinel\n- insert:\n    - id: keep-provider\n      name: fixture-provider\n# === qq-bridge MCP BEGIN ===\n- insert:\n    - id: mcp-snowluma\n      name: old\n# === qq-bridge MCP END ===\n');
 for (let i = 0; i < 6; i++) fs.writeFileSync(`${patch}.bak-fixture-${i}`, 'preserve');
-const preset = path.join(pkg, 'plugins/surfcore/presets/qq-chat.patch.yml'); fs.appendFileSync(preset, '\n# shipped-byte-sentinel\n'); const presetBefore = fs.readFileSync(preset);
+const preset = path.join(pkg, 'plugins/surfcore/presets/qq-chat-v2.patch.yml'); fs.appendFileSync(preset, '\n# shipped-byte-sentinel\n'); const presetBefore = fs.readFileSync(preset);
 function packageFiles(dir = pkg, prefix = '') {
   const result = {};
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

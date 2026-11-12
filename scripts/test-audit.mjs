@@ -97,8 +97,7 @@ const tests = [
   // 平台启动开关：QQ/B站 各自「是否启动」的唯一真相 + 旧 bridge.autoStart 迁移
   // （2026-10-24 用户要求；只碰临时 DSH_HOME，不启停真实桥接）。
   'test-platform-start.mjs',
-  // B站 会话权限：workspace-write 在 C:\Users\Mieksido 起不了命令 → 自动切 danger-full-access。
-  'test-scheduler-permission.mjs',
+  // V1 会话权限自动校正已随 V1 退役删除（2026-11-12），测试文件一并移除。
   // B站生物钟会话归组：新会话 workspaceId，旧版无工作区服务才退回专用 cwd。
   'test-bili-workspace.mjs',
   // B站评论/@监听的 TDZ 回归：程序错误不能被 catch 吞成网络错误。

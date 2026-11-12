@@ -57,11 +57,11 @@ assert.match(full.text, /喜欢下雨天/, 'full 模式没有注入核心');
 assert.match(full.text, /你是小测/, 'full 模式没有注入身份底座');
 
 // 没写语气层（旧角色只拆了日常/场景）：tone 模式必须回退核心，否则人设正文全丢。
-const toneFallback = composePersonaLayers({ core, daily, identity, personaMode: 'tone', mode: 'v2', maxChars: 6000 });
+const toneFallback = composePersonaLayers({ core, daily, identity, personaMode: 'tone', maxChars: 6000 });
 assert.match(toneFallback.text, /喜欢下雨天/, '没写语气层时 tone 模式丢了核心（兜底失效）');
 
 // 真写了语气层：tone 模式省核心（省 token），但身份底座必须在。
-const toneOnly = composePersonaLayers({ core, daily, tone: toneLayer, identity, personaMode: 'tone', mode: 'v2', maxChars: 6000 });
+const toneOnly = composePersonaLayers({ core, daily, tone: toneLayer, identity, personaMode: 'tone', maxChars: 6000 });
 assert.equal(toneOnly.text.includes('喜欢下雨天'), false, '写了语气层后 tone 模式不该再带核心');
 assert.match(toneOnly.text, /你是小测/, 'tone 模式省核心后必须保留身份底座');
 assert.match(toneOnly.text, /句子短、爱用波浪号/, 'tone 模式没有带语气层');

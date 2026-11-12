@@ -96,7 +96,6 @@ import { createPetChatService } from './pet-chat.js';
 import { createPetPurposeService } from './pet-purpose.js';
 import { createPetApiService } from './pet-api.js';
 import { createUpdatesService, resumePendingApply } from './updates.js';
-import { BILI_WORKSPACE_TITLE, biliWorkspacePath } from './bili-workspace.js';
 import {
   adminFromSources, adminSummary, normalizeAdmin, projectAdminSave,
 } from '../../../src/admin-identity.js';
@@ -113,7 +112,6 @@ import {
 } from './bili-qr-login.mjs';
 import { fishGuardStateSummary } from '../tools/lib/fish-guard.mjs';
 import { summarizeQqFishGuard } from './qq-fish-guard.js';
-import { applySessionPermission } from './scheduler.js';
 import { fileStamp, isStale } from '../../../src/config-stamps.js';
 import { commitQqConfigPatch } from '../../../src/qq-config-transaction.js';
 import { withVolcBudgetLock } from '../../../src/voice-volc-budget.js';
@@ -503,14 +501,9 @@ export function apply(ctx) {
       const character = readCurrentCharacter();
       const baseSessionId = character ? `bili-whale-${character.id}` : 'bili-whale';
       const sessionId = biliSessionEpoch ? `${baseSessionId}-r${biliSessionEpoch}` : baseSessionId;
-      const biliWorkspace = biliWorkspacePath(DSH_HOME);
       scheduler = startScheduler(ctx, {
         dshHome: DSH_HOME,
         biliMjs: BILI_MJS,
-        // 新会话走 workspaceId；cwd 只作为旧版 DSH 没有 workspaceController 时的兜底。
-        cwd: biliWorkspace,
-        workspacePath: biliWorkspace,
-        workspaceTitle: BILI_WORKSPACE_TITLE,
         sessionId,
         tokenBudget,
         memoryV2: memoryV2.channelMemory('bili'), biliV2Agent: biliMemoryHost, onMemoryBlocked: result => reportMemoryBlocked({ ...result, channel: 'bili' }),
@@ -3315,34 +3308,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       return;
     }
     if (req.method === 'POST' && pathname.endsWith('/session-permission')) {
-      // 手动修复：把当前角色的 B站 会话切到配置的权限（默认 danger-full-access）。
-      // 定时器也会自动做；这个按钮用于「现在就想让她能跑命令」时立刻生效。
-      const body = JSON.parse(await readBody(req) || '{}');
-      const current = readCurrentCharacter();
-      const sessionId = current ? `bili-whale-${current.id}` : 'bili-whale';
-      const target = String(body.target ?? readBiliConfig().config?.agent?.sandbox ?? 'danger-full-access');
-      let inspected = false;
-      try {
-        if (ctx.sessionController?.inspect) { await ctx.sessionController.inspect(sessionId); inspected = true; }
-      } catch (error) {
-        pluginLog(`[权限] inspect ${sessionId} 失败：${error?.message ?? error}`);
-      }
-      // inspect 之后 session 可能还没同步进 ctx.sessions。
-      if (inspected) await new Promise((resolve) => setTimeout(resolve, 120));
-      const result = applySessionPermission(ctx, sessionId, target, (message) => pluginLog(message));
+      // 一代会话权限修复接口已随 V1 退役删除（2026-11-12）：B站 会话与权限由 V2 Host 管理，
+      // 不再有 sessionController.inspect / permissionPresets 这条旧链路。保留结构化拒绝，避免旧 UI 静默 404。
+      pluginLog('[权限] 一代会话权限修复接口已退役（B站 V2 Host 管理会话）');
       json(res, 200, {
-        ok: result.ok,
-        sessionId,
-        target,
-        inspected,
-        ...result,
-        message: result.ok
-          ? (result.changed ? `已切到 ${target}` : `已经是 ${target}`)
-          : ({
-            'session-not-active': '会话还没挂上（等下一次醒来会自动设置）',
-            'permission-services-unavailable': 'DSH 没有提供 permissionPresets 服务',
-            'set-failed': `设置失败：${result.error ?? '未知错误'}`,
-          }[result.reason] ?? result.reason),
+        ok: false,
+        code: 'BILI_V1_SESSION_PERMISSION_RETIRED',
+        error: '一代会话权限修复已随 V1 退役。',
+        hint: 'B站 V2 会话由 Host 管理，无需手动切权限；若作业被拒绝，请在记忆页核对 V2 来源审批后重试。',
       });
       return;
     }

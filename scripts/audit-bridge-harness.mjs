@@ -116,6 +116,20 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   // 旧审计用例按“每条消息都能醒”写；Token 防爆破默认会让部分用例被 2 分钟间隔拦住。
   // 这里默认关掉，专门的 test-token-guard 覆盖开启逻辑，需要开启的用例显式覆盖。
   harnessConfig.socialV2 = { tokenGuard: { enabled: false }, ...(config.socialV2 ?? {}) };
+  // V2-only（2026-11-12）：生产路由缺省已是 v2，旧一代记忆卡路径永远不再走。
+  // 但 VM 夹具没有真实控制库/来源审批，绝大多数会话/发送/唤醒用例需要按旧基线
+  // 的「本地记忆卡路径」测它们自己的行为。这里把路由桩成 v1 仅用于夹具；
+  // 需要真实 V2 语义的用例通过 globals.createQQMemoryBridge 覆盖真实实现
+  // （见 test-memory-v2-qq-integration）。不要把这个桩当成生产可回退依据。
+  if (!globals.createQQMemoryBridge) {
+    globals = {
+      ...globals,
+      createQQMemoryBridge: () => ({
+        routing: () => ({ ok: true, backend: 'v1' }),
+        status: () => ({ active: false, sourceState: 'not_saved', failure: null }),
+      }),
+    };
+  }
   fs.writeFileSync(path.join(temp, 'config.json'), JSON.stringify(harnessConfig));
   if (savedState) fs.writeFileSync(path.join(temp, 'state/sessions.json'), JSON.stringify(savedState));
   // 额外状态文件（用于测试"启动时读到损坏/旧版文件"这类路径）。
@@ -360,7 +374,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   const bridge = await context.auditReady;
   // 夹具默认模拟“SnowLuma 已连接”；通道断开用例会显式 setSnowlumaHealth({connected:false})。
   bridge.setSnowlumaHealth({ connected: true, lastSendOkAt: Date.now(), lastSendFailAt: 0 });
-  bridge.setPresets(['standard', 'qq-chat', 'qq-chat-v2']);
+  bridge.setPresets(['standard', 'qq-chat-v2']);
   bridge.setReady(true);
   return { ...bridge, calls, temp, async close() {
     for (const timer of timers) clearTimeout(timer);

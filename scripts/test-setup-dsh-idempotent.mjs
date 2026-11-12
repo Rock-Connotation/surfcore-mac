@@ -53,7 +53,7 @@ fs.symlinkSync(path.join(ROOT, 'plugins', 'surfcore'), path.join(tmpHome, 'plugi
 function runSetup(label) {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'setup-dsh.mjs'), 'web'], {
     // 保留最小 PATH（进程启动需要），但把 dsh CLI 排除在外 → 跳过自动 pnpm 安装那一步
-    env: { ...process.env, DSH_HOME: tmpHome, PATH: path.dirname(process.execPath) },
+    env: { ...process.env, DSH_HOME: tmpHome, PATH: path.dirname(process.execPath), QQ_BRIDGE_SKIP_DSH_INSTALL: '1' },
     encoding: 'utf8',
     cwd: ROOT,
   });
@@ -119,7 +119,7 @@ if (!depOk) failed += 1;
 
 // 断言 6：DSH 0.1.7 机制 —— preset 由 surfcore bundle 的 patch 层装配，
 // 旧目录 ~/.dsh/.agent-presets 不再写入（也不删除用户数据）。
-for (const p of ['qq-chat', 'qq-chat-v2']) {
+for (const p of ['qq-chat-v2']) {
   const patchFile = path.join(ROOT, 'plugins', 'surfcore', 'presets', `${p}.patch.yml`);
   const text = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, 'utf8') : '';
   const ok = text.includes('@deepseek-ai/dsh-agent-preset') && new RegExp(`^\\s+id: ${p}$`, 'm').test(text);

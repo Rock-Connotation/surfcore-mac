@@ -38,7 +38,6 @@
     "bundle": {
       "patch": [
         "./cordis.patch.yml",
-        "./presets/qq-chat.patch.yml",
         "./presets/qq-chat-v2.patch.yml"
       ]
     },

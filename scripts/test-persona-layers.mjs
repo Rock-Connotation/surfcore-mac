@@ -51,7 +51,7 @@ assert.equal(personaSceneFromKey(''), '');
 // 〔一代〕 小节过滤仍然生效（V2-only：一代内容一律不注入，〔二代〕 与未标记小节照常注入）。
 {
   const core = '共同\n\n## 一代专用 〔一代〕\n一代内容\n\n## 二代专用 〔二代〕\n二代内容';
-  const v2 = composePersonaLayers({ core, maxChars: 6000 }).text;
+  const v2 = composePersonaLayers({ core, maxChars: 6000 }).text; // V2-only：mode 参数已删，默认即二代行为
   assert.ok(v2.includes('二代内容') && !v2.includes('一代内容'));
 }
 

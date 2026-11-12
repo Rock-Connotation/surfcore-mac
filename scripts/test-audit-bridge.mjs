@@ -15,7 +15,7 @@ await test('closed-agent session is not reused after switching to chat', async (
   h.setMode('chat');
   const restricted = await h.ensureSession('private:123');
   assert.notEqual(restricted, privileged);
-  assert.equal(h.calls.created.at(-1).agentPreset, 'qq-chat');
+  assert.equal(h.calls.created.at(-1).agentPreset, 'qq-chat-v2');
   assert.ok(h.calls.cancelled.includes(privileged));
 });
 await test('unavailable preset catalogue fails closed for QQ and learner sessions', async (h) => {
@@ -581,7 +581,7 @@ await test('slang learner session self-heals when the saved session is gone', as
   // 再取一次必须复用刚建的那个，不能每次唤醒都再建一个。
   assert.equal(await h.ensureSlangLearnerSession(), id);
   assert.equal(h.calls.created.length, 1);
-}, { files: { 'state/slang-session.json': { sessionId: 'session-dead', preset: 'qq-chat' } } });
+}, { files: { 'state/slang-session.json': { sessionId: 'session-dead', preset: 'qq-chat-v2' } } });
 
 
 if (failures) process.exitCode = 1;

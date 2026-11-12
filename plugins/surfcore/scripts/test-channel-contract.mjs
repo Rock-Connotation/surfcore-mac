@@ -11,6 +11,12 @@ const chars = await import('../../../src/character-persona.js');
 const { appendExperienceEvent, readExperienceInbox } = await import('../../../src/core/experience.js');
 const { createEmptyCard, ingestExperienceEvents, saveMemoryCardOutputs } = await import('../../../src/memory-card.js');
 const { buildCharacterContext } = await import('../../../src/core/context.js');
+const { cardText, preparedMemoryView } = await import('../../../scripts/test-v2-context-fixture.mjs');
+// V2-only（2026-11-12）：context.js 不再直接读记忆卡，测试要把卡片文本包成 Host 准备包。
+const view = (channel, conversationKey = '') => {
+  const text = cardText({ memoryJson: alpha.memoryJson }, { channel, conversationKey });
+  return buildCharacterContext({ audience: { channel, conversationKey }, ...preparedMemoryView(text, { channel, conversationKey }) });
+};
 const alpha = chars.characterPaths('alpha');
 const beta = chars.characterPaths('beta');
 fs.mkdirSync(alpha.memoryDir, { recursive: true });
@@ -40,8 +46,8 @@ test('local adapter preserves captured role and projects a restricted event into
  const paths = { dir: alpha.memoryDir, json: alpha.memoryJson, markdown: alpha.memoryMd, promptQq: alpha.memoryPromptQq, promptBili: alpha.memoryPromptBili };
  saveMemoryCardOutputs(paths, card);
  fs.writeFileSync(path.join(chars.CHARACTERS_DIR, 'current.json'), JSON.stringify({ id: 'alpha', epoch: 1 }));
- assert.match(buildCharacterContext({ audience: { channel: 'local' } }).text, /隔离素材的本地观察/);
- assert.doesNotMatch(buildCharacterContext({ audience: { channel: 'bili' } }).text, /隔离素材的本地观察/);
+ assert.match(view('local').text, /隔离素材的本地观察/);
+ assert.doesNotMatch(view('bili').text, /隔离素材的本地观察/);
  dispose(); registry.dispose();
 });
 

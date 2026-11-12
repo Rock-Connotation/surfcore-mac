@@ -21,7 +21,7 @@ assert.ok(daily.includes('K.prefix ? stripPrefix'), '有当前前缀时仍按当
 assert.ok(daily.includes('无固定前缀'), 'dry 预览必须说明当前无前缀');
 
 const scheduler = fs.readFileSync(path.resolve('plugins/surfcore/lib/scheduler.js'), 'utf8');
-assert.ok(scheduler.includes('不添加固定前缀'), '空前缀时提示词不能再要求固定前缀');
+assert.ok(!scheduler.includes('不添加固定前缀'), 'V1 手抄唤醒提示已随 V1 退役删除（空前缀规则由 kinds.mjs/命令层负责）');
 
 const toolsConfig = fs.readFileSync(path.resolve('plugins/surfcore/tools/lib/config.mjs'), 'utf8');
 const paths = fs.readFileSync(path.resolve('plugins/surfcore/lib/paths.js'), 'utf8');
