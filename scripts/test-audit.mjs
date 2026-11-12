@@ -155,6 +155,9 @@ const tests = [
   // wake triggers 白名单、memory-update 边界、wait 租约归一化、md/黑话/表情/账本；
   // 本轮新增：/api/send/* 失败路径的作用域错误（R15）、reserved2 落库丢表情识别字段（R16）。
   'test-audit-regressions.mjs',
+  // W5/R01–R10 真实 V2 跨链路门禁：隔离 MemoryService/Host、正式授权、
+  // 人格编译、配置预检、调度退役屏障、失败可见与真实数据保留。
+  'test-v2-real-integration.mjs',
   // 表情语义层：编号分配、情绪识别、本地注意力编码、语境匹配、注入文本；
   // 以及表情库/工具面接线（编号可当 stickerId、收藏时带 emotion/content）。
   'test-sticker-semantics.mjs', 'test-stickers.mjs',

@@ -9,7 +9,14 @@ import { CONTEXT_FIELDS, digest } from '../src/core/memory-v2-contract.js';
 import { loadMemoryCard, normalizeMemoryCardConfig, renderMemoryCard } from '../src/memory-card.js';
 import { readCurrentCharacter } from '../src/character-persona.js';
 
-/** 把一段文本包成 buildCharacterContext 认可的（同步校验过的）V2 准备包。 */
+/**
+ * 把一段文本包成 buildCharacterContext 认可的（同步校验过的）V2 准备包。
+ *
+ * ⚠️ 边界（2026-11-12 W5/R05）：这里的 `verifyPreparedMemory` 是**恒真**的纯函数夹具，
+ * 只用于单独验证 context.js 的投影/预算/角色绑定。**绝不能**用作跨链路集成证据：
+ * 真实 Host 必须用 `memoryService.host.verifyPrepared` 校验签发摘要与当前上下文。
+ * 任何引用本夹具的用例都不得声称「已证明 V2 签发、权限或来源」。
+ */
 export function preparedMemoryView(text, { characterId, characterEpoch = 1, channel = 'local', conversationKey = '', query = 'fixture-query' } = {}) {
   const current = readCurrentCharacter();
   const id = String(characterId ?? current?.id ?? '');
