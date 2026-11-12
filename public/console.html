@@ -1800,14 +1800,14 @@ button:active:not(:disabled) {
       <h2>运行模式</h2>
       <div class="mode-row" id="modeRow">
         <button data-mode="chat" aria-pressed="false"><span class="mode-indicator" aria-hidden="true"></span><strong>聊天模式</strong><small>白名单内，随时对话</small></button>
-        <button data-mode="closed-agent" aria-pressed="false"><span class="mode-indicator" aria-hidden="true"></span><strong>封闭 Agent</strong><small>仅管理员，完整工具</small></button>
+        <button data-mode="closed-agent" aria-pressed="false" disabled title="本版本不可用：V2 QQ 只允许受限 NativeOwner；owner 远程任务请用「任务：…」入口"><span class="mode-indicator" aria-hidden="true"></span><strong>封闭 Agent（不可用）</strong><small>已退役：改用「任务：…」入口</small></button>
         <button data-mode="reserved2" aria-pressed="false"><span class="mode-indicator" aria-hidden="true"></span><strong>二代仿真</strong><small>自主阅读、发言与潜水</small></button>
       </div>
       <div class="row" style="margin-top:12px">
         <label style="flex:1;margin:0">封闭 Agent 使用的 DSH 预设</label>
         <select id="closedPreset" style="max-width:260px"><option value="">（DSH 默认 preset）</option></select>
       </div>
-      <div class="meta">切换后即时保存。仿真参数可在左侧对应页面调整；封闭 Agent 仅允许管理员私聊。</div>
+      <div class="meta">切换后即时保存。仿真参数可在左侧对应页面调整。封闭 Agent（完整本地工具会话）在本版本不可用：QQ 回复只允许受限 NativeOwner，owner 远程任务请用「任务：…」入口（独立 Task Harness 准入）。</div>
     </section>
 <section id="section-sessions" data-page="sessions" class="card span-all">
       <h2>会话映射</h2>

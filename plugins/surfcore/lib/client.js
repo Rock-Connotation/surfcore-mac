@@ -3349,11 +3349,11 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             readOnly: (f) => f.readOnly || (f.path.join(".") === "self.mid") || (f.path.join(".") === "self.name"),
             onSave,
             categories: QQ_ADV_CATEGORIES,
-            groupExtra: (g) => g.group === "连接与身份" ? h(Row, { label: "运行模式", hint: "chat=普通安全聊天；reserved2=二代工具仿真；closed-agent=仅主人私聊全工具。只运行当前模式，其他模式配置不生效" },
-              h("select", { className: "qbw-select", value: overview?.mode?.effective ?? "reserved2", onChange: async (e) => {
+            groupExtra: (g) => g.group === "连接与身份" ? h(Row, { label: "运行模式", hint: "chat=普通安全聊天；simulation（=reserved2）=二代工具仿真。closed-agent（完整本地工具会话）在本版本不可用：QQ 回复只允许受限 NativeOwner，owner 远程任务请用「任务：…」入口。" },
+              h("select", { className: "qbw-select", value: overview?.mode?.effective ?? "chat", onChange: async (e) => {
                 try { await api("/mode", { method: "POST", body: { mode: e.target.value } }); toast(`✓ 模式已切到 ${e.target.value}`); await reload(); } catch (err) { toast(`✗ ${err.message}`); }
               } },
-                [["chat", "chat（普通）"], ["reserved2", "reserved2（二代仿真）"], ["closed-agent", "closed-agent（封闭）"], ["simulation", "simulation（=reserved2）"]].map(([v, l]) => h("option", { key: v, value: v }, l)))) : null,
+                [["chat", "chat（普通）"], ["reserved2", "reserved2（二代仿真）"], ["simulation", "simulation（=reserved2）"]].map(([v, l]) => h("option", { key: v, value: v }, l)))) : null,
           })),
           h(GroupPolicyArea, { busy, setBusy, toast }),
           h(DshRepairCard, { busy, setBusy, toast }),

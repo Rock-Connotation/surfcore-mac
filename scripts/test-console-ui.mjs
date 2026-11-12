@@ -118,12 +118,14 @@ try {
   });
 
   await test('Mode and preset contracts', async () => {
-    for (const mode of ['chat', 'reserved2', 'closed-agent']) {
+    // closed-agent 在本版本不可用（R03）：按钮必须禁用，不能宣称「切过去就能用」。
+    assert.equal(await page.locator('#modeRow [data-mode="closed-agent"]').isDisabled(), true, 'closed-agent 入口必须显式禁用');
+    for (const mode of ['chat', 'reserved2']) {
       assert.deepEqual(await clickWrite(`#modeRow [data-mode="${mode}"]`, '/api/mode'), { mode, closedAgentPreset: '' });
     }
     const select = await reveal('#closedPreset');
     await Promise.all([page.waitForResponse(r => r.url().endsWith('/api/mode') && r.request().method() === 'POST'), select.selectOption('qq-chat-v2')]);
-    assert.deepEqual(fixture.requests.at(-1).body, { mode: 'closed-agent', closedAgentPreset: 'qq-chat-v2' });
+    assert.deepEqual(fixture.requests.at(-1).body, { mode: 'reserved2', closedAgentPreset: 'qq-chat-v2' });
   });
 
   await test('Role creation, selection, clearing and silent-mode contracts', async () => {
