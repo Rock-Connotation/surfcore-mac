@@ -132,7 +132,7 @@ node scripts/setup-dsh.mjs
 
 `setup-dsh.mjs` 做三件事：
 
-1. 把 `qq-chat` / `qq-chat-v2` 两条 **agent preset** 插进 DSH profile（DSH 0.1.7 起的 bundle patch 机制）；
+1. 只把 `qq-chat-v2` **agent preset** 插进 DSH profile（DSH 0.1.7 起的 bundle patch 机制；一代 `qq-chat` 已退役）；
 2. 在 profile 的 `cordis.patch.yml` 挂 **三个 MCP server**（QQ 工具 / SnowLuma 探活 / 只读联网搜索）；
 3. 在 profile `package.json` 注册唯一一个 bundle：`surfcore`。
 
@@ -161,6 +161,7 @@ node scripts/setup-dsh.mjs
 ```
 
 > 其余几百个键都有默认值，全部含义见 [DATA-AND-CONFIG.md §1](docs/guides/DATA-AND-CONFIG.md)。
+> 2026-11-12 起 V1 已退役：安装脚本只装配 `qq-chat-v2` 预设，`reserved` 模式与一代仿真目录不再生成；旧 `state/mode.json` / `memory-v2/routing.json` 保持原样不动，按只读预检给出的计划处理。
 > 装好之后**建议一切都在设置页里改**（保存即生效，且会自动备份）。
 
 ### 2.4 首次验证
@@ -199,10 +200,10 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 
 | 模式 | 她是谁 | 能干什么 |
 | --- | --- | --- |
-| `chat` | 群友 | 白名单内聊天，工具面受安全守卫限制 |
-| `closed-agent` | 只理管理员 | 私聊 owner，可用完整 DSH 工具 |
-| `reserved` | 一代仿真群友 | 状态机 + 空格分条 + `[SILENT]` |
-| `reserved2` | 二代仿真群友（**默认**） | 一切皆工具：自己看消息、发言、等待、潜水、收尾 |
+| `chat` | 群友 | 白名单内聊天，受限 `qq-chat-v2` 工具面 |
+| `simulation`（=`reserved2`） | 二代仿真群友 | 一切皆工具：自己看消息、发言、等待、潜水、收尾 |
+| `closed-agent` | ❌ 本版本不可用 | 完整本地工具会话已随 V1 退役；owner 远程任务请用「任务：…」入口（独立 Task Harness 准入） |
+| `reserved` | ❌ 已退役 | 一代仿真；权威配置写它时阻断新任务并显示处理计划 |
 
 ### 3.3 让她主动找你（可选）
 
@@ -282,13 +283,13 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 
 | 能力 | 状态 | 前置或说明 |
 | --- | --- | --- |
-| QQ 收发、四模式、白名单、工具守卫 | ✅ | SnowLuma |
+| QQ 收发、有效模式/预设、白名单、工具守卫 | ✅ | SnowLuma；`closed-agent`/`reserved` 已退役 |
 | 角色、人格卡、衰减记忆、身份对齐 | ✅ | 无 |
 | B站日常（作息 / 观看 / 评论 / 分享） | ✅ | B站扫码 |
 | 语音库与本地/云端 TTS | ✅ | 语音引擎；火山 TTS 真实计费与音质待验 |
 | 桌宠 | ✅ | 仓库外的 Electron 工程 |
 | 抖音陪伴 | 🟡 | 独立浏览器 profile + 人工登录；日常稳定性待验 |
-| B站 V2 / Memory V2 / QQ V2 Native | 🟡 | 模块验收完成，未全面转正；Memory V2 默认仍是 V1 |
+| B站 V2 / Memory V2 / QQ V2 Native | ✅ | V1 已破坏式退役；生产路由只认 V2，新安装正式授权后即可 capture/prepare，旧档案只读保留 |
 | 任务 Harness（含 Mac 本地执行） | 🟡 | 在 dev 验收，尚未随版本发布 |
 | B站直播间监听、回私信 | 🟡 | 默认关 |
 

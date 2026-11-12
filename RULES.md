@@ -1,27 +1,25 @@
 # QQ 桥接权限与安全规则（RULES）
 
-## 运行模式（QQ 桥接四模式）
+## 运行模式（QQ 桥接，V1 退役后）
 
 模式由**桥接控制台**（默认 `http://127.0.0.1:3100`）顶部的模式按钮切换，也可直接改 DSH 设置的 `qq-mode` 命名空间；
 控制台会**同时**写穿到 DSH 设置与本地 `qq-bridge/state/mode.json`，两者保持一致。
 （DSH 设置页目前**没有** `qq-mode` 卡片：该插件只有 host 半，未实现浏览器半。详见 docs/guides/DSH_SETUP.md。）
 桥接每 5 秒读取一次；控制台切换立即应用。会话持久化记录创建时的模式、preset 和管理员边界，权限变化时自动撤销旧会话映射和二代 token，并在下次消息到达时重建，避免继续使用旧的高权限 preset。升级前没有这些权限元数据的旧会话也会重建一次，历史仍保留在 DSH。
-全新安装运行 `scripts/setup-dsh.mjs` 后，DSH 设置与本地兜底默认均为 `reserved2`；若已存在 `state/mode.json` 或 DSH 设置旧值，脚本不会覆盖。
+两个配置来源都确实未配置时按明确 V2 默认 `chat` 处理；权威来源明确是退役值（`reserved`）、非法值或读取失败时进入可见 blocked，不继承上一次模式、也不被低优先级值掩盖。全新安装的 `state/mode.json` 为 `reserved2`（即 `simulation`）；若已存在旧值，脚本不会覆盖。
 
 | 模式 | 允许通道 | agent preset | 用途 |
 | --- | --- | --- | --- |
-| `chat` | 白名单群 + 白名单私聊 | qq-chat（安全聊天） | 日常聊天 |
-| `closed-agent` | **仅** 私聊 ownerQQ | DSH 默认 preset（通常 `standard`，完整工具） | 你在 QQ 私聊里操控 DSH |
-| `reserved`（一代仿真） | 暂同 chat | qq-chat | 仿真群友：观望/活跃/试探/退场状态机，选择性参与并主动收尾 |
-| `reserved2`（二代仿真，运行 `setup-dsh.mjs` 后默认） | 暂同 chat | qq-chat-v2 | 文本不自动转发，AI 通过工具自主看消息/发言/等待/设置唤醒与潜水 |
+| `chat` | 白名单群 + 白名单私聊 | `qq-chat-v2` | 日常聊天（V2 缺省契约） |
+| `simulation` / `reserved2` | 白名单群 + 白名单私聊 | `qq-chat-v2` | 二代仿真：文本不自动转发，AI 通过工具自主看消息/发言/等待/设置唤醒与潜水 |
+| `closed-agent` | ❌ 不可用 | — | 完整本地工具会话已随 V1 退役，API/UI 显式禁用 |
+| `reserved` | ❌ 已退役 | — | 一代仿真；权威来源写它时阻断新任务并给出处理计划 |
 
-> ⚠️ `closed-agent` 模式下 owner 私聊 agent 拥有**完整本地工具**（DSH 默认 preset，通常是 `standard`），
-> 这是有意为之（QQ 远程操控 DSH）。该模式只放行 owner 私聊，群友完全无法触达；
-> 切换回 `chat` 后，owner 私聊也回到 qq-chat 安全预设。
->
-> 注：DSH 0.1.5 已不存在 `router-standard` preset。桥接现在留空表示「用 DSH 默认 preset」，
-> 并在启动时读取 `agentPresets/list` 校验；填了不存在的 preset 名会回退到默认值并打警告，
-> 绝不会创建出「无 preset」会话（那会被 DSH 套上 `standard`，对 QQ 群是安全回归）。
+> ⚠️ 本版本**没有**「owner 私聊获得完整本地工具」的模式。普通 QQ 聊天与仿真都走受限
+> NativeOwner（`qq-chat-v2`，无 bash/文件/进程/应用控制工具）。owner 的远程电脑任务
+> 由独立 `Task Harness` 承接（`任务：…` / `任务状态` / `取消任务`）：它有自己的 owner
+> 准入、群聊拒绝、危险命令/路径拦截、审批、取消与持久回执，不依赖 `closed-agent`。
+> 控制台「封闭 Agent」按钮与 `/api/mode` 均会明确返回 `QQ_MODE_UNAVAILABLE`，不会静默成功切换。
 
 ## 权限分层
 
@@ -54,7 +52,7 @@
 
 | 层 | 位置 | 管什么 | 生效方式 |
 | --- | --- | --- | --- |
-| **仿真提示词**（两代各一份） | `dsh/agent-presets/qq-chat/agent.cordis.yml`（一代）与 `qq-chat-v2/agent.cordis.yml`（二代）的 `persona.prefix` | 怎么调工具、怎么参与群聊（行为与协议：安全规则、工具协议、唤醒/分条/记忆/黑话等） | 控制台可按代次分别编辑；保存会写仓库源文件并同步到 `~/.dsh/.agent-presets/<preset>/`；**新会话**自动用新版，**正在进行的 QQ 会话**需 `POST /api/session/reset` 或重启 DSH |
+| **仿真提示词** | `dsh/agent-presets/qq-chat-v2/agent.cordis.yml` 的 `persona.prefix` | 怎么调工具、怎么参与群聊（行为与协议：安全规则、工具协议、唤醒/分条/记忆/黑话等） | 保存会写仓库源文件并同步到 `~/.dsh/.agent-presets/qq-chat-v2/`；**新会话**自动用新版，**正在进行的 QQ 会话**需 `POST /api/session/reset` 或重启 DSH |
 | **角色人格（总容器）** | `~/.dsh/surfcore/characters/<id>/`（`character.json` / `persona.md` / `memory/` / `bili/` / `snapshots/`） | 一个角色 = 人格卡 + 衰减/全量记忆卡 + B站 行为账本；加载别的角色会先把旧角色存档 | 设置页「角色」页新建/加载/存档/回档；切换时停桥接+生物钟、清会话、换 `current.json`（epoch+1）后重启。完整规则见 [`docs/guides/CHARACTER_PERSONA.md`](docs/guides/CHARACTER_PERSONA.md) |
 | **人格提示词** | 当前角色的 `characters/<id>/persona.md`（旧布局回退 `roles/<人格名>.md`） | AI 是谁、什么性格、怎么说话（人设与语气） | 桥接每条消息前注入，**保存即生效** |
 | **记忆卡**（第三层，和人格卡并列） | 当前角色的 `characters/<id>/memory/memory-card-prompt-{qq,bili}.md`；全量卡：`memory-card-full.jsonl` + `-stats.json`（**不生成 prompt**） | 她自己的长期记忆：B站冲浪、QQ 聊天、和主人的重要互动；衰减卡按重要度/时间模糊或遗忘，全量卡只存档、永久清晰 | 插件宿主维护；QQ 下一条消息 / B站 下一次醒来只读衰减卡的注入文件；全量卡不进提示词，控制台/API 按需搜索/召回。完整规则见 [`docs/guides/MEMORY_CARD.md`](docs/guides/MEMORY_CARD.md) |
