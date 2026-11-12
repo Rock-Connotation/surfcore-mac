@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-12 | [文档平台事实错误与易腐数字校正 + doc-facts 校验](2026-11-12-doc-facts-and-platform-correction.md) | 修正“不支持 macOS”等事实错误与版本/标签/模块/路径数字，新增离线可执行校验 | 未发布（文档+开发脚本） |
 | 2026-11-12 | [功能提交、合dev与安全去重清理](2026-11-12-functional-commits-and-safe-cleanup.md) | 保留两条功能线，按内容保全历史资料后清理分支与工作树 | 本地收拢，未发布 |
 | 2026-11-11 | [阶段 B-E：记忆闭环、任务准入与 Mac 本地执行能力建设](2026-11-11-phase-bcde-memory-v2-task-harness-and-mac-execution.md) | Memory V2时间排序与摘录、TaskLedger任务账本、TaskHarness准入守门、文件整理计划、受限命令与Mac原生应用控制 | 阶段验收，未发布 |
 | 2026-11-11 | [Phase A：主动目的受众收敛、进程有界终态与交互取消准确回执](2026-11-11-phase-a-remediation.md) | V1 purpose受众过滤与他人愿望归属隔离、子进程两阶段有界终止及交互取消状态判定 | 阶段验收，未发布 |

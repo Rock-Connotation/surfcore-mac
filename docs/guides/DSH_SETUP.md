@@ -13,7 +13,7 @@
    cd qq-bridge
    ```
 
-   > 默认分支 `main` 即当前版本 **0.1.0（SurfCore 合体版，目标 DSH `0.2.1-rc.2`）**，clone 下来无需切换分支。
+   > 默认分支 `main` 即当前稳定版本（仓库版本以根 `package.json` 为准，当前 `0.8.8`；目标 DSH `0.2.1-rc.2`），clone 下来无需切换分支。
    > 与 DSH 的版本对应关系与逐条适配记录见 [DSH_020_ADAPTATION.md](DSH_020_ADAPTATION.md)。
 
 2. **安装依赖**：

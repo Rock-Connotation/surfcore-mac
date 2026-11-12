@@ -113,8 +113,8 @@
 
 | # | 问题 | 证据 | 判断 |
 | --- | --- | --- | --- |
-| A1 | `src/bridge.js` **14,964 行**单一文件，其中控制台是 126 条路径 / 153 个 `if (url.pathname === …)` 分支的同一条 if 链（约 2.5k 行） | `wc -l`；`grep -c "url.pathname ==="` = 153 | 🔴 全仓库最大单体，也是改动最容易出事的地方。**本轮没有动它**：这些分支共享上百个模块级状态，硬拆需要把状态收敛成 context 对象，属多日重构，不适合夹在体检里做。拆分第一步建议：先把"纯函数型"端点（读状态、算预览）抽成 `console/routes/*.js`，副作用端点留原地 |
-| A2 | 插件 → 核心用**相对路径跨包引用**（12 个模块），且 `src/memory-card.js` 带 `?rev=20261025-pet-memory2` 缓存破坏后缀，**同一个 rev 字符串硬编码在 3 个文件里** | `grep -rn "?rev="` | 🟡 漏 bump = 热重载跑旧引擎（PITFALLS #68）；只 bump 一处 = 两个模块实例、模块级状态分裂。建议后续收敛成一个 re-export 壳 + 一条断言"3 处 rev 必须相同" |
+| A1 | `src/bridge.js` **18,221 行**单一文件，其中控制台是 163 条精确路径 + 17 条前缀判断（按出现次数计）/ 163 个 `if (url.pathname === …)` 判断的同一条 if 链（约 2.5k 行） | `wc -l`；`grep -o "url.pathname ===" src/bridge.js \| wc -l` = 163；`grep -o "pathname.startsWith" src/bridge.js \| wc -l` = 17 | 🔴 全仓库最大单体，也是改动最容易出事的地方。**本轮没有动它**：这些分支共享上百个模块级状态，硬拆需要把状态收敛成 context 对象，属多日重构，不适合夹在体检里做。拆分第一步建议：先把"纯函数型"端点（读状态、算预览）抽成 `console/routes/*.js`，副作用端点留原地 |
+| A2 | 插件 → 核心用**相对路径跨包引用**（38 个模块、96 处），且 `src/memory-card.js` 带 `?rev=20261025-pet-memory2` 缓存破坏后缀，**同一个 rev 字符串硬编码在 3 个文件里** | `grep -rn "?rev="`；`npm run doc-facts` | 🟡 漏 bump = 热重载跑旧引擎（PITFALLS #68）；只 bump 一处 = 两个模块实例、模块级状态分裂。建议后续收敛成一个 re-export 壳 + 一条断言"3 处 rev 必须相同" |
 | A3 | 双进程写同一份 `config.json`（插件设置页 / 桥接控制台），原子写但**无跨进程锁** | 两侧都是 tmp+rename | 🟡 R25，低概率丢一次修改 |
 | A4 | 桌宠是**仓库外**独立工程，契约只有一个 `host.json`（`version: 1`），没有协议版本协商 | `plugins/surfcore/docs/PET.md` | 🟡 R24，单机可接受 |
 | A5 | 配置默认值有**三层**：`store.js` 的 `DEFAULTS`、`config.example.json`（被 `readQqConfig()` 当默认层 deepMerge！不是纯文档）、各函数的 `??` 回退。`config.example.json` 缺 `chat` / `platforms.start` / `pet` / `tokenBudget` 四段 | `plugins/surfcore/lib/store.js:272 exampleDefaults()` | 🟡 功能没坏（各处都有 `?? {}` 兜底），但"模板即默认值"这层缺段会让新装用户看不见这些能力。修法要先定"哪一层是权威默认"，不宜顺手补 |
