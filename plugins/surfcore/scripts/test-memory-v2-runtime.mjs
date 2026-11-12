@@ -1,4 +1,3 @@
-import { DatabaseSync } from 'node:sqlite';
 import { deriveBiliV2PublicSourceSet } from '../lib/bili-v2-public-source-set.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -107,8 +106,11 @@ try {
   const dyCandidate = conversations.find(item => item.processorScopes[0].policy.audiences[0][0] === 'douyin');
   assert.ok(dyCandidate);
   await manage('configure_policy', { conversationId: dyCandidate.id, processorScope: 'exact-model' });
+  // R01：正式 preview/commit 批准之后，真实 adapter capture 必须直接可用，
+  // 不再依赖影子期开关（历史 shadowEnabled 列既不授权也不代表就绪）。
   const dyCapture = await dy.adapter.capture({ conversationKey: 'douyin:homepage-recommendation' });
-  assert.equal(dyCapture.code, 'MEMORY_SHADOW_DISABLED', JSON.stringify(dyCapture));
+  assert.equal(dyCapture.ok, true, JSON.stringify(dyCapture));
+  assert.equal(dy.adapter.release(dyCapture.handle).ok, true);
   douyinFailure = { ok: false, code: 'DOUYIN_BUSY', error: 'PRIVATE_PLATFORM_ERROR', hint: 'PRIVATE_PLATFORM_HINT' };
   const dyBusy = await dy.adapter.capture({ conversationKey: 'douyin:homepage-recommendation' });
   assert.equal(dyBusy.code, 'MEMORY_IDENTITY_BUSY', JSON.stringify(dyBusy));
@@ -119,7 +121,9 @@ try {
   assert.ok(busyCandidates.some(item => item.id === 'local-sharing'));
   assert.equal(busyCandidates.some(item => item.processorScopes[0].policy.audiences[0][0] === 'douyin'), false);
   douyinFailure = null;
-  assert.equal((await dy.adapter.capture({ conversationKey: 'douyin:homepage-recommendation' })).code, 'MEMORY_SHADOW_DISABLED');
+  const dyRecovered = await dy.adapter.capture({ conversationKey: 'douyin:homepage-recommendation' });
+  assert.equal(dyRecovered.ok, true, JSON.stringify(dyRecovered));
+  assert.equal(dy.adapter.release(dyRecovered.handle).ok, true);
   assert.ok(douyinReads >= 4, 'Identity must be read freshly for each capture and candidate lookup.');
   const hidden = runtime.channelMemory('bili'); assert.equal((await hidden.adapter.capture({ conversationKey: 'bili:unproven' })).ok, false);
   const biliPublic = conversations.find(item => item.processorScopes[0].policy.audiences[0][1] === 'bili:9:public:11');
@@ -129,8 +133,8 @@ try {
   assert.deepEqual(biliPrivate.processorScopes[0].policy.audiences, [['bili', 'bili:9:private:22', 'bili:9:actor:9']]);
   await manage('configure_policy', { conversationId: biliPublic.id, processorScope: 'exact-model' });
   const captured = await hidden.adapter.capture({ conversationKey: 'bili:9:public:11' });
-  assert.equal(captured.code, 'MEMORY_SHADOW_DISABLED', JSON.stringify(captured));
-  assert.ok(captured.hint);
+  assert.equal(captured.ok, true, JSON.stringify(captured));
+  assert.equal(hidden.adapter.release(captured.handle).ok, true);
   assert.equal(biliPublic.processorScopes[0].policy.processingGrants[0].providerRouteId, deriveMemoryProviderRouteId(selected).providerRouteId);
   assert.equal((await hidden.adapter.capture({ conversationKey: 'bili:9:public:99' })).ok, false);
   biliAccount = '10';
@@ -155,9 +159,7 @@ try {
   assert.deepEqual(safeSet.sourceSetPreview, setCandidate.sourceSetPreview); assert.equal(JSON.stringify(safeSet).includes('processingGrants'), false);
   assert.equal(setCandidates.filter(item => item.processorScopes[0].policy.audiences.some(row => row[1] === exactSet.sourceConversations[0].conversationKey)).length, 1, 'A set member must not also create a per-object approval candidate.');
   await manage('configure_policy', { conversationId: setCandidate.id, processorScope: 'exact-model' });
-  // Exercise a pre-enabled isolated shadow store; the public management API does not expose a shadow switch.
-  const shadowFixture = new DatabaseSync(path.join(root, 'state', 'memory-control.sqlite'));
-  shadowFixture.prepare('UPDATE state SET shadowEnabled=1 WHERE id=1').run(); shadowFixture.close();
+  // 不直接改 SQLite：上面的批准全部走正式 preview/commit，capture 仍然必须可用。
   for (const conversationKey of [exactSet.outputConversationKey, ...exactSet.sourceConversations.map(row => row.conversationKey)]) {
     const scoped = await hidden.adapter.capture({ conversationKey }); assert.equal(scoped.ok, true, JSON.stringify(scoped)); assert.equal(scoped.sourceStamp.conversationKey, conversationKey); assert.equal(hidden.adapter.release(scoped.handle).ok, true);
   }
@@ -189,7 +191,6 @@ try {
   const isolatedPrivate = await hidden.adapter.capture({ conversationKey: 'bili:9:private:22' });
   assert.equal(isolatedPrivate.code, 'MEMORY_POLICY_DENIED', JSON.stringify(isolatedPrivate)); assert.ok(isolatedPrivate.error && isolatedPrivate.hint);
   biliPublicSets.length = 0;
-  const restoreShadow = new DatabaseSync(path.join(root, 'state', 'memory-control.sqlite')); restoreShadow.prepare('UPDATE state SET shadowEnabled=0 WHERE id=1').run(); restoreShadow.close();
 
   const localBefore = conversations.find(item => item.id === 'local-sharing').processorScopes[0].policy;
   current = { id: 'alpha', epoch: 2 };
@@ -212,7 +213,7 @@ try {
   assert.equal(previewResume.code, 'MEMORY_OPERATION_NOT_FOUND', JSON.stringify(previewResume)); assert.equal(previewResume.operationId, originalId); assert.ok(previewResume.hint);
   const afterResume = (await request('status')).value;
   assert.equal(afterResume.revision, beforeResume.revision); assert.equal(afterResume.operations.some(row => row.operationId === originalId), false);
-  console.log(JSON.stringify({ ok: true, douyinIdentity: 'fresh reads, actionable failure and candidate isolation verified', biliIdentity: 'fresh official-state candidates and exact-set identities verified', publicSourceSet: { memberCaptures: exactSet.sourceConversations.length, outputCaptures: 1, syntheticShadowEnabled: true, expandedSetDenied: true, accountModelEpochFenced: true, privateIsolation: true }, productionActivationVerified: false, backend: 'v1', fixture: root, actualMemoryWorker: true, managementAuth: 'fixture-only', nativeAgent: 'not mounted', nativeAdminResumer: 'injected; unknown original ID denied', productionRetirement: 'not mounted', noProviderCalled: true }));
+  console.log(JSON.stringify({ ok: true, douyinIdentity: 'fresh reads, actionable failure and candidate isolation verified', biliIdentity: 'fresh official-state candidates and exact-set identities verified', publicSourceSet: { memberCaptures: exactSet.sourceConversations.length, outputCaptures: 1, formalApprovalOnly: true, expandedSetDenied: true, accountModelEpochFenced: true, privateIsolation: true }, productionActivationVerified: false, backend: 'v2', fixture: root, actualMemoryWorker: true, managementAuth: 'fixture-only', nativeAgent: 'not mounted', nativeAdminResumer: 'injected; unknown original ID denied', productionRetirement: 'not mounted', noProviderCalled: true }));
 } finally {
   await runtime.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
 }

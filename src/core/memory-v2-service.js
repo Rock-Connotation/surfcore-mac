@@ -46,7 +46,7 @@ export function createMemoryService({ stateDir, charactersDir, getCharacter, now
   function lockFile() { return path.join(fs.existsSync(stateRoot) ? fs.realpathSync(stateRoot) : stateRoot, 'memory-v2.writer.lock'); }
   function dead(code, error) {
     live = false; initialized = false; cancelQueuedAdmissions(code,error);
-    diagnostic = fail(code, error, 'Keep V1 active. Close and reopen the shadow service, query original operation receipts, and capture new contexts; retire old sessions.');
+    diagnostic = fail(code, error, 'Close and reopen the memory service, query the original operation receipts, and capture new contexts; retire old sessions. V1 is retired and is not a fallback.');
     for (const request of pending.values()) request.resolve({ ...diagnostic, operationState: 'unknown', retry: 'query_receipt' });
     pending.clear();
   }
@@ -112,7 +112,7 @@ export function createMemoryService({ stateDir, charactersDir, getCharacter, now
   function serialized(ctx) { const record = check(ctx); return { ...ctx, admin: record.admin }; }
   async function capture(input, admin = false, authorization) {
     try {
-      requireThat(live && initialized, 'MEMORY_WORKER_UNAVAILABLE', 'Initialize the shadow service before capturing contexts.');
+      requireThat(live && initialized, 'MEMORY_WORKER_UNAVAILABLE', 'Initialize the memory service before capturing contexts.');
       requireThat(admin || (input.purpose ?? 'conversation') !== 'admin', 'MEMORY_ADMIN_REQUIRED', 'Ordinary context capture cannot create management authority.');
       const current = currentCharacter();
       if (admin) {
@@ -195,7 +195,7 @@ export function createMemoryService({ stateDir, charactersDir, getCharacter, now
       return { ok: true, admission: 'issued-package-only' };
     } catch (error) { return errorResult(error); }
   }
-  async function getStatus() { return live && initialized ? rpc('getStatus') : diagnostic ?? fail('MEMORY_WORKER_UNAVAILABLE', 'The shadow memory service has not been initialized.'); }
+  async function getStatus() { return live && initialized ? rpc('getStatus') : diagnostic ?? fail('MEMORY_WORKER_UNAVAILABLE', 'The memory service has not been initialized.'); }
   async function applyMemoryAction(ctx, action, expectedRevision, operationId) {
     try {
       check(ctx, true);
@@ -360,7 +360,7 @@ export function createMemoryService({ stateDir, charactersDir, getCharacter, now
       withNetworkAdmission,
       async resolveAudience(facts) {
         try {
-          requireThat(live && initialized, 'MEMORY_WORKER_UNAVAILABLE', 'Initialize the shadow service before resolving audience permissions.');
+          requireThat(live && initialized, 'MEMORY_WORKER_UNAVAILABLE', 'Initialize the memory service before resolving audience permissions.');
           requireThat(facts && Object.keys(facts).every((key) => ['channel', 'conversationKey', 'sourceAccountKey', 'requesterAccountKey', 'providerRouteId', 'purpose'].includes(key)), 'MEMORY_FIELD_FORBIDDEN', 'Audience resolution accepts trusted facts, not policy IDs, grant IDs or revisions.');
           const current = currentCharacter(), input = { characterId: current.id, purpose: facts.purpose ?? 'conversation' };
           for (const key of ['channel', 'conversationKey', 'sourceAccountKey', 'requesterAccountKey', 'providerRouteId']) input[key] = identifier(facts[key], key);

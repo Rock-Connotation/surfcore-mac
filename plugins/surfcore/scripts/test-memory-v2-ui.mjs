@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createMemoryV2Panel } from '../lib/memory-v2-panel.mjs';
 
-const base = () => ({ ok: true, backend: 'v1', revision: 7, character: { id: 'alpha', epoch: 1, name: 'Alpha' }, capabilities: { shadow: true, correct: true, activation: false, backup: true, restore: true, purge: true, removeHot: true, organize: true, identity: true, migration: true }, worker: { state: 'idle' }, backups: [], operations: [], policies: [], approvedConversations: [] });
+const base = () => ({ ok: true, backend: 'v2', readiness: 'ready', revision: 7, character: { id: 'alpha', epoch: 1, name: 'Alpha' }, capabilities: { shadow: true, correct: true, activation: false, backup: true, restore: true, purge: true, removeHot: true, organize: true, identity: true, migration: true }, worker: { state: 'idle' }, backups: [], operations: [], policies: [], approvedConversations: [] });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function fixture(handle = async () => base()) {
   const cells = []; let cursor = 0; let tree; const effects = []; const calls = [];

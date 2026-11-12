@@ -106,14 +106,18 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
     requireThat(result.ok, result.code, result.error, result.hint);
     return true;
   }
-  function validate(ctx, { permitAdmin = false, requireShadow = true } = {}) {
+  // V2-only（2026-11-12）：普通业务准入不再检查历史 `shadowEnabled` 列。
+  // 该列只在旧版影子期用于「先观察再切换」，V1 退役后它既不能代表授权、也不能代表就绪；
+  // 留着它做准入会制造「已选 V2、授权已提交、却仍被拒」的矛盾状态（R01）。
+  // 真正必须通过的门禁一律保留：角色/epoch、具体 audience/provider policy、控制修订、
+  // 来源证明、生命周期与删除屏障。列本身不删除、不重置、不做数据迁移。
+  function validate(ctx, { permitAdmin = false } = {}) {
     const s = state();
     admission(ctx.characterId, ctx.admin === true);
     requireThat(ctx.storeGeneration === generation, 'MEMORY_WORKER_STALE', 'This context belongs to a retired worker.');
     requireThat(ctx.purpose !== 'admin' || (permitAdmin && ctx.admin === true), 'MEMORY_ADMIN_REQUIRED', 'This action requires a trusted management capability.');
     for (const key of ['policyRevision', 'bindingRevision', 'deletionRevision', 'controlRevision']) requireThat(ctx[key] === s[key === 'controlRevision' ? 'revision' : key], 'MEMORY_CONTEXT_STALE', `The captured ${key} is stale.`, 'Retire the affected session and capture a new trusted context.');
     requireThat(policyAllows(policy(ctx.audiencePolicyId), ctx, { admin: ctx.admin === true }), 'MEMORY_POLICY_DENIED', 'This specific audience or provider has no approved processing policy.');
-    if (requireShadow) requireThat(s.shadowEnabled === 1, 'MEMORY_SHADOW_DISABLED', 'The V2 shadow kernel has not been explicitly enabled.', 'Use authenticated management to configure shadow mode. Production remains V1.');
     const db = role(ctx.characterId);
     requireThat(db.prepare('SELECT appliedControlRevision FROM metadata WHERE id=1').get().appliedControlRevision === s.revision, 'MEMORY_CONTROL_BLOCKED', 'The character view has not acknowledged current security controls.', 'Reopen the service to finish applying controls before memory, model, or send admission.');
     return db;
@@ -194,7 +198,7 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
     if (ctx.admin === true) {
       requireThat(ctx.purpose === 'admin' && ctx.storeGeneration === generation, 'MEMORY_ADMIN_REQUIRED', 'A live management receipt capability is required.');
       state();
-    } else validate(ctx, { requireShadow: false });
+    } else validate(ctx);
     if (ctx.admin === true && control.prepare('SELECT operationId FROM lifecycle_ops WHERE operationId=?').get(operationId)) return lifecycle.call(ctx, 'progress', { operationId });
     const action = control.prepare('SELECT * FROM privacy_actions WHERE operationId=?').get(operationId);
     if (action) {
@@ -402,7 +406,7 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
       return { ...parse(prior.result), applied: true, appliedControlRevision: state().revision };
     }
     requireThat(expectedRevision === s.revision && ctx.controlRevision === s.revision, 'MEMORY_REVISION_CONFLICT', 'The management preview revision is stale.', 'Refresh the management preview and confirm the exact current revision.');
-    requireThat(['configure_policy', 'enable_shadow', 'suppress', 'invalidate', 'revoke_policy', 'binding_barrier', 'correct'].includes(action.type), 'MEMORY_ACTION_UNAVAILABLE', 'This management action is unavailable in the shadow kernel.', 'Production activation, backup, restore, migration and purge require a later verified phase.');
+    requireThat(['configure_policy', 'enable_shadow', 'suppress', 'invalidate', 'revoke_policy', 'binding_barrier', 'correct'].includes(action.type), 'MEMORY_ACTION_UNAVAILABLE', 'This management action is unavailable in the current memory kernel.', 'Production activation, backup, restore, migration and purge require a later verified phase.');
     let configured, correction;
     if (action.type === 'configure_policy') {
       configured = validatePolicy(action.policy);
@@ -429,6 +433,8 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
       if (action.type === 'revoke_policy') { const p = policy(action.policyId); control.prepare('UPDATE policies SET payload=? WHERE policyId=?').run(canonical({ ...p, approved: false }), action.policyId); }
       const policyIncrement = ['configure_policy', 'revoke_policy'].includes(action.type) ? 1 : 0;
       const deletionIncrement = ['suppress', 'invalidate', 'correct'].includes(action.type) ? 1 : 0;
+      // `shadowEnabled` 是影子期历史列：保留写入路径只为让旧库结构一致，
+      // 它已不参与任何业务准入（见 validate）。不要据此判断 V2 是否「已激活」。
       control.prepare('UPDATE state SET revision=?,policyRevision=policyRevision+?,bindingRevision=bindingRevision+?,deletionRevision=deletionRevision+?,shadowEnabled=? WHERE id=1').run(revision, policyIncrement, action.type === 'binding_barrier' ? 1 : 0, deletionIncrement, action.type === 'enable_shadow' ? Number(action.enabled === true) : s.shadowEnabled);
       for (const root of action.roots ?? []) control.prepare('INSERT INTO root_controls VALUES(?,?,?,?) ON CONFLICT(characterId,rootId) DO UPDATE SET status=excluded.status,revision=excluded.revision').run(ctx.characterId, root, action.type, revision);
       const descriptor = { type: action.type, roots: action.roots ?? [], policyId: configured?.policyId ?? action.policyId ?? null, replacement: correction ?? null };

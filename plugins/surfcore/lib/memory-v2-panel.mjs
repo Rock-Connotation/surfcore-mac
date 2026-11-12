@@ -85,7 +85,7 @@ export function createMemoryV2Panel(React, { api, Btn, fmtTime }) {
       void load();
       return () => { mounted.current = false; version.current++; };
     }, [roleKey]);
-    const allowed = action => statusRef.current?.ok === true && ['v1', 'v2'].includes(statusRef.current?.backend) && statusRef.current?.capabilities?.[capabilities[action]] === true && statusRef.current?.revision != null && !!statusRef.current?.character?.id && statusRef.current?.character?.epoch != null;
+    const allowed = action => statusRef.current?.ok === true && statusRef.current?.backend === 'v2' && statusRef.current?.readiness !== 'blocked' && statusRef.current?.capabilities?.[capabilities[action]] === true && statusRef.current?.revision != null && !!statusRef.current?.character?.id && statusRef.current?.character?.epoch != null;
     const begin = async (action, payload = {}) => {
       if (lock.current || uncertainRef.current || !allowed(action)) return;
       lock.current = true; setBusy('preview'); setError(null); setNotice(''); setPreview(null); previewRef.current = null;
@@ -235,8 +235,10 @@ export function createMemoryV2Panel(React, { api, Btn, fmtTime }) {
       h('div', { className: 'qbw-actions' }, h(Btn, { onClick: confirmAdminResume, disabled: !!busy || !!uncertain }, '确认按原编号恢复'), h(Btn, { kind: 'qbw-btn2', disabled: !!busy, onClick: () => { resumeRef.current = null; setResume(null); } }, '取消恢复预览'))) : null;
     return h('section', { className: 'qbw-card mv2-panel', 'aria-label': 'V2 记忆管理', 'aria-busy': !!busy },
       h('style', null, `.mv2-panel{margin-bottom:14px;overflow-wrap:anywhere}.mv2-panel *{min-width:0}.mv2-panel h3{font-size:15px;margin:0}.mv2-panel h4{font-size:13px;margin:0 0 8px}.mv2-panel p{max-width:72ch}.mv2-panel .mv2-section{margin-top:18px;padding-top:14px;border-top:1px solid var(--qbw-line-soft)}.mv2-panel .qbw-kv{gap:16px;align-items:start}.mv2-panel .qbw-kv>span:last-child{text-align:right;max-width:66%;white-space:normal}.mv2-panel .qbw-input,.mv2-panel .qbw-select{max-width:100%;min-width:0}.mv2-panel label{display:block;margin:8px 0}.mv2-panel .qbw-rec>div:first-child{min-width:0}.mv2-panel summary{cursor:pointer;padding:8px 0}.mv2-panel :focus-visible{outline:2px solid var(--qbw-brand);outline-offset:3px}.mv2-panel ::selection{background:var(--qbw-brand);color:var(--qbw-on-brand)}.mv2-panel input{caret-color:var(--qbw-brand)}.mv2-panel button:disabled{opacity:.5;cursor:not-allowed}.mv2-panel .mv2-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}.mv2-panel .mv2-tabs button[aria-pressed=true]{border-color:var(--qbw-brand);color:var(--qbw-brand)}.mv2-panel .mv2-confirm{padding:12px;background:var(--qbw-surface-2);margin-top:14px}.mv2-panel .mv2-status{font-variant-numeric:tabular-nums}@media(max-width:480px){.mv2-panel .qbw-kv{flex-wrap:wrap}.mv2-panel .qbw-kv>span:last-child{max-width:100%;text-align:left}.mv2-panel .mv2-tabs button{flex:1 1 42%;white-space:normal}.mv2-panel .qbw-search input{min-width:0;width:100%;flex-basis:100%}}`),
-      h('div', { className: 'qbw-meter-head' }, h('h3', null, current.backend === 'v2' ? 'V2 记忆管理' : 'V2 影子管理'), h(Btn, { kind: 'qbw-btn2', onClick: load, disabled: !!busy }, busy === 'status' ? '读取中…' : '刷新状态')),
-      h('p', { className: 'qbw-hint' }, current.backend === 'v2' ? '当前由 V2 保存与检索。每个阶段单独确认。' : 'V1 继续作为当前记忆来源；此处单独检查 V2 影子库，不自动切换。'),
+      h('div', { className: 'qbw-meter-head' }, h('h3', null, 'V2 记忆管理'), h(Btn, { kind: 'qbw-btn2', onClick: load, disabled: !!busy }, busy === 'status' ? '读取中…' : '刷新状态')),
+      h('p', { className: 'qbw-hint' }, current.readiness === 'blocked'
+        ? `当前记忆不可用（${text(current.reason?.code)}）：${text(current.reason?.hint)}`
+        : '当前由 V2 保存与检索。每个阶段单独确认。'),
       h('div', { ref: feedbackRef, tabIndex: -1, 'aria-label': '记忆操作结果' }, error ? h('div', { role: 'alert', className: 'qbw-err' }, `${error.error} · ${error.code}；${error.hint}`) : null,
       notice ? h('p', { role: 'status', 'aria-live': 'polite' }, notice) : null,
       uncertain ? h('div', { className: 'qbw-warnbox' }, h('div', null, `待核对操作：${uncertain.operationId}`), h(Btn, { onClick: receipt, disabled: !!busy }, busy === 'receipt' ? '核对中…' : '核对提交状态')) : null),

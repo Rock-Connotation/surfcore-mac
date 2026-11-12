@@ -32,9 +32,13 @@ export function readMemoryRouting({ stateDir } = {}) {
     if (!fs.existsSync(path.join(stateDir, 'memory-control.sqlite'))) return fail('MEMORY_CONTROL_UNAVAILABLE', 'V2路由仍生效，但当前控制库缺失。');
     return { ok: true, backend: route.backend, descriptor: route };
   } catch (error) {
-    if (error.retiredBackend === 'v1') return fail('MEMORY_BACKEND_RETIRED', '路由仍指向已移除的 V1 记忆后端。', '本版本只支持 V2；在有授权的会话里备份后删除 memory-v2/routing.json，重启宿主按 V2 重新初始化。');
+    if (error.retiredBackend === 'v1') return fail('MEMORY_BACKEND_RETIRED', '路由仍指向已移除的 V1 记忆后端。',
+      '本版本只支持 V2。不要删除 routing.json 或控制库来制造「全新安装」——那会丢掉权限、删除屏障与账本。先在记忆页只读预检，再按预检给出的计划处理；真实转换需单独授权。');
     if (error.code === 'ENOENT' && !fs.existsSync(file) && !fs.existsSync(path.join(stateDir, 'memory-control.sqlite'))) return { ok: true, backend: 'v2', descriptor: null, source: 'fresh-default' };
-    return fail('MEMORY_ROUTING_INVALID', '持久记忆路由缺失、损坏或权限不正确。');
+    if (error.code === 'ENOENT' && fs.existsSync(path.join(stateDir, 'memory-control.sqlite'))) return fail('MEMORY_ROUTING_INVALID', '控制库存在但路由文件缺失。',
+      '这是完整性/恢复状态，不是全新安装。先在记忆页只读预检确认原控制库仍在，再决定是否重建路由；不要删除控制库。');
+    return fail('MEMORY_ROUTING_INVALID', '持久记忆路由缺失、损坏或权限不正确。',
+      '先在记忆页只读预检；修复权限或由 Host 重新发布路由。不要删除 routing.json、控制库或旧角色资料。');
   }
 }
 

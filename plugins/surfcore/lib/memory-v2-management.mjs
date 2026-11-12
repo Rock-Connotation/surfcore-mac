@@ -108,9 +108,17 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
   const capable = runner => typeof runner?.preview === 'function' && typeof runner?.commit === 'function' && typeof runner?.receipt === 'function';
   function status(role, core, runtime) {
     const current = list(core.characters).find(row => row.characterId === role.id);
+    // V2-only（R01/§5.1）：「后端」和「就绪」是两个事实，不能看到 backend=v2 就宣称运行正常。
+    // 后端只可能是 v2；任何缺失都进入可见 blocked，并带上机器码与下一步，而不是悄悄回落 v1。
+    const backend = runtime.backend === 'v2' ? 'v2' : null;
+    const blocked = backend === null
+      ? { code: 'MEMORY_BACKEND_RETIRED', hint: '本版本只支持 V2 记忆；在记忆页核对当前角色与授权，不要切回旧后端。' }
+      : null;
     const result = {
       ok: true, character: role, revision: core.revision, storeGeneration: core.storeGeneration,
-      backend: ['v1', 'v2'].includes(runtime.backend) ? runtime.backend : 'v1',
+      backend: backend ?? 'v2',
+      readiness: blocked ? 'blocked' : 'ready',
+      ...(blocked ? { reason: blocked } : {}),
       capabilities: { adminResume: typeof adminResumer?.resume === 'function', shadow: core.capabilities?.shadow === true, activation: false, removeHot: capable(hotManager), backup: typeof memoryService.host.lifecycle?.backup === 'function', restore: typeof memoryService.host.lifecycle?.restore === 'function', purge: typeof inspectMemory === 'function' && typeof memoryService.host.lifecycle?.requestDelete === 'function', organize: capable(organizer), identity: capable(identityManager), migration: capable(migrator), correct: capable(corrector) },
       worker: { state: 'ready' }, counts: { ...(number(current?.eventCount) ? { sources: current.eventCount } : {}), ...(number(current?.memoryVersionCount) ? { committed: current.memoryVersionCount } : {}) },
       backups: safeRows(runtime.backups, ['id', 'label', 'verified']), policies: safeRows(runtime.policies, ['id', 'label']),

@@ -68,8 +68,14 @@ export function createMemoryHost({ memoryService, getCharacter, resolveIdentity 
   async function status() {
     try {
       const result = await memoryService.getStatus();
-      return { ok: true, activeBackend: result?.activeBackend ?? 'v2', shadow: result?.ok === false ? denied(result) : { ok: true, enabled: result?.shadowEnabled === 1 || result?.shadowEnabled === true, runtimeVerified: false } };
-    } catch { return { ok: true, activeBackend: 'v2', shadow: fail('MEMORY_WORKER_UNAVAILABLE', 'The shadow memory service is unavailable.', 'Keep the current control state and check the isolated memory service status.') }; }
+      // V2-only：`shadowEnabled` 已退出准入（R01）。状态只区分「后端」与「是否就绪」，
+      // 不再用影子期开关表示可用性，避免出现 backend=v2 却显示「未启用」的矛盾。
+      const ready = result?.ok !== false;
+      return { ok: true, activeBackend: result?.activeBackend ?? 'v2',
+        readiness: ready ? 'ready' : 'blocked',
+        ...(ready ? {} : { reason: { code: result?.code || 'MEMORY_WORKER_UNAVAILABLE', hint: result?.hint || 'Check the isolated memory service status, then capture a new trusted context.' } }),
+        shadowEnabled: result?.shadowEnabled === 1 || result?.shadowEnabled === true };
+    } catch { return { ok: true, activeBackend: 'v2', readiness: 'blocked', reason: { code: 'MEMORY_WORKER_UNAVAILABLE', hint: 'Keep the current control state and check the isolated memory service status.' } }; }
   }
   function createAdapter({ channel, principal, purpose = 'conversation', canBindInput = false, canSubmitSourceFacts = false } = {}) {
     if (!CHANNELS.has(channel) || !['conversation', 'organize'].includes(purpose) || !object(principal) || (canSubmitSourceFacts && channel !== 'qq')) throw new TypeError('A trusted channel, principal and ordinary purpose are required.');

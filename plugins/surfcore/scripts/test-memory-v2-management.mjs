@@ -22,7 +22,7 @@ function policy(id) { return validatePolicy({ policyId: id, approved: true, audi
 async function fixture(name, extra = {}) {
   const dir = path.join(root, name); fs.mkdirSync(dir);
   const role = { id: 'app', epoch: 1, name: '当前角色' }, authorization = Symbol(name), records = new Map();
-  const runtime = { backend: 'v1', policies: [{ id: 'private', label: '当前私有授权' }], backups: [], operations: [], approvedConversations: [{ id: 'approved-one', label: '当前已批准会话', processorScopes: [{ id: 'local', label: '本机处理', policy: policy('selected-policy') }] }], budget: {} };
+  const runtime = { backend: 'v2', policies: [{ id: 'private', label: '当前私有授权' }], backups: [], operations: [], approvedConversations: [{ id: 'approved-one', label: '当前已批准会话', processorScopes: [{ id: 'local', label: '本机处理', policy: policy('selected-policy') }] }], budget: {} };
   const base = { channel: 'local', conversationKey: 'app:one', sourceAccountKey: 'local:person', requesterAccountKey: 'local:person', audiencePolicyId: 'private', providerRouteId: 'local:test', processingGrantId: 'grant' };
   let worker;
   const config = { stateDir: path.join(dir, 'state'), charactersDir: path.join(dir, 'characters'), getCharacter: () => ({ ...role }), authorizeManagement: cap => cap === authorization,
@@ -187,7 +187,7 @@ try {
     const foreign = { characterId: 'other', id: 'foreign', label: 'FOREIGN_ROLE_CANARY', verified: true };
     f.runtime.backups.push(foreign); f.runtime.policies.push(foreign); f.runtime.bindings = [foreign]; f.runtime.operations.push({ characterId: 'other', operationId: 'foreign', action: 'backup' });
     f.runtime.secret = 'RAW_SECRET_CANARY'; f.runtime.paths = '/Users/private/token'; f.runtime.approvedConversations[0].processorScopes[0].policy.privateText = 'HIDDEN_POLICY_CANARY';
-    const s = await f.status(); assert.equal(s.backend, 'v1'); assert.equal(s.capabilities.activation, false); assert.equal(s.capabilities.correct, false); assert.equal(s.capabilities.organize, false); assert.equal(s.capabilities.migration, false); assert.equal(s.counts.sources, 1); assert.deepEqual(s.budget, {});
+    const s = await f.status(); assert.equal(s.backend, 'v2'); assert.equal(s.readiness, 'ready'); assert.equal(s.capabilities.activation, false); assert.equal(s.capabilities.correct, false); assert.equal(s.capabilities.organize, false); assert.equal(s.capabilities.migration, false); assert.equal(s.counts.sources, 1); assert.deepEqual(s.budget, {});
     assert.ok(!JSON.stringify(s).match(/FOREIGN_ROLE_CANARY|RAW_SECRET_CANARY|HIDDEN_POLICY_CANARY|\/Users\/|processingGrants|providerRouteId/));
     const script = await f.request('/panel-client'); assert.equal(script.status, 200); assert.match(script.text, /createMemoryV2Panel/);
   });

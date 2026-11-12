@@ -110,7 +110,7 @@ export function createQQAccessPanel(React, { api, Btn, fmtTime = value => value 
     const readStatus = async () => {
       const value = await api('/memory-v2/status?channel=qq', { method: 'GET', signal: AbortSignal.timeout(12000) });
       if (value?.ok !== true) throw asError(value, 'MEMORY_STATUS_UNAVAILABLE', '检查 QQ 白名单、角色和 SurfCore Host；状态未知时不能启用处理许可。');
-      if (!value.character || !nonempty(value.character.id) || !Number.isSafeInteger(value.character.epoch) || !Number.isSafeInteger(value.revision) || !Array.isArray(value.approvedConversations) || !['v1', 'v2'].includes(value.backend)) {
+      if (!value.character || !nonempty(value.character.id) || !Number.isSafeInteger(value.character.epoch) || !Number.isSafeInteger(value.revision) || !Array.isArray(value.approvedConversations) || value.backend !== 'v2' || value.readiness === 'blocked') {
         throw asError({ code: 'MEMORY_STATUS_INVALID', error: 'QQ 处理授权状态缺少角色、修订号或对象列表。', hint: '刷新状态；状态完整前不会提交授权。' });
       }
       if (roleKey && value.character.id !== roleKey) throw asError({ code: 'CHARACTER_EPOCH_STALE', error: '当前角色已变化。', hint: '等待 QQ 页刷新到当前角色，再重新读取状态。' });
@@ -367,12 +367,12 @@ export function createQQAccessPanel(React, { api, Btn, fmtTime = value => value 
       status && rows.length === 0 && drafts.length === 0 ? h('div', { className: 'qbw-hint' }, '没有已保存且可选择的 QQ 群或私聊。先在上方白名单加入对象并保存，再刷新这里。') : null,
       rows.map(row => {
         const candidate = candidateFor(status, row.id);
-        const legacy = status?.backend === 'v1';
-        const active = !legacy && candidate?.approved === true;
-        const pending = !legacy && candidate?.approved === false;
+        // V2-only（V1 退役）：不再有「旧版记忆」分支，后端不是 v2 或未就绪时 readStatus 已拒绝。
+        const active = candidate?.approved === true;
+        const pending = candidate?.approved === false;
         const isPreview = preview?.reviewed.id === row.id;
         const isUncertain = uncertain?.reviewed.id === row.id;
-        const stateText = legacy ? '当前使用旧版记忆；白名单保存并生效后按原规则回复' : active ? '当前模型处理许可已确认' : pending ? '已在 QQ 白名单，当前模型待确认' : '模型或会话信息未知，暂不可操作';
+        const stateText = active ? '当前模型处理许可已确认' : pending ? '已在 QQ 白名单，当前模型待确认' : '模型或会话信息未知，暂不可操作';
         return h('div', { key: row.id, className: 'qbw-item', style: { display: 'block', marginTop: '8px' } },
           h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', flexWrap: 'wrap' } },
             h('div', null,

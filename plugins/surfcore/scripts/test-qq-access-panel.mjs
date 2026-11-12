@@ -78,12 +78,12 @@ try {
     assert.match(f.text(), /deepseek-v4\.1-flash/);
   }
 
-  // V1 keeps the legacy whitelist behavior and never offers a new model-grant action.
+  // V1 已退役（2026-11-12）：状态里出现 v1 后端必须被拒绝并可见，绝不降级展示「旧版记忆」。
   {
     const legacy = { ...status({ candidate: target, revision: 4 }), backend: 'v1' };
     const old = fixture(async path => ({ ...legacy, approvedConversations: [target] }));
     await old.ready();
-    assert.match(old.text(), /当前使用旧版记忆；白名单保存并生效后按原规则回复/);
+    assert.match(old.text(), /MEMORY_STATUS_INVALID/);
     assert.equal(old.nodes().some(node => old.nodeText(node) === '保存并启用回复'), false);
     assert.equal(old.calls.filter(call => call.path === '/memory-v2/manage').length, 0);
   }

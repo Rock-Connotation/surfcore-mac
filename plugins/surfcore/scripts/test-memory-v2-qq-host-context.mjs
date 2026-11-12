@@ -50,8 +50,7 @@ try {
   const candidates = await runtime.approvedConversations();
   const policyId = candidates.find(item => item.id === 'qq-group-2').processorScopes[0].policy.policyId;
   await manage('configure_policy', { conversationId: 'qq-group-2', processorScope: 'exact-model' });
-  const db = new DatabaseSync(path.join(root, 'state', 'memory-control.sqlite'));
-  db.prepare('UPDATE state SET shadowEnabled=1 WHERE id=1').run(); db.close();
+  // R01：正式批准后 capture 必须直接可用；不再直接改 SQLite 开影子开关。
   const { adapter } = runtime.channelMemory('qq');
   const received = good(await capture(adapter));
   assert.equal(received.sourceStamp.conversationKey, 'qq:1:group:2');
