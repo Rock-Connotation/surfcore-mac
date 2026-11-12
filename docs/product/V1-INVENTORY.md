@@ -89,8 +89,39 @@
 
 **一切最痛项（④⑤⑥）都压在同一条前置链上：Memory V2 转正（真机验收 + 数据迁移）→ 各渠道 V2 广泛回归 → 用户圈定范围 → 隔离备份 → 分批删 V1。** 最安全项（①②③）可随这条链顺路退场，不需要单独冒进。
 
-## 3. 本清单的边界
+## 3. 推荐圈定方案（2026-11-12 调研补证后，供拍板）
 
-- 只清点了"v1/V1 命名"与"V1 默认行为"；未评估各模块的行数规模与删除工作量。
+### 3.1 调研补证（本轮新增实证，全部可复核）
+
+1. **v1 preset 是生产缺省，且被测试钉住**：`src/bridge.js:920`（`agentPreset ?? 'qq-chat'`）；`scripts/test-audit-bridge.mjs:18` 断言缺省就是 `'qq-chat'`；`scripts/test-setup-dsh-idempotent.mjs:122` 要求 `qq-chat` 与 `qq-chat-v2` 两个 preset 目录都装；`scripts/test-phase-bc-verification.mjs:21` 的 safePresets 含 `'qq-chat'`。→ 删 ③ 必须连动改至少 4 个测试文件 + 缺省值 + 用户配置迁移。
+2. **模式枚举被三处测试钉住**：`test-qq-mode-plugin.mjs:71`、`test-console-ui.mjs:121`、`test-audit-security-mcp.mjs:205` 都遍历含 `'reserved'` 的五模式。→ 删 reserved 枚举是纯机械改造，但有回归面。
+3. **〔一代〕小节在仓库内只出现在文档示例**（`roles/README.md`），仓库自带的 preset/角色模板没有。→ ① 的迁移负担实际只在 `~/.dsh` 用户角色包（数据面），且可以做成一次性只读扫描 + 备份迁移脚本，体量可控。
+4. **memory-card 测试面很厚**：`src/memory-card.js` 2,481 行，受 `test-core-rev-sync`（rev 后缀纪律）、`test-memory-card`、`test-phase-a-verification`、`test-memory-v2-evaluation` 覆盖。→ ④ 不是"删文件"而是"删地基"，必须最后动。
+5. **reserved2 已在用 v2 preset**：`bridge.js:1009` 已有一处直接用 `'qq-chat-v2'`；`:4071` reserved2 优先取 `socialV2.agentPreset`。→ 把缺省从 v1 切到 v2 只剩"缺省值 + 迁移 + 观察期"，不是从零开始。
+
+### 3.2 三个候选方案
+
+**方案 A（推荐）：全部 6 项圈入退役范围，按三批走，节奏绑 V2 转正**
+
+| 批次 | 内容 | 准入条件 | 体量 | 风险 |
+| --- | --- | --- | --- | --- |
+| **D1 开关批（不是删除，可立即启动）** | 缺省 `agentPreset` 从 `'qq-chat'` 切 `'qq-chat-v2'`（`bridge.js:920`）+ 4 个测试文件改造 + `state/mode.json`、profile `agentPreset` 的兼容迁移（旧值照读，新写一律 v2）+ 一个使用周期观察 | QQ V2 已有真机验收（2026-11-12 HANDOFF），直接可做 | bridge.js 数行 + 4 测试 + 1 个迁移函数 | 低：v2 已真机跑过；回滚 = 改回缺省值一行 |
+| **D2 删 ①③（D1 观察期通过后）** | 删 `dsh/agent-presets/qq-chat/` 目录、reserved 模式枚举、`persona-layers.js`/`role-card.js`/`preset-prompt.js` 的 v1 过滤与硬校验（连同 `PRESET_BLOCKING_SUBSTRINGS_V1`） | D1 观察期无回退需求；`~/.dsh` 角色包〔一代〕小节一次性迁移（先隔离备份） | ~6 个文件 + 3 个测试文件改造 | 中：人格卡文本迁移是唯一数据面动作 |
+| **D3 删 ②④⑤⑥（Memory V2 转正后）** | 删 Memory V2 内 legacy 分支、`src/memory-card.js`+`lib/memory-card.js`+`lib/memory.js` 的 V1 本体、`lib/scheduler.js`+`tools/` 的 B站 V1 链路、`bridge.js` 的 v1 发送路径 | Memory V2 转正（真机验收 + 全量数据迁移 + 抽样核对）→ B站 V2 / QQ V2 广泛回归 → 用户最终确认 | 最大：memory-card 2,481 行 + tools 67 个文件 + scheduler + bridge v1 路径 | 高：数据迁移是硬前置；回滚靠 git revert + `_quarantine` 备份 |
+
+**方案 B（不推荐）：只圈 ①③，④⑤⑥ 无限期保留。** 与拍板"V1 系列最终删除"冲突；且 Memory V2 / QQ V2 / B站 V2 的工程与验收投入已经发生，长期双轨只会让 lint 债务（bridge.js 443 处）和文档数字继续腐烂。
+
+**方案 C（不可取）：一次全删。** QQ V2 目前只有单轮真机验收，删 v1 发送路径会让出站只剩未广泛回归的链路；B站 V2 还是"模块验收、未安装"状态。铁律 2/3 都不允许。
+
+### 3.3 圈定结论（推荐采纳方案 A）
+
+- **退役范围 = 清单 ①②③④⑤⑥ 全部**；排除表（§0）的 8 类第三方协议 v1 与 docs 历史记录**不在范围**，永久保留。
+- **立即可启动**：D1（缺省切 v2 + 测试改造 + 迁移）——这是解锁 ①③ 的钥匙，且本身不删任何东西。
+- **D2、D3 各自单独立批**：删除动作执行时按铁律 6 先隔离备份（`~/.dsh/_quarantine/` / `_backups/`），每批删除前后跑全门禁（audit / lint:failures / 插件测试 / doc-facts）。
+- **不删清单**：`test-core-rev-sync` 对 memory-card 的 rev 纪律在 D3 之前继续有效；`dsh.biliV2` / `dsh.memoryV2` 配置键在转正前保持默认关。
+
+## 4. 本清单的边界
+
+- 只清点了"v1/V1 命名"与"V1 默认行为"；行数规模与测试钉子已在 §3.1 补证（memory-card 2,481 行、4+3 个测试文件受影响）。
 - `docs/` 下的历史案例/HANDOFF 提到 V1 的文字不属于删除对象（历史记录）。
 - 本清单未删除任何代码、配置或数据；引用关系以 grep 实证为准，逐条可复核。
