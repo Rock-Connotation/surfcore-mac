@@ -11,14 +11,6 @@
     "method": "POST",
     "path": "/api/mode",
     "body": {
-      "mode": "reserved",
-      "closedAgentPreset": ""
-    }
-  },
-  {
-    "method": "POST",
-    "path": "/api/mode",
-    "body": {
       "mode": "reserved2",
       "closedAgentPreset": ""
     }
@@ -362,55 +354,6 @@
   },
   {
     "method": "POST",
-    "path": "/api/social",
-    "body": {
-      "triggerProbability": 0.35,
-      "activeCheckMinMs": 12000,
-      "activeCheckMaxMs": 30000,
-      "activeReplyDelayMinMs": 1000,
-      "activeReplyDelayMaxMs": 3000,
-      "activeDurationEnabled": true,
-      "activeDurationMinMs": 180000,
-      "activeDurationMaxMs": 600000,
-      "idleWindowMs": 300000,
-      "idleRetryProbability": 0.4,
-      "idleRetryWaitMs": 120000,
-      "skipProbability": 0.15,
-      "surrenderProbability": 0.08,
-      "contextWindow": 20,
-      "maxReplyChars": 500,
-      "burstEnabled": true,
-      "burstIntervalMinMs": 1000,
-      "burstIntervalMaxMs": 3000,
-      "longGapProbability": 0.1,
-      "longGapMinMs": 2500,
-      "longGapMaxMs": 5000,
-      "mustReplyKeywords": [
-        "鲸鱼",
-        "测试"
-      ],
-      "proactiveEnabled": true,
-      "proactiveIdleThresholdMs": 1800000,
-      "proactiveCheckMinMs": 300000,
-      "proactiveCheckMaxMs": 900000,
-      "proactiveProbability": 0.2
-    }
-  },
-  {
-    "method": "POST",
-    "path": "/api/social/state",
-    "body": {
-      "key": "group:123456789",
-      "phase": "idle"
-    }
-  },
-  {
-    "method": "POST",
-    "path": "/api/social/flush",
-    "body": {}
-  },
-  {
-    "method": "POST",
     "path": "/api/slang",
     "body": {
       "content": "测试词条",
@@ -445,7 +388,7 @@
         12
       ],
       "injectMax": 8,
-      "learnerPreset": "qq-chat",
+      "learnerPreset": "qq-chat-v2",
       "workspaceTitle": "QQ 黑话学习",
       "autoResearch": true
     }

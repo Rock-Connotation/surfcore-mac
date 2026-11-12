@@ -6391,90 +6391,6 @@ async function main() {
           }
           return;
         }
-        if (req.method === 'POST' && url.pathname === '/api/social/state') {
-          const body = await readBody();
-          const key = String(body.key ?? '').trim();
-          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          const phase = body.phase;
-          if (phase === 'active') {
-            // 手动进入活跃：相当于第四种触发方式，之后按正常活跃流程跑
-            enterActive(key);
-            log(`控制台：手动将 ${key} 设为活跃`);
-            sendJson({ ok: true, key, phase: 'active' });
-          } else if (phase === 'idle') {
-            leaveActive(key);
-            log(`控制台：手动将 ${key} 设为观望`);
-            sendJson({ ok: true, key, phase: 'idle' });
-          } else {
-            sendJson({ ok: false, error: 'phase 必须是 active 或 idle' }, 400);
-          }
-          return;
-        }
-        // ── 仿真群友模式（社交引擎）配置 ──────────────────────────────────────
-        if (req.method === 'GET' && url.pathname === '/api/social') {
-          const stats = {};
-          for (const [k, e] of social.pendingSummaries.entries()) stats[k] = e.items.length;
-          const states = {};
-          const keys = new Set([...social.states.keys(), ...social.recentMessages.keys()]);
-          for (const k of keys) {
-            const st = social.states.get(k);
-            states[k] = { phase: st?.phase ?? 'idle' };
-          }
-          sendJson({ config: cfg.social, pendingSummaries: stats, states });
-          return;
-        }
-        if (req.method === 'POST' && url.pathname === '/api/social') {
-          const body = await readBody();
-          const configFile = CONFIG_FILE;
-          // fail-fast：配置文件损坏时直接 500，绝不回写，避免把整个配置清成只剩 social
-          const file = readConfigObject(configFile);
-          const merged = { ...(file.social ?? {}), ...body };
-          // 新分句逻辑不再使用旧字段：保存时统一清理，避免旧配置残留
-          for (const k of ['burstProbability', 'burstMaxMessages', 'followUpEnabled', 'followUpProbability', 'followUpDelayMinMs', 'followUpDelayMaxMs', 'followUpCooldownMs']) {
-            delete merged[k];
-          }
-          for (const k of ['triggerProbability', 'activeCheckMinMs', 'activeCheckMaxMs', 'activeReplyDelayMinMs', 'activeReplyDelayMaxMs', 'activeDurationMinMs', 'activeDurationMaxMs', 'idleWindowMs', 'idleRetryProbability', 'idleRetryWaitMs', 'proactiveIdleThresholdMs', 'proactiveCheckMinMs', 'proactiveCheckMaxMs', 'proactiveProbability', 'maxReplyChars', 'contextWindow', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapMinMs', 'longGapMaxMs']) {
-            if (merged[k] !== undefined) {
-              const n = Number(merged[k]);
-              if (Number.isFinite(n) && n >= 0) merged[k] = n;
-            }
-          }
-          // 分条间隔 clamp 到非负
-          for (const k of ['burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapMinMs', 'longGapMaxMs']) {
-            if (merged[k] !== undefined) merged[k] = Math.max(0, Number(merged[k]) || 0);
-          }
-          // 概率字段 clamp 到 0~1
-          for (const k of ['triggerProbability', 'idleRetryProbability', 'proactiveProbability', 'skipProbability', 'surrenderProbability', 'longGapProbability']) {
-            if (merged[k] !== undefined) merged[k] = Math.min(1, Math.max(0, Number(merged[k])));
-          }
-          // contextWindow 限制 1~100
-          if (merged.contextWindow !== undefined) {
-            merged.contextWindow = Math.min(100, Math.max(1, Math.round(Number(merged.contextWindow))));
-          }
-          // 布尔字段
-          for (const k of ['activeDurationEnabled', 'proactiveEnabled', 'burstEnabled']) {
-            if (merged[k] !== undefined) merged[k] = Boolean(merged[k]);
-          }
-          // 范围字段保证 min <= max
-          for (const [minK, maxK] of [['activeCheckMinMs', 'activeCheckMaxMs'], ['activeReplyDelayMinMs', 'activeReplyDelayMaxMs'], ['activeDurationMinMs', 'activeDurationMaxMs'], ['proactiveCheckMinMs', 'proactiveCheckMaxMs'], ['burstIntervalMinMs', 'burstIntervalMaxMs'], ['longGapMinMs', 'longGapMaxMs']]) {
-            if (merged[minK] !== undefined && merged[maxK] !== undefined && Number(merged[minK]) > Number(merged[maxK])) {
-              [merged[minK], merged[maxK]] = [merged[maxK], merged[minK]];
-            }
-          }
-          if (Array.isArray(body.mustReplyKeywords)) merged.mustReplyKeywords = body.mustReplyKeywords.map(String);
-          file.social = merged;
-          atomicWriteJson(configFile, file);
-          cfg.social = { ...cfg.social, ...merged };
-          log('控制台：社交配置已更新');
-          sendJson({ ok: true, config: cfg.social });
-          return;
-        }
-        if (req.method === 'POST' && url.pathname === '/api/social/flush') {
-          const body = await readBody();
-          await flushSummaries(body.key || null);
-          sendJson({ ok: true });
-          return;
-        }
         // ── 后台控制端引导：向指定会话的 DSH agent 投递提醒 ──────────────────
         if (req.method === 'POST' && url.pathname === '/api/console/notify-ai') {
           const body = await readBody();
@@ -13939,14 +13855,10 @@ async function main() {
     }
   }
 
-  // 旧写法是 `isSocialEnabled() || cfg.social?.enabled !== false` —— 恒等于右边那一项
-  // （isSocialEnabled() 本身就蕴含 cfg.social?.enabled !== false，左侧永远不可能单独为真），
-  // 留着只会让人误以为"reserved 模式下才启动循环"。这里启动的只是一个 5 秒心跳，
-  // 每跳自己会用 isSocialEnabled() 判断当前模式（见 socialLoopTick 第一行）；
-  // 真正决定启不启动的只有配置里的显式关闭开关。
-  if (cfg.social?.enabled !== false) {
-    startSocialLoop();
-  }
+  // V1 退役（2026-11-12）：一代仿真 reserved 已不再被 MODE_INPUT_ALIASES 接受，
+  // isSocialEnabled() 恒为 false，5 秒社交心跳不再启动。
+  // 状态机函数与 social 容器暂时保留：会话退役/重置路径仍借它做内存态清理，
+  // 全部入站/出站分支已由模式闸门封死，不会执行任何一代逻辑。
 
   // 当前角色扮演提示：读 state/current-role.json + roles/<角色>.md，
   // 由桥接注入到 QQ 群消息（群友无法通过对话修改，只能由管理端写该文件）。

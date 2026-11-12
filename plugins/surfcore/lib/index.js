@@ -1776,8 +1776,8 @@ ${body}`;
     const body = JSON.parse(await readBody(req) || '{}');
     const mode = body.mode ? String(body.mode) : null;
     const ownerQQ = body.ownerQQ === undefined ? undefined : (body.ownerQQ === '' || body.ownerQQ === null ? null : String(body.ownerQQ));
-    if (mode && !['chat', 'closed-agent', 'reserved', 'reserved2', 'simulation'].includes(mode)) {
-      json(res, 400, { ok: false, error: 'mode 必须是 chat / closed-agent / reserved / reserved2 / simulation' });
+    if (mode && !['chat', 'closed-agent', 'reserved2', 'simulation'].includes(mode)) {
+      json(res, 400, { ok: false, code: 'RETIRED_MODE_REJECTED', error: 'mode 必须是 chat / closed-agent / reserved2 / simulation', hint: '一代仿真 reserved 已退役：请改为 simulation（即 reserved2）' });
       return;
     }
     const stateFile = path.join(QQ_STATE_DIR(), 'mode.json');

@@ -1106,7 +1106,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
         F("dsh.followDefaultModel", "跟随 DSH 默认模型", "默认开；QQ 聊天/黑话学习跟随 Web GUI 的默认模型，关掉则用上面的 provider/model", "switch"),
         // ownerQQ 不在这里：它已上移到两个标签页顶部的「管理员（QQ ⇄ B站 · 同一个人）」卡片，
         // 和 B站 owner.mid 一起保存，避免两个入口各改一边。
-        F("agentPreset", "一代 preset", "默认 qq-chat"),
+        F("agentPreset", "会话 preset", "默认 qq-chat-v2"),
         F("workspaceTitle", "工作区名称", "QQ 会话在 DSH 里的归组名"),
 F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { browse: "dir" }),
       ]},
@@ -1134,36 +1134,6 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       ]},
       { group: "人格与注入", note: "人格卡在「角色」页统一编辑", fields: [
         F("role.maxInjectChars", "人格注入上限（字符）", "1000~20000；默认 6000", "number", { min: 1000, max: 20000 }),
-      ]},
-      { group: "一代仿真（reserved）", note: "文本自动转发 + [SILENT]", fields: [
-        F("social.enabled", "启用一代仿真", "", "switch"),
-        F("social.maxReplyChars", "单条最大字数", "", "number", { min: 20 }),
-        F("social.mustReplyKeywords", "必须回复关键词", "逗号分隔", "list"),
-        F("social.contextWindow", "上下文条数", "", "number", { min: 0 }),
-        F("social.triggerProbability", "普通消息触发概率", "0~1", "number", { min: 0, max: 1, step: 0.01 }),
-        F("social.activeCheckMinMs", "活跃检测最小间隔（ms）", "", "number"),
-        F("social.activeCheckMaxMs", "活跃检测最大间隔（ms）", "", "number"),
-        F("social.idleWindowMs", "空闲窗口（ms）", "", "number"),
-        F("social.idleRetryProbability", "空闲重试概率", "", "number", { min: 0, max: 1, step: 0.01 }),
-        F("social.proactiveEnabled", "主动搭话", "", "switch"),
-        F("social.proactiveIdleThresholdMs", "主动搭话空闲阈值（ms）", "", "number"),
-        F("social.proactiveCheckMinMs", "主动检查最小间隔（ms）", "", "number"),
-        F("social.proactiveCheckMaxMs", "主动检查最大间隔（ms）", "", "number"),
-        F("social.proactiveProbability", "主动搭话概率", "", "number", { min: 0, max: 1, step: 0.01 }),
-        F("social.activeReplyDelayMinMs", "回复延迟最小（ms）", "", "number"),
-        F("social.activeReplyDelayMaxMs", "回复延迟最大（ms）", "", "number"),
-        F("social.activeDurationEnabled", "活跃时长限制", "", "switch"),
-        F("social.activeDurationMinMs", "活跃时长最小（ms）", "", "number"),
-        F("social.activeDurationMaxMs", "活跃时长最大（ms）", "", "number"),
-        F("social.skipProbability", "跳过概率", "", "number", { min: 0, max: 1, step: 0.01 }),
-        F("social.surrenderProbability", "放弃概率", "", "number", { min: 0, max: 1, step: 0.01 }),
-        F("social.idleRetryWaitMs", "空闲重试等待（ms）", "", "number"),
-        F("social.burstEnabled", "分条发送", "", "switch"),
-        F("social.burstIntervalMinMs", "分条最小间隔（ms）", "", "number"),
-        F("social.burstIntervalMaxMs", "分条最大间隔（ms）", "", "number"),
-        F("social.longGapProbability", "长间隔概率", "", "number", { min: 0, max: 1, step: 0.01 }),
-        F("social.longGapMinMs", "长间隔最小（ms）", "", "number"),
-        F("social.longGapMaxMs", "长间隔最大（ms）", "", "number"),
       ]},
       { group: "二代仿真（reserved2）", note: "工具化收发 + 自主潜水", fields: [
         F("socialV2.enabled", "启用二代仿真", "", "switch"),
@@ -1290,7 +1260,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("socialV2.media.maxPixels", "单张最大像素", "", "number"),
         F("socialV2.media.maxCount", "单条最多图片", "", "number", { min: 1 }),
       ]},
-      { group: "群聊（chat 模式）", note: "只影响 chat 一代逐条回复；reserved2 的发言/唤醒在「二代仿真」「鱼群保护」「Token 防爆破」", fields: [
+      { group: "群聊（chat 模式）", note: "只影响 chat 逐条回复；reserved2 的发言/唤醒在「二代仿真」「鱼群保护」「Token 防爆破」", fields: [
         F("chat.contextMessages", "群聊上下文条数", "默认 10；0=关闭", "number", { min: 0, max: 100 }),
         F("chat.groupContextMessages", "按群覆盖上下文", "JSON：{\"群号\": 条数}", "json"),
         F("chat.addressFilter.enabled", "别人之间说话时过滤（chat 模式）", "只影响 chat 逐条回复；reserved2 不用这个判定", "switch"),
@@ -1339,7 +1309,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
 
     const QQ_ADV_CATEGORIES = [
       { title: "接入与身份", members: ["连接与身份", "SnowLuma", "控制台", "安全通知"] },
-      { title: "人格与提示", members: ["人格与注入", "一代仿真（reserved）", "二代仿真（reserved2）"] },
+      { title: "人格与提示", members: ["人格与注入", "二代仿真（reserved2）"] },
       { title: "群与安全", members: ["群管理", "鱼群判定关键词（QQ）", "鱼群保护（QQ）", "Token 防爆破"] },
       { title: "唤醒与收尾", members: ["唤醒与潜水", "二代 · 唤醒与潜水", "对话收尾", "二代 · 对话收尾判断", "二代 · 上线补历史消息"] },
       { title: "发送与上下文", members: ["二代 · 发送与节奏", "二代 · 等待与上下文", "二代 · 主动与反馈"] },
@@ -3379,11 +3349,11 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             readOnly: (f) => f.readOnly || (f.path.join(".") === "self.mid") || (f.path.join(".") === "self.name"),
             onSave,
             categories: QQ_ADV_CATEGORIES,
-            groupExtra: (g) => g.group === "连接与身份" ? h(Row, { label: "运行模式", hint: "chat=普通安全聊天；reserved=一代仿真；reserved2=二代工具仿真；closed-agent=仅主人私聊全工具。只运行当前模式，其他模式配置不生效" },
+            groupExtra: (g) => g.group === "连接与身份" ? h(Row, { label: "运行模式", hint: "chat=普通安全聊天；reserved2=二代工具仿真；closed-agent=仅主人私聊全工具。只运行当前模式，其他模式配置不生效" },
               h("select", { className: "qbw-select", value: overview?.mode?.effective ?? "reserved2", onChange: async (e) => {
                 try { await api("/mode", { method: "POST", body: { mode: e.target.value } }); toast(`✓ 模式已切到 ${e.target.value}`); await reload(); } catch (err) { toast(`✗ ${err.message}`); }
               } },
-                [["chat", "chat（一代普通）"], ["reserved", "reserved（一代仿真）"], ["reserved2", "reserved2（二代仿真）"], ["closed-agent", "closed-agent（封闭）"], ["simulation", "simulation（=reserved2）"]].map(([v, l]) => h("option", { key: v, value: v }, l)))) : null,
+                [["chat", "chat（普通）"], ["reserved2", "reserved2（二代仿真）"], ["closed-agent", "closed-agent（封闭）"], ["simulation", "simulation（=reserved2）"]].map(([v, l]) => h("option", { key: v, value: v }, l)))) : null,
           })),
           h(GroupPolicyArea, { busy, setBusy, toast }),
           h(DshRepairCard, { busy, setBusy, toast }),

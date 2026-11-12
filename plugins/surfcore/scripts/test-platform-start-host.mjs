@@ -115,7 +115,7 @@ try {
   assert.equal(memory.status, 200, JSON.stringify(memory));
   assert.equal(memory.data.ok, true, JSON.stringify(memory));
   assert.equal(memory.data.character.id, alpha.character.id);
-  assert.equal(memory.data.backend, 'v1');
+  assert.equal(memory.data.backend, 'v2');
   assert.equal(memory.data.capabilities.activation, false);
   const rpc = routes.find(route => route.path === '/dsh-surfcore/memory-v2-api');
   assert.ok(rpc, 'The separately authenticated channel RPC endpoint must be registered.');
