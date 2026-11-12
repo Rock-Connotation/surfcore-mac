@@ -45,8 +45,8 @@ async function deniedAdmission(adapter, handle, options) {
   assert.equal(calls, 0);
 }
 try {
-  const initialized = good(await runtime.initialize()); assert.equal(initialized.backend, 'v1');
-  const status = good(await request('status')); assert.equal(status.backend, 'v1');
+  const initialized = good(await runtime.initialize()); assert.equal(initialized.backend, 'v2');
+  const status = good(await request('status')); assert.equal(status.backend, 'v2');
   const candidates = await runtime.approvedConversations();
   const policyId = candidates.find(item => item.id === 'qq-group-2').processorScopes[0].policy.policyId;
   await manage('configure_policy', { conversationId: 'qq-group-2', processorScope: 'exact-model' });

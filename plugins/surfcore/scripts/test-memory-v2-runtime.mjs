@@ -38,14 +38,14 @@ const request = async (suffix, body, owner = true) => {
   return { status: response.status, value: await response.json() };
 };
 try {
-  const init = await runtime.initialize(); assert.equal(init.ok, true, JSON.stringify(init)); assert.equal(init.backend, 'v1');
+  const init = await runtime.initialize(); assert.equal(init.ok, true, JSON.stringify(init)); assert.equal(init.backend, 'v2');
   // Use the production writer and the production QQ factory; a hand-aligned
   // fixture scope hid the real qq / qq-bridge discovery mismatch.
   const defaultQq = createQQMemoryBridge({ stateDir: path.join(root, 'state'), getCharacter: () => current, getRouting: () => ({ ok: true, backend: 'v2' }) });
   const scopeProbe = await defaultQq.captureSource({ key: 'private:3', loginAccountId: '1', actorAccountId: '3', objectId: 'scope-regression', text: 'hello' });
   assert.notEqual(scopeProbe.code, 'MEMORY_DISCOVERY_INVALID', 'The QQ default must reach the actual Host discovery, even when V1 refuses the source.');
   const state = await request('status'); assert.equal(state.status, 200); assert.equal(state.value.ok, true, JSON.stringify(state));
-  assert.equal(state.value.backend, 'v1'); assert.equal(state.value.capabilities.activation, false); assert.equal(state.value.capabilities.migration, false);
+  assert.equal(state.value.backend, 'v2'); assert.equal(state.value.capabilities.activation, false); assert.equal(state.value.capabilities.migration, false);
   assert.equal(state.value.capabilities.adminResume, true);
   const denied = await request('status', null, false); assert.equal(denied.value.ok, false); assert.ok(denied.value.code && denied.value.hint);
   const conversations = await runtime.approvedConversations(); assert.ok(conversations.length >= 4);
@@ -200,7 +200,7 @@ try {
   assert.throws(() => runtime.modelRequest({ ...metadata, jobId: metadata.jobId, characterId: 'alpha', characterEpoch: 1, step: 'reply' }), error => error.code === 'COMPANION_ROUTE_MISMATCH');
   verified = false;
   const unknown = await runtime.approvedConversations(); assert.deepEqual(unknown.map(item => item.id), ['local-sharing']);
-  assert.equal(runtime.routing().backend, 'v1');
+  assert.equal(runtime.routing().backend, 'v2');
   const personPayload = { platform: 'qq', accountId: '3' }, originalId = randomUUID();
   const beforeResume = (await request('status')).value;
   const personBody = { action: 'create_person', payload: { ...personPayload, payloadDigest: digest(personPayload), preview: true }, expectedRevision: beforeResume.revision,

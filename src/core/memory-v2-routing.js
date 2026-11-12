@@ -16,7 +16,8 @@ function descriptor(file) {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096 || (process.platform !== 'win32' && (stat.mode & 0o077))) throw new Error('protected routing required');
   const value = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (!value || Array.isArray(value) || Object.keys(value).some(key => !['schemaVersion', 'backend', 'controlRevision', 'storeGeneration', 'minCompatibleReader'].includes(key))) throw new Error('invalid routing fields');
-  if (value.schemaVersion !== ROUTE_VERSION || !['v1', 'v2'].includes(value.backend) || !Number.isSafeInteger(value.controlRevision) || value.controlRevision < 0
+  if (value.backend !== 'v2') throw Object.assign(new Error('retired memory backend'), { retiredBackend: value.backend });
+  if (value.schemaVersion !== ROUTE_VERSION || !Number.isSafeInteger(value.controlRevision) || value.controlRevision < 0
     || !Number.isSafeInteger(value.minCompatibleReader) || value.minCompatibleReader < 1 || typeof value.storeGeneration !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.storeGeneration)) throw new Error('invalid routing');
   return value;
 }
@@ -28,31 +29,35 @@ export function readMemoryRouting({ stateDir } = {}) {
     if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error('protected routing directory required');
     const route = descriptor(file);
     if (route.minCompatibleReader > ROUTE_VERSION) return fail('MEMORY_READER_UNSUPPORTED', '当前程序不支持控制库要求的读取版本。', '升级到兼容版本后重试，不降级读取旧卡或会话。');
-    if (route.backend === 'v2' && !fs.existsSync(path.join(stateDir, 'memory-control.sqlite'))) return fail('MEMORY_CONTROL_UNAVAILABLE', 'V2路由仍生效，但当前控制库缺失。');
+    if (!fs.existsSync(path.join(stateDir, 'memory-control.sqlite'))) return fail('MEMORY_CONTROL_UNAVAILABLE', 'V2路由仍生效，但当前控制库缺失。');
     return { ok: true, backend: route.backend, descriptor: route };
   } catch (error) {
-    if (error.code === 'ENOENT' && !fs.existsSync(file) && !fs.existsSync(path.join(stateDir, 'memory-control.sqlite'))) return { ok: true, backend: 'v1', descriptor: null, source: 'legacy-default' };
+    if (error.retiredBackend === 'v1') return fail('MEMORY_BACKEND_RETIRED', '路由仍指向已移除的 V1 记忆后端。', '本版本只支持 V2；在有授权的会话里备份后删除 memory-v2/routing.json，重启宿主按 V2 重新初始化。');
+    if (error.code === 'ENOENT' && !fs.existsSync(file) && !fs.existsSync(path.join(stateDir, 'memory-control.sqlite'))) return { ok: true, backend: 'v2', descriptor: null, source: 'fresh-default' };
     return fail('MEMORY_ROUTING_INVALID', '持久记忆路由缺失、损坏或权限不正确。');
   }
 }
 
 /** Host-only publication from a successfully read current control snapshot. */
-export function writeMemoryRouting({ stateDir, status, allowDowngrade = false } = {}) {
+export function writeMemoryRouting({ stateDir, status } = {}) {
   if (typeof stateDir !== 'string' || !path.isAbsolute(stateDir) || status?.ok !== true) return fail('MEMORY_ROUTING_INVALID', 'Host尚未确认当前控制库，不能发布路由。');
   const dir = path.join(stateDir, 'memory-v2'), file = path.join(dir, 'routing.json');
   const route = { schemaVersion: ROUTE_VERSION, backend: status.activeBackend, controlRevision: status.revision,
     storeGeneration: status.storeGeneration, minCompatibleReader: status.minCompatibleReader ?? ROUTE_VERSION };
-  if (!['v1', 'v2'].includes(route.backend) || !Number.isSafeInteger(route.controlRevision) || route.controlRevision < 0
+  if (route.backend !== 'v2') return fail('MEMORY_BACKEND_RETIRED', '控制库仍指向已移除的 V1 记忆后端，拒绝发布路由。', '先在有授权的会话完成 V2 迁移（记忆生命周期），再重启宿主重新发布路由。');
+  if (!Number.isSafeInteger(route.controlRevision) || route.controlRevision < 0
     || !Number.isSafeInteger(route.minCompatibleReader) || route.minCompatibleReader < 1 || !/^[A-Za-z0-9_-]{1,128}$/.test(route.storeGeneration ?? '')) return fail('MEMORY_ROUTING_INVALID', 'Host控制快照的路由字段无效。');
   let fd, published = false;
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (fs.existsSync(file) || fs.lstatSync(dir).isSymbolicLink()) {
       if (fs.lstatSync(dir).isSymbolicLink()) return fail('MEMORY_ROUTING_INVALID', '路由目录不能是符号链接。');
-      const prior = descriptor(file);
-      if (route.controlRevision < prior.controlRevision) return fail('MEMORY_ROUTING_ROLLBACK', '当前控制修订落后于已发布路由，拒绝覆盖。');
-      if (prior.backend === 'v2' && route.backend === 'v1' && !allowDowngrade) return fail('MEMORY_ROUTING_ROLLBACK', 'V2路由不能在启动或故障时自动退回V1。', '先完成有授权的兼容回滚、会话清退与数据保全，再发布回滚路由。');
-      if (JSON.stringify(prior) === JSON.stringify(route)) return { ok: true, backend: route.backend, descriptor: route, unchanged: true };
+      let prior = null;
+      try { prior = descriptor(file); } catch (error) { if (error.retiredBackend !== 'v1') throw error; }
+      if (prior) {
+        if (route.controlRevision < prior.controlRevision) return fail('MEMORY_ROUTING_ROLLBACK', '当前控制修订落后于已发布路由，拒绝覆盖。');
+        if (JSON.stringify(prior) === JSON.stringify(route)) return { ok: true, backend: route.backend, descriptor: route, unchanged: true };
+      }
     }
     const temp = path.join(dir, `.routing-${randomUUID()}.tmp`), bytes = Buffer.from(JSON.stringify(route) + '\n');
     fd = fs.openSync(temp, 'wx', 0o600);

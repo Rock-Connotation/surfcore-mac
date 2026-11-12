@@ -68,7 +68,7 @@ try {
     const failed = await badMetadata.captureSource(source(50)); assert.equal(failed.sourceState, 'not_saved'); assert.equal(failed.code, 'MEMORY_SPOOL_METADATA_FAILED'); assert.ok(failed.hint); assert.notEqual(failed.acceptance, 'queued_durable');
   } finally { fs.renameSync = originalRename; }
   route = { ok: false, code: 'MEMORY_ROUTING_INVALID', error: 'Invalid', hint: 'Check control.' }; assert.equal((await bridge.validate('group:300')).code, 'MEMORY_ROUTING_INVALID');
-  route = { ok: true, backend: 'v1' }; assert.equal((await bridge.captureSource(source(6))).code, 'MEMORY_BACKEND_CHANGED'); assert.equal((await bridge.validate('group:300')).code, 'MEMORY_BACKEND_CHANGED');
-  const freshLegacy = createQQMemoryBridge({ stateDir: root, getCharacter: () => role, getRouting: () => route, client, prepareContext }); assert.equal((await freshLegacy.captureSource(source(6))).backend, 'v1'); assert.equal((await freshLegacy.validate('group:300')).backend, 'v1');
+  route = { ok: true, backend: 'v1' }; assert.equal((await bridge.captureSource(source(6))).code, 'MEMORY_BACKEND_RETIRED'); assert.equal((await bridge.validate('group:300')).code, 'MEMORY_BACKEND_RETIRED');
+  const freshLegacy = createQQMemoryBridge({ stateDir: root, getCharacter: () => role, getRouting: () => route, client, prepareContext }); assert.equal((await freshLegacy.captureSource(source(6))).code, 'MEMORY_BACKEND_RETIRED'); assert.equal((await freshLegacy.validate('group:300')).code, 'MEMORY_BACKEND_RETIRED');
   console.log('PASS QQ adapter: complete redacted sources, account/actor identities, full manifests, original-epoch send lease, unknown receipt, revocation and fail-closed routing');
 } finally { fs.rmSync(root, { recursive: true, force: true }); }

@@ -194,7 +194,7 @@ function identityContextLines() {
   ].filter(Boolean)
 }
 
-/** Same Bili persona/memory composition, bound to one role revision. */
+/** Same Bili persona/memory composition, bound to one role revision. V2-only：本入口不再组装旧记忆上下文。 */
 export function biliContextForRound(request) {
   const routing = readMemoryRouting({ stateDir: QQ_STATE_DIR })
   if (!routing.ok) return {
@@ -202,22 +202,17 @@ export function biliContextForRound(request) {
     error: '当前单轮入口不能使用旧记忆上下文。',
     hint: '打开记忆页核对当前V2来源审批和受管理任务；此入口不会降级读取V1记忆。', text: '', sections: [],
   }
-  if (routing.backend === 'v2' || request?.memoryBackend === 'v2') {
-    if (!request?.v2 && !request?.biliMemoryHost && !request?.memoryContext && !request?.preparedMemory) {
-      return {
-        ok: false, code: 'BILI_V2_MANAGED_ROUND_REQUIRED',
-        error: '当前单轮入口不能使用旧记忆上下文。',
-        hint: '打开记忆页核对当前V2来源审批和受管理任务；此入口不会降级读取V1记忆。', text: '', sections: [],
-      }
+  if (!request?.v2 && !request?.biliMemoryHost && !request?.memoryContext && !request?.preparedMemory) {
+    return {
+      ok: false, code: 'BILI_V2_MANAGED_ROUND_REQUIRED',
+      error: '当前单轮入口不能使用旧记忆上下文。',
+      hint: '打开记忆页核对当前V2来源审批和受管理任务；此入口不会降级读取V1记忆。', text: '', sections: [],
     }
-    const includeMemory = request?.includeMemory ?? Boolean(request?.memoryContext && request?.preparedMemory);
-    const checked = buildCharacterContext({ ...request, scene: 'bili', audience: { channel: 'bili', ...(request?.audience || {}) }, memoryBackend: 'v2', includeMemory })
-    if (!checked.ok) return checked
-    return { ...checked, text: checked.text || (Array.isArray(checked.sections) ? checked.sections.map(s => s.text).join('\n\n') : '') }
   }
-  const checked = buildCharacterContext({ ...request, scene: 'bili', audience: { channel: 'bili' } })
+  const includeMemory = request?.includeMemory ?? Boolean(request?.memoryContext && request?.preparedMemory);
+  const checked = buildCharacterContext({ ...request, scene: 'bili', audience: { channel: 'bili', ...(request?.audience || {}) }, memoryBackend: 'v2', includeMemory })
   if (!checked.ok) return checked
-  return { ...checked, text: identityContextLines().join('\n\n') }
+  return { ...checked, text: checked.text || (Array.isArray(checked.sections) ? checked.sections.map(s => s.text).join('\n\n') : '') }
 }
 
 /** 今天已经搭了几条话（读账本，给唤醒提示看进度） */
@@ -548,7 +543,7 @@ export function startScheduler(ctx, opts) {
   function memoryRouting() {
     let route
     try { route = memoryV2?.getRouting ? memoryV2.getRouting() : readMemoryRouting({ stateDir: QQ_STATE_DIR }) } catch { route = { ok: false } }
-    if (!route?.ok || !['v1', 'v2'].includes(route.backend)) {
+    if (!route?.ok || route.backend !== 'v2') {
       const error = Object.assign(new Error('B站记忆路由不可用。'), { ok: false, code: route?.code || 'BILI_V2_ROUTING_UNAVAILABLE', error: 'B站记忆路由不可用。', hint: route?.hint || '恢复 Host 记忆路由后重试；不会切回旧上下文。' })
       onMemoryBlocked(error)
       throw error

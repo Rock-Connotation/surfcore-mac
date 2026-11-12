@@ -35,7 +35,7 @@ async function admin(f) { return good(await f.service.host.captureAdminContext(b
 async function context(f, input = base) { return good(await f.service.captureContext(input)).context; }
 async function action(f, value, id) { const ctx = await admin(f); return f.service.applyMemoryAction(ctx, value, ctx.controlRevision, id); }
 async function setup(f) {
-  const status = good(await f.service.initialize()); assert.equal(status.activeBackend, 'v1'); assert.equal(status.capabilities.activation, false); assert.deepEqual(status.pragmas, { journal_mode: 'delete', synchronous: 3, foreign_keys: 1 });
+  const status = good(await f.service.initialize()); assert.equal(status.activeBackend, 'v2'); assert.equal(status.capabilities.activation, false); assert.deepEqual(status.pragmas, { journal_mode: 'delete', synchronous: 3, foreign_keys: 1 });
   good(await action(f, { type: 'configure_policy', policy: privatePolicy }, 'setup-private'));
   good(await action(f, { type: 'configure_policy', policy: publicPolicy }, 'setup-public'));
   good(await action(f, { type: 'enable_shadow', enabled: true }, 'setup-shadow'));
@@ -55,7 +55,7 @@ async function proposal(f, ctx, refs, cited, values = {}) {
 }
 try {
   const f = instance('main');
-  await test('real worker, independent databases, default V1, explicit policy and shadow capabilities', async () => {
+  await test('real worker, independent databases, default V2, explicit policy and shadow capabilities', async () => {
     good(await f.service.initialize());
     bad(await f.service.captureContext(base), 'MEMORY_POLICY_DENIED');
     bad(await f.service.captureContext({ ...base, purpose: 'admin' }), 'MEMORY_ADMIN_REQUIRED');
@@ -228,7 +228,7 @@ try {
     await f.worker().terminate(); bad(await f.service.validateContext(ctx, prepared), 'MEMORY_CONTEXT_UNTRUSTED');
     good(await f.service.initialize()); bad(await f.service.searchMemory(ctx, '小明'), 'MEMORY_CONTEXT_UNTRUSTED');
     const next = await context(f, publicBase); assert.ok(good(await f.service.searchMemory(next, '小明')).records.length > 0);
-    assert.equal(good(await f.service.getStatus()).activeBackend, 'v1');
+    assert.equal(good(await f.service.getStatus()).activeBackend, 'v2');
   });
   await test('control commit without view acknowledgment blocks admission and remains recoverable', async () => {
     const blocked = instance('blocked-control', { applyControlsAtRevision: 4 }); await setup(blocked);

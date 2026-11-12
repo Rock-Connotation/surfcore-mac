@@ -31,7 +31,7 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
     if (faults[name] && n < faults[name]) { faultCounts.set(name, n + 1); throw new Error(`fixture:${name}`); }
   }
   control.exec(`CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, policyRevision INTEGER NOT NULL, bindingRevision INTEGER NOT NULL, deletionRevision INTEGER NOT NULL, activeBackend TEXT NOT NULL, shadowEnabled INTEGER NOT NULL);
-    INSERT OR IGNORE INTO state VALUES(1,0,0,0,0,'v1',0);
+    INSERT OR IGNORE INTO state VALUES(1,0,0,0,0,'v2',0);
     CREATE TABLE IF NOT EXISTS policies(policyId TEXT PRIMARY KEY,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS privacy_actions(operationId TEXT PRIMARY KEY,requestDigest TEXT NOT NULL,revision INTEGER NOT NULL UNIQUE,characterId TEXT NOT NULL,action TEXT NOT NULL,result TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS root_controls(characterId TEXT NOT NULL,rootId TEXT NOT NULL,status TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(characterId,rootId));`);
@@ -423,7 +423,7 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
       correction={type:'memory',id:row.memoryId,revision:row.revision,payloadDigest:row.payloadDigest};
     }
     const revision = s.revision + 1;
-    const result = receipt(operationId, { controlRevision: revision, accessState: 'access_revoked', sourceState: 'committed', applied: false, activeBackend: 'v1', ...(correction?{correctionState:'persisted-replacement-linked',replacement:correction}:{}) });
+    const result = receipt(operationId, { controlRevision: revision, accessState: 'access_revoked', sourceState: 'committed', applied: false, activeBackend: 'v2', ...(correction?{correctionState:'persisted-replacement-linked',replacement:correction}:{}) });
     const committed = transaction(control, operationId, () => {
       if (configured) control.prepare('INSERT INTO policies VALUES(?,?) ON CONFLICT(policyId) DO UPDATE SET payload=excluded.payload').run(configured.policyId, canonical(configured));
       if (action.type === 'revoke_policy') { const p = policy(action.policyId); control.prepare('UPDATE policies SET payload=? WHERE policyId=?').run(canonical({ ...p, approved: false }), action.policyId); }

@@ -3767,8 +3767,6 @@ async function main() {
 
   const reverse = new Map(); // sessionId -> conv key
   for (const [key, sessionId] of Object.entries(state.sessions)) reverse.set(sessionId, key);
-  // 新版 DSH 事件流需要显式 follow；启动时为已持久化的 QQ 会话补上。
-  if (memoryV2Route().ok && memoryV2Route().backend === 'v1') for (const [key, sessionId] of Object.entries(state.sessions)) if (!state.memoryV2Sessions[key] && !state.memoryV2Retirements[sessionId]) api.events.follow(sessionId);
   const sessionPromises = new Map(); // key -> create promise（防并发重复创建）
   const promptQueues = new Map(); // key -> { queue: [], running: false }：每个 QQ 会话串行投递 DSH prompt，保证 turn 顺序
 

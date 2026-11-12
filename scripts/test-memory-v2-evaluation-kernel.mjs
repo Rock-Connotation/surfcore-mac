@@ -122,7 +122,7 @@ export async function runKernelEvaluation() {
   let statusAfterIngest, statusAfterReopen;
   const ingestTimes = [], rows = [], canaryProbes = [], noRelevance = [];
   try {
-    const initial = good(await service.initialize()); assert.equal(initial.activeBackend, 'v1');
+    const initial = good(await service.initialize()); assert.equal(initial.activeBackend, 'v2');
     for (const policy of policyFixture.policies) {
       const ctx = await admin();
       const { policyId: id, approved, audiences, processingGrants } = policy;
@@ -160,7 +160,7 @@ export async function runKernelEvaluation() {
     }
     statusAfterReopen = good(await service.getStatus());
     assert.equal(statusAfterReopen.characters.reduce((n, role) => n + role.eventCount, 0), 10000);
-    assert.equal(statusAfterReopen.activeBackend, 'v1');
+    assert.equal(statusAfterReopen.activeBackend, 'v2');
     const warm = data.queries[0];
     for (let i = 0; i < 3; i++) { const ctx = await queryContext(warm); good(await service.searchMemory(ctx, warm.text, { limit: 8 })); good(await service.prepareMemoryContext(ctx, warm.text, { memory: 1800, total: 6000 })); }
     const searchTimes = [], prepareTimes = [], captureTimes = [], validationTimes = [];

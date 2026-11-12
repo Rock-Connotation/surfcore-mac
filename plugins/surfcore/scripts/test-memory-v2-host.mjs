@@ -22,7 +22,7 @@ function fake() {
   const fixture = { current: () => current, setRole: (value) => { current = value; }, bump: () => revision++, deny: () => { allowed = false; }, clock: () => time, advance: () => { time += 40_000; }, bound, calls };
   const valid = (ctx) => !contexts.has(ctx) ? { ok: false, code: 'MEMORY_CONTEXT_UNTRUSTED' } : contexts.get(ctx) !== revision ? { ok: false, code: 'MEMORY_CONTEXT_STALE' } : { ok: true };
   fixture.service = {
-    getStatus: async () => ({ ok: true, activeBackend: 'v1', shadowEnabled: 1 }),
+    getStatus: async () => ({ ok: true, activeBackend: 'v2', shadowEnabled: 1 }),
     host: {
       async resolveAudience(facts) { calls.push(['resolve', facts]); await fixture.onResolve?.(); return allowed ? { ok: true, ...facts, audiencePolicyId: 'private', processingGrantId: 'grant' } : { ok: false, code: 'MEMORY_POLICY_DENIED' }; },
       async bindInputManifest(ctx, refs) { good(valid(ctx)); bound.push(structuredClone(refs)); if (refs.some((r) => r.id === 'forbidden')) return { ok: false, code: 'MEMORY_EVIDENCE_DENIED' }; return { ok: true }; },
@@ -139,7 +139,7 @@ await test('loopback HTTP uses channel-scoped ephemeral credentials and denies o
     bad(await raw({ action: 'withNetworkAdmission', handle: 'forged', dispatch: 'function' }), 'MEMORY_FIELD_FORBIDDEN');
     for (const key of ['dispatch', 'dispatchFunction', 'function']) bad(await raw({ action: 'capture', conversationKey: 'login:private:a', [key]: 'call' }), 'MEMORY_FIELD_FORBIDDEN');
     const client = createMemoryClient({ discoveryFile: api.discoveryFiles['qq-bridge'] });
-    assert.equal(good(await client.status()).activeBackend, 'v1');
+    assert.equal(good(await client.status()).activeBackend, 'v2');
     const request = good(await client.capture('login:private:a')), prepared = good(await client.prepare(request.handle, 'current'));
     good(await client.validate(request.handle, prepared.preparedHandle)); good(await client.ingest(request.handle, [], 'op-one')); good(await client.receipt(request.handle, 'op-one'));
     const local = createMemoryClient({ discoveryFile: api.discoveryFiles['local-search'], scope: 'local-search' });

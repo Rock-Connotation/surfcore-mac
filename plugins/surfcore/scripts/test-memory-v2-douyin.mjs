@@ -235,10 +235,10 @@ await test('production POST validates exact engine lease before JSON and release
   const controller = createCompanionController({ engine: facade, getCharacter: f.role, readiness: async () => ({ ok: true }) });
   const result = await controllerResponse(controller, f.context, 'start'); assert.equal(result.status, 409); bad(result.body); assert.equal(released, 1); assert.doesNotMatch(result.text, /\/video\/123|\/video\/456/);
 }));
-await test('legacy factory remains V1 by default while explicit V2 requires prepared input', async () => {
+await test('fresh factory is V2 by default while V2 requires prepared input', async () => {
   current({ id: 'alpha', epoch: 1 }); const dir = path.join(root, 'fresh-v1');
   const memory = createCompanionMemory({ stateDir: dir, getCharacter: () => ({ id: 'alpha', epoch: 1 }) });
-  good(memory.routing()); assert.equal(memory.routing().backend, 'v1');
+  good(memory.routing()); assert.equal(memory.routing().backend, 'v2');
   const v2 = createCompanionMemory({ getCharacter: () => ({ id: 'alpha', epoch: 1 }), memoryV2: { getRouting: () => ({ ok: true, backend: 'v2' }) } });
   bad(v2.buildContext({ characterId: 'alpha', characterEpoch: 1 }), 'MEMORY_PREPARATION_REQUIRED');
 });

@@ -68,8 +68,8 @@ export function createMemoryHost({ memoryService, getCharacter, resolveIdentity 
   async function status() {
     try {
       const result = await memoryService.getStatus();
-      return { ok: true, activeBackend: result?.activeBackend ?? 'v1', shadow: result?.ok === false ? denied(result) : { ok: true, enabled: result?.shadowEnabled === 1 || result?.shadowEnabled === true, runtimeVerified: false } };
-    } catch { return { ok: true, activeBackend: 'v1', shadow: fail('MEMORY_WORKER_UNAVAILABLE', 'The shadow memory service is unavailable.', 'Keep V1 active and check the isolated memory service status.') }; }
+      return { ok: true, activeBackend: result?.activeBackend ?? 'v2', shadow: result?.ok === false ? denied(result) : { ok: true, enabled: result?.shadowEnabled === 1 || result?.shadowEnabled === true, runtimeVerified: false } };
+    } catch { return { ok: true, activeBackend: 'v2', shadow: fail('MEMORY_WORKER_UNAVAILABLE', 'The shadow memory service is unavailable.', 'Keep the current control state and check the isolated memory service status.') }; }
   }
   function createAdapter({ channel, principal, purpose = 'conversation', canBindInput = false, canSubmitSourceFacts = false } = {}) {
     if (!CHANNELS.has(channel) || !['conversation', 'organize'].includes(purpose) || !object(principal) || (canSubmitSourceFacts && channel !== 'qq')) throw new TypeError('A trusted channel, principal and ordinary purpose are required.');
@@ -129,7 +129,7 @@ export function createMemoryHost({ memoryService, getCharacter, resolveIdentity 
       let value, signal;
       const reject = (error) => {
         const result = denied(error);
-        if (error?.code === 'MEMORY_NETWORK_ADMISSION_UNSUPPORTED') result.hint = 'Do not dispatch. Keep V1 active and verify the installed Host admission hook before capturing a new request.';
+        if (error?.code === 'MEMORY_NETWORK_ADMISSION_UNSUPPORTED') result.hint = 'Do not dispatch. Verify the installed Host admission hook before capturing a new request.';
         return Object.assign(new Error(result.error), result);
       };
       try {
@@ -138,7 +138,7 @@ export function createMemoryHost({ memoryService, getCharacter, resolveIdentity 
         if (!exact(options, ['signal'])) throw fail('MEMORY_ADMISSION_SIGNAL_INVALID', 'Admission accepts only an optional abort signal.');
         signal = options.signal;
         if (signal && (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) throw fail('MEMORY_ADMISSION_SIGNAL_INVALID', 'Use an actual abort signal for cancellable admission.');
-        if (typeof memoryService.host?.withNetworkAdmission !== 'function') throw fail('MEMORY_NETWORK_ADMISSION_UNSUPPORTED', 'The private kernel network admission hook is unavailable.', 'Do not dispatch. Keep V1 active and verify the installed Host admission hook before capturing a new request.');
+        if (typeof memoryService.host?.withNetworkAdmission !== 'function') throw fail('MEMORY_NETWORK_ADMISSION_UNSUPPORTED', 'The private kernel network admission hook is unavailable.', 'Do not dispatch. Verify the installed Host admission hook before capturing a new request.');
         if (!signal) await value.pending;
         else await new Promise((resolve, rejectWait) => {
           const abort = () => { signal.removeEventListener('abort', abort); rejectWait(fail('MEMORY_ADMISSION_ABORTED', 'The pending actual-input wait was cancelled.', 'Keep this request cancelled; no network call was started.')); };

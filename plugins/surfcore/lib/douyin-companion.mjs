@@ -366,7 +366,7 @@ export function createDouyinCompanion({
     try {
       const routing = v2.routing();
       check(routing.ok, routing.code, routing.error, routing.hint);
-      if (routing.backend === 'v2') session = await v2.capture(context, 'douyin:homepage-recommendation');
+      session = await v2.capture(context, 'douyin:homepage-recommendation');
       const input = { id: entry.id, url: entry.url, title: entry.title, durationMs: entry.durationMs, mediaSource: entry.mediaSource, mediaUserAgent: entry.mediaUserAgent };
       job.phase = 'perceive'; saveJob(localLedger, job);
       let perceived;
@@ -430,7 +430,7 @@ export function createDouyinCompanion({
       const beforeSend = async ({ phase } = {}) => {
         assertRole(job, context);
         if (session) await v2.validate(session, phase !== 'completion');
-        else { const route = v2.routing(); check(route.ok && route.backend === 'v1', route.code || 'MEMORY_ROUTING_CHANGED', route.error || '活动期间记忆路由已变化。', route.hint || '以当前可信路由重新开始。'); }
+        else { const route = v2.routing(); check(route.ok, route.code || 'MEMORY_ROUTING_CHANGED', route.error || '活动期间记忆路由已变化。', route.hint || '以当前可信路由重新开始。'); }
         return { ok: true };
       };
       await beforeSend();
@@ -552,7 +552,7 @@ export function createDouyinCompanion({
       const route = v2.routing();
       check(route.ok, route.code, route.error, route.hint);
       let built;
-      try { built = route.backend === 'v2' ? { ok: true, text: '', memoryText: '', personaText: '' } : await guarded(job, context, () => buildContext(context)); }
+      try { built = { ok: true, text: '', memoryText: '', personaText: '' }; }
       catch (error) { if (runtimes.get(job.jobId).controller.signal.aborted) throw error; throw problem('DOUYIN_CONTEXT_FAILED', '无法读取当前角色的记忆上下文。', '检查当前角色和Host记忆服务后重新手动验收。'); }
       check(built?.ok === true && typeof built.text === 'string', safeCode(built?.code, 'DOUYIN_CONTEXT_FAILED'), safeDisplayText(built?.error, 240) || '无法读取当前角色的记忆上下文。', safeDisplayText(built?.hint, 300) || '检查当前角色和Host记忆服务后重新手动验收。');
       const trustedPersona = contextSection(built, 'persona') ?? (typeof built.personaText === 'string' ? built.personaText : '');
@@ -680,11 +680,10 @@ export function createDouyinCompanion({
       const role = requireCurrentRole(context), route = v2.routing();
       check(route.ok, route.code, route.error, route.hint);
       const lease = responseLeases.get(value);
-      if (route.backend === 'v1' && !lease) return { ok: true };
-      check(route.backend === 'v2' && lease && lease.role.id === role.id && lease.role.epoch === role.epoch && lease.digest === responseDigest(value),
+      check(lease && lease.role.id === role.id && lease.role.epoch === role.epoch && lease.digest === responseDigest(value),
         'MEMORY_RESPONSE_UNTRUSTED', '本次日记响应没有完整的当前授权凭据。', '刷新当前角色日记；不要复用或改写旧响应。');
       await v2.validate(lease.session);
-      check(v2.routing().backend === 'v2', 'MEMORY_ROUTING_CHANGED', '响应期间记忆后端已变化。', '以当前可信路由刷新日记。');
+      const latestRoute = v2.routing(); check(latestRoute.ok, 'MEMORY_ROUTING_CHANGED', '响应期间记忆后端已变化。', '以当前可信路由刷新日记。');
       requireCurrentRole(context);
       check(lease.digest === responseDigest(value), 'MEMORY_RESPONSE_UNTRUSTED', '等待期间日记响应已变化。', '重新读取日记后再展示。');
       return { ok: true };
@@ -694,7 +693,7 @@ export function createDouyinCompanion({
     let session;
     try {
       const route = v2.routing(); check(route.ok, route.code, route.error, route.hint);
-      if (route.backend === 'v1' || value?.ok !== true) return value;
+      if (value?.ok !== true) return value;
       const role = requireCurrentRole(context), stamp = contextStamp(context, role);
       const safeJob = job => {
         if (!job) return null;
