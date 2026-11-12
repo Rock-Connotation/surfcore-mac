@@ -253,6 +253,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     isConversationBusyV2, v2TurnStartAt, turnLeaseNoted, TURN_BUSY_LEASE_MS,
     settingFromDshNamespace, selfIdentityTextV2, buildWakeReminderPromptV2,
     getMode() { return currentMode; },
+    getModeStatus() { return modeStatus; },
+    getModeBlocked() { return modeBlocked; },
+    clearModeBlock() { modeBlocked = null; modeStatus = { state: 'default', source: 'none', requested: null }; },
     setSnowlumaHealth(patch = {}) { Object.assign(snowlumaHealth, patch); },
     setSelfIdentity(display, id) {
       selfDisplayName = String(display ?? '');
@@ -269,7 +272,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     voiceCfg, voiceTriggerBlock, voiceMentionAt, voiceOwnerAt, voiceLastSentAt, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText, readConfigObject, atomicWriteJson,
     voiceBudgetCheck, sendVoiceTransport, sendVoiceV2, sendVoiceForV2, sendNativeQQReply, getNativeQQCapabilities, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
     taskLedger, taskHarness,
-    setMode(value) { currentMode = value; },
+    setMode(value) { currentMode = value; modeBlocked = null; modeStatus = { state: 'valid', source: 'fixture', requested: value }; },
     getModelStatus() { return modelStatusState; },
     setReady(value) { dshReady = value; },
     setPresets(value) { dshPresetIds = value; dshDefaultPreset = 'standard'; },

@@ -221,10 +221,30 @@ const MODE_INPUT_ALIASES = Object.freeze({
   simulation: 'reserved2',
   'closed-agent': 'closed-agent'
 });
+/**
+ * 本版本不可用的模式（2026-11-12 R03）。
+ *
+ * `closed-agent` 的含义是「owner 私聊获得完整本地工具会话」。V2-only 之后 QQ 回复只走
+ * 受限 NativeOwner（精确 preset、无通用本地工具），因此这个模式**无法**在不放宽工具权限
+ * 的前提下交付。保留入口却保证失败才是缺陷；这里显式禁用并给出能力差异说明。
+ *
+ * owner 的远程任务能力由独立 Task Harness 承接（`任务：` / `任务状态` / `取消任务`），
+ * 它有自己的 owner 准入、路径/命令拦截、取消与回执，不依赖本模式。
+ */
+const UNAVAILABLE_MODES = Object.freeze({
+  'closed-agent': 'closed-agent（完整本地工具会话）在本版本不可用：V2 QQ 回复只允许受限 NativeOwner，不会给社交会话挂完整工具。owner 远程任务请用「任务：…」入口（独立 Task Harness 准入）。请选择 chat 或 simulation。',
+});
 /** 已退役的模式名 → 给用户的迁移提示（fail-closed 时日志要说清下一步）。 */
 const RETIRED_MODE_NAMES = Object.freeze({
   reserved: '一代仿真模式（reserved）已退役：请在 DSH 设置或 state/mode.json 里改为 "simulation"（即二代 reserved2）',
 });
+/**
+ * V2 明确默认模式（两个来源都确实未配置时）。这是**契约**，不是「上一次的值」：
+ * 未配置 ≠ 退役值 ≠ 读取失败，三者必须走不同分支（R07）。
+ */
+const DEFAULT_MODE = 'chat';
+/** 读取失败 / 非法值的可见阻断；权威来源明确退役时也落这里，绝不静默沿用上一次模式。 */
+const modeBlock = (code, error, hint, source) => ({ ok: false, code, error, hint, source });
 /** 内部合法模式集合（由别名表派生，避免"两份名单各自漂移"）。 */
 const VALID_MODES = Object.freeze([...new Set(Object.values(MODE_INPUT_ALIASES))]);
 
@@ -3932,8 +3952,12 @@ async function main() {
   let dshReady = false;
   let dshCheckStarted = false;
   let snowlumaWatchStarted = false; // SnowLuma 上游健康探测只启动一次（见 startSnowlumaWatch）
-  let currentMode = 'chat'; // chat | closed-agent | reserved2（仿真模式，由 DSH settings / state/mode.json 驱动；一代 reserved 已随 V1 退役）
+  let currentMode = DEFAULT_MODE; // chat | closed-agent | reserved2（仿真模式，由 DSH settings / state/mode.json 驱动；一代 reserved 已随 V1 退役）
   let lastMode = currentMode;
+  // 模式来源状态（R07）：未配置 / 有效 / 退役 / 非法 / 读取失败必须可区分，
+  // 且权威来源明确退役、非法或读取失败时进入可见 blocked，绝不沿用上一次模式。
+  let modeStatus = { state: 'default', source: 'none', requested: null };
+  let modeBlocked = null;
   // closed-agent 模式使用的 DSH agent preset：留空表示「用 DSH 自己声明的默认 preset」。
   // 旧版本这里硬编码 'router-standard'，但 DSH 0.1.5 已移除该 preset，硬编码会导致
   // 创建出的会话挂不上 preset，进而被 DSH 套上 standard（含本地工具）。
@@ -3964,6 +3988,31 @@ async function main() {
     setTimeout(() => { flushQueue(); }, 3000);
   };
 
+  /** 只读本地 mode.json，并显式区分「文件不存在 / 字段不存在 / 有效 / 退役 / 非法 / 读取失败」。 */
+  function readLocalMode() {
+    const file = path.join(STATE_DIR, 'mode.json');
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf8'); }
+    catch (error) { return error?.code === 'ENOENT' ? { state: 'absent' } : { state: 'unreadable', code: error?.code ?? 'IO' }; }
+    let value;
+    try { value = JSON.parse(raw); } catch { return { state: 'invalid', requested: '(invalid json)' }; }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return { state: 'invalid', requested: '(invalid shape)' };
+    if (!Object.prototype.hasOwnProperty.call(value, 'mode')) return { state: 'absent', closedAgentPreset: value.closedAgentPreset };
+    const requested = value.mode;
+    if (retiredModeHint(requested)) return { state: 'retired', requested, closedAgentPreset: value.closedAgentPreset };
+    const normalized = normalizeModeInput(requested);
+    if (!normalized) return { state: 'invalid', requested, closedAgentPreset: value.closedAgentPreset };
+    return { state: 'valid', mode: normalized, requested, closedAgentPreset: value.closedAgentPreset };
+  }
+  function applyModeSource(state, mode, requested, source, hint) {
+    modeStatus = { state, source, requested: requested ?? null };
+    if (state === 'valid' || state === 'default') { currentMode = mode; modeBlocked = null; return; }
+    modeBlocked = { state, source, requested: requested ?? null, code: state === 'retired' ? 'QQ_MODE_RETIRED' : state === 'unavailable' ? 'QQ_MODE_UNAVAILABLE' : state === 'unreadable' ? 'QQ_MODE_UNREADABLE' : 'QQ_MODE_INVALID',
+      error: state === 'retired' ? `QQ 模式配置指向已退役的值「${String(requested).slice(0, 24)}」。` : state === 'unavailable' ? `QQ 模式「${String(requested).slice(0, 24)}」在本版本不可用。` : state === 'unreadable' ? '无法读取 QQ 模式配置。' : `QQ 模式配置无效（${String(requested ?? '').slice(0, 24) || '空值'}）。`,
+      hint: hint || '在 DSH 设置或 state/mode.json 里显式选择一个有效模式（chat / simulation / closed-agent）；阻断期间不处理新任务，也不会沿用上一次模式。' };
+    log(`⛔ ${modeBlocked.error} 已阻断新任务；${modeBlocked.hint}`);
+  }
+
   // 从 DSH settings 读取桥接模式；命名空间未注册时回退本地 state/mode.json
   async function refreshMode() {
     try {
@@ -3980,11 +4029,17 @@ async function main() {
       // 读取必须 user 层优先：DSH 0.2.0-rc.2 写完 settings 后同进程内 value 不更新，
       // 只读 value 会让控制台切的模式被 5 秒轮询改回去（issue #22）。
       const fromDsh = normalizeModeInput(rawModeFromDsh);
-      if (!fromDsh) {
-        const hint = retiredModeHint(rawModeFromDsh);
-        if (hint) log(`⚠️ ${hint}（已忽略该值，保持当前模式 ${currentMode}）`);
+      if (rawModeFromDsh !== undefined && rawModeFromDsh !== null && rawModeFromDsh !== '' && !fromDsh) {
+        // 权威来源（DSH settings）明确给了退役/非法值：阻断，不继承 chat，也不被本地值掩盖。
+        applyModeSource(retiredModeHint(rawModeFromDsh) ? 'retired' : 'invalid', null, rawModeFromDsh, 'dsh', retiredModeHint(rawModeFromDsh));
+        return;
+      }
+      if (fromDsh && UNAVAILABLE_MODES[fromDsh]) {
+        applyModeSource('unavailable', null, fromDsh, 'dsh', UNAVAILABLE_MODES[fromDsh]);
+        return;
       }
       if (fromDsh) {
+        applyModeSource('valid', fromDsh, rawModeFromDsh, 'dsh');
         currentMode = fromDsh;
         // DSH 设置页也可配置管理员 QQ；**留空表示不覆盖 config.json**
         // （见 plugins/qq-mode-console 的 schema 描述）。这里必须显式判断空串：
@@ -4012,17 +4067,19 @@ async function main() {
         }
         return;
       }
-    } catch {}
-    const local = readJsonSafe(path.join(STATE_DIR, 'mode.json'), null);
-    const fromLocal = local ? normalizeModeInput(local.mode) : null;
-    if (!fromLocal) {
-      const hint = retiredModeHint(local?.mode);
-      if (hint) log(`⚠️ ${hint}（已忽略该值，保持当前模式 ${currentMode}）`);
+    } catch (error) {
+      // DSH 设置读取失败本身不等于配置损坏：继续读本地兜底，但记录来源。
+      modeStatus = { ...modeStatus, dshReadFailed: error?.code ?? 'SETTINGS_DESCRIBE_FAILED' };
     }
-    if (fromLocal) currentMode = fromLocal;
-    if (typeof local?.closedAgentPreset === 'string' && local.closedAgentPreset) {
-      closedAgentPreset = local.closedAgentPreset;
-    }
+    const local = readLocalMode();
+    if (typeof local.closedAgentPreset === 'string') closedAgentPreset = local.closedAgentPreset;
+    if (local.state === 'valid' && UNAVAILABLE_MODES[local.mode]) { applyModeSource('unavailable', null, local.mode, 'local', UNAVAILABLE_MODES[local.mode]); return; }
+    if (local.state === 'retired') { applyModeSource('retired', null, local.requested, 'local', retiredModeHint(local.requested)); return; }
+    if (local.state === 'invalid') { applyModeSource('invalid', null, local.requested, 'local'); return; }
+    if (local.state === 'unreadable') { applyModeSource('unreadable', null, null, 'local'); return; }
+    if (local.state === 'valid') { applyModeSource('valid', local.mode, local.requested, 'local'); return; }
+    // 两个来源都确实未配置：按明确 V2 默认契约处理，而不是沿用上一次的模式。
+    applyModeSource('default', DEFAULT_MODE, null, 'none');
   }
 
   /** 拉取 DSH 当前可用的 agent preset 清单（供控制台下拉与 closed-agent 兜底使用）。 */
@@ -5258,6 +5315,8 @@ async function main() {
           sendJson({
             memoryV2,
             mode: currentMode,
+            modeStatus,
+            ...(modeBlocked ? { modeBlocked } : {}),
             root: ROOT,
             dshBaseUrl: cfg.dsh.baseUrl,
             closedAgentPreset,
@@ -5368,6 +5427,10 @@ async function main() {
           const body = await readBody();
           // 规范名与历史名都接受，落盘的始终是内部拼写（见 MODE_INPUT_ALIASES）。
           const requestedMode = normalizeModeInput(body.mode);
+          if (requestedMode && UNAVAILABLE_MODES[requestedMode]) {
+            sendJson({ ok: false, code: 'QQ_MODE_UNAVAILABLE', error: `模式「${requestedMode}」在本版本不可用。`, hint: UNAVAILABLE_MODES[requestedMode] }, 409);
+            return;
+          }
           if (!requestedMode) {
             sendJson({ ok: false, code: 'MODE_INVALID', error: `mode 必须是 ${VALID_MODES.join(' / ')}（simulation 为 reserved2 的规范名）${retiredModeHint(String(body.mode ?? '')) ? `；${retiredModeHint(String(body.mode ?? ''))}` : ''}`, hint: '控制台模式按钮或 DSH 设置页选择一个有效模式' }, 400);
             return;
@@ -16137,6 +16200,12 @@ async function main() {
     const transferReceivedAt = Date.now();
     // 群画像：成员数缓存用于小群/大群分层；失败不影响消息处理。
     if (kind === 'group') void ensureGroupMeta(id);
+    if (modeBlocked) {
+      // 模式配置退役/非法/读取失败：可见阻断，不继承 chat、不被低优先级值掩盖（R07）。
+      appendActivity(`${key} [模式阻断] ${modeBlocked.code}：${modeBlocked.error}`);
+      logThrottled(`modeblock:${key}`, 60_000, `[模式阻断] ${key} ${modeBlocked.code}：${modeBlocked.error} ${modeBlocked.hint}`);
+      return;
+    }
     if (!modeAllowed(key, kind, id, cfg, currentMode)) {
       logThrottled(`unauth:${key}`, 10 * 60_000, `忽略未授权会话 ${key}（当前模式 ${currentMode}，来自 ${event.user_id}；同类日志 10 分钟内只记一次）`);
       return;

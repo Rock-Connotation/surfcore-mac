@@ -7,6 +7,8 @@
 //       无起始时间的残留 collector 不再判忙；collector 保留，迟到回复照常 flush。
 //   #29 被 @ 了不理人 —— 机器人昵称/QQ 号必须写进唤醒 prompt（否则 agent 把 @自己 当 @别人）。
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
 let failures = 0;
@@ -117,6 +119,64 @@ await test('#29 唤醒 prompt 必须写明机器人自己的昵称与 QQ 号', a
     h.setSelfIdentity('', '');
     assert.equal(h.selfIdentityTextV2(), '', '身份未知时不注入空行（不能写「你的昵称是（）」）');
     assert.doesNotMatch(h.buildWakePromptV2(KEY, 'timeout'), /【你的身份】/);
+  } finally { await h.close(); }
+});
+
+
+// R07（V1 退役）：QQ 模式来源必须区分「未配置 / 有效 / 退役 / 非法 / 读取失败 / 不可用」，
+// 权威退役值不得继承 chat、不得被本地低优先级值掩盖。
+await test('R07 DSH 设置里写 retired reserved 必须阻断新任务', async () => {
+  const h = await bridgeHarness();
+  try {
+    h.setMode('reserved2');
+    h.api.settings.describe = async () => ({ result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'reserved' }, user: {} }] } } });
+    await h.refreshMode();
+    const blocked = h.getModeBlocked();
+    assert.ok(blocked, '权威来源的退役值必须产生可见 blocked');
+    assert.equal(blocked.code, 'QQ_MODE_RETIRED'); assert.ok(blocked.error && blocked.hint);
+    assert.equal(h.getMode(), 'reserved2', '不得继承 chat 或悄悄改值');
+    const status = h.getModeStatus();
+    assert.equal(status.state, 'retired');
+  } finally { await h.close(); }
+});
+await test('R07 两个来源都未配置时按明确 chat 契约处理', async () => {
+  const h = await bridgeHarness();
+  try {
+    h.setMode('reserved2');
+    h.api.settings.describe = async () => ({ result: { ok: true, value: { namespaces: [] } } });
+    // 删除本地 mode.json 的 mode 字段，只留 closedAgentPreset。
+    fs.writeFileSync(path.join(h.temp, 'state', 'mode.json'), JSON.stringify({ closedAgentPreset: '' }));
+    await h.refreshMode();
+    assert.equal(h.getMode(), 'chat');
+    assert.equal(h.getModeBlocked(), null);
+    assert.equal(h.getModeStatus().state, 'default');
+  } finally { await h.close(); }
+});
+await test('R07 权威值非法时本地有效值不得掩盖', async () => {
+  const h = await bridgeHarness();
+  try {
+    h.setMode('reserved2');
+    fs.writeFileSync(path.join(h.temp, 'state', 'mode.json'), JSON.stringify({ mode: 'chat' }));
+    h.api.settings.describe = async () => ({ result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'bogus' }, user: {} }] } } });
+    await h.refreshMode();
+    const blocked = h.getModeBlocked();
+    assert.ok(blocked); assert.equal(blocked.code, 'QQ_MODE_INVALID');
+    assert.equal(blocked.source, 'dsh');
+    assert.equal(h.getMode(), 'reserved2', '不得被本地 chat 掩盖');
+  } finally { await h.close(); }
+});
+await test('R03 closed-agent 在本版本不可用：本地权威值进入 blocked', async () => {
+  const h = await bridgeHarness();
+  try {
+    h.setMode('chat');
+    fs.writeFileSync(path.join(h.temp, 'state', 'mode.json'), JSON.stringify({ mode: 'closed-agent' }));
+    h.api.settings.describe = async () => ({ result: { ok: true, value: { namespaces: [] } } });
+    await h.refreshMode();
+    const blocked = h.getModeBlocked();
+    assert.ok(blocked, 'closed-agent 必须产生可见 blocked，不能静默成功切换');
+    assert.equal(blocked.code, 'QQ_MODE_UNAVAILABLE');
+    assert.ok(blocked.hint && /任务|Task Harness|不可用/.test(blocked.hint));
+    assert.equal(h.getModeStatus().state, 'unavailable');
   } finally { await h.close(); }
 });
 
