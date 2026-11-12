@@ -125,7 +125,7 @@ voxd :8765/8767 ← HTTP ← 桥接/桌宠         │ 三个 MCP server     │
 ### 1.4 代码分层（依赖只能从上往下）
 
 ```
-表现层   client.js（14 标签）            public/console.html（10 页）
+表现层   client.js（15 标签）            public/console.html（10 页）
 装配层   lib/index.js（路由/生命周期）     src/bridge.js（控制台/生命周期）
 领域层   scheduler/memory/characters/align/pet-*/token-budget/updates/extensions
          bridge 内部：入站/唤醒/出站/socialV2/目的/语音/鱼群/额度
@@ -133,7 +133,7 @@ voxd :8765/8767 ← HTTP ← 桥接/桌宠         │ 三个 MCP server     │
 外部     DSH API、SnowLuma、voxd、文件系统
 ```
 
-耦合注意：插件用相对路径 import 仓库根 `src/`（12 个模块、约 26 处）；`src/memory-card.js` 带 `?rev=` 缓存破坏后缀，**同一字符串硬编码在 3 处**（`lib/memory-card.js`、`lib/pet-chat.js:27`、桥接对应引用），改了引擎不 bump rev → 热重载仍跑旧代码。
+耦合注意：插件用相对路径 import 仓库根 `src/`（38 个模块、96 处；`npm run doc-facts` 复核）；`src/memory-card.js` 带 `?rev=` 缓存破坏后缀，**同一字符串硬编码在 3 处**（`lib/memory-card.js`、`lib/pet-chat.js:27`、桥接对应引用），改了引擎不 bump rev → 热重载仍跑旧代码。
 
 ---
 
@@ -437,7 +437,7 @@ apply：git/zip → updates-pending.json + apply-update.mjs（等 DSH 退出）�
 
 ### P2（结构性债务，优化时考虑，别顺手改）
 
-- `src/bridge.js` 单体 15k 行 + 126 路由一条 if 链；`lib/client.js` 4.8k 行无 schema。
+- `src/bridge.js` 单体 18,221 行 + 163 条精确路径一条 if 链；`lib/client.js` 7.3k 行无 schema。
 - 两处 `rootOffsetFor`、两套版本比较、额度三处实现、端口常量散落 8 处。
 - 两处默认值（桥接硬编码 + `config.example.json`）会漂移。
 

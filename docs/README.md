@@ -4,6 +4,10 @@
 > 仓库目录结构与 `scripts/` 命名约定见 **[FOLDER_MAP.md](FOLDER_MAP.md)**。
 >
 > **状态标记**：✅ 仍然有效（按它做就对） · ⚠️ 部分过时（见备注） · 🗄️ 已被取代（保留作背景）
+>
+> **文档数字校验**：版本号、设置页标签数、`src` 模块引用数、控制台路径数、桥接行数等易腐数字，
+> 统一用 `npm run doc-facts`（`node scripts/doc-facts.mjs`）对照代码实测；有不符/缺失时退出码为 1。
+> 改代码后先跑它，再改文档；不要手抄数字。
 
 ---
 
@@ -52,11 +56,11 @@
 | 文档 | 一句话说明 | 状态 |
 | --- | --- | --- |
 | [guides/ARCHITECTURE.md](guides/ARCHITECTURE.md) | **总纲**：进程/端口拓扑、五层代码分层、两个世界（QQ/B站）+ 三个共享引擎、6 条关键数据流、两套状态根、三份配置、安全模型、**启动/重启矩阵**、术语表、文档地图 | ✅ 2026-10-26 新增，先读这篇 |
-| [guides/MODULE-BRIDGE.md](guides/MODULE-BRIDGE.md) | **桥接内核逐段**（`src/bridge.js` 约 15,000 行）：启动序列、入站/出站全链路、会话与状态、控制台 API 分组、安全闸门、定时器、失败模式 | ✅ 2026-10-26 新增 |
+| [guides/MODULE-BRIDGE.md](guides/MODULE-BRIDGE.md) | **桥接内核逐段**（`src/bridge.js` 18,221 行）：启动序列、入站/出站全链路、会话与状态、控制台 API 分组、安全闸门、定时器、失败模式 | ✅ 2026-10-26 新增 |
 | [guides/MODULE-CORE-A.md](guides/MODULE-CORE-A.md) | **核心引擎 A**：记忆卡、角色人格、目的机制、对话收尾、每日额度、token 账本、价目表、管理员/自我/身份闸、分享范围 | ✅ 2026-10-26 新增 |
 | [guides/MODULE-CORE-B.md](guides/MODULE-CORE-B.md) | **核心引擎 B**：B站 API/记忆/动态/卡片、鱼群、表情语义、黑话、md→纯文本、转发展开、补历史、问候、SSRF 防护、联网搜索、DSH 客户端、语音内核、ACL | ✅ 2026-10-26 新增 |
 | [guides/MODULE-PLUGIN.md](guides/MODULE-PLUGIN.md) | **插件宿主**：装配顺序、配置模型（脱敏/原子写/备份保留）、设置页 API 动作面、B站 调度器、记忆与对齐、token 采集、扩展/平台接口、桥接自愈 | ✅ 2026-10-26 新增 |
-| [guides/UI-AND-CONSOLE.md](guides/UI-AND-CONSOLE.md) | **两套界面**：插件设置页 14 个标签逐页逐卡片（控件↔配置键↔API）、浏览器控制台 10 个页面、分工与重叠 | ✅ 2026-10-26 新增 |
+| [guides/UI-AND-CONSOLE.md](guides/UI-AND-CONSOLE.md) | **两套界面**：插件设置页 15 个标签逐页逐卡片（控件↔配置键↔API）、浏览器控制台 10 个页面、分工与重叠 | ✅ 2026-10-26 新增 |
 | [guides/SUBSYSTEM-BILI.md](guides/SUBSYSTEM-BILI.md) | **B站 子系统**：账号与凭据、生物钟、内容生产/消费、34 个 CLI 命令与 23 个库、四本账额度、鱼群、脱敏、配置全解 | ✅ 2026-10-26 新增 |
 | [guides/SUBSYSTEM-VOICE.md](guides/SUBSYSTEM-VOICE.md) | **语音子系统**：三条链路（语音库/现场合成/语音包）、状态机、本地↔云端路由、合成契约、发送全链路、触发规则、配置全解 | ✅ 2026-10-26 新增 |
 | [guides/SUBSYSTEM-PET.md](guides/SUBSYSTEM-PET.md) | **桌宠子系统**：拓扑、发现与鉴权、pet-api 端点、对话链路、事件队列、目的载体与互斥、记忆写入、语音与回音、专注模式、桌宠侧契约 | ✅ 2026-10-26 新增 |
@@ -77,6 +81,7 @@
 
 入口：[macOS 技术设计 v1.0](design/macos/README.md)。按总体架构 → macOS/DSH → 共享 ASR → B站 → 实施计划 → 验收迁移 → 证据决策阅读；另保留完整合并版。
 本批 8 份原稿已归档，状态为待实现/待验证；归档不改变当前实现或自动启动工作包。
+注意：`docs/design/` 已被 `.gitignore` 忽略，是**本地资料**；换工作树或换机器时需单独携带，否则本入口会指向不存在的目录。
 
 ### 历史设计索引
 

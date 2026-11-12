@@ -50,6 +50,53 @@ npm run test:audit           # 195/195
 - 版本建议 0.8.9 patch；未 bump version、未打 tag、未发布
 ```
 
+---
+
+### 批次 2026-11-12 12:49 · 文档平台事实校正 + doc-facts 校验（A2/A3）
+<!-- release-batch: start=2026-11-12T11:20+08:00 end=2026-11-12T12:49+08:00 -->
+
+**建议**：**patch**（纯文档 + 开发脚本，无运行时行为变化）
+
+**覆盖提交**：`a3f281f`（本批次主体）；本队列条目与 COORDINATION 登记见紧随其后的 docs 提交。
+
+**改了什么**：
+- **A2 平台事实**：`README.md`、`docs/guides/BOUNDARIES.md` 的“Windows 优先 / 不支持 macOS”改为 Windows / macOS，
+  并写明 macOS 已有 2026-11-12 真机验收（QQ 收发与语音、B站扫码、桌宠、任务 Harness）、Linux 未验证。
+- **A2 易腐数字**（均按代码实测，来源写进文档）：
+  - 版本 `0.8.8`（`ROADMAP.md`、`DSH_SETUP.md`）；
+  - 设置页 15 标签（根 README、ARCHITECTURE、FOLDER_MAP、docs/README、12 课、插件 README 表格补“语音/抖音”）；
+  - 控制台 163 条精确路径 + 17 条前缀判断（ARCHITECTURE、BOUNDARIES、FOLDER_MAP、ROADMAP、RISK_REGISTER）；
+  - `src` 引用 38 个模块 / 96 处（根 README、ARCHITECTURE、FOLDER_MAP、12 课、RISK_REGISTER）；
+  - 桥接 18,221 行（ARCHITECTURE、FOLDER_MAP、docs/README、ROADMAP、RISK_REGISTER）。
+- **A1 文档表达（未删任何渠道）**：根 README 新增「4.1 能力状态与暂不做的渠道」（✅/🟡/🧪 + 暂不做/待确认）；
+  插件 README 主叙事改为“单机运行的数字角色运行环境”，贴吧/微信/小红书标注为占位或提案。
+- **A3 校验工具**：新增 `scripts/doc-facts.mjs` 与 `npm run doc-facts`（离线、只读、不联网、不改业务代码）；
+  输出实测事实与不符/缺失，异常退出码 1；扫描禁止回流的旧表述；`--json` 供机器读。`docs/README.md` 增加调用说明。
+
+**case**：`docs/cases/2026-11-12-doc-facts-and-platform-correction.md`
+
+**验证**：
+```text
+npm run doc-facts        # ✅ 0 不符 / 0 缺失，退出码 0
+npm run test:audit       # Audit suite: 195/195 scripts passed，退出码 0
+```
+反向验证：把 README 的“15 个标签”临时改成 14，脚本报 `README.md:195 文档=14 实测=15` 并退出 1；恢复后通过。
+
+**给发布会话的交接块（可直接转发）**：
+```text
+【SurfCore 发布交接】2026-11-12 · 文档事实校正 + doc-facts
+改了哪些文件：README.md、package.json、plugins/surfcore/README.md、scripts/doc-facts.mjs、docs/{README,FOLDER_MAP,RISK_REGISTER,ROADMAP}.md、docs/guides/{ARCHITECTURE,BOUNDARIES,DSH_SETUP,12-LESSONS-ARCHITECTURE}.md、docs/cases/2026-11-12-doc-facts-and-platform-correction.md、docs/cases/README.md
+测过什么/结果：npm run doc-facts → 0 不符/0 缺失；npm run test:audit → 195/195；反向篡改数字能报错并退出 1
+建议 patch / minor：patch
+case：docs/cases/2026-11-12-doc-facts-and-platform-correction.md
+改动层级：文档 + 开发脚本；运行时接口与行为无变化，向后兼容
+完整逻辑与爆炸半径：见 case「完整逻辑」；0 进程 / 0 运行时读者 / 不碰用户数据、密钥、花费
+失败路径：doc-facts 逐条打印「文件:行 文档=… 实测=…」或「缺失 …」，并退出 1，不会静默通过
+未验证：Windows 未重跑 audit；控制台路径口径（163/17，按出现次数）待用户确认
+```
+
+---
+
 ### 批次 2026-11-11 22:10 · Phase A-E 本地 Agent 审查、副作用防御与执行能力建设
 <!-- release-batch: start=2026-11-11T18:00+08:00 end=2026-11-11T22:10+08:00 -->
 
