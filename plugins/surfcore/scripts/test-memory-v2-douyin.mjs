@@ -227,7 +227,21 @@ await test('V2 quarantines legacy unproven rows and exact-response tampering whi
   await api.dispose(); const store = createDouyinCompanionStore(f.stateDir, () => new Date().toISOString()), ledger = store.readLedger();
   for (const row of [ledger.jobs[started.jobId], ...ledger.jobs[started.jobId].items]) { delete row.memoryV2Refs; delete row.memoryV2Receipts; delete row.memoryV2Receipt; }
   store.writeLedger(ledger); const fresh = f.engine(); const hidden = good(await fresh.status(f.context));
-  assert.deepEqual(hidden.recentJobs, []); assert.equal(hidden.activeJob, null); assert.doesNotMatch(JSON.stringify(hidden), /\/video\/123|\/video\/456/); fresh.releaseResponse(hidden);
+  // R08：无来源证明的终态作业现在投影「最小控制元数据」（jobId/state/phase/固定码/时间），
+  // 用户看得到失败与下一步；正文、视频标识、摘要与来源引用仍必须不可见。
+  assert.equal(hidden.activeJob, null);
+  assert.ok(hidden.recentJobs.length <= 1, '只投影当前角色的终态作业控制状态');
+  for (const job of hidden.recentJobs) {
+    assert.equal(job.provenance, 'pending');
+    assert.ok(!job.code && !job.error && !job.hint, '控制元数据不得夹带未授权正文');
+    for (const item of job.items) {
+      assert.equal(item.provenance, 'pending');
+      assert.equal(item.id, undefined); assert.equal(item.url, undefined); assert.equal(item.reason, undefined);
+      assert.equal(item.summary, undefined); assert.equal(item.draft, undefined);
+      assert.equal(item.memoryV2Refs, undefined); assert.equal(item.memoryV2Receipts, undefined);
+    }
+  }
+  assert.doesNotMatch(JSON.stringify(hidden), /\/video\/123|\/video\/456/); fresh.releaseResponse(hidden);
 }));
 await test('production POST validates exact engine lease before JSON and releases on denial', () => fixture('response-post', async f => {
   const api = f.engine(); let released = 0;

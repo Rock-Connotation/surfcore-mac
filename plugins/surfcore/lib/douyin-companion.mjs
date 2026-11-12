@@ -695,12 +695,46 @@ export function createDouyinCompanion({
       const route = v2.routing(); check(route.ok, route.code, route.error, route.hint);
       if (value?.ok !== true) return value;
       const role = requireCurrentRole(context), stamp = contextStamp(context, role);
+      // R08：把「作业控制状态」与「受权限限制的内容」分开投影。
+      // 以前缺少来源证明的作业整体返回 null，于是 readFeed/capture 之前就失败的当前作业
+      // 在公开 status 里彻底消失（activeJob:null、recentJobs:[]、lastError:null）——
+      // 用户看不到失败，也没有下一步。现在控制元数据（jobId/state/phase/固定错误码/
+      // 清洗后的 hint/时间）在当前角色/epoch 可见；正文、视频标识、摘要、来源引用
+      // 仍然必须满足来源与授权。
+      const controlMeta = job => ({
+        jobId: job.jobId, mode: job.mode, state: job.state, phase: job.phase,
+        characterId: job.characterId, characterEpoch: job.characterEpoch,
+        createdAt: job.createdAt, updatedAt: job.updatedAt, completedAt: job.completedAt,
+        calls: job.calls, acceptanceQualified: job.acceptanceQualified,
+        scheduleDate: job.scheduleDate, scheduleWindow: job.scheduleWindow,
+        ...(job.code ? { code: job.code } : {}),
+        ...(job.error ? { error: job.error } : {}),
+        ...(job.hint ? { hint: job.hint } : {}),
+        provenance: 'pending',
+      });
+      // 条目级也分两层：控制元数据（状态/固定码/清洗 hint/时间/时长/覆盖）可见，
+      // 正文与标识（id/url/title/摘要/草稿/来源引用）仍要求 proof。
+      const itemControl = item => ({
+        state: item.state, partial: item.partial === true, memorySaved: item.memorySaved === true,
+        ...(Number.isSafeInteger(item.durationMs) && item.durationMs > 0 ? { durationMs: item.durationMs } : {}),
+        ...(item.occurredAt ? { occurredAt: item.occurredAt } : {}),
+        ...(item.coverage ? { coverage: item.coverage } : {}),
+        ...(item.code ? { code: item.code } : {}),
+        ...(item.error ? { error: item.error } : {}),
+        ...(item.hint ? { hint: item.hint } : {}),
+        provenance: 'pending',
+      });
       const safeJob = job => {
         if (!job) return null;
         if (hasProof(job) && job.items.every(hasProof)) return job;
         if (activeJob?.jobId === job.jobId && ACTIVE.has(job.state)) {
-          const items = job.items.filter(hasProof);
+          const items = job.items.map(item => hasProof(item) ? item : itemControl(item));
           return { ...job, items };
+        }
+        // 任何终态作业（failed/interrupted/partial/cancelled/completed）都投影控制状态：
+        // 用户必须看得到「这次失败在哪、下一步做什么」，而正文与来源仍逐条受 proof 限制。
+        if (!ACTIVE.has(job.state)) {
+          return { ...controlMeta(job), items: job.items.map(item => hasProof(item) ? item : itemControl(item)) };
         }
         return null;
       };
@@ -727,6 +761,7 @@ export function createDouyinCompanion({
     return response(context ?? { characterId: role?.id, characterEpoch: role?.epoch }, await statusValue(context));
   }
   async function statusValue(context) {
+    // 失败可见性（R08）：当前角色的最后一次失败即使没有来源证明也要出现在 daily.lastError。
     let role;
     try {
       role = context === undefined || context === null ? currentRole() : requireCurrentRole(context);
@@ -751,7 +786,12 @@ export function createDouyinCompanion({
       .map(job => projectRecoverableJob(job, lockActive));
     const localActive = activeJob && activeJob.characterId === role.id && activeJob.characterEpoch === role.epoch ? projectJob(activeJob) : null;
     const paused = roleState?.paused === true || !!interruptedDaily;
-    const lastError = publicError(roleState?.lastError) ?? (interruptedDaily ? publicError({ code: 'DOUYIN_INTERRUPTED', error: '进程重启打断了日常活动。', hint: '已预留请求不会返还；查看保留结果并通过configure显式恢复。' }) : null);
+    // R08：即使作业没有任何来源证明，失败也必须出现在用户当前入口。
+    // 优先用角色账本里的 lastError；否则回退到最近一次失败/中断作业的固定码与清洗 hint。
+    const failedJob = visibleJobs.find(job => ['failed', 'interrupted'].includes(job.state) && job.code);
+    const lastError = publicError(roleState?.lastError)
+      ?? (interruptedDaily ? publicError({ code: 'DOUYIN_INTERRUPTED', error: '进程重启打断了日常活动。', hint: '已预留请求不会返还；查看保留结果并通过configure显式恢复。' })
+        : failedJob ? publicError({ code: failedJob.code, error: failedJob.error, hint: failedJob.hint }) : null);
     return {
       ok: true,
       characterId: role.id,
