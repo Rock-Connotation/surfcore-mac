@@ -7,6 +7,7 @@
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
 | 2026-11-12 | [A6 失败可见性：ok:false 三件套静态检查](2026-11-12-a6-failure-visibility.md) | lint-failures 棘轮基线（669 处债务入册只许降不许升），B站扫码/更新/TTS/语音包 P0 链路补齐 code+hint 并加失败分支断言 | 本地验收，未发布 |
+| 2026-11-12 | [PRD 拍板修订（定位/双平台/默认QQ/无分级/V1清单）](2026-11-12-prd-revision.md) | 六条拍板逐条落档 docs/product/ 四份；设置分叉核查实证无分叉；V1 清单只盘不删按安全→痛排序 | 本地验收，未发布 |
 | 2026-11-12 | [文档平台事实错误与易腐数字校正 + doc-facts 校验](2026-11-12-doc-facts-and-platform-correction.md) | 修正“不支持 macOS”等事实错误与版本/标签/模块/路径数字，新增离线可执行校验 | 未发布（文档+开发脚本） |
 | 2026-11-12 | [功能提交、合dev与安全去重清理](2026-11-12-functional-commits-and-safe-cleanup.md) | 保留两条功能线，按内容保全历史资料后清理分支与工作树 | 本地收拢，未发布 |
 | 2026-11-11 | [阶段 B-E：记忆闭环、任务准入与 Mac 本地执行能力建设](2026-11-11-phase-bcde-memory-v2-task-harness-and-mac-execution.md) | Memory V2时间排序与摘录、TaskLedger任务账本、TaskHarness准入守门、文件整理计划、受限命令与Mac原生应用控制 | 阶段验收，未发布 |
