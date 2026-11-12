@@ -235,6 +235,40 @@ try {
     assertClean(r);
   });
 
+  await test('owner branch hit does NOT advance lastSeen (Host rejection keeps the notice)', async () => {
+    const sessions = [mkSession({ talker: Number(OWNER), sender: Number(OWNER), name: 'SYNTHETIC_OWNER', msgKey: DIGIT19 })];
+    const first = await run({ sessions, args: ['--once', '--json'], state: { lastSeen: 0 } });
+    const out = jsonOut(first);
+    assert.equal(out.hit, true);
+    assert.match(out.requestId, /^bili-dm-[a-f0-9]{64}$/, 'stable requestId must be derived from exact coordinates');
+    // 同一状态再轮询一次：游标没有前进，所以同一条通知仍然命中，且 requestId 稳定不变。
+    const second = await run({ sessions, args: ['--once', '--json'], state: { lastSeen: 0 } });
+    const again = jsonOut(second);
+    assert.equal(again.hit, true, 'an unacked notice must remain eligible');
+    assert.equal(again.requestId, out.requestId, 'the same notice must keep the same requestId');
+    assertClean(second);
+  });
+
+  await test('--ack advances the cursor exactly once and clears pending', async () => {
+    const sessions = [mkSession({ talker: Number(OWNER), sender: Number(OWNER), name: 'SYNTHETIC_OWNER', msgKey: DIGIT19 })];
+    const hit = jsonOut(await run({ sessions, args: ['--once', '--json'], state: { lastSeen: 0 } }));
+    const pendingState = { lastSeen: 0, pending: [{ mid: OWNER, name: 'SYNTHETIC_OWNER', text: 'SYNTHETIC_INBOUND', ts: TS, msgKey: DIGIT19, requestId: hit.requestId }] };
+    const acked = await run({ sessions, args: ['--ack', hit.requestId], state: pendingState });
+    assert.equal(acked.code, 0, acked.stderr);
+    const receipt = JSON.parse(acked.stdout.trim().split('\n').filter(Boolean)[0]);
+    assert.equal(receipt.ok, true); assert.equal(receipt.acked, hit.requestId); assert.equal(receipt.pending, 0);
+    assert.equal(receipt.lastSeen, TS);
+    // 确认后再轮询：游标已前进 → 同一条通知不再命中（不重复外发）。
+    const after = jsonOut(await run({ sessions, args: ['--once', '--json'], state: { lastSeen: receipt.lastSeen, pending: [] } }));
+    assert.equal(after.hit, false);
+  });
+
+  await test('--ack unknown requestId fails visibly and advances nothing', async () => {
+    const result = await run({ sessions: [], args: ['--ack', 'bili-dm-' + 'f'.repeat(64)], state: { lastSeen: 0, pending: [] } });
+    assert.equal(result.code, 4, 'unknown ack must exit non-zero');
+    assert.match(result.stderr, /未知或已确认的通知编号/);
+  });
+
   console.log('PASS Bili DM trigger: ' + pass + ' cases');
 } catch (error) {
   console.log('FAIL ' + String((error && error.stack) || error));

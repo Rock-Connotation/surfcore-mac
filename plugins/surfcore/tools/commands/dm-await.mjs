@@ -6,9 +6,16 @@
 //   用法:
 //     node dm-await.mjs --baseline [--any]        把当前状态记为"已读"，从现在起只认新消息
 //     node dm-await.mjs --once [--json] [--any]   轮询一次（命中打印 DM_HIT / JSON）
+//     node dm-await.mjs --ack <requestId>         确认 Host 已持久接收，才推进扫描游标
+//
+//   2026-11-12（R04）：**命中不再提前推进游标**。以前命中就写 lastSeen/seen，
+//   一旦 Host 拒绝或超时，这条通知的触发资格已经消失，下一轮不会再提交 → 静默丢消息。
+//   现在命中只把「观察到」写进 pending（含稳定 requestId），游标要等 --ack 才前进。
+//   「观察到」「Host 已持久接收」「平台 ACK」是三个状态，不合并成一个成功布尔值。
 import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { config } from '../lib/config.mjs'
 
 const argv = process.argv.slice(2)
@@ -24,6 +31,7 @@ const BASE = !!opt.baseline
 const ONCE = !!opt.once || BASE
 const JSONOUT = !!opt.json
 const ANY = !!opt.any
+const ACK = typeof opt.ack === 'string' ? opt.ack : ''
 
 const U = process.env.USERPROFILE || process.env.HOME || '/'
 const STATE = biliState('dm-await-state.json')
@@ -41,6 +49,27 @@ const H = {
 }
 const loadState = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } }
 const saveState = (o) => { fs.mkdirSync(path.dirname(STATE), { recursive: true }); fs.writeFileSync(STATE, JSON.stringify(o, null, 2) + '\n') }
+// pending：已观察到、但 Host 尚未确认持久接收的通知。稳定 requestId 由内容坐标派生，
+// 同一条通知重复轮询得到同一个 ID（不会产生第二个 requestId 重复外发）。
+const pendingOf = (st) => (Array.isArray(st?.pending) ? st.pending.filter((row) => row && typeof row.requestId === 'string') : [])
+const requestIdOf = (row) => 'bili-dm-' + crypto.createHash('sha256').update(JSON.stringify([row.mid, row.msgKey ?? null, row.ts])).digest('hex')
+// --ack <requestId>：Host 已持久接收该通知 → 只有这一步推进扫描游标。
+// 未知 requestId 不推进任何游标，并返回可见失败（不假装成功）。
+if (ACK) {
+  const st = loadState(), rows = pendingOf(st), target = rows.find((row) => row.requestId === ACK)
+  if (!target) {
+    console.error(`✗ 未知或已确认的通知编号：${ACK}`)
+    process.exit(4)
+  }
+  const remaining = rows.filter((row) => row.requestId !== ACK)
+  const seen = (st.seen && typeof st.seen === 'object') ? { ...st.seen } : {}
+  if (target.mid) seen[String(target.mid)] = Math.max(Number(seen[String(target.mid)] ?? 0), Number(target.ts ?? 0))
+  const lastSeen = Math.max(Number(st.lastSeen ?? 0), Number(target.ts ?? 0))
+  saveState({ ...st, seen, lastSeen, pending: remaining, at: new Date().toISOString() })
+  console.log(JSON.stringify({ ok: true, acked: ACK, pending: remaining.length, lastSeen }))
+  process.exit(0)
+}
+
 const parsed = (content) => {
   // 私信内容可能是 {"content":"…"} 或纯文本
   try { const j = JSON.parse(String(content)); return String(j.content ?? j.text ?? content) } catch { return String(content ?? '') }
@@ -92,13 +121,14 @@ if (ANY) {
     })
   }
   if (BASE) {
+    // --baseline：显式把当前状态记为已读（用户主动重置基线），这是唯一会整体推进游标的入口。
     for (const it of items) seenMap[it.mid] = it.ts
     for (const s of r.list) {
       const t = String(s.talker_id ?? '')
       const ts = Number(s.last_msg?.timestamp ?? 0)
       if (t && ts > Number(seenMap[t] ?? 0)) seenMap[t] = ts
     }
-    saveState({ seen: seenMap, at: new Date().toISOString() })
+    saveState({ seen: seenMap, pending: [], at: new Date().toISOString() })
     console.log(`已把当前私信状态标记为已读（${Object.keys(seenMap).length} 个会话）✓ 从现在起只认新消息`)
     process.exit(0)
   }
@@ -113,10 +143,16 @@ if (ANY) {
     saveState({ seen: seenMap, at: new Date().toISOString() })
   }
   if (items.length && !FIRST_ANY) {
-    for (const it of items) seenMap[it.mid] = it.ts
-    saveState({ seen: seenMap, seenAt: now, at: new Date().toISOString() })
-    if (JSONOUT) console.log(JSON.stringify({ hit: true, items }))
-    else for (const it of items) console.log(`DM_HIT mid=${it.mid} name=${it.name} ts=${it.ts} text=${it.text.replace(/\n/g, ' ').slice(0, 200)}`)
+    // R04：只登记 pending，**不推进 seen**。游标由 --ack（Host 持久接收）推进。
+    const existing = pendingOf(st0), byId = new Map(existing.map((row) => [row.requestId, row]))
+    const emitted = items.map((it) => {
+      const row = { ...it, requestId: requestIdOf(it), observedAt: new Date().toISOString() }
+      if (!byId.has(row.requestId)) byId.set(row.requestId, row)
+      return row
+    })
+    saveState({ ...st0, seen: seenMap, pending: [...byId.values()], seenAt: now, at: new Date().toISOString() })
+    if (JSONOUT) console.log(JSON.stringify({ hit: true, items: emitted }))
+    else for (const it of emitted) console.log(`DM_HIT mid=${it.mid} name=${it.name} ts=${it.ts} text=${it.text.replace(/\n/g, ' ').slice(0, 200)} requestId=${it.requestId}`)
     process.exit(0)
   }
   if (JSONOUT) console.log(JSON.stringify({ hit: false, items: [], baseline: FIRST_ANY }))
@@ -153,13 +189,17 @@ if (!r.ok) { console.error(`✗ ${r.why}`); process.exit(3) }
 const lastSeen = Number(st.lastSeen ?? 0)
 const hit = r.ts > lastSeen && r.fromOwner
 if (hit) {
-  saveState({ ...st, lastSeen: r.ts, at: new Date().toISOString() })
-  if (JSONOUT) console.log(JSON.stringify({ hit: true, mid: OWNER, name: OWNER_NAME, text: r.text, ts: r.ts, ...(r.msgKey === undefined ? {} : { msgKey: r.msgKey }) }))
-  else console.log(`DM_HIT mid=${OWNER} name=${OWNER_NAME} ts=${r.ts} text=${r.text.replace(/\n/g, ' ').slice(0, 200)}`)
+  // R04：命中只登记 pending；lastSeen 等 --ack 才推进，Host 拒绝时通知不会丢。
+  const row = { mid: OWNER, name: OWNER_NAME, text: r.text, ts: r.ts, ...(r.msgKey === undefined ? {} : { msgKey: r.msgKey }) }
+  row.requestId = requestIdOf(row); row.observedAt = new Date().toISOString()
+  const byId = new Map(pendingOf(st).map((item) => [item.requestId, item]))
+  if (!byId.has(row.requestId)) byId.set(row.requestId, row)
+  saveState({ ...st, pending: [...byId.values()], at: new Date().toISOString() })
+  if (JSONOUT) console.log(JSON.stringify({ hit: true, ...row }))
+  else console.log(`DM_HIT mid=${OWNER} name=${OWNER_NAME} ts=${r.ts} text=${r.text.replace(/\n/g, ' ').slice(0, 200)} requestId=${row.requestId}`)
   process.exit(0)
 }
-// 没命中：把 lastSeen 往前推（避免旧消息反复触发；但只在对方是主人时推）
-if (r.ts > lastSeen) saveState({ ...st, lastSeen: r.ts, at: new Date().toISOString() })
-if (JSONOUT) console.log(JSON.stringify({ hit: false }))
+// 没命中时也不推进游标：只有 --ack 才代表「已处理」。
+if (JSONOUT) console.log(JSON.stringify({ hit: false, pending: pendingOf(st).length }))
 else if (!ONCE) console.log('无新私信')
 process.exit(1)
