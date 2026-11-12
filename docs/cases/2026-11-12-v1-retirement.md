@@ -1,6 +1,13 @@
-# 2026-11-12 V1 退役破坏式重构
+# 2026-11-12 V1 退役破坏式重构（历史案例 + 收口续篇）
 
-**状态：未完成。** 插件测试未通过；QQ V1 出站链与其他残留尚未退役。此前门禁结果是执行时的快照，不能视为当前工作区验收结果。
+> **2026-11-13 更新：本文 §「现象 / 根因 / 修法 / 验证 / 遗留」是 28dd419–76f666a 的
+> 历史快照，保留作决策史料；本批 R01–R10 收口请直接看文末「收口续篇」。**
+> 历史段里「未完成」「插件测试未通过」「建议删 routing」等措辞**不再代表当前状态**。
+
+**收口状态（2026-11-13）**：R01–R10 已按用户拍板的破坏式重构完成实现与隔离回归；
+真实 `~/.dsh` 的角色包/人格/记忆/控制库/权限/账本全程只读保留（中途两次测试夹具
+误写真实目录已恢复并留证，见文末「数据事故与恢复」）。离线门禁、真实链路、合并与
+发布状态以最终交付报告为准。
 
 > 依据 2026-11-12 用户拍板：「直接把六项 v1 删掉就可以了。现在是开发中，不需要那么多向后兼容，破坏式重构就可以了」。
 > 分支 `feat/v1-retirement`（基线 `5f27111`）；提交 `28dd419` / `5cd3456` / `b26f9fc` / `eba9153`，含后续文档与钉子收口。
@@ -89,3 +96,69 @@
 建议版本：minor（破坏式行为变化，用户可见模式/preset/接口变化；版本号由发布会话定）
 是否已 rebase/merge 最新 dev：**未合并**——主树 `/Users/shizihan/Daily/Github/surfcore-mac`（dev）仍有非本会话的未跟踪目录 `2026-11-12/`，按 AGENTS §1.9 不碰他人脏工作区；待对应会话收走后由协调/发布会话 `--no-ff` 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
 ```
+
+---
+
+## 收口续篇（2026-11-13）：R01–R10 实现、行为回归与数据事故
+
+> 本节是当前规范；上方所有「未完成 / 待补 / 建议删除 routing」等历史措辞均已失效。
+
+### 现象 → 根因 → 影响 → 修法
+
+| 编号 | 现象 | 根因（机制） | 修法 |
+| --- | --- | --- | --- |
+| R01 | 新安装授权成功却 `MEMORY_SHADOW_DISABLED` | `validate()` 把历史影子开关当 V2 业务准入门禁；`shadowEnabled=0` 是 fresh 默认 | `src/core/memory-v2-store.js` 移除 `requireShadow` 门禁；列保留不删不重置。管理/面板/Host 状态分离 `backend` 与 `readiness` |
+| R02 | 旧记忆卡在启动 8s 后仍被摄取/衰减/清空 prompt | `startMemoryCardTimer`、角色切换/回档/设置保存/感知投影、旧变更 API 全在生产链上 | `plugins/surfcore/lib/index.js` 移除全部生产维护装配与旧 API 实现，写动作统一 `410 MEMORY_CARD_WRITE_RETIRED`；旧档案只读保留。参考算法/只读查看保留 |
+| R03 | `closed-agent` UI 可选但 V2 必拒 `MEMORY_PRESET_UNSAFE` | 完整本地工具会话与受限 NativeOwner 语义冲突 | 明确「本版本不可用」：`UNAVAILABLE_MODES` + `/api/mode` 409 + 控制台按钮禁用 + 插件设置去掉选项；owner 远程任务能力由独立 Task Harness 承接（owner 准入/群聊拒绝/危险拦截/审批/取消/回执） |
+| R04 | owner DM 丢 `msgKey`、失败前游标已推进 | scheduler 重建对象漏字段；`dm-await` 命中即写 `lastSeen/seen` | scheduler 保留官方精确坐标；`dm-await` 命中只写 `pending`（稳定 requestId），`--ack` 才推进游标；「观察 / Host 持久接收 / 平台 ACK」三态分离 |
+| R05 | `retire()` 返回后旧 tick 仍 enqueue 并写账本 | `stop()` 只清定时器，无实例准入/取消/在途跟踪 | scheduler 增加 `generation + AbortController + inflight`；每个 await 后、enqueue 前、写账本前复核；retire 禁入→取消→限时等待→Host ACK；失败/超时返回结构化 blocked。`stopSchedulerNow` 检查 `ok:false` |
+| R06 | 抖音测试卡在 `job did not finish` | 夹具合法 receipt/refs 不全、未隔离 DSH_HOME/当前角色、`verifyPrepared` 异步、缺 `getModelRequest`、旧 `recordMemory` 断言 | `test-douyin-companion.mjs` 与 host/recall/sharing 系列迁到真实 MemoryService/Host 工厂；合法回执、同步验签、正式请求元数据、V2 reflection/持久回执断言；保留预算/取消/重启/隐私语义 |
+| R07 | 旧 `reserved` 被静默忽略并沿用上次模式；v1 routing hint 建议删文件/库 | `refreshMode` 把「退役值」当「读取失败」处理；routing hint 用「制造 fresh」掩盖控制库存在 | 模式来源区分 absent/valid/retired/invalid/unreadable/unavailable，权威退役/非法/读取失败进入可见 blocked；新增 `src/core/memory-v2-preflight.js` 只读预检 + 计划，明确不删 routing/SQLite/原数据 |
+| R08 | 前置失败作业在 status 消失（`recentJobs:[]`、`lastError:null`） | `safeJob` 要求完整来源证明；无证明就整体返回 null | 分离控制元数据与受限内容：终态作业投影 `jobId/state/phase/固定码/清洗 hint/时间`，正文/视频标识/摘要/refs 仍要求 proof；`daily.lastError` 回退到终态作业 |
+| R09 | QQ/B站 真实 Native 人格绕过一代过滤 | 两个 Host 各自 `fs.readFileSync(persona.md)` | 新增 `src/core/persona-v2-compile.js`：共享 `selectRoleText` + `GEN1_ROLE_LINE_RE`，内存编译、按场景/预算组合、同字符串同摘要给 Source/Owner，原文件不改 |
+| R10 | 分享缺 `memoryV2` 默认 v1 并保留旧 perform | 兼容分支仍在 | `companion-sharing.mjs` 删 v1 默认/perform，缺适配器/显式 v1/异步路由/接口不全一律结构化拒绝且零模型调用；sharing/race/platform/UI 业务测试迁到 V2 工厂 |
+
+### 完整逻辑（七步）
+
+1. **链路**：`memory-v2-store/service/host` → `memory-v2-runtime` → QQ `memory-v2-qq.js` / B站 `bili-v2-host` / 抖音 `douyin-companion-memory` / 分享 `companion-sharing`；`scheduler.js` 只保留 V2 触发机器，`tools/commands` 仍由 V2 worker 直接 fork，`src/memory-card.js` 仅保留参考算法与只读查看。
+2. **机制**：所有业务准入以「角色 epoch + 具体 audience/provider policy + 控制修订 + 来源证明 + 生命周期/删除屏障」为准；影子开关退出历史。停止/角色切换以「实例 generation + 取消 + 在途等待 + Host ACK」为屏障。平台通知以「pending → 持久接收 ACK → 游标」为状态机。
+3. **爆炸半径**：桥接进程 × DSH 插件宿主 × B站调度器 × 抖音/分享；失败均为显式 `code/error/hint`。不碰密钥、不花钱（隔离假模型）、不删用户数据。
+4. **取舍**：A（采用）沿现有 V2 收口、删旧生产路径，成本可控、回归可钉；B（未采用）重写 1.8 万行 bridge/scheduler/记忆层，风险与回滚成本过高。R05 跨链路 audit 未整体重写：VM 夹具继续测旧用例自身行为，另建 `scripts/test-v2-real-integration.mjs` 用真实 Host 覆盖 R01–R10，恒真准备包已显式标注「仅纯函数夹具」。
+5. **生效与重启**：`src/bridge.js` 改动重启 QQ 桥接；`plugins/surfcore/*` 改动重载 DSH 插件/重启 DSH；`dsh/agent-presets/qq-chat-v2` patch 重启 DSH 才装配。`state/mode.json`、`memory-v2/routing.json`、控制库是用户数据，本批不动。
+6. **验证**：`test:audit`、`test:regressions`、完整 `plugins/surfcore test`、`test:memory-v2`、`lint:failures`、`doc-facts`、`build-agent-preset-patches --check`；新增 `scripts/test-v2-real-integration.mjs`（12 项真实 V2 门禁）、`test-memory-v2-bili-scheduler-retire.mjs`（4 项）、DM pending/ack 3 项、R01 fresh 授权、R02 旧档案哈希、R07 预检、R08 失败可见、R09 人格编译、R10 缺装配零调用。Memory 评测 runner 显式编排 baseline→kernel，不再依赖未跟踪 `_backups` 报告。
+7. **回滚与残余**：程序回滚 = `git revert` 本批提交；**不**恢复旧数据库/额度账本/`~/.dsh` 角色资料。真实 DSH 实装、QQ 入站→回复 ACK、B站真机 enqueue/停止、旧配置副本处理仍列为未验（见最终交付）。`auditAndSend` 旧链与一代社交状态机在 V2 主路径后不可达，仍作为惰性残留登记，不误删共享传输/`isDirectAddress`/V2 工具。
+
+### 数据事故与恢复（如实登记）
+
+2026-11-12 两次测试夹具事故：`test-companion-sharing*.mjs` / `test-douyin-companion*.mjs` 的 ESM 静态 import 在 `process.env.DSH_HOME` 赋值前求值，把 `CHARACTERS_DIR` 绑到真实 `~/.dsh`，写入 `characters/current.json`（`alpha/epoch1`）、`alpha/persona.md`、新建 `alpha/persona.scenes/local.md` 与 `role-a/`、`role-b/` 目录。
+
+- 处置：现场复制到 `~/.dsh/_quarantine/incident-2026-11-12-test-wrote-real-dsh/`；按 `index.json` 权威值恢复 `current.json` = `app`/红豆/epoch 8；`alpha/persona.md` 从 `snapshots/before-switch/persona.md` 恢复为 `Alpha persona\n`；新建目录 rename 到隔离区。
+- 根治：新增 `plugins/surfcore/scripts/isolate-test-home.mjs`，所有会触碰 `character-persona.js` 的测试**第一条 import** 引入；`sharing-v2-fixture.mjs` 自检拒绝真实 home；所有门禁用隔离副本与显式 `DSH_HOME`。
+- 未受影响：`app` 角色全部数据、`memory-control.sqlite`、权限、删除屏障、预算与账本（mtime 未变）。
+
+### 发布交接块（当前批次）
+
+```text
+【合并请求】分支 feat/v1-retirement（R01–R10 收口，基线 76f666a）
+范围：V2-only 生产准入、旧卡写者退役、QQ 模式/预检/Task Harness 能力差异、
+B站 DM pending/ack 与调度退役屏障、抖音/分享真实 V2 工厂与失败可见、
+真实 V2 跨链路门禁、当前 README/RULES/DSH_SETUP/UI 文案、case/HANDOFF。
+数据：真实 ~/.dsh 只读保留；误写已恢复并留证。
+未验：真实 DSH 实装、QQ 入站→ACK、B站真机唤醒/停止、旧配置副本演练。
+发布：未获单独确认，不 bump/tag/Release/Pre-release。
+合并后：从新 HEAD 的 git 对象重生成 install-manifest 并提交，
+再跑 release-manifest --verify-ref HEAD 要求 0 问题。
+```
+
+### 真实验收计划（离线工作完成后；已验 / 未验分开）
+
+| 项目 | 目标隔离 profile / 对象 | 前置授权 | 已验 | 未验步骤 |
+| --- | --- | --- | --- | --- |
+| DSH 实装同源 | 独立 profile，不从常用 `web` 复制数据 | 安装/重启授权 | ❌ | 从最终提交构建 → 只装 `qq-chat-v2` patch + 3 个 MCP + surfcore bundle → 源/制品/实装文件逐 SHA 比对 → 重启后探针确认 preset 清单与工具面 |
+| QQ 入站→回复 ACK | 指定测试 QQ 对象、精确模型、单条消息数量 | 真实发送与模型预算单独确认 | ❌ | 入站身份 → 具体 policy → 来源 capture → prepare → Native 模型输入 → 发送租约 → 平台 ACK → 记忆写回 → 重复事件/重启恢复；不发群、不扩授权 |
+| B站 唤醒与停止 | 隔离 B站账号/对象、关闭真实互动 | 真机唤醒与外发单独确认 | ❌ | owner DM 精确坐标 → pending → Host 持久接收 → 游标推进；评论/夜间唤醒 → V2 Host enqueue；停止/角色切换时在每个 await 边界验证 0 新任务/0 写入；失败/超时保持 blocked |
+| 旧配置副本处理 | 脱敏副本：`mode.json` / `memory-v2/routing.json` / 控制库 / 旧角色档案 | 数据转换单独授权 | ❌ | 只读预检区分 fresh/ready/retired-v1/control-only/route-only/corrupt/reader-too-new/unreadable → 确认无自动改写、无删除 DB 建议 → 只读哈希清单 → 需要转换时另开授权批次 |
+
+**离线已验**（本批）：真实 MemoryService/Host 的正式授权→capture/prepare（R01）、撤销/换角色拒绝、旧档案哈希保留（R02）、模式与预检（R03/R07）、DM 精确坐标与 pending/ack（R04）、scheduler 退役屏障（R05）、抖音/分享全套 V2 工厂与失败可见（R06/R08/R10）、人格编译（R09）、真实 V2 跨链路 12 项门禁。
+
+**合并状态**：未合并。主树 `/Users/shizihan/Daily/Github/surfcore-mac` 有他人未跟踪 `2026-11-12/`；本地 `dev`=`5f27111`（退役前基线），功能分支 `feat/v1-retirement` HEAD=`b38523d`。按 AGENTS §1.9 不清理、不 stash、不在此会话合并。合并方案（待协调会话）：确认主树未跟踪目录归属与 `dev` 无他人写入 → `git checkout dev` → `git merge --no-ff feat/v1-retirement` → 从合并后 HEAD 重生成 `release/install-manifest.json` 并单独提交 → `node scripts/release-manifest.mjs --verify-ref HEAD` 要求 0 问题。发布另行确认。
