@@ -78,7 +78,7 @@ SurfCore 让一个 **DeepSeek Harness（DSH）agent** 活在一个真实的人�
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
 │ 表现层    plugins/surfcore/lib/client.js（设置页 15 个标签）           │
-│           public/console.html（桥接控制台 10 个页面）                  │
+│           public/console.html（桥接控制台 9 个页面）                  │
 ├───────────────────────────────────────────────────────────────────────┤
 │ 宿主装配  plugins/surfcore/lib/index.js（服务 + API + 生命周期）        │
 │           store.js（配置模型）  paths.js（路径解析）                   │
@@ -102,7 +102,7 @@ SurfCore 让一个 **DeepSeek Harness（DSH）agent** 活在一个真实的人�
 - 插件通过 `../../../src/*.js` **相对路径**直接引用 38 个核心模块共 96 处（`npm run doc-facts` 复核）；
   其中 `src/memory-card.js` 挂了 `?rev=` 缓存破坏后缀（同一字符串硬编码在 3 个文件里）。
   改了核心模块而没 bump rev → 热重载后插件仍在跑旧代码（PITFALLS #68）。现在有 `scripts/test-core-rev-sync.mjs` 钉一致性。
-- `src/bridge.js` 是**全仓库最大单体**（18,221 行），控制台 **163 条精确路径判断 + 17 条前缀判断**（按域归约后端点更少）
+- `src/bridge.js` 是**全仓库最大单体**（18118 行），控制台 **159 条精确路径判断 + 17 条前缀判断**（按域归约后端点更少）
   写在同一段 `if (url.pathname === …)` 链里。拆分是路线图上的事，见 `docs/RISK_REGISTER.md` 的 A1。
 
 ---
@@ -316,11 +316,11 @@ QQ 仍读仓库根的 `config.json`，B站 仍读自己的配置，插件只是�
 | 想知道 | 看 |
 | --- | --- |
 | **总览、进程、数据流、重启矩阵** | 本文 |
-| 桥接 18,221 行里的每个功能 | [MODULE-BRIDGE.md](MODULE-BRIDGE.md) |
+| 桥接 18118 行里的每个功能 | [MODULE-BRIDGE.md](MODULE-BRIDGE.md) |
 | 核心引擎逐个（记忆/人格/目的/收尾/额度/计价） | [MODULE-CORE-A.md](MODULE-CORE-A.md) |
 | 核心引擎逐个（B站/内容处理/接入层/语音内核） | [MODULE-CORE-B.md](MODULE-CORE-B.md) |
 | 插件宿主（服务、调度、扩展、配置模型） | [MODULE-PLUGIN.md](MODULE-PLUGIN.md) |
-| 两套界面：设置页 15 个标签 + 控制台 10 个页面 | [UI-AND-CONSOLE.md](UI-AND-CONSOLE.md) |
+| 两套界面：设置页 15 个标签 + 控制台 9 个页面 | [UI-AND-CONSOLE.md](UI-AND-CONSOLE.md) |
 | 语音全链路 | [SUBSYSTEM-VOICE.md](SUBSYSTEM-VOICE.md) |
 | 桌宠全链路 | [SUBSYSTEM-PET.md](SUBSYSTEM-PET.md) |
 | B站 子系统（34 个命令 / 生物钟 / 鱼群） | [SUBSYSTEM-BILI.md](SUBSYSTEM-BILI.md) |

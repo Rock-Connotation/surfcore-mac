@@ -22,7 +22,7 @@
 
 | 目录 | 作用 | 能不能删/动 |
 | --- | --- | --- |
-| `src/` | **桥接内核与共享引擎**：主程序 `bridge.js`、DSH 客户端、三个 MCP server、黑话/表情/语音共享库、鱼群保护（`fish-guard.js`）、记忆卡引擎（`memory-card.js`）、目的机制纯逻辑（`purpose-engine.js`）、对话收尾判断（`conversation-closure.js`）、**每日 token 额度纯逻辑（`token-budget.js`）+ 账本（`token-ledger.js`）**、**状态目录 ACL 收紧（`state-acl.mjs`，与 `scripts/harden-state-acl.mjs` 同一实现）**、**安全抓取（`safe-fetch.js`）**、**上线补历史（`history-catchup.js`）**、**价目表（`model-prices.js`）**、**发送语音内核（`voice-core.js` / `voice-packs.js` / `voice-tts.js`，三者职责不同：解析与探测 / 语音包安装 / 本地 TTS 客户端）** | 不能动。`bridge.js` 是主程序（**18,221 行**，仍是全仓库最大单体，控制台 163 条精确路径 + 17 条前缀判断写在同一条 if 链里）；`voice-core.js` 与 `snowluma-conn.js` 是**独立工具也在用的单一实现**；`memory-card.js` 同时被桥接/插件/单测引用，改评分权重必须跑 `npm run test:memory-card`；`purpose-engine.js` / `token-budget.js` 是纯逻辑，改它们要跑 `npm run test:audit`。**目录里只应有 `.js`/`.mjs`**：曾经的 `bridge.js.bak-*` 会污染全局搜索并看起来像 module，2026-09-20 已移出（见下） |
+| `src/` | **桥接内核与共享引擎**：主程序 `bridge.js`、DSH 客户端、三个 MCP server、黑话/表情/语音共享库、鱼群保护（`fish-guard.js`）、记忆卡引擎（`memory-card.js`）、目的机制纯逻辑（`purpose-engine.js`）、对话收尾判断（`conversation-closure.js`）、**每日 token 额度纯逻辑（`token-budget.js`）+ 账本（`token-ledger.js`）**、**状态目录 ACL 收紧（`state-acl.mjs`，与 `scripts/harden-state-acl.mjs` 同一实现）**、**安全抓取（`safe-fetch.js`）**、**上线补历史（`history-catchup.js`）**、**价目表（`model-prices.js`）**、**发送语音内核（`voice-core.js` / `voice-packs.js` / `voice-tts.js`，三者职责不同：解析与探测 / 语音包安装 / 本地 TTS 客户端）** | 不能动。`bridge.js` 是主程序（**18118 行**，仍是全仓库最大单体，控制台 159 条精确路径 + 17 条前缀判断写在同一条 if 链里）；`voice-core.js` 与 `snowluma-conn.js` 是**独立工具也在用的单一实现**；`memory-card.js` 同时被桥接/插件/单测引用，改评分权重必须跑 `npm run test:memory-card`；`purpose-engine.js` / `token-budget.js` 是纯逻辑，改它们要跑 `npm run test:audit`。**目录里只应有 `.js`/`.mjs`**：曾经的 `bridge.js.bak-*` 会污染全局搜索并看起来像 module，2026-09-20 已移出（见下） |
 | `scripts/` | 调试 / 测试 / 一次性运维脚本（见第二节命名约定） | 测试脚本不能删；`cleanup-*` / `fix-*` / `patch-*` / `diag-*` 多为历史遗留 |
 | `dsh/` | 要装进 DSH 的东西：`agent-presets/qq-chat`、`agent-presets/qq-chat-v2`（preset 的**权威源**，含工具白名单 `qq-tool-restrict.mjs` 的 re-export 壳）。DSH 0.1.7 起 preset 以 bundle patch 形式安装，patch 由 `scripts/build-agent-preset-patches.mjs` 从这里的源生成到 `plugins/surfcore/presets/` | 改 preset 会影响所有人设行为；改完必须重新生成 patch |
 | `plugins/` | DSH 插件：**`surfcore`（合体插件：QQ 设置 + B站养鱼 + 双向记忆 + 身份对齐 + 鱼群保护 + 目的载体（QQ / 桌宠） + 桌宠对话/语音 + token 额度 + 扩展/平台接口；含 `qq-mode` 命名空间与设置窗口）**；两个 QQ preset 行与 `qq-tool-restrict` 权威实现也在同一个 bundle 的 `presets/` 里。原 `qq-mode-console` 已并入 SurfCore，目录已从本仓库移除。桌宠相关：`lib/pet.js`（安装/启动）、`lib/pet-chat.js`（对话/语音/事件）、`lib/pet-purpose.js`（目的载体）、`lib/pet-api.js`（本地令牌接口），说明见 `plugins/surfcore/docs/PET.md`。另外：`lib/token-budget.js`（用量采集器，纯逻辑在 `src/token-budget.js`）、`lib/http-guard.js`（设置页 API 与桌宠 API **共用**的回环/同源/令牌判据） | 改了要重装/重启 DSH。⚠️ 插件通过 `../../../src/*.js` **相对路径直接引用同仓库核心模块**（38 个模块、96 处；`npm run doc-facts` 复核），其中 `src/memory-card.js` 带 `?rev=` 缓存破坏后缀——热重载前要 bump，规则见 PITFALLS #68 |
@@ -90,7 +90,7 @@ docs/
 │                 # ★ MODULE-CORE-A.md     核心引擎（记忆/人格/目的/收尾/额度/计价）
 │                 # ★ MODULE-CORE-B.md     核心引擎（B站/内容处理/接入层/语音内核）
 │                 # ★ MODULE-PLUGIN.md     插件宿主（服务/调度/扩展/配置模型）
-│                 # ★ UI-AND-CONSOLE.md    设置页 15 标签 + 控制台 10 页面
+│                 # ★ UI-AND-CONSOLE.md    设置页 15 标签 + 控制台 9 页面
 │                 # ★ SUBSYSTEM-BILI.md    B站 子系统
 │                 # ★ SUBSYSTEM-VOICE.md   语音子系统
 │                 # ★ SUBSYSTEM-PET.md     桌宠子系统

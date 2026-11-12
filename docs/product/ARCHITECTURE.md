@@ -1,7 +1,7 @@
 # SurfCore 功能架构说明
 
 配套文档：[PRD.md](PRD.md)（产品视角）· [IMPROVEMENTS.md](IMPROVEMENTS.md)（缺口与风险）· [V1-INVENTORY.md](V1-INVENTORY.md)（V1 退役清单）
-**文档版本 v0.2（2026-11-12）**：拍板不改变本图的进程/分层事实；受拍板影响的只有 §6 的状态语义（V1 系列标记为过时、抖音暂缓、桌宠低优先）。
+**文档版本 v0.2（2026-11-12）**：拍板不改变本图的进程/分层事实；受影响的只有 §6 的状态语义（V1 系列退役进行中，仍有残留、抖音暂缓、桌宠低优先）。
 依据：`dev` @ `790c1d3` 的源码与文档，只读扫描。所有结论标注入口文件；未逐行阅读 `src/bridge.js`（18,221 行），桥接细节引用 `docs/guides/MODULE-BRIDGE.md`。
 
 ---
@@ -18,7 +18,7 @@ PRD 的模块表回答"用户能看到什么"；本文回答"它在哪个进程�
 ┌─────────────────────────────── 用户 Mac / PC ───────────────────────────────┐
 │                                                                             │
 │  ┌──────────── DSH 宿主进程（Electron） ─────────────┐   ┌── SnowLuma（外部）──┐│
-│  │  agent preset：constant + qq-chat / qq-chat-v2    │   │  QQ 客户端运行时    ││
+│  │  agent preset：constant + qq-chat-v2（V2-only）    │   │  QQ 客户端运行时    ││
 │  │  surfcore bundle（plugins/surfcore/lib/index.js）│◄──┤  HTTP+WS，令牌鉴权  ││
 │  │   ├─ 设置窗口 /dsh-surfcore（client.js，15 标签）│   └─────────┬───────────┘│
 │  │   ├─ B站调度 scheduler.js（10s tick）             │             │            │
@@ -118,7 +118,7 @@ douyin-service（登录/推荐/详情，独立 profile）
 
 ## 6. 模块矩阵（实现位置 × 状态）
 
-状态语义（拍板后）：`🗄️ 已过时` = 按 2026-11-12 拍板判定过时、最终退役（清单见 [V1-INVENTORY.md](V1-INVENTORY.md)）；`⏸️ 暂缓` = 拍板不投入，代码保留。
+状态语义（2026-11-12 批次后）：`🗑️ 已删` = V1 系列退役进行中，仍有残留（逐项状态与保留物见 [V1-INVENTORY.md](V1-INVENTORY.md)、[docs/cases/2026-11-12-v1-retirement.md](../cases/2026-11-12-v1-retirement.md)）；`⏸️ 暂缓` = 拍板不投入，代码保留。V1 删除只动代码，`~/.dsh` 用户数据只读不动。
 
 | 子系统 | 入口 | 规模 | 状态 | 判据 |
 | --- | --- | --- | --- | --- |
@@ -126,12 +126,12 @@ douyin-service（登录/推荐/详情，独立 profile）
 | 插件宿主 API | `lib/index.js` | 4,149 行 / prefix 分派 | ✅ | `index.js:3916-4038` |
 | QQ 桥接 | `src/bridge.js` | 18,221 行 / 165 处路径 | ✅ | 控制台 + 审计 + 真机验收 |
 | B站调度 | `lib/scheduler.js` | — | ✅ | tick + 四本账 + 案例 |
-| B站 V1 链路 | `lib/scheduler.js` + `tools/` | — | 🗄️（生产默认，退役需先转正 V2） | [V1-INVENTORY.md](V1-INVENTORY.md) |
+| B站 V1 链路 | `lib/scheduler.js` + `tools/` | — | 🗑️ 已删（2026-11-12）：V1 会话/权限装配删除，改走 `biliV2Agent.enqueue` | 保留物：`scheduler.js` tick/监听机器（V2 Host 无自有触发器）、`tools/commands` 与 `tools/lib`（V2 worker 共享库）、`lib/automation.js`（只读 UI 快照）、`src/bili-api.js`（B站 V2 用）；见 V1-INVENTORY.md §1⑤ |
 | B站 V2 | `lib/bili-v2-*.mjs` | 多模块 | 🟡 | 模块验收，未安装 |
 | 抖音 | `lib/douyin-*.mjs` | 13 个模块 | 🟡 ⏸️ | 真实链路有验收，稳定性未验；拍板暂缓 |
-| 记忆 V1 | `src/memory-card.js` | — | 🗄️（生产默认，退役需先转正 V2） | 默认路径；用户数据载体 |
-| 记忆 V2 | `src/core/memory-v2-*` | 16 个模块 | 🟡 | 默认 `backend: 'v1'`（`memory-v2-routing.js:34`） |
-| QQ 一代仿真（v1 preset） | `dsh/agent-presets/qq-chat`、`bridge.js:538` | — | 🗄️（默认 preset 是 v1，转正 v2 后退役） | `PRESET_NAMES = { v1: 'qq-chat', v2: 'qq-chat-v2' }` |
+| 记忆 V1 | `src/memory-card.js` | — | 🗑️ 已删（2026-11-12）：`context.js` V1 记忆卡注入分支删除，后端收口 V2-only | 保留物：`src/memory-card.js` 本体（评测测试 import）、`lib/memory-card.js`/`lib/memory.js`（衰减卡/全量卡/同步实现）；`memory-v2-legacy-registry.js`、`memory-v2-migration-plan.js` 已删；见 V1-INVENTORY.md §1②④ |
+| 记忆 V2 | `src/core/memory-v2-*` | 16 个模块 | ✅ | V2-only：fresh 缺省 `{backend:'v2',source:'fresh-default'}`，读/发布 v1 fail-closed `MEMORY_BACKEND_RETIRED`；管理/面板 UI 仍接受 `backend:'v1'` 夹具值（仅展示层） |
+| QQ 一代仿真（v1 preset） | `dsh/agent-presets/qq-chat`、`bridge.js:538` | — | 🗑️ 已删（2026-11-12） | `qq-chat` 目录/patch 删除、`PRESET_NAMES` 收敛 `qq-chat-v2`；`/api/social*` 四个 V1 路由与 5 秒社交心跳删除。残留：`bridge.js` 一代社交状态机函数与 `social` 容器暂留（清内存态），`reserved` 不可达；见 V1-INVENTORY.md §1③⑥ |
 | 语音 | `src/voice-*.js` | — | ✅/🟡 | 语音库 ✅；云端 🟡；火山 TTS 真实计费/音质第一梯队 |
 | 桌宠 | `lib/pet*.js` | — | ✅ ⬇️ | API + 令牌；本体外部；拍板优先级较低 |
 | 目的 | `src/purpose-engine.js` | — | ✅ | 9 类需求 + 双载体 |
@@ -140,7 +140,7 @@ douyin-service（登录/推荐/详情，独立 profile）
 | 统一生活 | `src/core/life.js` | — | 🟡 | 已接入卡片，无独立入口 |
 | 扩展/平台 | `lib/extensions.js`、`lib/platforms.js` | — | 🟡 | 只有空壳示例；`tieba: planned` |
 | 贴吧 | `platforms/tieba/manifest.json` | 清单 | 🧪 | 无适配器 |
-| 一代仿真 | `qq-mode.js` `reserved` | — | 🗄️ | 默认 `reserved2` |
+| 一代仿真 | `qq-mode.js` `reserved` | — | 🗑️ 已删（2026-11-12） | 模式枚举删 `reserved`（旧 `state/mode.json` 值 fail-closed 并提示改 `simulation`）；保留 chat / closed-agent / reserved2（`simulation` 为规范名），默认 `reserved2`；控制台按钮与设置组删除 |
 | macOS 设计稿 | `docs/design/macos/` | 索引指向该入口 | 🧪 | 该目录被 `.gitignore:58` 忽略，本工作树未携带；`docs/README.md:78` 的"已收录"措辞易误读 |
 
 ---

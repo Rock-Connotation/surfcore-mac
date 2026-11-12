@@ -1,3 +1,11 @@
+## 2026-11-12 V1 退役破坏式重构进行中（未达到合并条件）
+
+工作树 `../surfcore-v1-retirement`，分支 `feat/v1-retirement`（基线 `5f27111`）。用户拍板「六项 v1 直接删、开发中不留向后兼容」正在实施：Memory 后端 V2-only、QQ 一代 preset/`reserved`/人格过滤层删除、B站 V1 会话/权限层删除、控制台与插件设置窗口一代入口删除、preset 只装 `qq-chat-v2`、`/api/social*` 四路由删除。
+
+提交：`28dd419`（S1）→ `5cd3456`（S2）→ `b26f9fc`（S3/S4）→ `eba9153`（清单），另有文档/钉子收口提交待补。此前运行 audit 194/194、lint 退出 0（债务 661≤669）、regressions 全过、memory-v2 47/47；这些结果不覆盖后续所有未提交修改。插件 npm test 未通过：`test-douyin-companion.mjs` 卡在 `job did not finish`，需修复并重跑。doc-facts 曾通过，verify-ref HEAD 曾为 0 问题，最终提交后均需重验。`test-console-ui` 用系统 Chrome 实跑：本批新增的 views/legacy IDs 断言已同步；4 个 FAIL 与基线 `5f27111` 完全相同（环境/基线漂移：提权命令、payload 契约、趋势图、404），非本批引入。
+
+**没验证**：真实 DSH 装配 `qq-chat-v2` patch、QQ 入站→V2 回复闭环、B站 V2 Host 真机 enqueue、旧 `~/.dsh` 里 `reserved` / v1 路由文件的手工迁移演练。**数据**：`~/.dsh` 原地保留未删。**残留**：bridge.js 惰性一代状态机（不可达）、QQ 出站 `auditAndSend` 双路径、Memory V2 面板 UI 的 v1 夹具值；详见 [case](cases/2026-11-12-v1-retirement.md)。**下一步**：发布/协调会话确认后合并 `feat/v1-retirement` 回 `dev`（`--no-ff`），从合并后 HEAD 重生成清单，真机回归，再定版本发版。未 bump/tag/发布/推公开仓库。**本会话未执行合并**：开工核对主树 `/Users/shizihan/Daily/Github/surfcore-mac` 仍有未跟踪目录 `2026-11-12/`（非本会话产物），按 AGENTS §1.9「脏文件不全是你的 → 停手」留给对应会话收走后再合并。
+
 ## 2026-11-12 功能收拢与清理完成
 
 QQ修复四批4b86c0d、03e4581、7227f5f、2b9d625已合dev（合并5bef7e1），保留主线Phase A–E。主目录当前dev，仅余main/dev两个分支和主目录一个worktree；main保持9eb4028。指定七目录及本次归档/临时测试副本按用户明确“无当前业务用途就删、不备份”授权删除，未迁移为另一份大备份。当前DSH独立程序、真实用户数据、记忆、配置与既有运行回滚目录未动。

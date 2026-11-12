@@ -106,7 +106,7 @@
 
 ```
 身份层   角色（人格卡 / 角色包 / 切换与快照）
-记忆层   衰减记忆卡 · 全量卡 · 双向脱敏同步 · 身份对齐 · Memory V2（实验）
+记忆层   衰减记忆卡 · 全量卡 · 双向脱敏同步 · 身份对齐 · Memory V2（后端已 V2-only，见 2026-11-12 退役 case）
 表达层   QQ（默认出口）· B站 · 抖音（暂缓）· 桌宠（低优先）· 语音 · 主动目的
 约束层   白名单/黑名单 · 工具守卫 · 鱼群保护 · 额度 · 隐私闸 · 身份闸
 运维层   设置窗口（15 标签，全用户一致）· 桥接控制台 · 诊断/备份/更新 · 扩展与平台接口
@@ -129,19 +129,19 @@
 
 | 功能 | 解决什么 | 关键行为 | 依赖实现 | 状态 |
 | --- | --- | --- | --- | --- |
-| 衰减记忆卡 | 会忘记、有清晰度 | 重要度评分、7 天保护、逐档降级、容量 80/90/100% | `src/memory-card.js`、`lib/memory-card.js` | ✅（V1 本体，按拍板最终退役，见 [V1-INVENTORY.md](V1-INVENTORY.md)） |
+| 衰减记忆卡 | 会忘记、有清晰度 | 重要度评分、7 天保护、逐档降级、容量 80/90/100% | `src/memory-card.js`、`lib/memory-card.js` | ✅（V1 记忆卡注入分支已删，`src/memory-card.js` 本体保留供评测测试 import，见 2026-11-12 退役 case） |
 | 全量卡 | 永不遗忘的存档 | append-only JSONL，不进提示词，默认 10GB 只告警 | `src/memory-card.js` | ✅ |
 | 三场景共享 | QQ/B站/桌宠同一张卡 | inbox 追加、插件唯一写卡、scope 隔离 | `ARCHITECTURE.md:195-209` | ✅ |
 | 双向脱敏同步 | 跨平台但不泄私密 | B站→QQ 默认开；QQ→B站 默认关；隐私闸整行丢弃 | `lib/memory.js`、`lib/privacy.js` | ✅ |
 | 身份对齐 | 同一个人跨平台认得出 | 手动/候选/批准；称呼优先 | `lib/align.js`、`src/identity-guard.js` | ✅ |
-| Memory V2 | 召回质量、时间感知、可审计来源 | 路由默认 v1；控制库缺失时 fail-closed | `src/core/memory-v2-*`、`lib/memory-v2-runtime.mjs` | 🟡（多条案例"未安装"）——V1 退役的前提是它先转正 |
+| Memory V2 | 召回质量、时间感知、可审计来源 | 后端已收口 V2-only：fresh 路由缺省 `{backend:'v2',source:'fresh-default'}`，读/发布 v1 一律 fail-closed `MEMORY_BACKEND_RETIRED` | `src/core/memory-v2-*`、`lib/memory-v2-runtime.mjs` | ✅（V1 记忆后端已删，见 2026-11-12 退役 case；管理/面板 UI 仍接受 `backend:'v1'` 夹具值，仅展示层） |
 
 #### C. QQ（默认出口）
 
 | 功能 | 解决什么 | 关键行为 | 依赖实现 | 状态 |
 | --- | --- | --- | --- | --- |
 | **默认入口** | 装完即落在 QQ | 安装后默认只开 QQ；B站/抖音默认关、设置中可开 | 现状默认 QQ+B站（`plugins/surfcore/README.md:36`） | 🟡（拍板已定，默认值改造待立批次） |
-| 四模式 | 不同权限面 | chat / closed-agent / reserved / reserved2；模式变了重建会话 | `RULES.md:11-25`、`src/bridge.js` | ✅ |
+| 三模式 | 不同权限面 | chat / closed-agent / reserved2（`simulation` 为规范名）；`reserved` 已随 V1 退役删除，模式变了重建会话 | `RULES.md:11-25`、`src/bridge.js` | ✅ |
 | 收发与会话映射 | 群/私聊进 DSH 再回 QQ | 每 QQ 会话一个 DSH 会话 + agentToken | `ARCHITECTURE.md:150-184` | ✅ |
 | 白名单/黑名单 | 只服务指定群/人 | 发送强制白名单；入站黑名单最前置 | `RULES.md:41,47` | ✅ |
 | 工具守卫 | 群友物理上碰不到本机 | preset 白名单 + `qq-tool-restrict.mjs` fail-closed | `RULES.md:37-39` | ✅ |
@@ -241,7 +241,7 @@
 
 ### P2（增强与退役；均不阻塞核心）
 
-12. Memory V2 / B站 V2 / QQ V2 从 dev 转正；**V1 系列按拍板判定为过时，最终目标删除**——退役路线与清单见 [V1-INVENTORY.md](V1-INVENTORY.md)，真正删除需用户圈定范围、另立批次并按铁律 6 先隔离备份。
+12. Memory V2 / B站 V2 / QQ V2 从 dev 转正；**V1 系列退役进行中，仍有残留且测试未通过**——退役清单与逐项状态见 [V1-INVENTORY.md](V1-INVENTORY.md)，操作记录见 [docs/cases/2026-11-12-v1-retirement.md](../cases/2026-11-12-v1-retirement.md)；`~/.dsh` 用户数据只读不动，代码残留与旧配置手工改值见该清单 §1/§4。
 13. 任务 Harness 与 Mac 本地执行的产品化（准入、产物、回执、可见状态）。
 14. 新平台（贴吧）与真实扩展。
 
@@ -302,7 +302,7 @@
 | 1 | 核心是数字角色分身；渠道是出口，不是产品本体 | §1.1、§三 |
 | 2 | Windows 与 macOS 双平台一等公民；Linux 未验证不承诺 | §1.4、§6.2 |
 | 3 | 默认入口是 QQ（安装后/首次打开默认落在 QQ） | §2.3、§五 P0-7 |
-| 4 | 无高级/普通用户之分；设置窗口完全一致；V1 系列过时、最终删除 | §2.1、§五 P2-12、V1-INVENTORY.md |
+| 4 | 无高级/普通用户之分；设置窗口完全一致；V1 系列过时、已按 2026-11-12 批次破坏式删除 | §2.1、§五 P2-12、V1-INVENTORY.md |
 | 5 | 桌宠优先级较低，不放主推能力 | §五 降级段、§4.2 G |
 | 6 | 无商业化打算；额度按资源约束存在 | §1.4、§三、§4.2 I |
 
@@ -311,5 +311,5 @@
 ### 7.2 剩余待确认（需要用户/后续批次处理）
 
 1. **默认只开 QQ 的实施**：改默认配置 + 老用户迁移策略（静默关别人的 B站是不可接受的）。待立批次。
-2. **V1 删除范围圈定**：清单见 [V1-INVENTORY.md](V1-INVENTORY.md)，按"删了最安全 → 删了最痛"排序；真正删除需用户圈定范围，另立批次并按铁律 6 先隔离备份。
+2. **V1 退役的已知残留与旧配置改值**：六项代码面仅部分删除，逐项状态与保留物见 [V1-INVENTORY.md](V1-INVENTORY.md)；残留（`auditAndSend`、`social` 容器、Memory V2 UI 夹具值）与旧 `state/mode.json`→`simulation`、旧 `routing.json` v1→V2 重新初始化见该清单 §1/§4，均属用户侧/代码残留收口，不再另立"圈定删除"批次。
 3. 火山 TTS 真实计费/音质验收（第一梯队，待真实凭据与真机）。

@@ -1,7 +1,7 @@
-# V1 清单盘点（决策用，2026-11-12）
+# V1 清单盘点（2026-11-12，退役进行中）
 
-> **本文只做清单，未删除任何代码或数据。** 依据 2026-11-12 拍板："V1 系列判定为过时，最终目标是删除"。
-> 真正删除需用户圈定范围后另立批次，并按 AGENTS 铁律 6 先隔离备份（`~/.dsh/_quarantine/` / `_backups/`）。
+> **状态：六项 V1 的退役尚未完成；QQ 出站链及其他残留仍在，插件测试未通过。** 依据 2026-11-12 拍板："直接把六项 v1 删掉就可以了。现在是开发中，不需要那么多向后兼容，破坏式重构就可以了"。
+> 删除只动代码/脚本/测试/文档：`~/.dsh` 用户数据（角色包/记忆卡/state/mode.json/账本）**只读不动**，删代码不删数据。操作与残留见 [docs/cases/2026-11-12-v1-retirement.md](../cases/2026-11-12-v1-retirement.md)。
 > 配套：[PRD.md](PRD.md) §五 P2-12 · [IMPROVEMENTS.md](IMPROVEMENTS.md) A4
 
 ## 0. 判定范围（先划清什么不是"V1 系列"）
@@ -31,7 +31,7 @@
 | 被谁引用 | 人格卡注入链（persona.js → bridge/pet/bili 注入）；`scripts/test-persona-layers.mjs`；preset 保存校验 |
 | 删除波及 | 人格卡中〔一代〕小节不再被过滤区分；preset 硬校验少一套不变量。**依赖前提：先让所有 preset 只用 v2 校验**，否则校验语义缺口 |
 | 数据/用户配置依赖 | ⚠️ **角色包人格卡（`roles/*.md` / 角色包 character 文件）里可能含〔一代〕小节**——是用户数据。删除过滤层前需把内容合并为 v2-only 文本并迁移 |
-| 建议动作 | 随"QQ 一代仿真退役"（③）一起做；先迁移人格卡文本 |
+| 批次状态 | ✅ **已删**：〔一代〕/〔二代〕过滤、`v1Only` 统计、`PRESET_BLOCKING_SUBSTRINGS_V1` 与 preset 'v1'/'v2' 硬校验全部移除；`role-card.js`/`preset-prompt.js`/`persona-layers.js` 固定 V2。`~/.dsh` 角色包内的〔一代〕文本属用户数据，只读不动，未做内容迁移 |
 
 ### ② 🟢 Memory V2 模块内部的 'v1' 兼容分支 —— 删了较安全（V2 转正后）
 
@@ -41,7 +41,7 @@
 | 被谁引用 | 路由判定被 `scheduler.js:biliContextForRound`、`douyin-companion-memory.mjs`、`qq-v2-reply-host.mjs:42`、`bili-v2-agent.mjs:66`、`lib/index.js`（memoryV2 装配）消费 |
 | 删除波及 | V2 变成硬性前置：无控制库/fail-closed 时不再回落 'v1'，而是明确报错。**这正是退役 V1 的语义**，但必须先完成数据迁移与真机验收，否则所有渠道记忆写入直接失败 |
 | 数据/用户配置依赖 | 迁移路径本身（memory-v2-migration-plan/legacy-registry）就是为 V1 数据设计的——**删迁移代码 = 永久放弃 V1 数据导入能力**，必须在数据迁移完成后才删 |
-| 建议动作 | Memory V2 转正 + 全量数据迁移验收后，作为"V1 退役"的一部分删除 |
+| 批次状态 | ✅ **已删**：Memory 后端收口 V2-only——fresh 路由缺省 `{backend:'v2',source:'fresh-default'}`，读/发布 v1 一律 fail-closed `MEMORY_BACKEND_RETIRED`；删 `memory-v2-legacy-registry.js`、`memory-v2-migration-plan.js`，legacy acceptance/回落 'v1' 分支与 UI 文案一并移除。`context.js` 删 V1 记忆卡分支与 life/purpose 注入。残留：Memory V2 管理/面板 UI 仍接受 `backend:'v1'` 夹具值，仅 UI 展示层，核心路由已 V2-only |
 
 ### ③ 🟡 QQ 一代仿真（v1 preset + reserved 模式） —— 删了中等痛
 
@@ -51,7 +51,7 @@
 | 被谁引用 | bridge 会话创建/模式闸（模式变→重建会话）、控制台模式页、`state/mode.json` 读写、测试脚本（协议回归） |
 | 删除波及 | `agentPreset` 缺省回退要改指 v2；模式枚举删 `reserved` 后，控制台与 `state/mode.json` 里已存的 `["reserved",...]` 值会校验失败——需要兼容读取或一次性迁移 |
 | 数据/用户配置依赖 | ⚠️ `state/mode.json`（用户当前模式）、DSH profile 的 `agentPreset` 配置值 |
-| 建议动作 | 真机回归后把缺省切到 `qq-chat-v2`，观察一个使用周期，再删 preset 目录与 reserved 枚举 |
+| 批次状态 | ✅ **已删**：`qq-chat` preset 目录与 patch 删除、`PRESET_NAMES` 收敛 `qq-chat-v2`；模式枚举删 `reserved`（旧 `state/mode.json` 值 fail-closed并提示改 `simulation`）；控制台一代仿真模式按钮/选项、插件设置窗口「一代仿真（reserved）」设置组删除；`/api/social*` 四个 V1 路由删除，V1 5 秒社交心跳不再启动。旧 `state/mode.json` 的 `reserved` 值需手工改 `simulation`（用户数据，只读不动） |
 
 ### ④ 🔴 V1 记忆后端本体（记忆卡 + 全量卡 + 同步） —— 删了最痛
 
@@ -61,7 +61,7 @@
 | 被谁引用 | **所有渠道的记忆读写**：QQ（inbox 注入、`/api/memory-card/notify`）、B站（调度上下文、脱敏同步）、桌宠（pet-chat）、purpose-engine（素材来源）、身份对齐 |
 | 删除波及 | 三场景共享记忆、长期关系、主动目的全部失效——产品停摆。**且它是 Memory V2 的迁移源**：迁移计划、legacy-registry 都从 V1 数据出发 |
 | 数据/用户配置依赖 | 🔴 **角色包 `memory/` 目录的全部 V1 记忆卡 + 全量卡 JSONL（append-only 用户数据，体量大、不可再生）** |
-| 建议动作 | 最后删。前置：Memory V2 转正（真实环境验收 + 失败路径有 code/hint + 回滚演练）→ 全量数据迁移且抽样核对 → 用户明确圈定后才动 |
+| 批次状态 | 🟡 **部分删除**：`src/core/context.js` 的 V1 记忆卡注入分支已删（Memory 后端 V2-only）；`src/memory-card.js` / `lib/memory-card.js` / `lib/memory.js` 本体**保留**——前者供评测测试 import，插件侧仍是衰减卡/全量卡与跨平台同步的实现。`~/.dsh` 角色包 `memory/` 下 V1 记忆卡/全量卡 JSONL 属用户数据，只读不动 |
 
 ### ⑤ 🔴 B站 V1 链路（调度 + 四本账 + 工具面） —— 删了最痛
 
@@ -71,7 +71,7 @@
 | 被谁引用 | 插件 index 装配、设置窗口 B站标签、桥接 B站工具面 |
 | 删除波及 | B站自主生活（PRD P1-9）停摆；四本账/观看历史/偏好数据失去消费者 |
 | 数据/用户配置依赖 | 🔴 `logs/bili-bot/` 账本与观看历史（append-only 用户数据）、`dsh.bili` 配置 |
-| 建议动作 | B站 V2 模块验收 + 真机安装后才可讨论；在此之前 V1 链路是唯一可用的 B站实现 |
+| 批次状态 | 🟡 **部分删除（V1 会话层已删，工具链/调度触发机器保留）**：`scheduler.js` 的 B站 V1 会话创建/权限装配删除，只保留 tick/监听机器并改走 `biliV2Agent.enqueue`（V2 Host 无自有触发器）；`src/bili-api.js` 保留（B站 V2 用）、`tools/commands` 与 `tools/lib` 是 V2 worker 共享库保留、`lib/automation.js` 只读 UI 快照保留。`~/.dsh`/`logs/bili-bot/` 账本与观看历史属用户数据，只读不动 |
 
 ### ⑥ 🔴 QQ V1 发送/审计链路 —— 删了最痛（与 V2 共存双路径）
 
@@ -81,15 +81,17 @@
 | 被谁引用 | QQ 出站全链路；QQ V2 只在 Memory 路由为 v2 时生效 |
 | 删除波及 | 当前生产大量流量仍走 v1 路径（Memory 默认 v1）；先删会让 QQ 出站只剩"V2 且 Memory=v2"才可用 |
 | 数据/用户配置依赖 | `dsh.memoryV2` / 路由状态文件；回复审计账本 |
-| 建议动作 | 依赖链是：**Memory V2 转正 → QQ V2 广泛回归 → 删 v1 发送路径**。与 ④ 必须同批或后于 ④ 的一体化决策 |
+| 批次状态 | 🟡 **已知残留（本批未整体重写 QQ 出站双路径）**：`src/bridge.js` 的 `auditAndSend` 仍在，属已知残留，未在本批删除；Memory 路由已 V2-only 后 QQ V2 链路生效。另 `src/bridge.js` 的一代社交状态机函数与 `social` 容器暂时保留（会话退役/重置仍借它清内存态），但 `reserved` 不可达、心跳不启动、HTTP 面已删 |
 
 ---
 
 ## 2. 依赖关系一句话
 
-**一切最痛项（④⑤⑥）都压在同一条前置链上：Memory V2 转正（真机验收 + 数据迁移）→ 各渠道 V2 广泛回归 → 用户圈定范围 → 隔离备份 → 分批删 V1。** 最安全项（①②③）可随这条链顺路退场，不需要单独冒进。
+**原前置链（Memory V2 转正 → 各渠道 V2 广泛回归 → 用户圈定范围 → 隔离备份 → 分批删 V1）已被 2026-11-12 破坏式重构取代**：不再等"用户圈定 + 数据迁移"，直接删代码面、收口 V2-only，用户数据（`~/.dsh`）只读不动；残余只在代码残留（④⑤⑥ 部分保留）与用户侧旧配置的手工改值。
 
 ## 3. 推荐圈定方案（2026-11-12 调研补证后，供拍板）
+
+> **已被破坏式重构取代，以下仅保留作决策史料**：2026-11-12 拍板最终改为「直接删六项、不留向后兼容」，未采用下列"分批 + 圈定 + 数据迁移"节奏。
 
 ### 3.1 调研补证（本轮新增实证，全部可复核）
 
@@ -122,6 +124,7 @@
 
 ## 4. 本清单的边界
 
-- 只清点了"v1/V1 命名"与"V1 默认行为"；行数规模与测试钉子已在 §3.1 补证（memory-card 2,481 行、4+3 个测试文件受影响）。
-- `docs/` 下的历史案例/HANDOFF 提到 V1 的文字不属于删除对象（历史记录）。
-- 本清单未删除任何代码、配置或数据；引用关系以 grep 实证为准，逐条可复核。
+- 只清点了"v1/V1 命名"与"V1 默认行为"；行数规模与测试钉子已在 §3.1 补证（memory-card 2,481 行、4+3 个测试文件受影响）——该补证是删除前的决策史料，现行状态以 §1「批次状态」为准。
+- §0 的第三方协议 `v1` 排除表（8 类）**不在删除范围，永久保留**；`docs/` 下的历史案例/HANDOFF 提到 V1 的文字不属于删除对象（历史记录）。
+- **`~/.dsh` 用户数据只读不动**：角色包人格卡/记忆卡、`state/mode.json`、`logs/bili-bot/` 账本一律不删。旧 `mode.json` 值 `reserved` 需手工改 `simulation`；旧 `memory-v2/routing.json` 指向 v1 时备份后删文件、重启按 V2 重新初始化。
+- 代码残留如实列在 §1（④⑤⑥ 部分保留、`auditAndSend` 与 `social` 容器保留）；引用关系以删除前 grep 实证为准，逐条可复核。

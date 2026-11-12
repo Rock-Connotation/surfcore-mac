@@ -14,6 +14,52 @@
 
 ## 待发布
 
+### 未完成：V1 退役破坏式重构（feat/v1-retirement）
+
+**不得发布或合并**：插件测试未通过，QQ V1 出站链和其他 V1 残留仍未退役；下列历史测试结果不代表当前工作区已验收。
+<!-- release-batch: start=2026-11-12T16:55+08:00 end=2026-11-12T19:47+08:00 -->
+
+**建议**：**minor**（删除一代 preset / reserved 模式 / `/api/social*` 四个路由、preset 只装 `qq-chat-v2`，属用户可见的行为与接口变化；具体版本号只由发布会话定）。
+
+**改了什么**：
+- Memory 后端收口 V2-only：fresh 缺省 `backend:'v2'`，读/发布 v1 fail-closed `MEMORY_BACKEND_RETIRED`；删 `legacy-registry` / `migration-plan`；`context.js` 删 V1 记忆卡分支与 life/purpose 注入。
+- QQ 一代仿真退役：`dsh/agent-presets/qq-chat/` 与 `qq-chat.patch.yml` 删除，`PRESET_NAMES` 收敛 `qq-chat-v2`，模式枚举删 `reserved`（旧值 fail-closed + hint 改 `simulation`），role-card / preset-prompt / persona-layers 固定 V2。
+- 控制台与插件设置窗口删一代仿真页、导航项、选项、设置组；`/api/social*` 四路由与 5 秒社交心跳删除。
+- B站 V1 会话/权限层删除：`scheduler.js` 唤醒改走 `biliV2Agent.enqueue`；`lib/index.js` 权限修复接口改结构化拒绝 `BILI_V1_SESSION_PERMISSION_RETIRED`；`tools/commands` / `automation.js` / `src/memory-card.js` / `src/bili-api.js` 按 V2 消费关系保留。
+- 测试钉子按 v2-only 改写，新增 `scripts/test-v2-context-fixture.mjs`；删 `scripts/test-scheduler-permission.mjs`；产品文档四份 + 两个 README + doc-facts 数字同步；`release/install-manifest.json` 按 HEAD 重生成（1092→1084）。
+- case：`docs/cases/2026-11-12-v1-retirement.md`（含可直接转发的交接块与已知残留清单）。
+
+**覆盖提交**：`28dd419` → `5cd3456` → `b26f9fc` → `eba9153`（+ 本批文档/钉子收口提交，合并前以 `git log` 现读为准）。
+
+**验证**：
+```text
+npm run test:audit          # 194/194
+npm run lint:failures       # 退出 0，债务 661 ≤ 基线 669
+npm run test:regressions    # 全部通过
+npm run test:memory-v2      # 47/47
+cd plugins/surfcore && npm test   # 未通过：test-douyin-companion.mjs 未完成
+npm run doc-facts           # 退出 0
+node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
+```
+
+**注意**：`~/.dsh` 用户数据原地保留（未删）；旧 `mode.json=reserved` 需手工改 `simulation`，旧 `memory-v2/routing.json=v1` 需备份后删除并按 V2 重启初始化。未启动真实 DSH/QQ/B站，真机验收待发布前补。
+
+**交接块（可直接复制给发布会话）**：
+```text
+【合并请求】
+分支：feat/v1-retirement（28dd419 / 5cd3456 / b26f9fc / eba9153 + 文档收口）
+范围：V1 退役破坏式重构（不留向后兼容）——Memory V2-only、QQ 一代 preset/reserved/人格过滤层删除、B站 V1 会话/权限层删除、控制台与设置窗口一代入口删除、发布清单按 HEAD 重生成
+改到的文件：src/bridge.js、src/core/*、src/role-card.js、src/preset-prompt.js、src/persona-layers.js、public/console.html、plugins/surfcore/{lib,package.json,qq-mode,scripts}、scripts/*（含新增 test-v2-context-fixture.mjs）、docs/product/*、README.md、docs/cases/2026-11-12-v1-retirement.md、release/install-manifest.json
+删除：dsh/agent-presets/qq-chat/、plugins/surfcore/presets/qq-chat.patch.yml、src/core/memory-v2-legacy-registry.js、memory-v2-migration-plan.js、scripts/test-memory-v2-legacy-registry.mjs、test-memory-v2-migration-plan.mjs、scripts/test-scheduler-permission.mjs
+测试：test:audit 194/194；lint:failures 退出 0（661 ≤ 669）；test:regressions 全通过；test:memory-v2 47/47；plugins/surfcore npm test 未通过，待修复；doc-facts 退出 0；verify-ref HEAD 问题 0 个
+改动层级：实现层 + 接口层（不向后兼容）：删 /api/social* 四路由、/mode 拒 reserved、/bili/session-permission 结构化拒绝、preset 只装 qq-chat-v2
+失败路径：旧 mode.json=reserved 有 hint；旧 routing.json=v1 回 MEMORY_BACKEND_RETIRED 带 hint；B站路由非 v2 抛 code/hint 不回落
+风险/未验证：未启动真实 DSH/QQ/B站；真机装配、回复闭环、B站唤醒闭环待验收；test-console-ui 用系统 Chrome 实跑 17/21（4 个 FAIL 与基线相同，属环境/基线漂移）
+残留：bridge.js 惰性一代状态机、QQ 出站 auditAndSend 双路径、Memory V2 面板 UI 的 v1 夹具值（详见 case）
+建议版本：minor（用户可见行为/接口变化；版本号由发布会话定）
+是否已 rebase/merge 最新 dev：未合并（主树 dev 有非本会话未跟踪 `2026-11-12/`，按 AGENTS §1.9 停手）；待对应会话收走后由协调/发布会话 --no-ff 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
+```
+
 ### 批次 2026-11-12 · PRD 拍板修订 + 文档事实校验（含 doc-facts 合并）
 <!-- release-batch: start=2026-11-12T21:00+08:00 end=2026-11-12T22:30+08:00 -->
 
