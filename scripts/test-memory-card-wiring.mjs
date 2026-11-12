@@ -30,12 +30,15 @@ assert.match(bridge, /memoryCard: memoryCardPromptBlock\(/, 'qq_get_prompt 没�
 assert.match(scheduler, /memoryCardPromptBlock\('bili'\)/, 'B站调度器没有注入记忆卡');
 assert.match(scheduler, /memoryCardBlockForBili\(\)/, 'B站记忆卡块没有接进 identityContextLines');
 
-// 3) 插件：定时维护 + 控制台 API + 生命周期清理。
-assert.match(index, /startMemoryCardTimer\(\{ log: pluginLog, callBridge \}\)/, '插件没有启动记忆卡定时维护');
-assert.match(index, /\/memory-card/, '插件缺少记忆卡 API 路由');
+// 3) 插件：V1 记忆卡写者已退役（2026-11-12 R02）。只保留只读查看，
+//    不得再启动定时维护、不得在生产路径调用 runMemoryCardMaintenance。
+assert.equal(index.includes('startMemoryCardTimer('), false, '插件仍在启动已退役的记忆卡定时维护');
+assert.equal(/runMemoryCardMaintenance\(/.test(index), false, '插件仍在生产路径写旧记忆卡');
+assert.equal(index.includes('memoryCardTimer'), false, '插件仍保留记忆卡定时器生命周期');
+assert.match(index, /\/memory-card/, '插件缺少记忆卡只读路由');
 assert.match(index, /handleMemoryCard/, '插件缺少记忆卡处理器');
+assert.match(index, /MEMORY_CARD_WRITE_RETIRED/, '旧记忆卡写动作没有结构化退役错误');
 assert.match(index, /memoryCard: memoryCardStatusNow\(\)/, '概览没有记忆卡状态');
-assert.match(index, /memoryCardTimer\?\.stop/, '插件销毁时没有停记忆卡定时器');
 
 // 4) 控制台：容量条 / 弹窗 / 规则面板。
 assert.match(client, /function MemoryCardPanel/, '控制台缺少记忆卡面板');
@@ -63,9 +66,12 @@ assert.match(client, /全量卡上限（GB）/, '控制台没有全量卡 GB 上
 assert.match(client, /设为初次相遇/, '控制台没有“设为初次相遇”入口');
 assert.match(client, /合并为一个事件/, '控制台没有“合并为一个事件”入口');
 assert.match(client, /合并后置顶/, '控制台没有合并后置顶选项');
-assert.match(index, /merge-memories/, '插件动作白名单没有 merge-memories');
+// R02（V1 退役）：旧变更 API 全部退役，不再断言动作白名单；
+// 只读查看（全量卡路由/快照/面板）保留，写动作统一返回结构化退役错误。
+assert.equal(index.includes('merge-memories'), false, '生产装配不得再保留旧卡合并动作');
+assert.equal(index.includes('set-first-meet'), false, '生产装配不得再保留旧卡初次相遇动作');
+assert.match(index, /MEMORY_CARD_WRITE_RETIRED/, '旧记忆卡写动作必须返回结构化退役错误');
 assert.match(client, /初次相遇：/, '控制台没有显示当前初次相遇');
-assert.match(index, /set-first-meet/, '插件动作白名单没有 set-first-meet');
 assert.match(client, /最初/, '控制台没有「最初」说明/标记');
 
 // 6) 真实 bridge.js（VM fixture）：注入块能读、主人消息能进 inbox、不会写真实 ~/.dsh。
