@@ -14,6 +14,37 @@
 
 ## 待发布
 
+### 批次 2026-11-12 · PRD 拍板修订 + 文档事实校验（含 doc-facts 合并）
+<!-- release-batch: start=2026-11-12T21:00+08:00 end=2026-11-12T22:30+08:00 -->
+
+**建议**：与 A6 批次合并进同一版 **0.8.9（patch，纯文档 + 校验脚本，无行为变化）**
+
+**改了什么**：
+- 新增 `docs/product/`（PRD v0.2 拍板修订 / IMPROVEMENTS v0.2 / ARCHITECTURE v0.2 / V1-INVENTORY.md）：2026-11-12 六条拍板逐条落档（数字角色分身定位、双平台一等公民、默认入口 QQ、无用户分级+V1 过时、桌宠降级、无商业化）+ 抖音暂缓、火山 TTS 第一梯队。
+- V1 清单盘点（只清单未删）：8 类第三方协议 v1 排除 + 6 项 V1 面按"删了最安全→删了最痛"排序，含删除波及与数据依赖。
+- 设置窗口一致性核查结论：**无按用户类型的分叉**（15 标签静态渲染，`client.js:6938-6954,7215`）。
+- 合入 feat/doc-facts（a3f281f/7b274d4）：README/BOUNDARIES 平台事实修正 + `npm run doc-facts` 文档数字校验（口径：控制台路径按出现次数、src 引用含 presets，已写进脚本头部说明）。
+- case：`docs/cases/2026-11-12-prd-revision.md`。
+
+**验证**：
+```text
+npm run test:audit          # 预期 195/195
+npm run lint:failures       # 预期退出 0
+npm run doc-facts           # 预期退出 0
+node scripts/release-manifest.mjs --verify-ref HEAD   # 预期问题 0 个
+```
+
+**交接块（可直接复制给发布会话）**：
+```text
+【合并请求】
+分支：feat/prd-revision + feat/doc-facts（均已 no-ff 合入 dev）
+范围：纯文档批次——PRD 拍板修订（docs/product/ 四份）+ doc-facts 脚本与平台事实修正；不改业务代码、不 bump version
+改到的文件：docs/product/*（新增4）、docs/cases/2026-11-12-prd-revision.md、docs/RELEASE-QUEUE.md、docs/COORDINATION.md、scripts/doc-facts.mjs、README.md、docs/BOUNDARIES.md、docs/guides/*（doc-facts 批次的数字修正）、package.json（doc-facts script）、release/install-manifest.json（合并后重生成）
+测试：test:audit 195/195；lint:failures 退出 0；doc-facts 退出 0；verify-ref HEAD 一致
+风险/未验证：纯文档无运行时风险；入口文档（README/插件README）改写留待"默认只开QQ"实施后同批
+是否已 rebase/merge 最新 dev：是（本批即合并执行方）
+```
+
 ### 批次 2026-11-12 20:10 · A6 失败可见性：ok:false 三件套静态检查 + P0 链路补齐
 <!-- release-batch: start=2026-11-12T18:30+08:00 end=2026-11-12T20:10+08:00 -->
 
