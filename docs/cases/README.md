@@ -186,3 +186,5 @@
 - [QQ Native 输出观察与取消](2026-11-11-memory-v2-qq-native-observation.md)：实际流分阶段观察、原配置/请求/分片检查、工具 guard witness、等待实际取消后卸载确认。
 
 - [2026-11-12 QQ Native语音与白名单启用流程](2026-11-12-qq-native-voice-access.md)
+
+- [V1 退役破坏式重构](2026-11-12-v1-retirement.md)：六项 V1 按 2026-11-12 拍板退役中（Memory 路由 V2-only、QQ 一代 preset/reserved/人格过滤层、B站 V1 会话层、控制台与设置窗口一代入口）；含七步完整逻辑、失败路径、已知残留与发布交接块。

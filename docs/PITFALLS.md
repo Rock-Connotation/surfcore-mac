@@ -4462,3 +4462,45 @@ QQ旧MCP注册qq_send_voice不代表私有NativeOwner拥有语音工具；Owner/
 ### 2026-11-12：唯一历史资料不等于当前业务依赖
 
 清理先核对已提交源码、活动cwd、真实安装目录、profile包引用和依赖symlink。历史ASR夹具、旧程序快照与验收资料即使内容独有，也不自动等于当前业务需要。用户明确“无当前业务用途就删、不需要备份”后，不再建立数GiB归档；取消并删除本轮生成副本，保留Git有效源码与真实运行数据。大tar内容去重方案仅为已取消尝试，不宣称保全完成。见2026-11-12功能提交与清理case。
+
+---
+
+## #101（2026-11-12/13，P0）测试夹具把角色写进真实 `~/.dsh`
+
+**现象**
+- 跑 `test-companion-sharing*.mjs` / `test-douyin-companion*.mjs` 后，真实 `~/.dsh/surfcore/characters/current.json` 变成 `{"id":"alpha","epoch":1}`，`alpha/persona.md` 被夹具文本覆盖，并新建 `alpha/persona.scenes/local.md`、`role-a/`、`role-b/` 目录。
+- 同一事故在加了一层隔离后**第二次复发**（23:48），说明「在某个测试文件里写 `process.env.DSH_HOME = ...`」不够。
+
+**根因**
+- `character-persona.js` 在模块**求值**时就用 `process.env.DSH_HOME` 计算 `CHARACTERS_DIR` 常量。ESM 静态 import 的依赖先于任何赋值语句执行；测试若在 import 链（例如 `companion-sharing.mjs → context.js → character-persona.js`）之后才设 `DSH_HOME`，常量已绑定到真实 `~/.dsh`。
+- 第二次复发是另一个测试文件`import { chromium } ...` + `sharing-fixture.mjs` 的静态链里，隔离模块没有被排到**第一条** import。
+
+**处置**
+- 现场复制到 `~/.dsh/_quarantine/incident-2026-11-12-test-wrote-real-dsh/`；按 `characters/index.json` 权威值恢复 `current.json` = `app`/红豆/epoch 8；`alpha/persona.md` 从 `alpha/snapshots/before-switch/persona.md` 恢复为 `Alpha persona\n`；新建目录 rename 到隔离区。
+- `app` 角色数据、`memory-control.sqlite`、权限、删除屏障、预算与账本 mtime 未变（已核验）。
+
+**怎么验证**
+- 门禁前后 `stat` 真实 `~/.dsh/surfcore/characters/current.json` 与 `alpha/persona.md`；`find ~/.dsh -newer <stamp>` 不得出现角色/控制库写入（QQ 桥接日志除外）。
+- 新增 `plugins/surfcore/scripts/isolate-test-home.mjs`：拒绝把 `DSH_HOME` 指向真实 home；所有会触碰 `character-persona.js` 的测试**第一条 import** 引入它。
+- `scripts/test-v2-real-integration.mjs` 断言隔离库与 persona 哈希不变。
+
+**怎么预防**
+- 任何会写数据的 Node 测试：第一条语句就是隔离模块 import；`sharing-v2-fixture.mjs` 传入 `root` 时复用同目录（跨进程 race），未传时新建。
+- 不要把「设置环境变量」放在 import 之后；不要用静态 import 间接加载 `character-persona.js` 后才想起隔离。
+- 真实 `~/.dsh` 是红线：测试只读、不写；需要旧档案就用隔离副本 + 显式 `DSH_HOME`。
+
+## #102（2026-11-13，P1）V2-only 后影子开关与旧配置提示的误导
+
+**现象**
+- 新安装正式授权后仍 `MEMORY_SHADOW_DISABLED`；旧 `routing.json=v1` 的 hint 曾建议「备份后删除 routing.json」，若照做会丢权限/删除屏障/账本。
+- 旧 `state/mode.json=reserved` 被 `refreshMode` 静默忽略，`currentMode` 仍 `chat` 或保持上次值。
+
+**根因**
+- `shadowEnabled` 是影子期历史列，不是 V2 准入条件；`validate()` 却把它当必要条件，制造「已选 V2 / 已授权 / 仍被拒」三态矛盾。
+- 「路由缺失 + 控制库存在」被当成 fresh；「退役值」与「读取失败/非法值」共用「忽略并沿用上次模式」分支。
+
+**处置 / 预防**
+- V2 业务准入只看角色 epoch、具体 policy、控制修订、来源证明、生命周期与删除屏障；历史列保留但不参与判断、不直接 SQL 改值。
+- 新增 `src/core/memory-v2-preflight.js` 只读预检：fresh / ready / retired-v1 / control-only / route-only / corrupt / reader-too-new / unreadable 分状态，处理计划明确「不删 routing、不删控制库、不改权限」。
+- QQ 模式来源分离：`absent` 按明确 `chat` 契约；权威 `retired`/`invalid`/`unreadable`/`unavailable` 进入可见 blocked，且不被本地低优先级值掩盖。
+- 回归：`scripts/test-v2-real-integration.mjs`、`scripts/test-issue-regressions.mjs`（R07/R03 四项）、`plugins/surfcore/scripts/test-memory-v2-runtime.mjs`（正式授权后 capture/prepare 可用）。

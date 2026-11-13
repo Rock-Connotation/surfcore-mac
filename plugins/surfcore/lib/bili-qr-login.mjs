@@ -75,7 +75,7 @@ function checkBrowser(candidate, { platform, fsApi = fs, probe = probeBrowser })
 
 function probeBrowser(executable, { spawnSyncImpl = spawnSync } = {}) {
   const result = spawnSyncImpl(executable, ['--version'], {
-    encoding: 'utf8', timeout: 3000, maxBuffer: 256 * 1024, windowsHide: true,
+    encoding: 'utf8', timeout: 6000, maxBuffer: 256 * 1024, windowsHide: true,
   });
   if (result?.error) return { ok: false, reason: result.error.message }; // failure-lint:ignore 内部探测步骤，checkBrowser/findBrowser 汇总后抛 code+hint
   if (result?.status !== 0) return { ok: false, reason: `版本探测退出码 ${result?.status ?? '未知'}` }; // failure-lint:ignore 内部探测步骤，checkBrowser/findBrowser 汇总后抛 code+hint

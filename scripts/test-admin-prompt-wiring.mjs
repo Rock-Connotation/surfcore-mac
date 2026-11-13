@@ -44,7 +44,7 @@ await withHarness({ ownerQQ: ADMIN.qq, admin: ADMIN }, async (h) => {
   assert.ok(wake.includes('【来源判断】'), '唤醒提示必须带来源判断块');
   assert.ok(wake.includes('合并转发 / 聊天记录 = QQ 聊天内容'), '来源判断块要明确合并转发属于 QQ');
 
-  const roleHint = h.currentRoleHintV2();
+  const roleHint = h.currentRoleHint();
   assert.ok(roleHint.includes('【管理员 · 温柔模式'), '角色提示（qq_get_prompt.hint）必须带完整管理员规则');
   assert.ok(roleHint.includes('绝不回嘴'));
   assert.ok(roleHint.includes(ADMIN.biliMid));
@@ -56,7 +56,7 @@ await withHarness({ ownerQQ: ADMIN.qq, admin: { ...ADMIN, gentle: false } }, asy
   const wake = h.buildWakePromptV2('group:456', 'question');
   assert.ok(!wake.includes(ADMIN.qq), '关掉温柔模式后不再注入管理员身份块');
   assert.ok(!wake.includes('绝不回嘴'), '关掉后不得再注入语气硬规则');
-  const roleHint = h.currentRoleHintV2();
+  const roleHint = h.currentRoleHint();
   assert.ok(!roleHint.includes('【管理员】'), '关掉后角色提示也不留管理员标记');
   assert.ok(!roleHint.includes('绝不回嘴'), '关掉后角色提示也不得带语气规则');
   assert.equal(h.ownerMessageTag(), '', '关掉后消息标记必须为空');

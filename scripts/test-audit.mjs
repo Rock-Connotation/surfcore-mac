@@ -97,8 +97,7 @@ const tests = [
   // 平台启动开关：QQ/B站 各自「是否启动」的唯一真相 + 旧 bridge.autoStart 迁移
   // （2026-10-24 用户要求；只碰临时 DSH_HOME，不启停真实桥接）。
   'test-platform-start.mjs',
-  // B站 会话权限：workspace-write 在 C:\Users\Mieksido 起不了命令 → 自动切 danger-full-access。
-  'test-scheduler-permission.mjs',
+  // V1 会话权限自动校正已随 V1 退役删除（2026-11-12），测试文件一并移除。
   // B站生物钟会话归组：新会话 workspaceId，旧版无工作区服务才退回专用 cwd。
   'test-bili-workspace.mjs',
   // B站评论/@监听的 TDZ 回归：程序错误不能被 catch 吞成网络错误。
@@ -156,6 +155,9 @@ const tests = [
   // wake triggers 白名单、memory-update 边界、wait 租约归一化、md/黑话/表情/账本；
   // 本轮新增：/api/send/* 失败路径的作用域错误（R15）、reserved2 落库丢表情识别字段（R16）。
   'test-audit-regressions.mjs',
+  // W5/R01–R10 真实 V2 跨链路门禁：隔离 MemoryService/Host、正式授权、
+  // 人格编译、配置预检、调度退役屏障、失败可见与真实数据保留。
+  'test-v2-real-integration.mjs',
   // 表情语义层：编号分配、情绪识别、本地注意力编码、语境匹配、注入文本；
   // 以及表情库/工具面接线（编号可当 stickerId、收藏时带 emotion/content）。
   'test-sticker-semantics.mjs', 'test-stickers.mjs',

@@ -61,7 +61,7 @@ let oldRejected = false;
 try { persona.Config({ text: 'x' }); } catch { oldRejected = true; }
 check('dsh-persona 仍拒绝旧字段 text（故障前提成立）', oldRejected);
 
-for (const p of ['qq-chat', 'qq-chat-v2']) {
+for (const p of ['qq-chat-v2']) {
   const f = path.join(ROOT, 'dsh/agent-presets', p, 'agent.cordis.yml');
   const row = yaml.load(fs.readFileSync(f, 'utf8')).find((r) => r.id === 'persona');
   let schemaOk = false;
@@ -83,7 +83,7 @@ const presetPatches = await import(pathToFileURL(path.join(ROOT, 'scripts/build-
 for (const { file, changed } of presetPatches.buildPatches({ check: true, log: () => {} })) {
   check(`${path.relative(ROOT, file)} 与仓库源一致（未漂移）`, !changed);
 }
-for (const p of ['qq-chat', 'qq-chat-v2']) {
+for (const p of ['qq-chat-v2']) {
   const doc = yaml.load(fs.readFileSync(presetPatches.patchFileFor(p), 'utf8'));
   const row = doc?.[0]?.insert?.[0];
   check(`patch ${p}: 是 @deepseek-ai/dsh-agent-preset 行`, row?.name === '@deepseek-ai/dsh-agent-preset');

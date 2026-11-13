@@ -7,7 +7,7 @@ async function fixture(mode = 'ok') {
   const calls = [], sources = new Map(), wait = new Promise(resolve => { release = resolve; });
   const ctx = { get: name => name === 'llm' ? { resolveModelInfo: async (provider, id) => ({ provider, id }) } : { currentSelection: () => ({ provider: 'p', model: 'm' }) } };
   const host = createQQV2ReplyHost({ ctx, memoryV2: { adapter: {}, getRouting: () => ({ ok: true, backend: 'v2' }) }, tokenBudget: {},
-    getCharacter: () => role, getQQIdentity: async () => ({ ok: true, verified: true, accountId: '1', allowedGroups: ['2', '3'], allowedPrivates: [] }), readPersona: () => 'Fixture persona.', timeoutMs: ['timeout', 'expired'].includes(mode) ? 5 : 1000,
+    getCharacter: () => role, getQQIdentity: async () => ({ ok: true, verified: true, accountId: '1', allowedGroups: ['2', '3'], allowedPrivates: [] }), compilePersona: () => ({ ok: true, text: 'Fixture persona.', digest: 'fixture' }), timeoutMs: ['timeout', 'expired'].includes(mode) ? 5 : 1000,
     loadEnvironment: async () => { if (mode === 'expired') await new Promise(resolve => setTimeout(resolve, 10)); return { nativeModules: {}, nativeCodec: { createUserMessage: value => value }, llm: {}, getLlmHookContext: () => ctx }; },
     createSource: ({ bridge, validateOwnedToolContext, toolSpecs }) => {
       assert.equal(toolSpecs.length, mode.startsWith('voice') ? 1 : 0);

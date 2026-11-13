@@ -276,7 +276,6 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       tone: readPersonaLayerText('tone'),
       scene: readPersonaLayerText('scene', 'pet'),
       daily: readPersonaLayerText('daily'),
-      mode: 'v2',
       maxChars: 4200,
       sceneId: 'pet',
     }).text || personaCore;

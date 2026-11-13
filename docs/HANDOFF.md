@@ -1,3 +1,15 @@
+## 2026-11-13 V1 退役 R01–R10 收口（离线门禁进行中，未合并）
+
+工作树 `../surfcore-v1-retirement`，分支 `feat/v1-retirement`，基线 `76f666a`。按 2026-11-12 审查报告完成 R01–R10 实现：V2-only 生产准入（移除 shadow 门禁）、旧记忆卡生产写者退役、QQ 模式/旧配置只读预检与 closed-agent 能力差异、B站 DM pending/ack 与调度退役屏障、抖音/分享真实 V2 工厂与失败可见、人格编译共享、真实 V2 跨链路门禁、Memory 评测显式编排、当前 README/RULES/DSH_SETUP/UI 文案。
+
+**已完成**：R01–R10 全部实现，最终 HEAD `0bfbd01`（功能分支，清单 1091 项 / verify-ref HEAD 0 问题）。离线门禁：`npm ci` 退出 0；`test:audit` 195/195 退出 0；`test:regressions` 全过退出 0；完整 `npm --prefix plugins/surfcore test`（含 35 个插件 Memory 脚本）退出 0；`test:memory-v2` 48/48 退出 0；`lint:failures`/`doc-facts`/`build-agent-preset-patches --check` 退出 0；`release-manifest --verify-ref HEAD` 0 问题。`test:console-ui` 因 `npm ci` 后缺 Playwright 跳过（环境项，非产品回归）。新增 `test-v2-real-integration.mjs` 12 项真实 Host 门禁、调度退役 4 项、DM pending/ack 3 项、R07/R03 模式回归 4 项。
+
+**真实验收（未做）**：DSH 隔离 profile 实装同源、QQ 入站→Native→发送 ACK→记忆、B站真机唤醒/停止/角色切换、旧配置副本诊断。**数据**：真实 `~/.dsh` 只读保留；两次测试夹具误写已按 `index.json` 与角色快照恢复，现场在 `~/.dsh/_quarantine/incident-2026-11-12-test-wrote-real-dsh/`；新夹具首行 `isolate-test-home.mjs` 根治。
+
+**合并**：未执行。主树 `/Users/shizihan/Daily/Github/surfcore-mac` 仍有他人未跟踪目录 `2026-11-12/`，按 AGENTS §1.9 不清理、不合并到主工作区；本地 `dev`=`5f27111`（退役前基线）需由协调会话确认后再合。合并后从新 HEAD 重生成 `install-manifest.json` 并 `release-manifest --verify-ref HEAD` 要求 0 问题。**发布**：未获单独确认，不 bump/tag/Release/Pre-release。
+
+**回滚**：程序回滚 = `git revert` 本批提交；不恢复旧数据库/额度账本/`~/.dsh` 角色资料。详见 [case 收口续篇](cases/2026-11-12-v1-retirement.md)。
+
 ## 2026-11-12 功能收拢与清理完成
 
 QQ修复四批4b86c0d、03e4581、7227f5f、2b9d625已合dev（合并5bef7e1），保留主线Phase A–E。主目录当前dev，仅余main/dev两个分支和主目录一个worktree；main保持9eb4028。指定七目录及本次归档/临时测试副本按用户明确“无当前业务用途就删、不备份”授权删除，未迁移为另一份大备份。当前DSH独立程序、真实用户数据、记忆、配置与既有运行回滚目录未动。

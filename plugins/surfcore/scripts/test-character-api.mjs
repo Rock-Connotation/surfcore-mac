@@ -181,7 +181,8 @@ try {
   assert.equal(memoryStatus.data.ok, true, JSON.stringify(memoryStatus.data));
   const control = new DatabaseSync(path.join(tempDsh, 'surfcore', 'memory-control.sqlite'));
   const { writeMemoryRouting } = await import('../../../src/core/memory-v2-routing.js');
-  control.prepare("UPDATE state SET activeBackend='v2',shadowEnabled=1 WHERE id=1").run();
+  // V2-only：全新库缺省 activeBackend 已是 v2，不再直接改 SQLite 开影子开关（R01）。
+  assert.equal(memoryStatus.data.backend, 'v2', JSON.stringify(memoryStatus.data));
   assert.equal(writeMemoryRouting({ stateDir: path.join(tempDsh, 'surfcore'), status: { ...memoryStatus.data, activeBackend: 'v2' } }).ok, true);
   const policiesBefore = control.prepare('SELECT * FROM policies ORDER BY policyId').all();
   const deniedSidebar = await invoke('GET', '/douyin/companion-sharing');

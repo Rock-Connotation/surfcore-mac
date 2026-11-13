@@ -31,13 +31,12 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
   if (!stateDir || typeof getCharacter !== 'function') throw new TypeError('QQ memory requires stateDir and a synchronous getCharacter.');
   const directory = path.join(stateDir, 'memory-v2', 'qq-producer');
   const latest = new Map(), history = new Map(), active = new Map(), failures = new Map(), sendLeases = new WeakMap();
-  let sourceChain = Promise.resolve(), observedV2 = false;
+  let sourceChain = Promise.resolve();
   async function release(handle) { try { await client.release(handle); } catch {} }
   function routing() {
     try {
       const route = getRouting();
-      if (route?.ok && route.backend === 'v2') observedV2 = true;
-      if (observedV2 && route?.ok && route.backend === 'v1') return problem('MEMORY_BACKEND_CHANGED', 'An active V2 bridge cannot downgrade in-flight work to legacy memory.', 'Restart the bridge to retire its V2 sessions before continuing with V1; keep durable sources unchanged.');
+      if (route?.ok && route.backend !== 'v2') return problem('MEMORY_BACKEND_RETIRED', 'The memory route is not a V2 backend.', 'The Host only supports V2 memory; verify the current routing and retry.');
       return route;
     } catch { return problem('MEMORY_ROUTING_INVALID', 'The memory route cannot be read.'); }
   }
@@ -93,8 +92,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
   async function recordSource(input, approvedSend = null) {
     let record, captured, durableRecord = false;
     try {
-      const role = approvedSend?.role ?? roleOf(getCharacter), route = requireRoute();
-      if (route.backend === 'v1') return { ok: true, backend: 'v1', acceptance: 'legacy' };
+      const role = approvedSend?.role ?? roleOf(getCharacter); requireRoute();
       if (!approvedSend && input.expectedCharacter && !sameRole(role, input.expectedCharacter)) return problem('CHARACTER_EPOCH_STALE', 'The role changed while the platform message was being read.');
       const match = /^(group|private):([1-9][0-9]{0,19})$/.exec(input.key ?? '');
       if (!match || typeof input.text !== 'string' || !input.text.trim()) return problem('MEMORY_SOURCE_FACTS_INVALID', 'A concrete QQ conversation and complete source text are required.');
@@ -149,7 +147,6 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     let captured;
     try {
       const role = roleOf(getCharacter), route = requireRoute();
-      if (route.backend === 'v1') return { ok: true, backend: 'v1' };
       await sourceChain; checkRole(role);
       const current = latest.get(key);
       if (!current || current.sourceState !== 'committed') return failures.get(key) ?? problem('MEMORY_SOURCE_PENDING', 'The current QQ input is not committed and authorized.');
@@ -189,7 +186,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
   }
   async function validate(key, { prepared = false } = {}) {
     try {
-      const route = requireRoute(); if (route.backend === 'v1') return { ok: true, backend: 'v1' };
+      const route = requireRoute();
       const packet = active.get(key); if (!packet) return problem('MEMORY_CONTEXT_REQUIRED', 'No current authorized QQ request exists.');
       checkRole(packet.role);
       if (packet.route !== digest(route.descriptor ?? route)) return problem('MEMORY_BINDING_STALE', 'The memory routing generation changed.');
@@ -266,7 +263,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     let captured;
     try {
       const role = roleOf(getCharacter), allowed = await validate(key); checkRole(role);
-      if (!allowed.ok || allowed.backend === 'v1') return allowed;
+      if (!allowed.ok) return allowed;
       const match = /^(group|private):([1-9][0-9]{0,19})$/.exec(key ?? '');
       if (!match || !/^[1-9][0-9]{0,19}$/.test(String(loginAccountId))) return problem('MEMORY_SOURCE_FACTS_INVALID', 'Actual OneBot login is required before an outbound send.');
       const facts = { loginAccountId: String(loginAccountId), actorAccountId: String(loginAccountId), conversationType: match[1], conversationId: match[2], objectId, direction: 'outbound' };

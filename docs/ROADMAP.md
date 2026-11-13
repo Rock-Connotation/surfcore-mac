@@ -22,6 +22,11 @@
 
 ## 1. 项目目标
 
+### 2026-11-12 路线变更：V1 退役改为破坏式重构（进行中）
+
+用户拍板「直接把六项 v1 删掉，开发中不需要向后兼容」，推翻 [V1-INVENTORY.md](product/V1-INVENTORY.md) §3 的 D1→D2→D3 观察期方案（该节保留作决策史料）。已开始按「缺省切 V2 + fail-closed 拒绝 v1 + 删 preset/模式/控制台入口 + 测试钉子按 v2-only 改写」实施，仍有残留和未通过的测试；不删 `~/.dsh` 用户数据。取舍与残留见 [case](cases/2026-11-12-v1-retirement.md)：B站调度触发机器与 `tools/commands` 必须留（V2 Host 无自有触发器、worker 直接 fork 它们），`src/memory-card.js` / `src/bili-api.js` 保留（评测与 V2 消费）。路线守则未变；本批不做「默认只开 QQ」等其它拍板项。
+
+
 ### 2026-11-08 进行中：火山 TTS 2.0 Mac 离线接入
 
 - 旧云端路径依赖 Windows 包及 `/v1/speak/file`，与火山 HTTP 单向流式协议不同。采用现有 Host 管理和共享 TTS 中的显式 provider，复用原语音限额及旧 voxd 默认路径；密钥单独受限存放，不回显，火山失败不自动换路。收益是 Mac 无需 Windows 运行时即可配置，成本是协议适配和维护流完整性检查；风险为实际流/计费/音频和权限尚未实测，切回原云端服务并重启桥接可回退。

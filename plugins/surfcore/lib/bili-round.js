@@ -211,9 +211,20 @@ export function createBiliRoundService({ stateDir, ctx, tokenBudget, runBili, ge
       const entry = Array.isArray(readback.items) ? readback.items.find(item => item.bv === chosen.bvid) : null
       check(entry && Number(entry.score) === fullReview.score && String(entry.reason ?? '') === fullReview.reason, 'ROUND_SCORE_NOT_APPLIED', '同日既有评分更高或不同，本轮评分未覆盖原账本。', '保留两份证据；按评分规则人工核对后处理。')
       update(job, { score: { confirmed: true, entry }, progress: 'memory' })
-      const memory = await guarded(job, signal, () => maintainMemory({ characterId: job.characterId, characterEpoch: job.characterEpoch, channel: 'bili' }))
-      check(memory?.ok === true && !memory.disabled, 'ROUND_MEMORY_FAILED', '评分未能确认进入记忆维护流程。', '检查记忆开关及维护结果。')
-      update(job, { state: 'completed', progress: 'finished', memory: { ok: true }, completedAt: new Date().toISOString() })
+      // F05：评分已由上面的账本写入/读回确认；不能再要求已退役的旧卡维护成功。
+      // 现在把这次完整单轮的来源/评分/经历交给正式 V2 记录回调，并核验真实回执。
+      const memory = await guarded(job, signal, () => maintainMemory({
+        characterId: job.characterId, characterEpoch: job.characterEpoch, channel: 'bili',
+        jobId: job.jobId, score: { confirmed: true, entry, score: fullReview.score, reason: fullReview.reason },
+        review: fullReview, material: job.material ?? null, providerRouteId: job.providerRouteId,
+      }))
+      if (memory?.ok !== true) {
+        // 评分事实保留在 job.score，记忆失败/未知单独可见；不重跑整轮、不重复评分。
+        update(job, { progress: 'memory-unconfirmed', memory: { ok: false, code: memory?.code ?? 'ROUND_MEMORY_UNCONFIRMED', hint: memory?.hint ?? null } })
+        throw problem(memory?.code ?? 'ROUND_MEMORY_UNCONFIRMED', memory?.error ?? '评分已确认，但 V2 记忆提交未确认。', memory?.hint ?? '用原 operationId 查询回执；不会重跑整轮或重复评分。')
+      }
+      check(memory.receipt?.sourceState === 'committed' && memory.receipt?.operationState === 'completed', 'ROUND_MEMORY_RECEIPT_INVALID', 'V2 记忆回执不完整。', '用原 operationId 查询回执；评分事实保留，不会重跑整轮。')
+      update(job, { state: 'completed', progress: 'finished', memory: { ok: true, receipt: memory.receipt }, completedAt: new Date().toISOString() })
     } catch (error) {
       const activeMediaId = mediaJobId || job.mediaJobId
       if (activeMediaId && (!mediaSettled || signal.aborted) && error?.code !== 'ROUND_CANCELLED_CONFIRMED') { try { await cancelJob(activeMediaId) } catch { error = problem('ROUND_CANCEL_CLEANUP_FAILED', '素材作业取消结果未知。', '检查感知作业状态并确认其已停止。') } }

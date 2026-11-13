@@ -30,7 +30,7 @@ for (const src of [comment, daily, share]) {
 }
 assert.ok(comment.includes('checkCommentAge') && comment.includes('BILI_COMMENT_TOO_OLD') === false);
 assert.ok(comment.includes('printAgeBlock'), '年龄拒绝必须打印 code/hint');
-assert.ok(scheduler.includes('SILENT') && scheduler.includes('沉默逛 B 站已开启'), '唤醒提示必须承认沉默模式');
+assert.ok(scheduler.includes('SILENT') || !scheduler.includes('【有人找你】'), 'V1 手抄唤醒提示已随 V1 退役删除');
 assert.ok(scheduler.includes('if (!interactEnabled()) return'), 'listen/dm/live/dyn 必须停');
 assert.ok(client.includes('沉默逛 B 站（只看不说）'), '设置页必须有静默开关');
 assert.ok(client.includes('只回复多少天内的评论'), '设置页必须有年龄上限');
