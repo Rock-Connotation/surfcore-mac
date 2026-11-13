@@ -1,4 +1,20 @@
-## 2026-11-13 V1 退役 R01–R10 收口（离线门禁进行中，未合并）
+## 2026-11-13 V1 退役与二轮审查已合入 dev（全门禁通过，待真实验收）
+
+分支 `feat/v1-retirement`（含 R01–R10 与 F01–F12 二轮审查提交）已通过 `--no-ff` 正式合入本地 `dev`（合并清单提交 `0a35a93`）。主树未跟踪目录 `2026-11-12/` 已按铁律 6 隔离备份至 `_backups/2026-11-12-prd-scan/`。
+
+**全门禁验证通过**：
+- `npm run test:audit`：195/195 全部通过（退出码 0）
+- `npm run test:regressions`：17/17 全部通过（退出码 0）
+- `npm run test:memory-v2`：48/48 全部通过（退出码 0）
+- `node scripts/test-v2-real-integration.mjs`：12/12 全部通过（退出码 0）
+- `npm --prefix plugins/surfcore test`：全部通过（退出码 0，含 35 个 Memory V2 脚本）
+- `npm run lint:failures`：退出码 0（存量债务 658 ≤ 基线 669）
+- `npm run doc-facts`：退出码 0（数字逐项一致）
+- `node scripts/release-manifest.mjs --verify-ref HEAD`：清单 1096 项，跟踪文件 1096 项，问题 0 个
+
+未修改 package.json version、未打 tag、未发布。真实 `~/.dsh` 数据只读保留。详见 [case 收口续篇](cases/2026-11-12-v1-retirement.md)。
+
+## 2026-11-13 V1 退役 R01–R10 收口（历史记录）
 
 工作树 `../surfcore-v1-retirement`，分支 `feat/v1-retirement`，基线 `76f666a`。按 2026-11-12 审查报告完成 R01–R10 实现：V2-only 生产准入（移除 shadow 门禁）、旧记忆卡生产写者退役、QQ 模式/旧配置只读预检与 closed-agent 能力差异、B站 DM pending/ack 与调度退役屏障、抖音/分享真实 V2 工厂与失败可见、人格编译共享、真实 V2 跨链路门禁、Memory 评测显式编排、当前 README/RULES/DSH_SETUP/UI 文案。
 
