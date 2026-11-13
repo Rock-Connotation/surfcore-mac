@@ -12,8 +12,8 @@ import { COMPANION_ROUTE } from '../lib/douyin-companion-model.mjs';
 // R06：导入前必须隔离 DSH_HOME 并建立当前角色。
 // 以前本夹具没有设置 DSH_HOME，`prepareCharacterContext` 会读真实 ~/.dsh，
 // 于是命中 CHARACTER_EPOCH_STALE，整个作业卡在 perceive —— 这是夹具缺陷，不是生产链缺陷。
-const FIXTURE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-companion-home-'));
-process.env.DSH_HOME = FIXTURE_HOME;
+// F07：唯一根由 isolate-test-home 在任何业务 import 前验证；不再晚改 DSH_HOME。
+const FIXTURE_HOME = testHome;
 const chars = await import('../../../src/character-persona.js');
 function establishRole(role) {
   const dir = path.join(chars.CHARACTERS_DIR, role.id);

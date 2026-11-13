@@ -11,15 +11,22 @@ export function deriveMemoryProviderRouteId({ provider, model } = {}) {
   const hash = createHash('sha256').update(JSON.stringify({ provider, model }), 'utf8').digest('hex');
   return { ok: true, providerRouteId: `dsh-route:${hash}` };
 }
+export function decodeMemoryRouteDescriptor(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new Error('invalid routing shape'), { problem: 'shape' });
+  if (Object.keys(value).some(key => !['schemaVersion', 'backend', 'controlRevision', 'storeGeneration', 'minCompatibleReader'].includes(key))) throw Object.assign(new Error('invalid routing fields'), { problem: 'fields' });
+  // 只有精确 v1 是「已退役」；缺失/未知/其它值都是损坏，不能误导处理计划。
+  if (value.backend === 'v1') throw Object.assign(new Error('retired memory backend'), { retiredBackend: value.backend });
+  if (value.backend !== 'v2') throw Object.assign(new Error('invalid routing backend'), { problem: 'value' });
+  if (value.schemaVersion !== ROUTE_VERSION || !Number.isSafeInteger(value.controlRevision) || value.controlRevision < 0
+    || !Number.isSafeInteger(value.minCompatibleReader) || value.minCompatibleReader < 1 || typeof value.storeGeneration !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.storeGeneration)) throw Object.assign(new Error('invalid routing'), { problem: 'value' });
+  return value;
+}
 function descriptor(file) {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096 || (process.platform !== 'win32' && (stat.mode & 0o077))) throw new Error('protected routing required');
-  const value = JSON.parse(fs.readFileSync(file, 'utf8'));
-  if (!value || Array.isArray(value) || Object.keys(value).some(key => !['schemaVersion', 'backend', 'controlRevision', 'storeGeneration', 'minCompatibleReader'].includes(key))) throw new Error('invalid routing fields');
-  if (value.backend !== 'v2') throw Object.assign(new Error('retired memory backend'), { retiredBackend: value.backend });
-  if (value.schemaVersion !== ROUTE_VERSION || !Number.isSafeInteger(value.controlRevision) || value.controlRevision < 0
-    || !Number.isSafeInteger(value.minCompatibleReader) || value.minCompatibleReader < 1 || typeof value.storeGeneration !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.storeGeneration)) throw new Error('invalid routing');
-  return value;
+  let value;
+  try { value = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error('invalid routing json'); }
+  return decodeMemoryRouteDescriptor(value);
 }
 export function readMemoryRouting({ stateDir } = {}) {
   if (typeof stateDir !== 'string' || !path.isAbsolute(stateDir)) return fail('MEMORY_ROUTING_INVALID', '缺少Host解析的持久状态目录。');

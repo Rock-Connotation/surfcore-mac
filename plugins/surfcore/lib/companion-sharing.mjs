@@ -338,7 +338,9 @@ export function createCompanionSharing({ stateDir, getCharacter, buildContext, m
           active.done.then(() => true),
           new Promise(resolve => { const timer = setTimeout(() => resolve(false), 5000); timer.unref?.(); }),
         ]);
-        if (!settled) return problem('DOUYIN_CHAT_CANCEL_UNKNOWN', '取消信号已发出，但回复仍未结束。', '稍后刷新对话核对原请求状态；不会自动重发或重复取消。');
+        // F11：必须返回完整 JSON envelope（ok:false/code/error/hint），
+        // 不能直接返回 Error 实例，否则 HTTP 序列化丢掉 ok 与 error 文本。
+        if (!settled) return failure(problem('DOUYIN_CHAT_CANCEL_UNKNOWN', '取消信号已发出，但回复仍未结束。', '稍后刷新对话核对原请求状态；不会自动重发或重复取消。'));
       } else {
         const rows = events(role), pending = rows.findLast(row => row.kind === 'request' && (!requestId || row.requestId === requestId));
         if (pending && !rows.some(row => ['answer', 'failure'].includes(row.kind) && row.requestId === pending.requestId) && requestRunning(pending)) {

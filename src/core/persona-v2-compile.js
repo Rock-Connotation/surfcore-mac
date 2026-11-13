@@ -63,9 +63,12 @@ export function compileV2Persona({
   // 分层一律按**传入的 roleId** 解析，不读「当前角色」指针：Host 可能已在切换途中。
   const layers = personaLayersForCharacter(roleId) ?? {};
   const readLayer = file => { try { return file ? readCore(file) : ''; } catch { return ''; } };
-  const tone = selectRoleText(readLayer(layers.tone));
+  // F09：core 做了两层过滤，tone/scene 原先只做标记选段，未标记的旧协议行
+  // 仍会进入最终 Native 输入。所有实际注入层统一同一口径。
+  const cleanLayer = file => stripLegacyPersonaLines(selectRoleText(readLayer(file))).text;
+  const tone = cleanLayer(layers.tone);
   const sceneFile = sceneId ? (layers.scenes?.[sceneId] ?? '') : '';
-  const sceneText = selectRoleText(readLayer(sceneFile));
+  const sceneText = cleanLayer(sceneFile);
   const identity = buildPersonaIdentity({ name: personaNameFromCard(raw, roleId), owner: ownerName });
   const composed = composePersonaLayers({
     core: cleaned.text, tone, scene: sceneText, identity,

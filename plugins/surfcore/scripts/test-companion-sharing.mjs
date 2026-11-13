@@ -14,7 +14,7 @@ import { createDouyinCompanionStore } from '../lib/douyin-companion-ledger.mjs';
 import { createCompanionSharing } from '../lib/companion-sharing.mjs';
 import { createSharingV2Fixture } from './sharing-v2-fixture.mjs';
 
-const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'companion-sharing-')));
+const root = path.join(testHome, 'surfcore');
 let role = { id: 'alpha', epoch: 1, name: '小白鲸' }, modelCalls = 0;
 const now = () => new Date('2026-11-07T06:00:00Z');
 const jobId = 'douyin-11111111-1111-4111-8111-111111111111';
@@ -23,7 +23,7 @@ const item = { id: '123456', url: 'https://www.douyin.com/video/123456', title: 
   coverage: { status: 'partial', transcriptComplete: true, missingRanges: 0, visualCoverage: 'sparse', frameSamples: 3, warningCount: 0, acceptanceQualified: true },
   feeling: 'like', reason: '它把纸箱当成了小窝。', summary: '猫钻进纸箱。', draft: '' };
 const ledgerStore = createDouyinCompanionStore(root, () => now().toISOString());
-const v2 = await createSharingV2Fixture({ root, role: { id: 'alpha', epoch: 1 } });
+const v2 = await createSharingV2Fixture({ role: { id: 'alpha', epoch: 1 } });
 ledgerStore.writeLedger({ version: 1, acceptanceCalls: 8, roles: { '"alpha"': { characterId: 'alpha', acceptedEpoch: 1, enabled: true, paused: false, lastError: null, days: {} } },
   jobs: { [jobId]: { jobId, mode: 'acceptance', state: 'partial', phase: 'finished', characterId: 'alpha', characterEpoch: 1,
     createdAt: now().toISOString(), updatedAt: now().toISOString(), completedAt: now().toISOString(), calls: 2, acceptanceQualified: true, scheduleDate: null, scheduleWindow: null,

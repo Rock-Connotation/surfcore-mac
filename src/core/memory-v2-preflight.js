@@ -16,6 +16,7 @@
 //   unreadable       读取失败（权限、IO）——与「未配置」严格区分
 import fs from 'node:fs';
 import path from 'node:path';
+import { decodeMemoryRouteDescriptor } from './memory-v2-routing.js';
 
 const ROUTE_VERSION = 1;
 const ROUTE_FIELDS = ['schemaVersion', 'backend', 'controlRevision', 'storeGeneration', 'minCompatibleReader'];
@@ -28,14 +29,11 @@ function inspectRouteFile(file) {
   if (process.platform !== 'win32' && (stat.mode & 0o077)) return { problem: 'permissions' };
   let value;
   try { value = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return { problem: 'json' }; }
-  if (!value || Array.isArray(value) || typeof value !== 'object') return { problem: 'shape' };
-  if (Object.keys(value).some((key) => !ROUTE_FIELDS.includes(key))) return { problem: 'fields' };
-  if (value.backend !== 'v2') return { value, retiredBackend: value.backend };
-  if (value.schemaVersion !== ROUTE_VERSION
-    || !Number.isSafeInteger(value.controlRevision) || value.controlRevision < 0
-    || !Number.isSafeInteger(value.minCompatibleReader) || value.minCompatibleReader < 1
-    || typeof value.storeGeneration !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.storeGeneration)) return { problem: 'value' };
-  return { value };
+  try { return { value: decodeMemoryRouteDescriptor(value) }; }
+  catch (error) {
+    if (error.retiredBackend !== undefined) return { retiredBackend: error.retiredBackend };
+    return { problem: error.problem ?? 'value' };
+  }
 }
 
 /**
@@ -50,12 +48,18 @@ export function preflightMemoryConfig({ stateDir } = {}) {
   const file = path.join(dir, 'routing.json');
   const controlFile = path.join(stateDir, 'memory-control.sqlite');
 
+  // F08：existsSync 会把 EACCES 当成「不存在」，误报 fresh。显式 lstat 区分。
+  const probe = target => {
+    try { fs.lstatSync(target); return true; }
+    catch (error) { if (error?.code === 'ENOENT') return false; throw error; }
+  };
   let routeExists = false, controlExists = false;
   try {
-    routeExists = fs.existsSync(file);
-    controlExists = fs.existsSync(controlFile);
+    routeExists = probe(file);
+    controlExists = probe(controlFile);
   } catch (error) {
-    return { ok: false, code: 'MEMORY_PREFLIGHT_UNREADABLE', error: '无法读取记忆配置目录。', hint: `检查状态目录权限后重试（${error?.code ?? 'IO'}）；不要删除目录或改用全新库绕过。` };
+    return decision('unreadable', 'MEMORY_PREFLIGHT_UNREADABLE', `无法读取记忆配置文件（${error?.code ?? 'IO'}）。`,
+      '检查状态目录与文件权限后重新预检；不要删除文件或用空库绕过。', { ioCode: error?.code ?? 'IO' });
   }
 
   if (!routeExists && !controlExists) {

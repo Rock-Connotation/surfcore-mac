@@ -366,13 +366,12 @@ assert.ok(source.includes('set(["night", "windows"], v)'), '作息窗口没有�
 assert.ok(!source.includes('set("night.windows"'), '作息窗口还在传字符串路径（会退化成字符级嵌套）');
 assert.ok(source.includes('onAllowAllChange: (value) => set(["allowAllWhenEmpty"], value)'), '「白名单为空时全部放行」没有用数组路径绑定');
 assert.ok(!source.includes('set("allowAllWhenEmpty"'), '「白名单为空时全部放行」还在传字符串路径');
-// 记忆页 B站→QQ 开关：checked 必须读可编辑草稿，不能读服务端快照 qq.biliBridge。
-assert.ok(source.includes('const biliToQqDraft ='), '记忆页 B站→QQ 开关缺少可编辑草稿');
-assert.ok(source.includes('checked: biliToQqDraft'), '记忆页 B站→QQ 开关没有绑定可编辑草稿（点了会弹回）');
-// 「只同步这些群」必须用允许逗号的列表编辑器，不能每次按键 split/join（PITFALLS #49）。
-assert.ok(/只同步这些群[\s\S]{0,400}h\(IdListEditor/.test(source), '「只同步这些群」没有使用 IdListEditor');
-assert.ok(!source.includes('(qqToBili.includeGroups ?? []).join("，")'), '「只同步这些群」还在用 split/join 绑输入框（逗号会被吞）');
-assert.ok(source.includes('onChange: (list) => setQqToBili("includeGroups", list)'), '「只同步这些群」没有接线到 includeGroups');
+// F06：旧跨渠道摘要写者已退役，记忆页不能留可点的旧写动作/可保存的旧开关。
+assert.ok(source.includes('QQ_BILI_SUMMARY_WRITE_RETIRED'), '记忆页没有显示旧摘要写者退役码');
+for (const dead of ['action: "sync"', 'action: "refresh-bili"', 'action: "scan-align"', 'action: "purge"', 'checked: biliToQqDraft', 'const biliToQqDraft =', '只同步这些群', 'setQqToBili']) {
+  assert.ok(!source.includes(dead), `记忆页仍残留已退役的旧摘要写 UI：${dead}`);
+}
+assert.ok(source.includes('旧跨渠道摘要（只读）'), '记忆页没有把旧摘要区标为只读');
 
 // ── 通知函数接线（2026-10-30 用户反馈：语音页保存后红字 "toast is not a function"）──
 // 根因：Settings 里 toast 是"浮层文案字符串"，真正的函数叫 notify；

@@ -7,7 +7,7 @@ import { createBiliRoundController } from '../lib/bili-round-controller.js';
 import { biliRoundPage } from '../lib/bili-round-page.js';
 
 let cfg = { night: { controlledOnly: false } }, legacy = true, enabled = true;
-let duringCatalog = null;
+let duringCatalog = null, memoryCapability = null;
 let role = { id: 'app', epoch: 4 }, starts = 0, cancels = 0, stops = 0, partials = 0;
 const jobs = [
   { jobId: 'own', characterId: 'app', characterEpoch: 4, state: 'completed' },
@@ -18,6 +18,7 @@ const make = (extraLlm = {}) => createBiliRoundController({
   stateDir: '/unused-test-only', perception: {}, getCharacter: () => role,
   readConfig: () => cfg, saveConfig: value => { cfg = { night: { ...cfg.night, ...value.night } }; },
   platformEnabled: () => enabled, legacyRunning: () => legacy,
+  memoryCapability: async () => memoryCapability ?? { ok: true },
   stopLegacy: async () => { legacy = false; stops++; },
   json: (res, code, body) => { res.code = code; res.body = body; }, readBody: async req => JSON.stringify(req.body),
   createRound: () => ({
@@ -49,6 +50,12 @@ r = await call(fresh, 'POST', { action: 'start', provider: 'magpie', model: 'wor
 const badResolver = make({ resolveModelInfo: async () => { throw new Error('Synthetic network error'); } });
 const badR = await call(badResolver, 'POST', { action: 'start', provider: 'magpie', model: 'workbuddy/hy4free', maxTokens: 2000 });
 assert.equal(badR.body.code, 'BILI_ROUND_MODEL_UNAVAILABLE'); assert.ok(badR.body.hint);
+// F05：V2 写回能力不可用必须在任何模型/媒体调用前拒绝，不能晚到评分后失败。
+memoryCapability = { ok: false, code: 'BILI_V2_ROUND_SCOPE_UNAPPROVED', error: '当前单轮没有已批准的 V2 记忆会话。', hint: '在记忆页预览并批准后再发起单轮。' };
+const startsBeforeGate = starts;
+r = await call(fresh, 'POST', { action: 'start', provider: 'magpie', model: 'workbuddy/hy4free', maxTokens: 2000 });
+assert.equal(r.body.code, 'BILI_V2_ROUND_SCOPE_UNAPPROVED'); assert.equal(starts, startsBeforeGate); assert.ok(r.body.hint);
+memoryCapability = null;
 r = await call(fresh, 'GET'); assert.deepEqual(r.body.value.jobs.map(j => j.jobId), ['own']); assert.equal(r.body.value.activeJobId, null);
 r = await call(fresh, 'GET', null, '?jobId=other'); assert.equal(r.body.code, 'ROUND_FORBIDDEN'); assert.ok(r.body.hint);
 r = await call(fresh, 'POST', { action: 'cancel', jobId: 'other' }); assert.equal(r.body.code, 'ROUND_FORBIDDEN'); assert.equal(cancels, 0);
@@ -69,13 +76,13 @@ await fresh.cancelActive(); assert.equal(cancels, 2); // all Host-owned in-fligh
 const transition = fresh.beginTransition(); await transition.ready;
 r = await call(fresh, 'POST', { action: 'start', provider: 'magpie', model: 'workbuddy/hy4free', maxTokens: 2000 });
 assert.equal(r.body.code, 'BILI_ROUND_TRANSITION'); assert.equal(starts, 1); assert.ok(r.body.hint);
-transition.finish(); transition.finish(); assert.equal(fresh.readiness().ok, true);
+transition.finish(); transition.finish(); assert.equal((await fresh.readiness()).ok, true);
 let releaseMutation;
 const mutation = fresh.withTransition(() => new Promise(resolve => { releaseMutation = resolve; }));
 while (!releaseMutation) await new Promise(resolve => setTimeout(resolve, 1));
 r = await call(fresh, 'POST', { action: 'start', provider: 'magpie', model: 'workbuddy/hy4free', maxTokens: 2000 });
 assert.equal(r.body.code, 'BILI_ROUND_TRANSITION'); assert.equal(starts, 1);
-releaseMutation(); await mutation; assert.equal(fresh.readiness().ok, true);
+releaseMutation(); await mutation; assert.equal((await fresh.readiness()).ok, true);
 // Parse the actual shipped inline script, rather than duplicating its syntax in a fixture.
 const script = biliRoundPage.match(/<script>([\s\S]*)<\/script>/)?.[1]; assert.ok(script); new vm.Script(script);
 await api.dispose(); await fresh.dispose();

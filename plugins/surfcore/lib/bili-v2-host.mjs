@@ -327,7 +327,31 @@ export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getChar
     if (result.ok) closed = true;
     return result.ok ? { ok: true, closed: true } : result;
   }
-  return Object.freeze({ enqueue, retire, withTransition, close,
+  // F05：受控单轮的正式 V2 写回会话。只取当前 Host 已核验的公开来源集合，
+  // 不新建授权、不回退旧卡；没有已批准集合时返回显式不可用。
+  async function roundMemoryScope() {
+    try {
+      const ticket = generation, capturedRole = role(), route = await resolveRoute(ticket, capturedRole);
+      const account = checked(await accountReader().getAccount());
+      live(ticket, capturedRole);
+      const sets = [...publicSets.values()].filter(value => sameRole(value.role, capturedRole) && value.accountMid === account.accountMid && value.routeId === route.providerRouteId);
+      if (sets.length !== 1) return { ok: false, code: 'BILI_V2_ROUND_SCOPE_UNAPPROVED',
+        error: '当前单轮没有唯一已核验的 B站公开来源集合。', hint: '在记忆页按当前角色、账号、精确模型与完整公开来源集合预览并批准后再发起单轮。' };
+      const set = sets[0].set;
+      return freeze({ ok: true, conversationKey: set.outputConversationKey, providerRouteId: route.providerRouteId,
+        characterId: capturedRole.id, characterEpoch: capturedRole.epoch, accountMid: account.accountMid, publicSourceSetId: set.id,
+        hostVersion: roundScopeVersion() });
+    } catch (error) { return report(error?.code ? error : issue('BILI_V2_ROUND_SCOPE_UNPROVEN', 'Restore the approved Host public source set.')); }
+  }
+  // 本地版本戳：让装配方判断已缓存的单轮会话是否仍属于同一代 Host/角色，
+  // 不需要每次 readiness 都重新打官方账号接口。
+  function roundScopeVersion() {
+    let currentRole = null;
+    try { currentRole = role(); } catch {}
+    return freeze({ generation, closed, transitioning: transitioning || transitions > 0,
+      publicSourceSetCount: publicSets.size, characterId: currentRole?.id ?? null, characterEpoch: currentRole?.epoch ?? null });
+  }
+  return Object.freeze({ enqueue, retire, withTransition, close, roundMemoryScope, roundScopeVersion,
     getPlatformState: async () => { try { return await platformState(); } catch (error) { return report(error?.code ? error : issue('BILI_V2_ROUTE_UNPROVEN', 'Restore the actual selected Host model.')); } },
     getStatus: () => Object.freeze({ ok: !closed && !closing && !fault, closed, transitioning: transitioning || transitions > 0, activeJobs: pending.size, registeredSources: instance?.source?.getStatus().activeSourceCount ?? 0, targetCount: targets.size, publicSourceSetCount: publicSets.size, activePreflights: preflights.size, preflightHandles: preflightHandles.size, ...(lastFailure ? { lastFailure } : {}) }),
   });

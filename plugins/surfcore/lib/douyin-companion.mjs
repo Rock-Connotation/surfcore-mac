@@ -49,6 +49,8 @@ export function createDouyinCompanion({
   let activeJob = null;
   let runnerPromise = null;
   const runtimes = new Map();
+  // F10：进程仍活着时保留「终态未保存」的可查询视图；不统一误报进程重启。
+  const terminalFailures = new Map();
   let disposed = false;
   let transitionDepth = 0;
   let transitionQueue = Promise.resolve();
@@ -597,10 +599,19 @@ export function createDouyinCompanion({
     } finally {
       clearRoleWatch(job);
       job.completedAt = nowIso();
-      try { saveJob(localLedger, job); }
+      try { saveJob(localLedger, job); terminalFailures.delete(job.jobId); }
       catch (error) {
         const failure = failObject(error, 'DOUYIN_STATE_WRITE_FAILED');
-        job.state = 'failed'; job.phase = 'failed'; job.code = failure.code; job.error = failure.error; job.hint = failure.hint;
+        // 不把失败写回 job 后再次尝试保存（那会用同一个非法对象重试）。
+        // 内存保留原 operationId / 来源回执 / 固定诊断，供 status 查询。
+        terminalFailures.set(job.jobId, {
+          code: 'DOUYIN_CHAT_SAVE_UNCERTAIN',
+          error: '作业终态未确认保存，原来源与回执保留。',
+          hint: '保留原操作编号并查询回执；磁盘状态以最后有效对象为准，不会自动重跑或退款。',
+          operationId: job.memoryV2Receipt?.operationId ?? null,
+          state: job.state, phase: job.phase, ioCode: failure.code ?? null,
+          at: nowIso(),
+        });
       }
       activeJob = null;
       runnerPromise = null;
@@ -701,15 +712,34 @@ export function createDouyinCompanion({
       // 用户看不到失败，也没有下一步。现在控制元数据（jobId/state/phase/固定错误码/
       // 清洗后的 hint/时间）在当前角色/epoch 可见；正文、视频标识、摘要、来源引用
       // 仍然必须满足来源与授权。
+      // F10：无 proof 时 error/hint 只能来自「固定 code → 固定用户提示」白名单，
+      // 任意依赖/模型正文不得作为控制元数据直出（可能含未授权内容）。
+      const fixedIssue = code => {
+        const known = {
+          DOUYIN_FEED_FAILED: ['读取首页推荐失败。', '检查登录账号和推荐页状态后重新手动验收。'],
+          DOUYIN_NO_QUALIFIED_MATERIAL: ['首页推荐没有合格素材。', '检查首页推荐是否可用；没有合格素材时不会调用模型或记为观看。'],
+          DOUYIN_FRAMES_UNAVAILABLE: ['没有可用稀疏画面采样。', '补齐本机画面采样后再验收；音频单独不足以完成本轮。'],
+          DOUYIN_TRANSCRIPT_EMPTY: ['没有可确认的语音转写。', '选择含可辨语音的推荐视频后再验收。'],
+          DOUYIN_MODEL_FAILED: ['模型调用失败。', '检查模型服务与请求账本；不会自动客户端重试。'],
+          DOUYIN_MEMORY_TIMEOUT: ['记忆写入等待超时，活动已停止。', '检查 Host 记忆服务与请求状态；不会自动重复写入。'],
+          DOUYIN_CHAT_SAVE_UNCERTAIN: ['作业终态未确认保存。', '保留现有记录并核对原回执，不要重复发送。'],
+          DOUYIN_INTERRUPTED: ['进程重启打断了上轮活动。', '已预留请求不会返还；查看保留结果后手动决定是否重新验收。'],
+          DOUYIN_CANCELLED: ['这次活动已取消。', '查看已保留结果与用量；不会自动重发。'],
+        }[code] ?? ['这次活动未完成。', '刷新日记查看固定错误码与下一步；原始诊断只在受权通道保留。'];
+        return { code: code || 'DOUYIN_JOB_INCOMPLETE', error: known[0], hint: known[1] };
+      };
+      const safeIssue = row => {
+        const code = safeCode(row?.code);
+        return fixedIssue(code);
+      };
       const controlMeta = job => ({
+        ok: true, // F10：作业投影不是失败 envelope；controller 仍按 ok:true 返回。
         jobId: job.jobId, mode: job.mode, state: job.state, phase: job.phase,
         characterId: job.characterId, characterEpoch: job.characterEpoch,
         createdAt: job.createdAt, updatedAt: job.updatedAt, completedAt: job.completedAt,
         calls: job.calls, acceptanceQualified: job.acceptanceQualified,
         scheduleDate: job.scheduleDate, scheduleWindow: job.scheduleWindow,
-        ...(job.code ? { code: job.code } : {}),
-        ...(job.error ? { error: job.error } : {}),
-        ...(job.hint ? { hint: job.hint } : {}),
+        ...(job.code || job.error || job.hint ? safeIssue(job) : {}),
         provenance: 'pending',
       });
       // 条目级也分两层：控制元数据（状态/固定码/清洗 hint/时间/时长/覆盖）可见，
@@ -719,9 +749,7 @@ export function createDouyinCompanion({
         ...(Number.isSafeInteger(item.durationMs) && item.durationMs > 0 ? { durationMs: item.durationMs } : {}),
         ...(item.occurredAt ? { occurredAt: item.occurredAt } : {}),
         ...(item.coverage ? { coverage: item.coverage } : {}),
-        ...(item.code ? { code: item.code } : {}),
-        ...(item.error ? { error: item.error } : {}),
-        ...(item.hint ? { hint: item.hint } : {}),
+        ...(item.code || item.error || item.hint ? safeIssue(item) : {}),
         provenance: 'pending',
       });
       const safeJob = job => {
@@ -729,7 +757,7 @@ export function createDouyinCompanion({
         if (hasProof(job) && job.items.every(hasProof)) return job;
         if (activeJob?.jobId === job.jobId && ACTIVE.has(job.state)) {
           const items = job.items.map(item => hasProof(item) ? item : itemControl(item));
-          return { ...job, items };
+          return { ...controlMeta(job), items };
         }
         // 任何终态作业（failed/interrupted/partial/cancelled/completed）都投影控制状态：
         // 用户必须看得到「这次失败在哪、下一步做什么」，而正文与来源仍逐条受 proof 限制。
@@ -789,11 +817,14 @@ export function createDouyinCompanion({
     // R08：即使作业没有任何来源证明，失败也必须出现在用户当前入口。
     // 优先用角色账本里的 lastError；否则回退到最近一次失败/中断作业的固定码与清洗 hint。
     const failedJob = visibleJobs.find(job => ['failed', 'interrupted'].includes(job.state) && job.code);
-    const lastError = publicError(roleState?.lastError)
+    const activeFailure = [...terminalFailures.values()].find(row => visibleJobs.some(job => job.jobId === row.jobId) || activeJob?.jobId === row.jobId) ?? null;
+    const lastError = activeFailure ? publicError(activeFailure)
+      : publicError(roleState?.lastError)
       ?? (interruptedDaily ? publicError({ code: 'DOUYIN_INTERRUPTED', error: '进程重启打断了日常活动。', hint: '已预留请求不会返还；查看保留结果并通过configure显式恢复。' })
         : failedJob ? publicError({ code: failedJob.code, error: failedJob.error, hint: failedJob.hint }) : null);
     return {
       ok: true,
+      ...(activeFailure ? { saveUncertain: activeFailure } : {}),
       characterId: role.id,
       characterEpoch: role.epoch,
       daily: {

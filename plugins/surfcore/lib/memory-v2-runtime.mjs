@@ -206,6 +206,18 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
     if (!adapter) throw new TypeError('Unsupported private memory channel.');
     return Object.freeze({ adapter, getRouting: routing, onBlocked: result => onBlocked({ ...result, channel }) });
   }
+  // F05：只读查询已批准且未撤销的策略，供受控单轮 readiness 核验；
+  // 不新增授权、不暴露管理写入能力。
+  async function activePolicies() {
+    if (closed || !initialized || diagnostic) return failure('MEMORY_RUNTIME_UNAVAILABLE', 'V2 记忆宿主尚未就绪。', '在记忆页核对当前角色与路由后重试。');
+    const facts = { channel: 'local', conversationKey: 'local:memory-management', sourceAccountKey: 'local:owner', requesterAccountKey: 'local:owner',
+      audiencePolicyId: 'local:management', providerRouteId: 'local:management', processingGrantId: 'local:management' };
+    const captured = await service.captureAdminContext(facts, adminAuthorization);
+    if (captured?.ok !== true) return captured;
+    const status = await service.host.admin.status(captured.context);
+    if (status?.ok !== true) return status;
+    return { ok: true, policies: (status.policies ?? []).map(row => ({ policyId: row.policyId, approved: row.approved === true })) };
+  }
   function modelRequest({ jobId, step, characterId, characterEpoch, providerRouteId, model, system, prompt, images = [] }) {
     const expected = routeId(COMPANION_ROUTE);
     if (!sameRole({ id: characterId, epoch: characterEpoch }, role()) || providerRouteId !== expected || model !== COMPANION_ROUTE.model || !stable(jobId)) throw Object.assign(new Error('逐步请求与当前角色或精确模型不一致。'), failure('COMPANION_ROUTE_MISMATCH', '逐步请求与当前角色或精确模型不一致。'));
@@ -222,5 +234,5 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
     await manager.handle(req, res, url); return true;
   }
   return Object.freeze({ initialize, close, routing, channelMemory, modelRequest, handleApi, handleManagement,
-    apiPrefix: api.prefix, service, host, approvedConversations });
+    apiPrefix: api.prefix, service, host, approvedConversations, activePolicies });
 }

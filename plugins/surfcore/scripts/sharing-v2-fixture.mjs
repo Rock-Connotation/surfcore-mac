@@ -14,38 +14,32 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * @param {{ root?: string, role?: {id:string, epoch:number}, conversationKey?: string }} input
+ * @param {{ role?: {id:string, epoch:number}, conversationKey?: string }} input
  */
-export async function createSharingV2Fixture({ root, role = { id: 'alpha', epoch: 1 }, conversationKey } = {}) {
-  // 复用 isolate-test-home 已隔离的 home 根，避免再次指向真实目录。
-  // 传入 root 时**复用同一个目录**（跨进程 race 测试需要两个进程看到同一份控制库/账本）；
-  // 只有未传 root 时才新建。
-  const home = root
-    ? (fs.existsSync(root) ? fs.realpathSync(root) : (fs.mkdirSync(root, { recursive: true, mode: 0o700 }), fs.realpathSync(root)))
-    : fs.realpathSync(fs.mkdtempSync(path.join(testHome, 'sharing-v2-')));
-  process.env.DSH_HOME = home;
-  const chars = await import('../../../src/character-persona.js');
-  // 生产装配里 sharing 的 stateDir 就是 STATE_DIR（= home/surfcore），角色也住在同一
-  // 棵树下（characters/<id>）。这里保持同构：stateDir 一律取 home/surfcore，
-  // 这样 createSharingStore 与 MemoryService 看到的是同一份角色目录。
+export async function createSharingV2Fixture({ role = { id: 'alpha', epoch: 1 }, conversationKey } = {}) {
+  // F07：唯一根 = isolate-test-home 验证过的 testHome。业务模块的 DSH_HOME 与
+  // 本 factory 的 stateDir/角色目录/账本全部从它派生，不接受任意外部 root；
+  // 跨进程共享由父测试 createTestRoot() 让 helper 的 testHome 本身成为共享根。
+  const home = fs.realpathSync(testHome);
   const stateDir = path.join(home, 'surfcore');
+  const charactersDir = path.join(stateDir, 'characters');
   const { deriveMemoryProviderRouteId } = await import('../../../src/core/memory-v2-routing.js');
   const { COMPANION_ROUTE } = await import('../lib/douyin-companion-model.mjs');
   const { createMemoryService } = await import('../../../src/core/memory-v2-service.js');
   const { createMemoryHost } = await import('../lib/memory-v2-host.mjs');
 
-  const dir = path.join(chars.CHARACTERS_DIR, role.id);
+  const dir = path.join(charactersDir, role.id);
   fs.mkdirSync(path.join(dir, 'persona.scenes'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'persona.md'), '# Alpha\n温柔、有主见的小白鲸。');
   fs.writeFileSync(path.join(dir, 'persona.scenes', 'local.md'), '本机伙伴场景：自然简短。');
-  fs.mkdirSync(path.dirname(chars.CURRENT_FILE), { recursive: true });
-  fs.writeFileSync(chars.CURRENT_FILE, JSON.stringify({ version: 1, ...role }));
+  fs.mkdirSync(charactersDir, { recursive: true });
+  fs.writeFileSync(path.join(charactersDir, 'current.json'), JSON.stringify({ version: 1, ...role }));
   const getCharacter = () => role;
 
   const routeId = deriveMemoryProviderRouteId(COMPANION_ROUTE).providerRouteId;
   const key = conversationKey ?? `local:companion-sharing:${role.id}`;
   const management = Symbol('sharing-v2-fixture');
-  const service = createMemoryService({ stateDir, charactersDir: chars.CHARACTERS_DIR, getCharacter, authorizeManagement: value => value === management });
+  const service = createMemoryService({ stateDir, charactersDir, getCharacter, authorizeManagement: value => value === management });
   const init = await service.initialize();
   if (init?.ok !== true) throw new Error(`fixture memory init failed: ${JSON.stringify(init)}`);
 

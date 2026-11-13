@@ -1867,7 +1867,7 @@ async function main() {
   const nativeMemoryClient = createMemoryClient({ stateDir: SURFCORE_DIR, scope: 'qq', getCharacter: readCurrentCharacter });
   const nativeQQ = createNativeQQChannel({ memory: qqMemory, getCharacter: readCurrentCharacter,
     getIdentity: readOfficialMemoryQQIdentity,
-    isAllowed: key => usesMemoryV2() && isSessionAllowedInCurrentMode(key) && !shouldBlockSilentReply(key),
+    isAllowed: key => usesMemoryV2() && !modeBlocked && isSessionAllowedInCurrentMode(key) && !shouldBlockSilentReply(key),
     send: sendNativeQQReply,
     getCapabilities: getNativeQQCapabilities,
     onComplete: async (job, result) => {
@@ -1882,15 +1882,37 @@ async function main() {
     },
   });
   const taskLedger = createTaskLedger({ stateDir: STATE_DIR });
+  /**
+   * F02：owner 管理回执专用传输。只允许 Task Harness / bridge 自身的管理路径调用；
+   * 保留 captureSendGuard 的白名单与模式门禁、owner 准入由调用方 checkAdmission 完成，
+   * 平台 ACK 缺失记 unknown，不伪造 session/safety 证明、不自动重发。
+   */
+  async function sendOwnerManagementReply({ conversationKey, text, taskId, phase }) {
+    const ticket = `${taskId ?? 'owner'}:${phase ?? 'reply'}:${crypto.randomUUID()}`;
+    const [kind, id] = String(conversationKey).split(':');
+    if (!/^(group|private):[1-9][0-9]{0,19}$/.test(String(conversationKey))) {
+      return { ok: false, code: 'OWNER_REPLY_TARGET_INVALID', error: '管理回执目标无效。', hint: '检查任务归属的会话键。' };
+    }
+    managementSendTickets.set(conversationKey, ticket);
+    managementDelivery.set(ticket, 'unknown');
+    try {
+      await sendToQQ(conversationKey, text);
+      if (!lastSendSucceeded(conversationKey)) return { ok: false, code: 'OWNER_REPLY_SEND_FAILED', error: '管理回执发送失败。', hint: '检查 QQ 连接后查询任务状态；不会自动重发。' };
+      const state = managementDelivery.get(ticket) ?? 'unknown';
+      return { ok: true, delivery: state, ticket };
+    } finally {
+      managementSendTickets.delete(conversationKey);
+      setTimeout(() => managementDelivery.delete(ticket), 60_000).unref?.();
+    }
+  }
   const taskHarness = createTaskHarness({
     ledger: taskLedger,
     reportsDir: path.join(STATE_DIR, 'reports'),
-    sendCallback: async ({ conversationKey, text }) => {
-      await sendToQQ(conversationKey, text);
-      if (!lastSendSucceeded(conversationKey)) {
-        return { ok: false, error: `QQ message send failed for ${conversationKey}` };
-      }
-      return { ok: true };
+    sendCallback: async ({ conversationKey, text, taskId, phase }) => {
+      const result = await sendOwnerManagementReply({ conversationKey, text, taskId, phase });
+      if (!result.ok) return { ok: false, error: result.error, code: result.code, hint: result.hint };
+      // 只有平台回执明确 delivered 才记成功；unknown 不自动重发。
+      return { ok: true, delivery: result.delivery };
     },
     log
   });
@@ -1930,12 +1952,18 @@ async function main() {
   }
   async function beginMemoryV2Send(key) {
     if (!usesMemoryV2()) return null;
+    const admission = modeAdmissionSnapshot(); // F01：租约绑定准入修订。
+    assertModeAdmission(admission);
     await requireMemoryV2SessionSafety(key, state.sessions[key]);
+    assertModeAdmission(admission);
     const route = validateMemoryV2ProviderRoute(key, state.sessions[key]);
     if (!route.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); throw Object.assign(new Error(route.error), route); }
+    assertModeAdmission(admission);
     const result = await qqMemory.authorizeSend({ key, loginAccountId: selfUserId });
     if (!result.ok) throw Object.assign(new Error(result.error), memoryV2Failure(key, result));
+    assertModeAdmission(admission);
     await requireMemoryV2SessionSafety(key, state.sessions[key]);
+    assertModeAdmission(admission);
     const after = validateMemoryV2ProviderRoute(key, state.sessions[key]);
     if (!after.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); throw Object.assign(new Error(after.error), after); }
     return result.lease;
@@ -3958,6 +3986,21 @@ async function main() {
   // 且权威来源明确退役、非法或读取失败时进入可见 blocked，绝不沿用上一次模式。
   let modeStatus = { state: 'default', source: 'none', requested: null };
   let modeBlocked = null;
+  // F01：单调模式修订。所有 Native job / 发送租约记录准入时的修订；
+  // 每次跨 await 恢复与最终平台调用前复核，阻断后旧对象不得复活。
+  let modeRevision = 0;
+  function modeAdmissionSnapshot() {
+    return { revision: modeRevision, blocked: modeBlocked?.code ?? null, effective: currentMode };
+  }
+  function assertModeAdmission(snapshot) {
+    if (modeBlocked) throw Object.assign(new Error(modeBlocked.error || 'QQ 模式配置已阻断。'), modeBlocked);
+    if (!snapshot || snapshot.revision !== modeRevision || snapshot.blocked) {
+      throw Object.assign(new Error('QQ 模式已变化，原作业/租约不得继续发送。'), {
+        ok: false, code: 'MEMORY_MODE_REVISION_STALE', error: 'QQ 模式已变化，原作业/租约不得继续发送。',
+        hint: '按当前合法模式重新发起请求；旧来源与回执保留，不会自动重发。',
+      });
+    }
+  }
   // closed-agent 模式使用的 DSH agent preset：留空表示「用 DSH 自己声明的默认 preset」。
   // 旧版本这里硬编码 'router-standard'，但 DSH 0.1.5 已移除该 preset，硬编码会导致
   // 创建出的会话挂不上 preset，进而被 DSH 套上 standard（含本地工具）。
@@ -4005,7 +4048,9 @@ async function main() {
     return { state: 'valid', mode: normalized, requested, closedAgentPreset: value.closedAgentPreset };
   }
   function applyModeSource(state, mode, requested, source, hint) {
-    modeStatus = { state, source, requested: requested ?? null };
+    const previous = modeStatus.state;
+    modeRevision += 1;
+    modeStatus = { state, source, requested: requested ?? null, revision: modeRevision, previous };
     if (state === 'valid' || state === 'default') { currentMode = mode; modeBlocked = null; return; }
     modeBlocked = { state, source, requested: requested ?? null, code: state === 'retired' ? 'QQ_MODE_RETIRED' : state === 'unavailable' ? 'QQ_MODE_UNAVAILABLE' : state === 'unreadable' ? 'QQ_MODE_UNREADABLE' : 'QQ_MODE_INVALID',
       error: state === 'retired' ? `QQ 模式配置指向已退役的值「${String(requested).slice(0, 24)}」。` : state === 'unavailable' ? `QQ 模式「${String(requested).slice(0, 24)}」在本版本不可用。` : state === 'unreadable' ? '无法读取 QQ 模式配置。' : `QQ 模式配置无效（${String(requested ?? '').slice(0, 24) || '空值'}）。`,
@@ -4068,8 +4113,11 @@ async function main() {
         return;
       }
     } catch (error) {
-      // DSH 设置读取失败本身不等于配置损坏：继续读本地兜底，但记录来源。
+      // F01：权威源读取失败不得「回退本地 chat」并清掉既有 blocked。
+      // 保持当前诊断与阻断，等待明确恢复；只有真正两个来源都不存在才按 default 契约。
       modeStatus = { ...modeStatus, dshReadFailed: error?.code ?? 'SETTINGS_DESCRIBE_FAILED' };
+      applyModeSource('unreadable', null, null, 'dsh', '权威 DSH 设置读取失败；保留当前阻断状态，检查连接后重新读取。');
+      return;
     }
     const local = readLocalMode();
     if (typeof local.closedAgentPreset === 'string') closedAgentPreset = local.closedAgentPreset;
@@ -4098,6 +4146,7 @@ async function main() {
 
   /** 当前模式是否允许该会话进入 */
   function modeAllowed(key, kind, id, cfg, mode) {
+    if (modeBlocked) return false; // F01：blocked 覆盖所有社交准入，包括 Native。
     if (mode === 'closed-agent') {
       // 封闭 agent 模式：仅 owner 私聊
       return key === `private:${String(cfg.ownerQQ ?? '')}`;
@@ -4154,9 +4203,9 @@ async function main() {
     if (usesMemoryV2()) {
       const route = memoryV2Route();
       const role = readCurrentCharacter();
-      return JSON.stringify([currentMode, modePreset(key, currentMode, cfg) ?? '', role?.id, role?.epoch, route.descriptor ?? route, state.memoryV2Sessions[key] ?? null]);
+      return JSON.stringify([currentMode, modePreset(key, currentMode, cfg) ?? '', role?.id, role?.epoch, route.descriptor ?? route, state.memoryV2Sessions[key] ?? null, modeAdmissionSnapshot()]);
     }
-    return JSON.stringify([currentMode, modePreset(key, currentMode, cfg) ?? '', currentMode === 'closed-agent' ? cfg.ownerQQ : null]);
+    return JSON.stringify([currentMode, modePreset(key, currentMode, cfg) ?? '', currentMode === 'closed-agent' ? cfg.ownerQQ : null, modeAdmissionSnapshot()]);
   }
 
   function isCurrentSession(key, sessionId) {
@@ -9876,6 +9925,11 @@ async function main() {
 
   // QQ 发送队列（顺序发送 + 间隔，避免触发频率限制）
   let sendChain = Promise.resolve();
+  // F02：bridge 自身产生的 owner 管理回执（任务状态/取消/产物）走独立受控传输。
+  // 这个登记表只在模块内部由 sendOwnerManagementReply 写入，外部输入无法开旁路；
+  // 每条登记一次性消费，平台 ACK 未知不写 delivered、不自动重发。
+  const managementSendTickets = new Map();
+  const managementDelivery = new Map();
   function redactKnownTokensOnly(text) {
     let s = String(text ?? '');
     for (const token of KNOWN_AGENT_TOKENS) {
@@ -13544,6 +13598,7 @@ async function main() {
   async function deliverPromptNow(key, promptText, opts = {}) {
     if (usesMemoryV2()) {
       try {
+      if (modeBlocked) return memoryV2Failure(key, modeBlocked); // F01：主动提交也不得建新 job。
       const role = readCurrentCharacter();
       if (!isSessionAllowedInCurrentMode(key)) return memoryV2Failure(key, { code: 'MEMORY_AUDIENCE_DENIED', error: 'This QQ conversation is not allowed.', hint: 'Check the current channel allowlist.' });
       if (!dshReady) return memoryV2Failure(key, { code: 'MEMORY_DSH_UNAVAILABLE', error: 'DSH is unavailable; the durable source remains queued.', hint: 'Restore DSH and submit a fresh authorized request; old prompt strings are not replayed.' });
@@ -17831,7 +17886,22 @@ async function main() {
   for (const [method, kind] of [['sendPrivateMessage', 'private'], ['sendGroupMessage', 'group']]) {
     const send = bot[method].bind(bot);
     bot[method] = async (id, body) => {
-      const key = `${kind}:${id}`, lease = await beginMemoryV2Send(key);
+      const key = `${kind}:${id}`;
+      const ticket = managementSendTickets.get(key);
+      if (ticket) {
+        // 管理回执：不套旧 model-session 包装；sendToQQ 仍做白名单/模式/发送守卫。
+        managementSendTickets.delete(key);
+        try {
+          const result = await send(id, body);
+          const messageId = result?.data?.message_id ?? result?.message_id ?? null;
+          managementDelivery.set(ticket, messageId == null ? 'unknown' : 'delivered');
+          return result;
+        } catch (error) {
+          managementDelivery.set(ticket, 'unknown');
+          throw error;
+        }
+      }
+      const lease = await beginMemoryV2Send(key);
       let result;
       try { result = await send(id, body); }
       catch (error) { await finishMemoryV2Send(lease, key, body, null, 'delivery_unknown'); throw error; }

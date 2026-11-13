@@ -1,4 +1,4 @@
-import { testHome } from './isolate-test-home.mjs';
+import { testHome, shareTestRoot } from './isolate-test-home.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,10 +14,11 @@ if (process.argv[2] === '--child') {
   // request+answer 带主进程已提交的来源证明（v2.proof 从 ledger 里读，不再开库）。
   // 这正是跨进程幂等依赖的 durable reconciliation 输入。主进程随后在锁内重放
   // reply，必须返回已保存的回复且零次模型调用。
-  const root = process.argv[3];
+  // F07：共享根由父进程的 createTestRoot() 创建，helper 已通过 owner marker 验证；
+  // 本进程所有路径只从已验证的 testHome 派生，不信任任意 argv / DSH_HOME 路径。
   const { createSharingStore } = await import('../lib/companion-sharing-store.mjs');
   const { createDouyinCompanionStore } = await import('../lib/douyin-companion-ledger.mjs');
-  const stateDir = path.join(root, 'surfcore');
+  const stateDir = path.join(testHome, 'surfcore');
   const v2 = { stateDir };
   const store = createSharingStore(stateDir);
   const ledger = createDouyinCompanionStore(stateDir, () => new Date('2026-11-07T06:00:00Z').toISOString());
@@ -42,6 +43,9 @@ if (process.argv[2] === '--child') {
   console.log(JSON.stringify({ seeded: true, requestId: request.requestId }));
   process.exit(0);
 }
+// 父测试把 helper 已验证的 testHome 通过 SURFCORE_TEST_ROOT* 传给子进程；
+// 两边使用同一份账本，且子进程仍会校验 owner marker。
+const shared = shareTestRoot();
 const f = await fixture(); assert.equal((await opening(f)).ok, true);
 const read = fs.readFileSync;
 let raced = false, child;
@@ -51,7 +55,7 @@ fs.readFileSync = function (file, ...args) {
     raced = true;
     // f.root 在 testHome 下，本身已隔离；把 DSH_HOME 固定成 f.root，
     // 子进程的 isolate-test-home 会复用它而不是新建目录。
-    child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--child', f.root], { encoding: 'utf8', env: { ...process.env, DSH_HOME: f.root } });
+    child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--child'], { encoding: 'utf8', env: { ...process.env, ...shared } });
     assert.equal(child.status, 0, `child exit ${child.status}: ${String(child.stderr||'').slice(0,600)}`);
   }
   return bytes;

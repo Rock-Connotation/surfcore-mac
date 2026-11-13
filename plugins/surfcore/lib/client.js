@@ -2060,6 +2060,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           else if (!r.cancelled) toast(`✗ ${r.error || "打不开选择框"}`);
         } catch (e) { toast(`✗ ${e.message}`); }
       };
+      // F06/F12：旧跨渠道摘要写者已退役，概览按钮不再调用会 410 的写 API。
+      const retiredSummary = () => toast("✗ QQ_BILI_SUMMARY_WRITE_RETIRED：旧跨渠道摘要写入已退役；旧资料只读保留，请在 V2 记忆页按精确会话和模型正式授权。");
       const act = async (action) => {
         setBusy(action);
         try {
@@ -2111,6 +2113,13 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h(Btn, { kind: "qbw-btn2", onClick: () => goTab?.("qq") }, "检查 QQ 回复设置")) : null,
         overview?.adminProjectionFailure ? h("div", { className: "qbw-warnbox", role: "alert" },
           h("b", null, overview.adminProjectionFailure.error), h("div", null, overview.adminProjectionFailure.hint)) : null,
+        // F01：模式阻断必须在用户当前界面可见，给出请求值/有效值/恢复步骤。
+        overview?.bridgeMode?.blocked ? h("div", { className: "qbw-warnbox", role: "alert" },
+          h("b", null, `QQ 模式阻断：${overview.bridgeMode.blocked.code}`),
+          h("div", null, `请求值 ${overview.bridgeMode.requested ?? "（无）"} · 当前有效值 ${overview.bridgeMode.effective ?? "（无）"} · 状态 ${overview.bridgeMode.state ?? "unknown"}`),
+          h("div", null, overview.bridgeMode.blocked.error),
+          h("div", null, overview.bridgeMode.blocked.hint),
+          h("div", { className: "qbw-hint" }, "恢复：在控制台/DSH 设置选择 chat 或 simulation；旧配置不会被自动改写。")) : null,
         bridge.snowluma?.configWriteFailure ? h("div", { className: "qbw-warnbox", role: "alert" },
           h("b", null, bridge.snowluma.configWriteFailure.error), h("div", null, bridge.snowluma.configWriteFailure.hint)) : null,
         h(LimitReportCard, { events: limitEvents, goTab, onAck: ackGate, onMute: muteLimit }),
@@ -2150,18 +2159,15 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             h("div", { className: "qbw-kv" }, h("span", null, "生成时间"), h("span", null, fmtTime(bili.generatedAt))),
             h("div", { className: "qbw-kv" }, h("span", null, "隐私复检"), h("span", null, bili.blocked ? "命中，已拦截" : "通过")),
             h("div", { className: "qbw-actions" },
-              h(Btn, { kind: "qbw-btn2", onClick: async () => {
-                setBusy("refresh-bili");
-                try { const r = await api("/memory", { method: "POST", body: { action: "refresh-bili" } }); toast(r.ok ? "✓ B站记忆已刷新" : `✗ ${r.error ?? "失败"}`); await reload(); } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-              }, disabled: !!busy }, "刷新 B站记忆"))),
+              h(Btn, { kind: "qbw-btn2", onClick: retiredSummary, disabled: !!busy }, "旧摘要写入已退役"))),
           h("div", { className: "qbw-card" },
             h("h4", null, "合体层 ", h(StatusDot, { ok: scheduler.running }, scheduler.running ? "生物钟在跑" : "生物钟未启动")),
             h("div", { className: "qbw-kv" }, h("span", null, "身份对齐"), h("span", null, `${align.links ?? 0} 条 / 候选 ${align.candidates ?? 0}`)),
-            h("div", { className: "qbw-kv" }, h("span", null, "QQ→B站记忆"), h("span", null, memory.qqToBili?.enabled ? "开" : "关")),
-            h("div", { className: "qbw-kv" }, h("span", null, "B站→QQ记忆"), h("span", null, memory.biliToQq?.enabled ? "开" : "关")),
+            h("div", { className: "qbw-kv" }, h("span", null, "QQ→B站（历史配置）"), h("span", null, memory.qqToBili?.enabled ? "开" : "关")),
+            h("div", { className: "qbw-kv" }, h("span", null, "B站→QQ（历史配置）"), h("span", null, memory.biliToQq?.enabled ? "开" : "关")),
             h("div", { className: "qbw-kv" }, h("span", null, "隐私策略"), h("span", null, `v${overview?.privacyPolicyVersion ?? "?"}`)),
             h("div", { className: "qbw-actions" },
-              h(Btn, { kind: "qbw-btn2", onClick: () => act("refresh-bili"), disabled: !!busy }, "刷新 B站记忆"))),
+              h(Btn, { kind: "qbw-btn2", onClick: retiredSummary, disabled: !!busy }, "旧摘要写入已退役"))),
           h("div", { className: "qbw-card" },
             h("h4", null, "启动"),
             h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
@@ -4443,21 +4449,33 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     function MemoryV2Panel({ initialStatus, roleKey, onStatus }) {
       const [Component, setComponent] = useState(null);
       const [error, setError] = useState("");
+      const [preflight, setPreflight] = useState(null);
       const [attempt, setAttempt] = useState(0);
       useEffect(() => {
         let active = true;
+        // F08：先读独立于 Runtime 的只读预检；旧配置/坏路由时记忆页仍能显示诊断。
+        api("/memory-v2/preflight").then((value) => { if (active) setPreflight(value); }).catch(() => {});
         import("/dsh-surfcore/api/memory-v2/panel-client")
           .then((module) => {
             if (typeof module.createMemoryV2Panel !== "function") throw new Error("invalid memory panel module");
             if (active) { setComponent(() => module.createMemoryV2Panel(React, { api, Btn, fmtTime })); setError(""); }
           })
-          .catch(() => { if (active) setError("MEMORY_PANEL_NOT_READY：V2 管理入口尚未接通；可重载入口，或继续使用当前 V1 记忆卡。"); });
+          .catch(() => { if (active) setError("MEMORY_PANEL_NOT_READY：V2 管理入口尚未接通；点「重载 V2 入口」重试。本版本没有 V1 记忆后端可回退。"); });
         return () => { active = false; };
       }, [attempt]);
-      if (Component) return h(Component, { initialStatus, roleKey, onStatus });
+      const diagnostic = preflight && preflight.state !== "ready"
+        ? h("div", { className: "qbw-warnbox", role: "status" }, [
+            h("b", null, `只读诊断：${preflight.state} · ${preflight.code || ""}`),
+            h("div", null, preflight.error || "记忆配置需要核对。"),
+            h("div", null, preflight.hint || ""),
+            preflight.plan?.steps?.length ? h("ul", null, preflight.plan.steps.map((step, i) => h("li", { key: i }, step))) : null,
+          ])
+        : null;
+      if (Component) return h("div", null, diagnostic, h(Component, { initialStatus, roleKey, onStatus }));
       return h("div", { className: "qbw-card", role: error ? "alert" : "status" },
+        diagnostic,
         error || "正在加载 V2 记忆管理…",
-        error ? h(Btn, { kind: "qbw-btn2", onClick: () => { setError(""); setAttempt((n) => n + 1); } }, "重载 V2 入口") : null);
+        h(Btn, { kind: "qbw-btn2", onClick: () => { setError(""); setAttempt((n) => n + 1); } }, "重载 V2 入口"));
     }
 
     // ── 记忆卡（角色的长期记忆）────────────────────────────────────────────
@@ -5675,98 +5693,38 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         try { const r = await api("/memory-card"); setCard(r); } catch (e) { setErr(e.message); }
       }, []);
       useEffect(() => { load(); loadCard(); }, [load, loadCard]);
-      const biliToQq = qq?.biliBridge?.memory?.enabled !== false && qq?.biliBridge?.enabled !== false;
-      // 开关必须绑“可编辑草稿”，不能直接绑服务端快照 qq.biliBridge：
-      // 旧写法点了只改 unified.__biliToQqToggle，checked 却读 qq 快照 → 点完立刻弹回（PITFALLS #16）。
-      const biliToQqDraft = typeof unified?.__biliToQqToggle === "boolean" ? unified.__biliToQqToggle : biliToQq;
-      const qqToBili = unified?.memory?.qqToBili ?? {};
-      const setQqToBili = (key, value) => setUnified(["memory", "qqToBili", key], value);
-      const syncNow = async () => {
-        setBusy("sync");
-        try { const r = await api("/memory", { method: "POST", body: { action: "sync" } }); toast(r.ok ? `✓ 已同步（${r.stats?.kept ?? 0} 条，脱敏 ${r.stats?.redactions ?? 0} 处）` : `✗ ${r.error ?? "失败"}`); await load(); await reload(); }
-        catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-      };
-      const scan = async () => {
-        setBusy("scan");
-        try { const r = await api("/memory", { method: "POST", body: { action: "scan-align" } }); toast(`✓ 扫描完成：QQ 候选 +${r.qq?.added ?? 0}，B站候选 +${r.bili?.added ?? 0}`); await load(); await reload(); }
-        catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-      };
-      const purge = async () => {
-        if (!confirm("清空 QQ→B站 记忆和原始公开 feed？对齐表与 B站→QQ 简报不受影响。")) return;
-        setBusy("purge");
-        try {
-          const r = await api("/memory", { method: "POST", body: { action: "purge" } });
-          toast(r.ok ? "✓ 已清空 QQ→B站 记忆" : `✗ ${r.error ?? "失败"}`);
-          await load();
-          await reload();
-        } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-      };
+      // F06/F12：旧跨渠道摘要写者已退役，不再提供会 410 的按钮或保存已失效的开关。
+      // 旧资料仍只读展示；跨渠道记忆统一走页面顶部的 V2 记忆管理。
       const status = data?.status ?? overview?.memory ?? {};
       return h("div", null,
         h(MemoryV2Panel, { initialStatus: overview?.memoryV2, roleKey: overview?.character?.active?.id || overview?.character?.id || "", onStatus: (status) => setMemoryV2Backend(status.backend) }),
         memoryV2Backend !== "v2" ? h(MemoryCardPanel, { view: "summary", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }) : null,
-        h("div", { className: "qbw-group" }, "双向脱敏同步（QQ ⇄ B站）", h("small", null, "只搬运公开、脱敏后的近况；和上面的记忆卡不是一回事")),
-        h("div", { className: "qbw-dangerbox" },
-          h("b", null, "隐私红线（锁定，不可关）："),
-          "私信/私聊永不跨平台；密码、令牌、cookie、手机号、身份证、银行卡、住址、真实姓名、精确位置、外部链接一律剔除；",
-          "QQ 号/群号/B站 mid 不写进记忆正文；生成后还要过一遍 assertSafeOutput，命中就拒绝落盘。"),
+        h("div", { className: "qbw-group" }, "旧跨渠道摘要（只读）", h("small", null, "QQ ⇄ B站 一代摘要写者已退役；原文件、状态与审计保持只读")),
+        h("div", { className: "qbw-warnbox", role: "status" },
+          h("b", null, "QQ_BILI_SUMMARY_WRITE_RETIRED"),
+          h("div", null, "旧摘要、状态与人格文件保持只读；本版本不再提供同步、刷新、扫描、重建、清理或可保存的开关。"),
+          h("div", null, "需要跨渠道记忆请在上方 V2 记忆页按精确会话和模型正式授权；不会自动迁移或删除旧资料。")),
         h("div", { className: "qbw-grid" },
           h("div", { className: "qbw-card" },
-            h("h4", null, "B站 → QQ"),
-            h("p", null, "默认开启，保持原行为。B站只读公开打分/评论/收藏/公开动态/日记公开见闻；不读任何私信。"),
-            h(Row, { label: "同步 B站记忆到 QQ", hint: "关掉 = QQ 侧的她不提 B站经历" },
-              h("input", { className: "qbw-switch", type: "checkbox", checked: biliToQqDraft, onChange: (e) => {
-                // 保存时由 normalizedQq 落到 biliBridge.memory.enabled（见主组件）。
-                setUnified(["__biliToQqToggle"], e.target.checked);
-              } })),
-            h("div", { className: "qbw-hint" }, `状态：${biliToQqDraft ? "开" : "关"} · 简报 ${status.biliToQq?.briefChars ?? 0} 字 · ${fmtTime(status.biliToQq?.generatedAt)}`),
-            h("div", { className: "qbw-kv" }, h("span", null, "隐私复检"), h("span", null, status.biliToQq?.blocked ? "命中拦截" : "通过")),
-            h("div", { className: "qbw-hint" }, "保存后需重启 QQ 桥接才生效（底部「保存并重启 QQ 桥接」）。"),
-            h("div", { className: "qbw-actions" },
-              h(Btn, { kind: "qbw-btn2", onClick: async () => {
-                setBusy("refresh-bili");
-                try { const r = await api("/memory", { method: "POST", body: { action: "refresh-bili" } }); toast(r.ok ? "✓ 已刷新" : `✗ ${r.error ?? "失败"}`); await load(); } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-              }, disabled: !!busy }, "立即刷新"))),
+            h("h4", null, "B站 → QQ（历史简报）"),
+            h("div", { className: "qbw-kv" }, h("span", null, "简报字数"), h("span", null, `${status.biliToQq?.briefChars ?? 0} 字`)),
+            h("div", { className: "qbw-kv" }, h("span", null, "生成时间"), h("span", null, fmtTime(status.biliToQq?.generatedAt))),
+            h("div", { className: "qbw-kv" }, h("span", null, "隐私复检"), h("span", null, status.biliToQq?.blocked ? "命中拦截" : "通过"))),
           h("div", { className: "qbw-card" },
-            h("h4", null, "QQ → B站"),
-            h("p", null, "默认关闭。只读白名单群里的公开消息；私信、命令、媒体消息不会进入。"),
-            h(Row, { label: "同步 QQ 记忆到 B站", hint: "开启后 B站每次醒来会看到群里的近况（已脱敏）" },
-              h("input", { className: "qbw-switch", type: "checkbox", checked: qqToBili.enabled === true, onChange: (e) => setQqToBili("enabled", e.target.checked) })),
+            h("h4", null, "QQ → B站（历史摘要）"),
             h("div", { className: "qbw-kv" }, h("span", null, "上次同步"), h("span", null, fmtTime(status.qqToBili?.last?.at))),
             h("div", { className: "qbw-kv" }, h("span", null, "保留条数 / 字数"), h("span", null, `${status.qqToBili?.last?.kept ?? 0} 条 / ${status.qqToBili?.chars ?? 0} 字`)),
-            h("div", { className: "qbw-kv" }, h("span", null, "丢弃（隐私/命令/媒体）"), h("span", null, status.qqToBili?.last?.dropped ?? 0)),
-            h("div", { className: "qbw-actions" },
-              h(Btn, { onClick: syncNow, disabled: !!busy || qqToBili.enabled !== true }, busy === "sync" ? "同步中…" : "立即同步"),
-              h(Btn, { kind: "qbw-btn2", onClick: scan, disabled: !!busy }, "扫描身份候选"),
-              h(Btn, { kind: "qbw-btn2", onClick: purge, disabled: !!busy }, busy === "purge" ? "清理中…" : "清空 QQ→B站 记忆")))),
-        h(AdvancedSettings, { note: "记忆卡规则 / 最近记忆 / 全量卡 / 同步范围 / 注入预览 / 审计：展开后同样可改" },
+            h("div", { className: "qbw-kv" }, h("span", null, "丢弃（隐私/命令/媒体）"), h("span", null, status.qqToBili?.last?.dropped ?? 0)))),
+        h(AdvancedSettings, { note: "旧摘要预览与审计（只读）：不再展开已失效的同步参数与写入按钮" },
           memoryV2Backend !== "v2" ? h(MemoryCardPanel, { view: "details", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }) : null,
           memoryV2Backend !== "v2" ? h(FullMemoryCardPanel, { reloadKey: fullVersion, busy, toast }) : null,
-          h(Section, { title: "同步范围与隐私参数", note: "QQ → B站", collapsible: false },
-            h(Row, { label: "回看天数", hint: "只读最近 N 天的公开群消息" },
-              h("input", { className: "qbw-input", type: "number", min: 1, max: 90, value: qqToBili.lookbackDays ?? 7, onChange: (e) => setQqToBili("lookbackDays", Number(e.target.value)) })),
-            h(Row, { label: "最多消息条数", hint: "防止一次读太多" },
-              h("input", { className: "qbw-input", type: "number", min: 20, max: 5000, value: qqToBili.maxMessages ?? 300, onChange: (e) => setQqToBili("maxMessages", Number(e.target.value)) })),
-            h(Row, { label: "记忆最大字符", hint: "超过会截断，保留边界说明" },
-              h("input", { className: "qbw-input", type: "number", min: 1200, max: 20000, value: qqToBili.maxChars ?? 6000, onChange: (e) => setQqToBili("maxChars", Number(e.target.value)) })),
-            h(Row, { label: "包含管理员消息", hint: "默认不包含：管理员消息常含指令/隐私" },
-              h("input", { className: "qbw-switch", type: "checkbox", checked: qqToBili.includeOwner === true, onChange: (e) => setQqToBili("includeOwner", e.target.checked) })),
-            h(Row, { label: "使用群昵称", hint: "关掉 = 只写「群友」；开 = 用群名片（不带 QQ 号）" },
-              h("input", { className: "qbw-switch", type: "checkbox", checked: qqToBili.useNicknames !== false, onChange: (e) => setQqToBili("useNicknames", e.target.checked) })),
-            h(Row, { label: "只同步这些群", hint: "逗号分隔群号；留空 = 跟随 allow.groups", },
-              h(IdListEditor, {
-                value: qqToBili.includeGroups ?? [],
-                placeholder: "群号，逗号分隔：123456789，987654321",
-                emptyHint: "留空 = 跟随 allow.groups",
-                onChange: (list) => setQqToBili("includeGroups", list),
-              }))),
           h("div", { className: "qbw-cols" },
             h("div", null,
-              h("div", { className: "qbw-group" }, "QQ → B站 预览 ", h("small", null, status.qqToBili?.path ?? "")),
-              h("div", { className: "qbw-scroll" }, h("pre", null, data?.qqPreview?.text || "（还没有生成；开启同步后点「立即同步」）"))),
+              h("div", { className: "qbw-group" }, "QQ → B站 历史摘要 ", h("small", null, status.qqToBili?.path ?? "")),
+              h("div", { className: "qbw-scroll" }, h("pre", null, data?.qqPreview?.text || "（无历史摘要；本版本不再生成）"))),
             h("div", null,
-              h("div", { className: "qbw-group" }, "B站 → QQ 简报预览 ", h("small", null, status.biliToQq?.path ?? "")),
-              h("div", { className: "qbw-scroll" }, h("pre", null, data?.biliPreview || "（还没有生成；点「立即刷新」）")))),
+              h("div", { className: "qbw-group" }, "B站 → QQ 历史简报 ", h("small", null, status.biliToQq?.path ?? "")),
+              h("div", { className: "qbw-scroll" }, h("pre", null, data?.biliPreview || "（无历史简报；本版本不再生成）")))),
           h(Section, { title: "同步审计（只记数量，不记内容）", note: `${data?.audit?.length ?? 0} 条`, collapsible: false },
             (data?.audit ?? []).slice().reverse().map((item, i) => h("div", { className: "qbw-item", key: i },
               h("div", null,

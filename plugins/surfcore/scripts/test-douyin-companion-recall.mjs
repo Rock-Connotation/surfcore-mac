@@ -1,4 +1,4 @@
-import { testHome } from './isolate-test-home.mjs';
+import { testHome, shareTestRoot } from './isolate-test-home.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,20 +8,16 @@ import { fileURLToPath } from 'node:url';
 
 const script = fileURLToPath(import.meta.url);
 if (process.argv[2] !== '--child') {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-companion-recall-'));
-  const child = spawnSync(process.execPath, [script, '--child', root], {
+  const child = spawnSync(process.execPath, [script, '--child'], {
     encoding: 'utf8',
-    env: { ...process.env, DSH_HOME: root, USERPROFILE: root },
+    env: { ...process.env, ...shareTestRoot() },
   });
   if (child.stdout) process.stdout.write(child.stdout);
   if (child.stderr) process.stderr.write(child.stderr);
   assert.equal(child.error, undefined, child.error?.message);
   assert.equal(child.status, 0, `fixture child exited ${child.status}`);
 } else {
-  const root = path.resolve(process.argv[3]);
-  process.env.DSH_HOME = root;
-  process.env.USERPROFILE = root;
-
+  const root = testHome;
   const chars = await import('../../../src/character-persona.js');
   const { createCompanionMemory } = await import('../lib/douyin-companion-memory.mjs');
   const { buildCharacterContext } = await import('../../../src/core/context.js');

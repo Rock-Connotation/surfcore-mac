@@ -7,8 +7,7 @@ import { Readable } from 'node:stream';
 import { createCompanionModel, COMPANION_ROUTE } from '../lib/douyin-companion-model.mjs';
 import { createCompanionController } from '../lib/douyin-companion-controller.mjs';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-companion-host-'));
-process.env.DSH_HOME = root;
+const root = testHome;
 const chars = await import('../../../src/character-persona.js');
 const { createCompanionMemory } = await import('../lib/douyin-companion-memory.mjs');
 const { runMemoryCardMaintenance } = await import('../lib/memory-card.js');

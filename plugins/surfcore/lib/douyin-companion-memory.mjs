@@ -55,6 +55,18 @@ export function createCompanionMemory({ getCharacter, maintainMemory, stateDir =
     if (receipt?.sourceState !== 'committed') return requireOk(failure('MEMORY_SOURCE_UNCONFIRMED', '原始经历尚未确认保存。', '查询原操作回执；不会自动重新提交或调用模型。'));
     const refs = receipt.eventRefs;
     if (!Array.isArray(refs) || !refs.length) return requireOk(failure('MEMORY_SOURCE_REFS_REQUIRED', 'Host回执缺少已保存原文的精确引用。'));
+    // F10：回执并入持久对象前先验证完整合同；残缺回执不得污染 job/item 的
+    // 最后有效状态，避免 saveJob 抛 DOUYIN_STATE_INVALID 后留下 running。
+    const validRef = ref => ref && ref.type === 'event' && ref.revision === 1
+      && typeof ref.id === 'string' && /^[a-f0-9]{64}$/.test(ref.payloadDigest ?? '');
+    const complete = receipt.ok === true && typeof receipt.operationId === 'string'
+      && receipt.acceptance === 'volatile' && receipt.sourceState === 'committed'
+      && receipt.selectionState === 'not_selected' && receipt.indexState === 'ready'
+      && receipt.operationState === 'completed' && receipt.retry === 'none'
+      && Number.isSafeInteger(receipt.commitSequence) && receipt.commitSequence >= 1
+      && Array.isArray(receipt.eventIds) && receipt.eventIds.length === refs.length
+      && refs.every(validRef) && refs.every(ref => receipt.eventIds.includes(ref.id));
+    if (!complete) return requireOk(failure('MEMORY_SOURCE_RECEIPT_INVALID', 'Host回执字段不完整，未能并入作业状态。', '用原操作编号查询回执；来源可能已提交，不会重新 ingest 或改写作废状态。'));
     await requireOk(adapter.bindActualInput(session.handle, refs));
     session.refs.push(...refs); session.receipts.push(receipt);
     return { ok: true, refs, receipt };
