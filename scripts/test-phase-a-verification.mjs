@@ -260,8 +260,8 @@ try {
 
   const routing = readMemoryRouting({ stateDir: tmpDir });
   assert.equal(routing.ok, true, 'Routing query must succeed');
-  assert.equal(routing.backend, 'v1', 'Routing activeBackend must default to v1');
-  assert.equal(routing.source, 'legacy-default', 'Source must be legacy-default');
+  assert.equal(routing.backend, 'v2', 'Routing activeBackend must default to v2 (V1 retired)');
+  assert.equal(routing.source, 'fresh-default', 'Source must be fresh-default');
 } finally {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 }

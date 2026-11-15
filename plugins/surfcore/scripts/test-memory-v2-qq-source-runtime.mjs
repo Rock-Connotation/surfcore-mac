@@ -2,16 +2,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { createMemoryService } from '../../../src/core/memory-v2-service.js';
-import { createMemoryHost } from '../lib/memory-v2-host.mjs';
-import { createQQMemoryBridge } from '../../../src/core/memory-v2-qq.js';
-import { createQQV2SourceRuntime } from '../lib/qq-v2-source-runtime.mjs';
-import { createTokenBudgetService } from '../lib/token-budget.js';
-import { createQQV2NativeOwner } from '../lib/qq-v2-native-owner.mjs';
-import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
 
 const rootDir = path.resolve('_backups/memory-v2-qq-source-runtime', 'run-' + process.version + '-' + randomUUID());
 fs.mkdirSync(rootDir, { recursive: true, mode: 0o700 });
+// Set the fixture home before importing modules that capture character paths.
+process.env.DSH_HOME = path.join(rootDir, 'dsh-home');
+const { createMemoryService } = await import('../../../src/core/memory-v2-service.js');
+const { createMemoryHost } = await import('../lib/memory-v2-host.mjs');
+const { createQQMemoryBridge } = await import('../../../src/core/memory-v2-qq.js');
+const { createQQV2SourceRuntime } = await import('../lib/qq-v2-source-runtime.mjs');
+const { createTokenBudgetService } = await import('../lib/token-budget.js');
+const { createQQV2NativeOwner } = await import('../lib/qq-v2-native-owner.mjs');
+const { deriveMemoryProviderRouteId } = await import('../../../src/core/memory-v2-routing.js');
+const { createQQV2ReplyHost } = await import('../lib/qq-v2-reply-host.mjs');
+const { createNativeQQChannel } = await import('../../../src/core/qq-native-channel.js');
 
 const good = value => {
   assert.equal(value?.ok, true, JSON.stringify(value));
@@ -158,7 +162,6 @@ async function fixture(options = {}) {
       }
       return rawAdapter.capture(args[0]);
     },
-    release: async (...args) => rawAdapter.release(...args),
   });
 
   f.bridge = createQQMemoryBridge({
@@ -306,6 +309,20 @@ await test('positive QQ V2 source runtime end-to-end flow with recall', async ()
 });
 
 // 2. Identity and route drift negatives
+await test('synchronous Host release preserves the original preparation failure', async () => {
+  const f = await fixture(); let released = 0;
+  try {
+    good(await f.bridge.captureSource({ key: 'group:900', loginAccountId: '100', actorAccountId: '200', objectId: 'cleanup-source', text: 'Fresh complete source.' }));
+    good(await f.bridge.prepareReply({ key: 'group:900' }));
+    const runtime = createQQV2SourceRuntime({ bridge: f.bridge, adapter: { ...f.adapter,
+      prepare: async () => ({ ok: false, code: 'MEMORY_QUERY_INVALID', error: 'Fixture rejected preparation.', hint: 'Use the original preparation error.' }),
+      release: handle => { released++; return f.adapter.release(handle); },
+    }, getCharacter: f.getCharacter, getQQIdentity: f.getQQIdentity, corePersona: persona, nativeCodec: unitCodec, validateOwnedToolContext: f.validateOwnedToolContext });
+    const result = bad(await runtime.prepareReplyPrompt({ key: 'group:900', job: { jobId: 'cleanup-job', sessionId: 'cleanup-session', requestId: 'cleanup-request' } }), 'MEMORY_QUERY_INVALID');
+    assert.ok(result.hint); assert.equal(released, 1); good(await runtime.close());
+  } finally { await f.close(); }
+});
+
 await test('QQ live identity drift blocks admission and preparation', async () => {
   const f = await fixture();
   try {
@@ -445,7 +462,7 @@ async function nativeQQSourceCycle() {
   const budget = createTokenBudgetService({ ctx: {}, dshHome: f.dir, qqStateDir: path.join(f.dir, 'state') });
   budget.saveLimits({ qq: { cny: null, tokens: 100 }, bili: { cny: null, tokens: null }, other: { cny: null, tokens: null }, total: { cny: null, tokens: null } });
 
-  let owner, providerCalls = 0, toolCalls = 0;
+  let owner, providerCalls = 0, toolCalls = 0, voiceCycle = false, voiceModelCalls = 0;
   const deadline = async promise => {
     let timer;
     try {
@@ -467,6 +484,13 @@ async function nativeQQSourceCycle() {
       async *stream(options) {
         providerCalls++;
         assert.ok(JSON.stringify(options.messages).includes(marker), 'actual SDK request must include earlier Core memory');
+        if (voiceCycle && ++voiceModelCalls === 1) {
+          assert.equal(options.tools.length, 1); assert.equal(options.tools[0].name, 'qq_send_voice');
+          yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } };
+          yield { type: 'block-end', index: 0, block: { type: 'text', text: 'Intermediate text must never be sent.' } };
+          yield { type: 'block-end', index: 1, block: { type: 'tool-call', id: 'native-voice-intent', name: 'qq_send_voice', arguments: JSON.stringify({ text: 'Hello blue voice' }) } };
+          yield { type: 'finish', reason: { kind: 'tool-calls' } }; return;
+        }
         if (providerCalls === 1) {
           yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } };
           yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'call-tool-qq-1', name: 'qq_reply', arguments: JSON.stringify({ text: 'Hello blue' }) } };
@@ -571,14 +595,55 @@ async function nativeQQSourceCycle() {
     await deadline(owner.retire());
     await deadline(f.runtime.close());
 
+    // Exercise the production Host composition with the installed SDK, real
+    // Core and real source ledger. Only the model and QQ transport are fake.
+    budget.saveLimits({ qq: { cny: null, tokens: 1000000 } });
+    good(await f.bridge.captureSource({ key: 'group:900', loginAccountId: '100', actorAccountId: '200', objectId: 'native-host-composition', text: marker }));
+    good(await f.bridge.prepareReply({ key: 'group:900' }));
+    let nativeSends = 0;
+    const channel = createNativeQQChannel({ memory: f.bridge, getCharacter: f.getCharacter, getIdentity: f.getQQIdentity,
+      isAllowed: () => true, send: async (_key, text) => { assert.equal(text, 'Confirmed blue response'); nativeSends++; return { ok: true, messageId: '123' }; }, onComplete: () => {} });
+    const request = good(channel.begin('group:900', f.getCharacter(), 1)).request;
+    const replyHost = createQQV2ReplyHost({ ctx: outer, memoryV2: { adapter: f.adapter, getRouting: () => f.bridge.routing() }, tokenBudget: budget,
+      getCharacter: f.getCharacter, getQQIdentity: f.getQQIdentity, readPersona: () => persona,
+      loadEnvironment: async () => ({ nativeModules: bootstrapModules, nativeCodec: actual, llm: outer.get('llm'), getLlmHookContext: () => outer }),
+      callBridge: async (_url, { body }) => { const data = await channel.request(body); return { ok: data.ok, status: data.ok ? 200 : 409, data }; } });
+    good(replyHost.submit(request)); await deadline(replyHost.whenIdle());
+    assert.equal(replyHost.getReceipt(request.requestId)?.delivered, true, JSON.stringify(replyHost.getReceipt(request.requestId)));
+    assert.equal(nativeSends, 1); assert.equal(providerCalls, 3);
+    good(await replyHost.close());
+    assert.deepEqual(network, []);
+    console.log('PASS production QQ reply Host + installed Native SDK + Core + private bridge: 1 complete reply, 1 fake QQ ACK, 0 external calls');
+
+    voiceCycle = true;
+    good(await f.bridge.captureSource({ key: 'group:900', loginAccountId: '100', actorAccountId: '200', objectId: 'native-host-voice', text: marker + ' Please reply by voice.' }));
+    good(await f.bridge.prepareReply({ key: 'group:900' }));
+    let voiceSends = 0;
+    const voiceChannel = createNativeQQChannel({ memory: f.bridge, getCharacter: f.getCharacter, getIdentity: f.getQQIdentity,
+      isAllowed: () => true, getCapabilities: () => ({ ok: true, voice: { enabled: true, maxChars: 120 } }),
+      send: async (_key, text, options) => { await options.validate(); assert.equal(options.delivery, 'voice'); assert.equal(text, 'Hello blue voice'); voiceSends++; return { ok: true, messageId: '124' }; }, onComplete: () => {} });
+    const voiceRequest = good(voiceChannel.begin('group:900', f.getCharacter(), 2)).request;
+    const voiceHost = createQQV2ReplyHost({ ctx: outer, memoryV2: { adapter: f.adapter, getRouting: () => f.bridge.routing() }, tokenBudget: budget,
+      getCharacter: f.getCharacter, getQQIdentity: f.getQQIdentity, readPersona: () => persona,
+      loadEnvironment: async () => ({ nativeModules: bootstrapModules, nativeCodec: actual, llm: outer.get('llm'), getLlmHookContext: () => outer }),
+      callBridge: async (_url, { body }) => { const data = await voiceChannel.request(body); return { ok: data.ok, status: data.ok ? 200 : 409, data }; } });
+    good(voiceHost.submit(voiceRequest)); await deadline(voiceHost.whenIdle());
+    assert.equal(voiceHost.getReceipt(voiceRequest.requestId)?.delivered, true, JSON.stringify(voiceHost.getReceipt(voiceRequest.requestId)));
+    assert.equal(voiceSends, 1); assert.equal(voiceModelCalls, 2);
+    good(await voiceHost.close()); assert.deepEqual(network, []);
+    console.log('PASS production Native voice tool: actual SDK witness + Core ledger + one voice intent + one fake ACK, no intermediate/final duplicate text, 0 network');
+
     const evidenceDir = path.resolve('_backups/memory-v2-coordinator/qq-source-runtime-independent');
     fs.mkdirSync(evidenceDir, { recursive: true });
     const evidence = {
       ok: true,
       providerCalls,
       toolCalls,
-      tokens,
-      gates: 2,
+      tokens: (await budget.status()).usage.total.tokens,
+      gates: providerCalls,
+      productionHostReplies: nativeSends,
+      productionHostVoiceReplies: voiceSends,
+      productionVoiceModelCalls: voiceModelCalls,
       admittedInputs: status.admittedInputs,
       committedOutputs: status.committedOutputs,
       sentLeases: status.sentLeases,

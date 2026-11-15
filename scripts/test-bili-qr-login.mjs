@@ -41,6 +41,19 @@ assert.equal(validateQrAccount({ selfMid: owner.mid, ownerMid: owner.mid, target
 // 没读到 mid 直接失败
 assert.equal(validateQrAccount({ target: 'fish', account: {} }).ok, false);
 
+// 失败可见性（AGENTS 1.7）：每个失败分支的 code 与 hint 都非空，code 稳定为 bili.qr-*
+for (const verdict of [
+  validateQrAccount({ target: 'fish', account: {} }),
+  validateQrAccount({ ...base, target: 'owner', account: fish }),
+  validateQrAccount({ ...base, target: 'owner', account: other, expectedMid: owner.mid }),
+  validateQrAccount({ ...base, target: 'fish', account: owner }),
+  validateQrAccount({ ...base, target: 'fish', account: other }),
+]) {
+  assert.equal(verdict.ok, false);
+  assert.match(String(verdict.code), /^bili\.qr-/, `code 必须是稳定的 bili.qr-*：${verdict.code}`);
+  assert.ok(String(verdict.hint).length >= 8, `hint 必须给可执行的下一步：${verdict.hint}`);
+}
+
 // macOS discovery checks real app executables (including user Applications), not .app folders.
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-qr-browser-'));
 try {

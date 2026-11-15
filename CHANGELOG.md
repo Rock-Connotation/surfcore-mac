@@ -1,3 +1,36 @@
+## [0.9.0-dev.1] - 2026-11-15
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [0.9.0] - 2026-11-15
+
+> 调查记录：[V1 退役破坏式重构](docs/cases/2026-11-12-v1-retirement.md) ·
+> [三轮复审离线修复 R3](docs/cases/2026-11-15-v1-retirement-r3-offline-fixes.md) ·
+> [四轮：接管重驱动合同 + 取消后回执可查](docs/cases/2026-11-15-v1-retirement-r4-resume-and-receipt.md) ·
+> [Mac 实机取证 G7：CLI 包装进程孤儿](docs/cases/2026-11-15-mac-real-machine-g7-evidence.md)
+
+### 变更
+
+- **V1 退役（v2-only）**：记忆后端只走 V2，旧预设/旧模式入口收拢并按 `QQ_MODE_RETIRED` 明确拒绝（fail-closed），不再回落到 V1 执行路径；`~/.dsh` 里的角色包、记忆、配置、授权与额度账本不删。
+- **B站接管口径改为诚实降级**：不再由 `accepted:true` 自行合成 `durable:true`；未完成持久接管的作业写成 `accepted-needs-retry` / `unknown`（带 code/error/hint），重启后不假称会自动跑起来。
+
+### 修复
+
+- **QQ 准入与语音误取消**：不再把「本次轮询时间」当权限语义代数（同一有效模式的下一次轮询不再误取消在途语音）；进入 blocked 时真正取消 Native 作业并撤销未消费 lease —— 修前旧 lease 仍能发送成功，修后返回 `MEMORY_SOURCE_LEASE_REQUIRED`（原 Host 句柄 `MEMORY_HANDLE_STALE`）。
+- **管理消息回执**：受控管理回执统一走带回执的发送路径，按 delivered/rejected/unknown 三态记账；平台返回 `{}`（unknown）不再被记成已送达，`messageId` 有则回填（`OWNER_REPLY_UNKNOWN`）。
+- **B站事件身份与接管**：作业身份按触发类型定义（作息绑角色+计划日期+时段、提醒绑已持久化发生编号、DM 绑账号+角色+消息坐标），不同日期/不同提醒不再压成同一个 requestId；重启后按原 requestId 重放尚未 dispatch 的作业，已 dispatch 或状态未知只按原编号查询、不换 ID 重跑。
+- **退役进程树**：CLI 子命令及其后代纳入退役等待，deadline 等真实退出事件（超时给 `BILI_SCHEDULER_RETIRE_TIMEOUT`）；`tools/bili.mjs` 包装进程收到 SIGTERM/SIGINT 后有界自退（3 秒宽限 → SIGKILL → 退出码 128+signal），不再留下被 launchd 收养的 `PPID=1` 孤儿。
+- **受控单轮**：来源集合的发现与权限判断在自己流程内完成，不再依赖即将退役的调度器内存缓存 —— 修前 readiness `BILI_V2_ROUND_SCOPE_UNAPPROVED`、start HTTP 409、模型调用 0，修后集合 0→1、readiness ok、start 200。
+- **抖音**：无 proof 的状态响应统一走固定 code→文案映射，`saveUncertain` 按 jobId/角色/epoch 归属；取消/中断后可按原 operation 编号查回执（`DOUYIN_STALE_CHARACTER` / `DOUYIN_RECEIPT_NOT_FOUND`），非法状态不再污染运行时作业。
+- **记忆预检**：`readFileSync` 的 I/O 错误与 JSON 解析错误分开报告，EACCES 不再被说成「不是有效 JSON」。
+
+### 发布/测试
+
+- 门禁：`npm run test:audit` 206/206、`test:regressions` 17/17、`test:memory-v2` 50/50、插件套件 37 段、`lint:failures` / `doc-facts` / preset 契约全过；`install-manifest --verify-ref HEAD` 1111/1111 问题 0。
+- 新增合同测试：`test-qq-admission-r3.mjs`（准入代数与 lease）、`test-owner-delivery-r3.mjs`（管理回执三态）、`test-douyin-reflection-receipt.mjs`（取消后回执可查）、`test-bili-cli-signal-r4.mjs`（信号自退与 SIGKILL 升级）。
+
 ## [0.8.8] - 2026-11-03
 
 ### 修复

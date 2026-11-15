@@ -4,7 +4,6 @@ import path from 'node:path';
 import http from 'node:http';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { randomUUID } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
 
 if (process.env.SURFCORE_BILI_HOST_NATIVE !== '1' || !process.env.DSH_HOME?.includes('bili-host-native')) throw new Error('Run only in the explicitly isolated native Host fixture.');
 const home = process.env.DSH_HOME, receiverMode = process.env.SURFCORE_BILI_HOST_RECEIVER_NATIVE === '1', publicMode = process.env.SURFCORE_BILI_HOST_PUBLIC_NATIVE === '1';
@@ -102,12 +101,11 @@ try {
     currentDshUrl: () => address, getManagementAuthorization: req => req.headers['x-fixture-owner'] === 'fixture-owner',
     getPlatformState: channel => channel === 'bili' ? host?.getPlatformState() ?? null : null });
   checked(await memory.initialize());
-  const before = memory.routing(); assert.equal(before.backend, 'v1');
-  // Seed an already activated isolated fixture; this does not implement or prove production activation.
-  const control = new DatabaseSync(path.join(stateDir, 'memory-control.sqlite'));
-  control.prepare("UPDATE state SET activeBackend='v2',shadowEnabled=1 WHERE id=1").run();
-  const row = control.prepare('SELECT activeBackend,revision FROM state WHERE id=1').get(); control.close();
-  checked(writeMemoryRouting({ stateDir, status: { ok: true, activeBackend: row.activeBackend, revision: row.revision, storeGeneration: before.descriptor.storeGeneration, minCompatibleReader: before.descriptor.minCompatibleReader } }));
+  // V2-only（2026-11-12）：全新隔离库的缺省后端就是 v2，不再需要也不允许直接改 SQLite
+  // 伪造影子开关；路由由 Runtime 按正式控制快照发布。
+  const before = memory.routing(); assert.equal(before.backend, 'v2');
+  const status = checked(await memory.service.getStatus());
+  checked(writeMemoryRouting({ stateDir, status: { ...status, activeBackend: 'v2' } }));
   host = createBiliV2Host({ ctx: outer, stateDir, getCharacter: () => role, memoryV2: memory.channelMemory('bili'), tokenBudget: budget,
     getFeedCandidates: async () => [{ kind: 'video', bvid: 'BV1234567890' }, { kind: 'video', bvid: 'BV1234567891' }],
     getCredentials: async () => ({ cookie: 'DedeUserID=9; bili_jct=SYNTHETIC_CSRF', bili_jct: 'SYNTHETIC_CSRF' }),

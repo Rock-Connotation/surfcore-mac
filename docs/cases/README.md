@@ -6,8 +6,15 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-15 | [V1 退役四轮（接管重驱动合同 + 取消后回执可查）](2026-11-15-v1-retirement-r4-resume-and-receipt.md) | 生产 scheduler 用原 requestId 重驱动 `pre_dispatch` 接管任务的离线合同（51→52 场景，含反向重放）、抖音取消后按原操作编号查真实 Host 回执、越界帧数经核实无需再修（附证据） | 已合入 dev |
+| 2026-11-15 | [V1 退役三轮复审离线修复（F01–F05/N01/P2）](2026-11-15-v1-retirement-r3-offline-fixes.md) | 准入代数与 lease 撤销、管理回执按真实 ACK 入账、B站诚实降级不再假称 durable、退役等真实退出、单轮来源集合、抖音/预检错误分类，另加 9 条常驻合同测试 | 已合入 dev |
+| 2026-11-12 | [A6 失败可见性：ok:false 三件套静态检查](2026-11-12-a6-failure-visibility.md) | lint-failures 棘轮基线（669 处债务入册只许降不许升），B站扫码/更新/TTS/语音包 P0 链路补齐 code+hint 并加失败分支断言 | 本地验收，未发布 |
+| 2026-11-12 | [PRD 拍板修订（定位/双平台/默认QQ/无分级/V1清单）](2026-11-12-prd-revision.md) | 六条拍板逐条落档 docs/product/ 四份；设置分叉核查实证无分叉；V1 清单只盘不删按安全→痛排序 | 本地验收，未发布 |
+| 2026-11-12 | [文档平台事实错误与易腐数字校正 + doc-facts 校验](2026-11-12-doc-facts-and-platform-correction.md) | 修正“不支持 macOS”等事实错误与版本/标签/模块/路径数字，新增离线可执行校验 | 未发布（文档+开发脚本） |
+| 2026-11-12 | [功能提交、合dev与安全去重清理](2026-11-12-functional-commits-and-safe-cleanup.md) | 保留两条功能线，按内容保全历史资料后清理分支与工作树 | 本地收拢，未发布 |
 | 2026-11-11 | [阶段 B-E：记忆闭环、任务准入与 Mac 本地执行能力建设](2026-11-11-phase-bcde-memory-v2-task-harness-and-mac-execution.md) | Memory V2时间排序与摘录、TaskLedger任务账本、TaskHarness准入守门、文件整理计划、受限命令与Mac原生应用控制 | 阶段验收，未发布 |
 | 2026-11-11 | [Phase A：主动目的受众收敛、进程有界终态与交互取消准确回执](2026-11-11-phase-a-remediation.md) | V1 purpose受众过滤与他人愿望归属隔离、子进程两阶段有界终止及交互取消状态判定 | 阶段验收，未发布 |
+| 2026-11-11 | [QQ V2 桥接在线但不回复](2026-11-11-qq-v2-native-reply.md) | scope 不匹配、Native 未装配与失败不可见 | 真实验收通过，未发布 |
 | 2026-11-11 | [Bili 受控单轮所选模型正向 V2 接线与退役 ACK](2026-11-11-memory-v2-bili-manual-round.md) | 模型路由校验派生、V2 上下文纯净构建与调度器退役 ACK 闭环 | 验收通过，未安装 |
 | 2026-11-11 | [Memory V2 迁移盘点安全预览暴露与隔离区完整性](2026-11-11-memory-v2-migration-preview.md) | 管理面板 cleanPreview 安全透出统计指标，隔离区严格保留且未获批准不切生产 | 验收通过，未安装 |
 | 2026-11-11 | [QQ V2 原生来源运行时与 Bridge 联合闭环](2026-11-11-memory-v2-qq-source-runtime.md) | 来源包/Core召回/Native Owner/账本与单次租约闭环，普通4例与实际Native探针通过 | 阶段验收，未安装 |
@@ -179,3 +186,11 @@
 - [QQ 私有 context、文本包与原件导出](2026-11-11-memory-v2-qq-source-plumbing.md)：完整 producer 分片/原 refs 私有导出、actor 保真的只读文本包与独立 QQ Host context。
 - [QQ Native owner 私有所有权](2026-11-11-memory-v2-qq-native-owner.md)：实际 Native agent 私有所有权、动态角色/模型/工具检查、真实预算前置 gate 与完整退役。
 - [QQ Native 输出观察与取消](2026-11-11-memory-v2-qq-native-observation.md)：实际流分阶段观察、原配置/请求/分片检查、工具 guard witness、等待实际取消后卸载确认。
+
+- [2026-11-12 QQ Native语音与白名单启用流程](2026-11-12-qq-native-voice-access.md)
+
+- [V1 退役破坏式重构](2026-11-12-v1-retirement.md)：六项 V1 按 2026-11-12 拍板退役中（Memory 路由 V2-only、QQ 一代 preset/reserved/人格过滤层、B站 V1 会话层、控制台与设置窗口一代入口）；含七步完整逻辑、失败路径、已知残留与发布交接块。
+
+- [G7 Mac 实机取证（非侵入）：CLI 包装进程的孤儿后代与 SIGTERM 修复](2026-11-15-mac-real-machine-g7-evidence.md)：实机捕到 5 个 `PPID=1` 的 CLI 孤儿（最早 1.9 天），根因是 `plugins/surfcore/tools/bili.mjs` 只转发信号、自己不退出；修成有界退出 + 升级 SIGKILL（先红 7s 挂死 → 修后 3–4s 退出），并把实机环境证据（DSH 自带 node v24.21.0、桌面应用在跑、`~/.dsh/profiles` 三 profile）一并落档。
+
+- [G7 第二阶段：把 SurfCore 装进隔离实例的真实宿主验收](2026-11-15-mac-real-machine-g7-phase2-isolated-host.md)：在 `os.tmpdir()` 的隔离 `HOME`/`DSH_HOME` 里用 `setup-dsh` 装本工作树的 `plugins/surfcore`，再用真实应用二进制起 `@deepseek-ai/dsh-desktop-host`，验收真实 loader 激活 `surfcore` + `qq-mode`、shutdown 后零残留、守门进程内零非回环外联（AC1–AC3/AC6–AC8 PASS；HTTP 健康面与页面渲染记为环境阻断；含 AC9 反向重放红→绿与"隔离 profile 必须补基座 bundle"的坑）。

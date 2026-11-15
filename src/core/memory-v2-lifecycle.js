@@ -260,7 +260,7 @@ export function createLifecycle({ stateDir, charactersDir, control, role, closeR
       mark(ctx.characterId, KERNEL);
       const intent = transaction(control, operationId, () => { control.prepare('INSERT INTO lifecycle_ops VALUES(?,?,?,?,?,?,?)').run(operationId, requestDigest, ctx.characterId, kind, 'intent_committed', '{}', canonical({ ok: true, operationId, phase: 'intent_committed' })); return { ok: true }; }, true);
       if (!intent.ok) return intent;
-      const saved = makeBackup(ctx, request, operationId, inv), result = { ok: true, operationId, backupId: saved.backupId, manifest: saved.manifest, phase: 'backup_verified', activeBackend: 'v1' };
+      const saved = makeBackup(ctx, request, operationId, inv), result = { ok: true, operationId, backupId: saved.backupId, manifest: saved.manifest, phase: 'backup_verified', activeBackend: 'v2' };
       const completed = transaction(control, operationId, () => { save(op(operationId), 'backup_verified', result); return result; }, true); return completed.ok ? progress(ctx,operationId) : completed;
     }
     const parent = resolved(kind === 'continueDelete' ? op(request.deleteOperationId) : kind === 'resume' ? op(request.operationId) : null);
@@ -269,7 +269,7 @@ export function createLifecycle({ stateDir, charactersDir, control, role, closeR
     if (kind === 'resume') requireThat(parent && parent.phase !== 'completed', 'MEMORY_ACTION_INVALID', 'Select an unfinished original operation.');
     if(['resume','continueDelete'].includes(kind)) requireThat(pending(ctx.characterId).every((item)=>item.operationId===parent?.operationId),'MEMORY_LIFECYCLE_BLOCKED','A different unfinished lifecycle operation must be resolved first.');
     const revision = state().revision + 1, payload = { request, inventory: inv, previousEpoch: ctx.capturedEpoch, oldGeneration: generation, nonce: randomUUID(), controlRevision: revision, candidateId: `generation-${digest([ctx.characterId, operationId]).slice(0, 32)}`, parentId: parent?.operationId ?? null, effectiveKind: kind === 'resume' ? parent.payload.effectiveKind ?? parent.kind : kind, originalRequest: kind === 'resume' ? parent.payload.originalRequest ?? parent.payload.request : request };
-    const result = { ok: true, operationId, phase: 'intent_committed', controlRevision: revision, activeBackend: 'v1', accessState: kind === 'requestDelete' || kind === 'continueDelete' ? 'access_revoked' : 'blocked', activeStorePurged: false, retainedCopiesPurged: false, pending: [] };
+    const result = { ok: true, operationId, phase: 'intent_committed', controlRevision: revision, activeBackend: 'v2', accessState: kind === 'requestDelete' || kind === 'continueDelete' ? 'access_revoked' : 'blocked', activeStorePurged: false, retainedCopiesPurged: false, pending: [] };
     const committed = transaction(control, operationId, () => {
       control.prepare('UPDATE state SET revision=?,bindingRevision=bindingRevision+1,deletionRevision=deletionRevision+? WHERE id=1').run(revision, kind === 'requestDelete' ? 1 : 0);
       if (kind === 'requestDelete') {
@@ -369,7 +369,7 @@ export function createLifecycle({ stateDir, charactersDir, control, role, closeR
       const effective = row.payload.effectiveKind, purged = effective === 'continueDelete';
       let pendingCopies = [];
       if (purged) pendingCopies = row.payload.originalRequest.purgeRetained === true ? purgeRetained(row) : [{ kind: 'retained-copies', state: 'pending', action: 'Confirm explicit retained-copy purge after inspecting backup/quarantine/producer inventory.' }];
-      const result = { ...row.result, ok: true, phase: 'completed', storeGeneration: generation, epoch: row.payload.retirementProof.epoch, accessState: effective === 'requestDelete' || purged ? 'access_revoked' : 'current-controls-applied', activeStorePurged: purged, retainedCopiesPurged: purged && pendingCopies.length === 0, deletionPhase: purged ? (pendingCopies.length ? 'active_store_purged' : 'retained_copies_purged') : effective === 'requestDelete' ? 'access_revoked' : null, conflicts: row.payload.summary?.conflicts ?? [], pending: pendingCopies, quotaRestored: false, activeBackend: 'v1' };
+      const result = { ...row.result, ok: true, phase: 'completed', storeGeneration: generation, epoch: row.payload.retirementProof.epoch, accessState: effective === 'requestDelete' || purged ? 'access_revoked' : 'current-controls-applied', activeStorePurged: purged, retainedCopiesPurged: purged && pendingCopies.length === 0, deletionPhase: purged ? (pendingCopies.length ? 'active_store_purged' : 'retained_copies_purged') : effective === 'requestDelete' ? 'access_revoked' : null, conflicts: row.payload.summary?.conflicts ?? [], pending: pendingCopies, quotaRestored: false, activeBackend: 'v2' };
       const committed = transaction(control, row.operationId, () => { save(row, 'completed', result); return { ok: true }; }, true); requireThat(committed.ok, committed.code, committed.error, committed.hint);
     }
   }

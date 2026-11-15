@@ -5,6 +5,38 @@ import { spawnSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
+  'test-qq-native-channel.mjs',
+  'test-qq-native-voice.mjs',
+  // V1 退役三轮复审 F01 的常驻合同测试：准入代数是"权限语义代数"而非"本次轮询时间"，
+  // 同模式轮询不得误取消语音；blocked 边界变更必须让旧 lease/在途 Native 作业永久失效。
+  'test-qq-admission-r3.mjs',
+  // V1 退役三轮复审 F02 的常驻合同测试：owner 管理消息（查询/取消/开始/失败）必须真正送达平台；
+  // 送达未知不得记成 delivered、也不得自动重发；长回执每段各自要有 ACK 与合法 messageId。
+  'test-owner-delivery-r3.mjs',
+  // V1 退役三轮复审 F05 的常驻合同测试：受控单轮必须先有本次已批准来源集合，喂给模型的 BV
+  // 必须属于该集合；未批准候选与模型路由变更都在发起调用之前被拒（不得"绿而无调用"）。
+  '../plugins/surfcore/scripts/test-memory-v2-bili-round-runtime-r3.mjs',
+  '../plugins/surfcore/scripts/test-memory-v2-bili-round-index-r3.mjs',
+  // F04 退役进程树：Host ACK 之后不得再有子进程写入；deadline 等真实 close 而非 AbortError；
+  // 退役失败必须保留原实例与原操作编号并结构化冒泡。
+  '../plugins/surfcore/scripts/test-bili-retire-barrier-r3.mjs',
+  // 预算空快照自拒缺陷：全新状态落盘后必须能被自己重新加载；真正损坏的状态仍必须逐条被拒。
+  '../plugins/surfcore/scripts/test-budget-empty-state-r3.mjs',
+  // P2/F10 抖音投影 + F08 预检 I/O：无 proof 状态文案必须固定、保存未确认按 jobId/角色/epoch 归属、
+  // 读取失败不得被报成 JSON 损坏。
+  '../plugins/surfcore/scripts/test-douyin-errors-r3.mjs',
+  '../plugins/surfcore/scripts/test-preflight-io-r3.mjs',
+  // P2/F01 辅项 模式保存回执：桥接没在运行 ≠ 模式非法。合法模式必须"已保存、待桥接启动后生效"，
+  // 不得把离线连接失败报成 409/QQ_MODE_INVALID；退役值与非法值仍必须 fail-closed。
+  '../plugins/surfcore/scripts/test-qq-mode-save-r3.mjs',
+  // R4-B 抖音：取消不得抹掉已提交写入的原操作编号——取消后必须能按原编号查真实 Host 回执，
+  // 并如实报告 unknown/completed；同时证明失败路径 1 秒级退出、不残留测试根、不挂住门禁。
+  '../plugins/surfcore/scripts/test-douyin-reflection-receipt.mjs',
+  // R4/G7 退役资源：plugins/surfcore/tools/bili.mjs 是转发型包装进程，收到 SIGTERM/SIGINT 后必须自己退出，
+  // 不能只在子进程 'close' 里退出——子进程不可中断时包装进程会变成 PPID=1 的孤儿（实机取证）。
+  '../plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs',
+  '../plugins/surfcore/scripts/test-qq-access-panel.mjs',
+  '../plugins/surfcore/scripts/test-memory-v2-alerts.mjs',
   'test-update-archive.mjs',
   'test-self-test-target.mjs',
   'test-package-data-paths.mjs', 'test-package-data-consumers.mjs',
@@ -93,8 +125,7 @@ const tests = [
   // 平台启动开关：QQ/B站 各自「是否启动」的唯一真相 + 旧 bridge.autoStart 迁移
   // （2026-10-24 用户要求；只碰临时 DSH_HOME，不启停真实桥接）。
   'test-platform-start.mjs',
-  // B站 会话权限：workspace-write 在 C:\Users\Mieksido 起不了命令 → 自动切 danger-full-access。
-  'test-scheduler-permission.mjs',
+  // V1 会话权限自动校正已随 V1 退役删除（2026-11-12），测试文件一并移除。
   // B站生物钟会话归组：新会话 workspaceId，旧版无工作区服务才退回专用 cwd。
   'test-bili-workspace.mjs',
   // B站评论/@监听的 TDZ 回归：程序错误不能被 catch 吞成网络错误。
@@ -152,6 +183,9 @@ const tests = [
   // wake triggers 白名单、memory-update 边界、wait 租约归一化、md/黑话/表情/账本；
   // 本轮新增：/api/send/* 失败路径的作用域错误（R15）、reserved2 落库丢表情识别字段（R16）。
   'test-audit-regressions.mjs',
+  // W5/R01–R10 真实 V2 跨链路门禁：隔离 MemoryService/Host、正式授权、
+  // 人格编译、配置预检、调度退役屏障、失败可见与真实数据保留。
+  'test-v2-real-integration.mjs',
   // 表情语义层：编号分配、情绪识别、本地注意力编码、语境匹配、注入文本；
   // 以及表情库/工具面接线（编号可当 stickerId、收藏时带 emotion/content）。
   'test-sticker-semantics.mjs', 'test-stickers.mjs',
@@ -319,6 +353,9 @@ const tests = [
 ];
 if (process.platform === 'darwin') {
   tests.push('test-package-patch-anchor.mjs');
+  // G7 第二阶段（2026-11-15）：在隔离 DSH_HOME 里把 SurfCore 装进真实打包宿主——要求真插件行激活、
+  // 停止后无残留后代、守门进程内零非回环外联。DSH web 的 HTTP 面与页面渲染当前记为「环境阻断」（会话 token 由桌面外壳经 IPC 注入）。
+  tests.push('test-surfcore-isolated-host.mjs');
   tests.push('test-perception-silence.mjs', 'test-perception-resources.mjs', 'test-perception-service.mjs', 'test-perception-cli.mjs', 'test-perception-host.mjs');
 } else {
   console.log('NOT RUN: native ASR integration fixtures currently require the macOS execution matrix; Windows/Intel ASR acceptance remains unverified.');

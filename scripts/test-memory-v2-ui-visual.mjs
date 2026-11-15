@@ -25,7 +25,7 @@ const before = process.argv.includes('--before');
 const serve = process.argv.includes('--serve');
 const requests = [];
 const capabilities = { shadow: true, correct: true, activation: false, backup: true, restore: true, purge: true, removeHot: false, organize: true, identity: true, migration: true };
-export const status = { ok: true, backend: 'v1', revision: 7, storeGeneration: 'shadow-1', characterId: 'fixture-role', role: '夹具角色', character: { id: 'fixture-role', epoch: 1, name: '夹具角色' }, capabilities,
+export const status = { ok: true, backend: 'v2', readiness: 'ready', revision: 7, storeGeneration: 'shadow-1', characterId: 'fixture-role', role: '夹具角色', character: { id: 'fixture-role', epoch: 1, name: '夹具角色' }, capabilities,
   worker: { state: 'paused', code: 'MEMORY_BUDGET_EXHAUSTED', error: '额外整理额度不足，来源仍保留', hint: '查看费用与预留，或等待下一周期。' },
   lastSuccessfulIngest: '2026-11-09T12:00:00Z', counts: { sources: 24, committed: 20, rejected: 1, review: 3 },
   queue: { state: 'queued_durable', pending: 3 }, lastReceipt: { source: 'queued_durable', selection: 'review', index: 'pending' },

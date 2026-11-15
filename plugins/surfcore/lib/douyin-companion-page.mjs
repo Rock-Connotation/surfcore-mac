@@ -63,6 +63,7 @@ async function loadPortrait(expectedContext,expectedStamp){
  }catch(e){if(retired||token!==portraitRequest||stamp!==expectedStamp)return;if(portraitObjectUrl){URL.revokeObjectURL(portraitObjectUrl);portraitObjectUrl=''}$('portrait').removeAttribute('src');$('portrait').hidden=true;const failure=controller.signal.aborted?{code:'COMPANION_PORTRAIT_TIMEOUT',error:'读取本机立绘超过 5 秒，已停止等待。',hint:'点“刷新”重试；若持续失败，请重新配置当前角色的本机立绘。'}:e;$('portrait-status').textContent='立绘读取失败 · '+[failure.code||'COMPANION_PORTRAIT_LOAD_FAILED',failure.error||'本机立绘暂时无法显示。',failure.hint||'点“刷新”重试。'].filter(Boolean).join(' · ')}
  finally{clearTimeout(timer);if(portraitController===controller)portraitController=null;if(portraitTimer===timer)portraitTimer=null;focusConversationOnce()}
 }
+function frameCoverage(value,space=''){return Number.isSafeInteger(value)&&value>=1&&value<=3?String(value)+space+'张稀疏画面':'稀疏画面数量未确认'}
 function sharingText(tag,value,cls){const el=document.createElement(tag);el.textContent=value==null?'':String(value);if(cls)el.className=cls;return el}
 function sharingError(error){const e=error||{};return{code:e.code||'SHARING_REQUEST_FAILED',error:e.error||e.message||'本机伙伴对话请求失败。',hint:e.hint||'检查状态后再手动重试；系统不会自动重发。'}}
 function sharingCharacterRequired(code){return code==='COMPANION_CHARACTER_REQUIRED'||code==='DOUYIN_CHAT_CHARACTER_REQUIRED'}
@@ -82,7 +83,7 @@ function renderSharingOpenings(){
  for(const opening of openings){
   const card=document.createElement('article');card.className='opening-card';card.dataset.openingId=String(opening.id||'');
   card.append(sharingText('small',opening.sourceTitle||'刚刚的一处小发现','pill'));
-  const details=[opening.sourceId||'',opening.occurredAt?new Date(opening.occurredAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'',opening.coverage?.transcriptComplete?'音轨完整':'音轨部分',String(Number(opening.coverage?.frameSamples)||0)+' 张稀疏画面'].filter(Boolean).join(' · ');
+  const details=[opening.sourceId||'',opening.occurredAt?new Date(opening.occurredAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'',opening.coverage?.transcriptComplete?'音轨完整':'音轨部分',frameCoverage(opening.coverage?.frameSamples,' ')].filter(Boolean).join(' · ');
   if(details)card.append(sharingText('small',details,'muted'));
   card.append(sharingText('p',opening.text||'','opening-text'));
   if(opening.question)card.append(sharingText('p',opening.question,'opening-question'));
@@ -185,7 +186,7 @@ function render(data,retryPortrait=false){
   for(const item of j.items||[]){
    const el=document.createElement('article');el.className='entry';const h=document.createElement('h3'),a=document.createElement('a');a.textContent=item.title||'这次的小发现';
    if(/^https:\/\/www\.douyin\.com\/video\/[0-9]+$/.test(item.url)){a.href=item.url;a.target='_blank';a.rel='noreferrer'}h.append(a);el.append(h);
-   const scope=item.state==='skipped'?'已跳过 · 未形成观看经历':(item.coverage?.transcriptComplete?'音轨处理完整':'部分音轨覆盖')+' · '+(item.coverage?.frameSamples||0)+'张稀疏画面';
+   const scope=item.state==='skipped'?'已跳过 · 未形成观看经历':(item.coverage?.transcriptComplete?'音轨处理完整':'部分音轨覆盖')+' · '+frameCoverage(item.coverage?.frameSamples);
    el.append(text('small',(item.occurredAt?new Date(item.occurredAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'')+' · '+scope));
    if(item.summary)el.append(text('p',item.summary));if(item.reason)el.append(text('p','感受理由：'+item.reason));
    if(item.error||item.hint)el.append(text('p',[item.code,item.error,item.hint].filter(Boolean).join(' · '),'error'));

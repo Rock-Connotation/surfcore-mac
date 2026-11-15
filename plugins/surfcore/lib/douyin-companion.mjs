@@ -3,7 +3,7 @@ import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing
 import { createCompanionMemory } from './douyin-companion-memory.mjs';
 import { COMPANION_ROUTE } from './douyin-companion-model.mjs';
 import crypto from 'node:crypto';
-import { createDouyinCompanionStore } from './douyin-companion-ledger.mjs';
+import { createDouyinCompanionStore, validateLedger } from './douyin-companion-ledger.mjs';
 import { buildDouyinReflectionSystem, parseDouyinReflection } from './douyin-companion-reflection.mjs';
 import {
   CompanionError, problem, check, isRecord, safeCode as legacySafeCode, safeDisplayText, scrubPromptText,
@@ -49,6 +49,8 @@ export function createDouyinCompanion({
   let activeJob = null;
   let runnerPromise = null;
   const runtimes = new Map();
+  // F10：进程仍活着时保留「终态未保存」的可查询视图；不统一误报进程重启。
+  const terminalFailures = new Map();
   let disposed = false;
   let transitionDepth = 0;
   let transitionQueue = Promise.resolve();
@@ -186,6 +188,7 @@ export function createDouyinCompanion({
     } : { code: null, error: null, hint: null };
     return {
       ...(item.memoryV2Refs ? { memoryV2Refs: item.memoryV2Refs, memoryV2Receipts: item.memoryV2Receipts, memoryV2Receipt: item.memoryV2Receipt } : {}),
+      ...(item.reflectionOperation ? { reflectionOperation: item.reflectionOperation } : {}),
       id: safeSourceId(item.id) || '',
       url: safeSourceUrl(item.url) || '',
       title: safeDisplayText(item.title, 240),
@@ -252,6 +255,20 @@ export function createDouyinCompanion({
       hint: '已预留请求不会返还；检查保留结果后手动决定是否重新验收。',
     };
   }
+  const fixedIssue = code => {
+    const known = {
+      DOUYIN_FEED_FAILED: ['读取首页推荐失败。', '检查登录账号和推荐页状态后重新手动验收。'],
+      DOUYIN_NO_QUALIFIED_MATERIAL: ['首页推荐没有合格素材。', '检查首页推荐是否可用；没有合格素材时不会调用模型或记为观看。'],
+      DOUYIN_FRAMES_UNAVAILABLE: ['没有可用稀疏画面采样。', '补齐本机画面采样后再验收；音频单独不足以完成本轮。'],
+      DOUYIN_TRANSCRIPT_EMPTY: ['没有可确认的语音转写。', '选择含可辨语音的推荐视频后再验收。'],
+      DOUYIN_MODEL_FAILED: ['模型调用失败。', '检查模型服务与请求账本；不会自动客户端重试。'],
+      DOUYIN_MEMORY_TIMEOUT: ['记忆写入等待超时，活动已停止。', '检查 Host 记忆服务与请求状态；不会自动重复写入。'],
+      DOUYIN_CHAT_SAVE_UNCERTAIN: ['作业终态未确认保存。', '保留现有记录并核对原回执，不要重复发送。'],
+      DOUYIN_INTERRUPTED: ['进程重启打断了上轮活动。', '已预留请求不会返还；查看保留结果后手动决定是否重新验收。'],
+      DOUYIN_CANCELLED: ['这次活动已取消。', '查看已保留结果与用量；不会自动重发。'],
+    }[code] ?? ['这次活动未完成。', '刷新日记查看固定错误码与下一步；原始诊断只在受权通道保留。'];
+    return { code: code || 'DOUYIN_JOB_INCOMPLETE', error: known[0], hint: known[1] };
+  };
   function publicError(value) {
     if (!value) return null;
     return { code: safeCode(value.code), error: safeDisplayText(value.error, 240) || '陪伴活动未能完成。', hint: safeDisplayText(value.hint, 300) || '查看失败阶段并检查本地依赖后再手动操作。' };
@@ -340,10 +357,20 @@ export function createDouyinCompanion({
   }
   function retainProvenance(job, item, saved, phase) {
     const receipt = { ...saved.receipt, phase };
-    for (const target of [job, item]) {
+    const candidate = structuredClone(localLedger);
+    const candidateJob = candidate.jobs[job.jobId];
+    const candidateItem = candidateJob.items[job.items.indexOf(item)];
+    for (const target of [candidateJob, candidateItem]) {
       target.memoryV2Refs = [...(target.memoryV2Refs ?? []), ...saved.refs];
       target.memoryV2Receipts = [...(target.memoryV2Receipts ?? []), receipt];
       target.memoryV2Receipt = receipt;
+    }
+    try { validateLedger(candidate); }
+    catch { throw problem('MEMORY_SOURCE_RECEIPT_INVALID', 'Host回执无法安全并入作业状态。', '用原操作编号查询回执；来源可能已提交，不会重新提交。'); }
+    for (const [target, source] of [[job, candidateJob], [item, candidateItem]]) {
+      target.memoryV2Refs = source.memoryV2Refs;
+      target.memoryV2Receipts = source.memoryV2Receipts;
+      target.memoryV2Receipt = source.memoryV2Receipt;
     }
   }
   async function processOne(job, context, entry, index, sharedContext, trustedPersona = '') {
@@ -366,7 +393,7 @@ export function createDouyinCompanion({
     try {
       const routing = v2.routing();
       check(routing.ok, routing.code, routing.error, routing.hint);
-      if (routing.backend === 'v2') session = await v2.capture(context, 'douyin:homepage-recommendation');
+      session = await v2.capture(context, 'douyin:homepage-recommendation');
       const input = { id: entry.id, url: entry.url, title: entry.title, durationMs: entry.durationMs, mediaSource: entry.mediaSource, mediaUserAgent: entry.mediaUserAgent };
       job.phase = 'perceive'; saveJob(localLedger, job);
       let perceived;
@@ -430,7 +457,7 @@ export function createDouyinCompanion({
       const beforeSend = async ({ phase } = {}) => {
         assertRole(job, context);
         if (session) await v2.validate(session, phase !== 'completion');
-        else { const route = v2.routing(); check(route.ok && route.backend === 'v1', route.code || 'MEMORY_ROUTING_CHANGED', route.error || '活动期间记忆路由已变化。', route.hint || '以当前可信路由重新开始。'); }
+        else { const route = v2.routing(); check(route.ok, route.code || 'MEMORY_ROUTING_CHANGED', route.error || '活动期间记忆路由已变化。', route.hint || '以当前可信路由重新开始。'); }
         return { ok: true };
       };
       await beforeSend();
@@ -467,6 +494,10 @@ export function createDouyinCompanion({
         coverage: { ...coverage, visualCoverage: 'sparse', frameSamples: images.length, status: 'partial' },
       };
       let memory;
+      if (session) {
+        item.reflectionOperation = { operationId: v2.reflectionOperationId(session), state: 'unknown' };
+        saveJob(localLedger, job);
+      }
       try {
         assertRole(job, context);
         memory = await guarded(job, context, () => session ? v2.reflect(session, memoryPayload) : recordMemory(context, memoryPayload, { signal: runtime.controller.signal }), operationTimeout,
@@ -477,7 +508,7 @@ export function createDouyinCompanion({
         throw problem('DOUYIN_MEMORY_FAILED', '模型结果未能写入当前角色记忆。', '检查Host记忆服务与角色归属；原始草稿仍在本机作业状态中。');
       }
       check(memory?.ok === true, safeCode(memory?.code, 'DOUYIN_MEMORY_FAILED'), safeDisplayText(memory?.error, 240) || '模型结果未能写入当前角色记忆。', safeDisplayText(memory?.hint, 300) || '检查Host记忆服务与角色归属后再手动恢复。');
-      if (session) { retainProvenance(job, item, memory, 'reflection'); await v2.validate(session); }
+      if (session) { retainProvenance(job, item, memory, 'reflection'); await v2.validate(session); item.reflectionOperation.state = 'completed'; }
       item.state = partial ? 'partial' : 'completed';
       item.partial = partial;
       item.memorySaved = true;
@@ -552,7 +583,7 @@ export function createDouyinCompanion({
       const route = v2.routing();
       check(route.ok, route.code, route.error, route.hint);
       let built;
-      try { built = route.backend === 'v2' ? { ok: true, text: '', memoryText: '', personaText: '' } : await guarded(job, context, () => buildContext(context)); }
+      try { built = { ok: true, text: '', memoryText: '', personaText: '' }; }
       catch (error) { if (runtimes.get(job.jobId).controller.signal.aborted) throw error; throw problem('DOUYIN_CONTEXT_FAILED', '无法读取当前角色的记忆上下文。', '检查当前角色和Host记忆服务后重新手动验收。'); }
       check(built?.ok === true && typeof built.text === 'string', safeCode(built?.code, 'DOUYIN_CONTEXT_FAILED'), safeDisplayText(built?.error, 240) || '无法读取当前角色的记忆上下文。', safeDisplayText(built?.hint, 300) || '检查当前角色和Host记忆服务后重新手动验收。');
       const trustedPersona = contextSection(built, 'persona') ?? (typeof built.personaText === 'string' ? built.personaText : '');
@@ -597,10 +628,20 @@ export function createDouyinCompanion({
     } finally {
       clearRoleWatch(job);
       job.completedAt = nowIso();
-      try { saveJob(localLedger, job); }
+      try { saveJob(localLedger, job); terminalFailures.delete(job.jobId); }
       catch (error) {
         const failure = failObject(error, 'DOUYIN_STATE_WRITE_FAILED');
-        job.state = 'failed'; job.phase = 'failed'; job.code = failure.code; job.error = failure.error; job.hint = failure.hint;
+        // 不把失败写回 job 后再次尝试保存（那会用同一个非法对象重试）。
+        // 内存保留原 operationId / 来源回执 / 固定诊断，供 status 查询。
+        terminalFailures.set(job.jobId, {
+          jobId: job.jobId, characterId: job.characterId, characterEpoch: job.characterEpoch,
+          code: 'DOUYIN_CHAT_SAVE_UNCERTAIN',
+          error: '作业终态未确认保存，原来源与回执保留。',
+          hint: '保留原操作编号并查询回执；磁盘状态以最后有效对象为准，不会自动重跑或退款。',
+          operationId: job.memoryV2Receipt?.operationId ?? null,
+          state: job.state, phase: job.phase, ioCode: failure.code ?? null,
+          at: nowIso(),
+        });
       }
       activeJob = null;
       runnerPromise = null;
@@ -680,11 +721,10 @@ export function createDouyinCompanion({
       const role = requireCurrentRole(context), route = v2.routing();
       check(route.ok, route.code, route.error, route.hint);
       const lease = responseLeases.get(value);
-      if (route.backend === 'v1' && !lease) return { ok: true };
-      check(route.backend === 'v2' && lease && lease.role.id === role.id && lease.role.epoch === role.epoch && lease.digest === responseDigest(value),
+      check(lease && lease.role.id === role.id && lease.role.epoch === role.epoch && lease.digest === responseDigest(value),
         'MEMORY_RESPONSE_UNTRUSTED', '本次日记响应没有完整的当前授权凭据。', '刷新当前角色日记；不要复用或改写旧响应。');
       await v2.validate(lease.session);
-      check(v2.routing().backend === 'v2', 'MEMORY_ROUTING_CHANGED', '响应期间记忆后端已变化。', '以当前可信路由刷新日记。');
+      const latestRoute = v2.routing(); check(latestRoute.ok, 'MEMORY_ROUTING_CHANGED', '响应期间记忆后端已变化。', '以当前可信路由刷新日记。');
       requireCurrentRole(context);
       check(lease.digest === responseDigest(value), 'MEMORY_RESPONSE_UNTRUSTED', '等待期间日记响应已变化。', '重新读取日记后再展示。');
       return { ok: true };
@@ -694,18 +734,57 @@ export function createDouyinCompanion({
     let session;
     try {
       const route = v2.routing(); check(route.ok, route.code, route.error, route.hint);
-      if (route.backend === 'v1' || value?.ok !== true) return value;
+      if (value?.ok !== true) return value;
       const role = requireCurrentRole(context), stamp = contextStamp(context, role);
+      // R08：把「作业控制状态」与「受权限限制的内容」分开投影。
+      // 以前缺少来源证明的作业整体返回 null，于是 readFeed/capture 之前就失败的当前作业
+      // 在公开 status 里彻底消失（activeJob:null、recentJobs:[]、lastError:null）——
+      // 用户看不到失败，也没有下一步。现在控制元数据（jobId/state/phase/固定错误码/
+      // 清洗后的 hint/时间）在当前角色/epoch 可见；正文、视频标识、摘要、来源引用
+      // 仍然必须满足来源与授权。
+      // F10：无 proof 时 error/hint 只能来自「固定 code → 固定用户提示」白名单，
+      // 任意依赖/模型正文不得作为控制元数据直出（可能含未授权内容）。
+      const safeIssue = row => {
+        const code = safeCode(row?.code);
+        return fixedIssue(code);
+      };
+      const controlMeta = job => ({
+        ok: true, // F10：作业投影不是失败 envelope；controller 仍按 ok:true 返回。
+        jobId: job.jobId, mode: job.mode, state: job.state, phase: job.phase,
+        characterId: job.characterId, characterEpoch: job.characterEpoch,
+        createdAt: job.createdAt, updatedAt: job.updatedAt, completedAt: job.completedAt,
+        calls: job.calls, acceptanceQualified: job.acceptanceQualified,
+        scheduleDate: job.scheduleDate, scheduleWindow: job.scheduleWindow,
+        ...(job.code || job.error || job.hint ? safeIssue(job) : {}),
+        provenance: 'pending',
+      });
+      // 条目级也分两层：控制元数据（状态/固定码/清洗 hint/时间/时长/覆盖）可见，
+      // 正文与标识（id/url/title/摘要/草稿/来源引用）仍要求 proof。
+      const itemControl = item => ({
+        state: item.state, partial: item.partial === true, memorySaved: item.memorySaved === true,
+        ...(Number.isSafeInteger(item.durationMs) && item.durationMs > 0 ? { durationMs: item.durationMs } : {}),
+        ...(item.occurredAt ? { occurredAt: item.occurredAt } : {}),
+        ...(item.coverage ? { coverage: item.coverage } : {}),
+        ...(item.code || item.error || item.hint ? safeIssue(item) : {}),
+        provenance: 'pending',
+      });
       const safeJob = job => {
         if (!job) return null;
         if (hasProof(job) && job.items.every(hasProof)) return job;
         if (activeJob?.jobId === job.jobId && ACTIVE.has(job.state)) {
-          const items = job.items.filter(hasProof);
-          return { ...job, items };
+          const items = job.items.map(item => hasProof(item) ? item : itemControl(item));
+          return { ...controlMeta(job), items };
+        }
+        // 任何终态作业（failed/interrupted/partial/cancelled/completed）都投影控制状态：
+        // 用户必须看得到「这次失败在哪、下一步做什么」，而正文与来源仍逐条受 proof 限制。
+        if (!ACTIVE.has(job.state)) {
+          return { ...controlMeta(job), items: job.items.map(item => hasProof(item) ? item : itemControl(item)) };
         }
         return null;
       };
       if (Array.isArray(value.recentJobs)) {
+        const lastError = value.daily.lastError ? safeIssue(value.daily.lastError) : null;
+        value.daily = { ...value.daily, lastError, windows: Object.fromEntries(Object.entries(value.daily.windows).map(([key, entry]) => [key, { ...entry, error: entry.error ? safeIssue(entry.error) : null }])) };
         value = { ...value, recentJobs: value.recentJobs.map(safeJob).filter(Boolean), activeJob: safeJob(value.activeJob) };
         const visible = new Set(value.recentJobs.map(job => job.jobId));
         value.daily = { ...value.daily, windows: Object.fromEntries(Object.entries(value.daily.windows).filter(([, entry]) => visible.has(entry.jobId))) };
@@ -728,6 +807,7 @@ export function createDouyinCompanion({
     return response(context ?? { characterId: role?.id, characterEpoch: role?.epoch }, await statusValue(context));
   }
   async function statusValue(context) {
+    // 失败可见性（R08）：当前角色的最后一次失败即使没有来源证明也要出现在 daily.lastError。
     let role;
     try {
       role = context === undefined || context === null ? currentRole() : requireCurrentRole(context);
@@ -744,17 +824,25 @@ export function createDouyinCompanion({
     const isAccepted = roleState?.acceptedEpoch === role.epoch;
     const lockActive = store.lockOwnerActive;
     if (lockActive === null) return callIssue(problem('DOUYIN_LOCK_INVALID', '无法确认陪伴账本锁状态，已停止展示可操作状态。', '检查本机状态目录和锁文件权限；保留数据并确认实例归属后再操作。'));
-    const interruptedDaily = lockActive === false ? Object.values(ledger.jobs).find(job => job.characterId === role.id && job.mode === 'daily' && ACTIVE.has(job.state)) : null;
+    const activeFailure = [...terminalFailures.values()].find(row => row.characterId === role.id && row.characterEpoch === role.epoch && ledger.jobs[row.jobId]) ?? null;
+    const interruptedDaily = lockActive === false ? Object.values(ledger.jobs).find(job => job.characterId === role.id && job.characterEpoch === role.epoch && job.jobId !== activeFailure?.jobId && job.mode === 'daily' && ACTIVE.has(job.state)) : null;
     const visibleJobs = Object.values(ledger.jobs)
       .filter(job => job.characterId === role.id && job.characterEpoch === role.epoch)
       .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
       .slice(0, 8)
-      .map(job => projectRecoverableJob(job, lockActive));
+      .map(job => job.jobId === activeFailure?.jobId ? { ...projectJob(job), state: activeFailure.state, phase: activeFailure.phase, ...fixedIssue(activeFailure.code) } : projectRecoverableJob(job, lockActive));
     const localActive = activeJob && activeJob.characterId === role.id && activeJob.characterEpoch === role.epoch ? projectJob(activeJob) : null;
     const paused = roleState?.paused === true || !!interruptedDaily;
-    const lastError = publicError(roleState?.lastError) ?? (interruptedDaily ? publicError({ code: 'DOUYIN_INTERRUPTED', error: '进程重启打断了日常活动。', hint: '已预留请求不会返还；查看保留结果并通过configure显式恢复。' }) : null);
+    // R08：即使作业没有任何来源证明，失败也必须出现在用户当前入口。
+    // 优先用角色账本里的 lastError；否则回退到最近一次失败/中断作业的固定码与清洗 hint。
+    const failedJob = visibleJobs.find(job => ['failed', 'interrupted'].includes(job.state) && job.code);
+    const lastError = activeFailure ? publicError(activeFailure)
+      : publicError(roleState?.lastError)
+      ?? (interruptedDaily ? publicError({ code: 'DOUYIN_INTERRUPTED', error: '进程重启打断了日常活动。', hint: '已预留请求不会返还；查看保留结果并通过configure显式恢复。' })
+        : failedJob ? publicError({ code: failedJob.code, error: failedJob.error, hint: failedJob.hint }) : null);
     return {
       ok: true,
+      ...(activeFailure ? { saveUncertain: activeFailure } : {}),
       characterId: role.id,
       characterEpoch: role.epoch,
       daily: {
@@ -776,6 +864,19 @@ export function createDouyinCompanion({
       activeJob: localActive ?? visibleJobs.find(job => ACTIVE.has(job.state)) ?? null,
       recentJobs: visibleJobs,
     };
+  }
+  async function queryReflection(context, operationId) {
+    let session;
+    try {
+      const role = requireCurrentRole(context);
+      const found = Object.values(readLedger().jobs).some(job => job.characterId === role.id && job.characterEpoch === role.epoch && job.items.some(item => item.reflectionOperation?.operationId === operationId));
+      check(found, 'DOUYIN_RECEIPT_NOT_FOUND', '没有找到该角色的反思操作编号。', '查看原作业状态并使用其中的操作编号。');
+      session = await v2.capture(contextStamp(context, role), 'douyin:homepage-recommendation');
+      const result = await v2.receipt(session, operationId);
+      requireCurrentRole(context);
+      return result;
+    } catch (error) { return callIssue(error); }
+    finally { v2.release(session); }
   }
   async function cancel(context) { return response(context, await cancelValue(context)); }
   async function cancelValue(context) {
@@ -880,5 +981,5 @@ export function createDouyinCompanion({
     return { ok: true };
   }
 
-  return { start, status, cancel, configure, tick, withTransition, dispose, validateResponse, releaseResponse };
+  return { start, status, cancel, queryReflection, configure, tick, withTransition, dispose, validateResponse, releaseResponse };
 }

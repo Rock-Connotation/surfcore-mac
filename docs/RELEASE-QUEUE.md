@@ -14,6 +14,346 @@
 
 ## 待发布
 
+> **2026-11-15 dev 测试构建已发布**：`v0.9.0-dev.1`（tag / Pre-release @ `c5da206`，仓库 `Rock-Connotation/surfcore-mac`）已把下方全部批次交到可安装形态；本地 `release-manifest --verify-ref HEAD` 1111/1111 问题 0，远端 `verify-remote-manifest` 一致 1111 / 不符 0 / 缺失 0。测试机把更新通道切 **dev** 后点「检查更新」。
+> **稳定版 `0.9.0` 未发**：待 G7 实机第二阶段（隔离实例）通过后，按本节批次发 stable。
+
+### 历史批次（勿用于发布）：V1 退役破坏式重构第一批
+
+> **2026-11-13 标记：本批次是 28dd419–76f666a 的历史快照，已被下方「R01–R10 收口」批次取代。**
+> 其中「不得发布或合并」「插件测试未通过」「建议删 routing.json」「默认仍是 V1」等措辞均已失效。
+> 保留原文只为移交史料；发布会话只使用紧随其后的当前批次。
+
+**当时状态**：插件测试未通过，QQ V1 出站链和其他 V1 残留仍未退役；下列历史测试结果不代表当前工作区已验收。
+<!-- release-batch: start=2026-11-12T16:55+08:00 end=2026-11-12T19:47+08:00 -->
+
+**建议**：**minor**（删除一代 preset / reserved 模式 / `/api/social*` 四个路由、preset 只装 `qq-chat-v2`，属用户可见的行为与接口变化；具体版本号只由发布会话定）。
+
+**改了什么**：
+- Memory 后端收口 V2-only：fresh 缺省 `backend:'v2'`，读/发布 v1 fail-closed `MEMORY_BACKEND_RETIRED`；删 `legacy-registry` / `migration-plan`；`context.js` 删 V1 记忆卡分支与 life/purpose 注入。
+- QQ 一代仿真退役：`dsh/agent-presets/qq-chat/` 与 `qq-chat.patch.yml` 删除，`PRESET_NAMES` 收敛 `qq-chat-v2`，模式枚举删 `reserved`（旧值 fail-closed + hint 改 `simulation`），role-card / preset-prompt / persona-layers 固定 V2。
+- 控制台与插件设置窗口删一代仿真页、导航项、选项、设置组；`/api/social*` 四路由与 5 秒社交心跳删除。
+- B站 V1 会话/权限层删除：`scheduler.js` 唤醒改走 `biliV2Agent.enqueue`；`lib/index.js` 权限修复接口改结构化拒绝 `BILI_V1_SESSION_PERMISSION_RETIRED`；`tools/commands` / `automation.js` / `src/memory-card.js` / `src/bili-api.js` 按 V2 消费关系保留。
+- 测试钉子按 v2-only 改写，新增 `scripts/test-v2-context-fixture.mjs`；删 `scripts/test-scheduler-permission.mjs`；产品文档四份 + 两个 README + doc-facts 数字同步；`release/install-manifest.json` 按 HEAD 重生成（1092→1084）。
+- case：`docs/cases/2026-11-12-v1-retirement.md`（含可直接转发的交接块与已知残留清单）。
+
+**覆盖提交**：`28dd419` → `5cd3456` → `b26f9fc` → `eba9153`（+ 本批文档/钉子收口提交，合并前以 `git log` 现读为准）。
+
+**验证**：
+```text
+npm run test:audit          # 194/194
+npm run lint:failures       # 退出 0，债务 661 ≤ 基线 669
+npm run test:regressions    # 全部通过
+npm run test:memory-v2      # 47/47
+cd plugins/surfcore && npm test   # 未通过：test-douyin-companion.mjs 未完成
+npm run doc-facts           # 退出 0
+node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
+```
+
+**注意**：`~/.dsh` 用户数据原地保留（未删）；旧 `mode.json=reserved` 需手工改 `simulation`，旧 `memory-v2/routing.json=v1` 需备份后删除并按 V2 重启初始化。未启动真实 DSH/QQ/B站，真机验收待发布前补。
+
+**交接块（可直接复制给发布会话）**：
+```text
+【合并请求】
+分支：feat/v1-retirement（28dd419 / 5cd3456 / b26f9fc / eba9153 + 文档收口）
+范围：V1 退役破坏式重构（不留向后兼容）——Memory V2-only、QQ 一代 preset/reserved/人格过滤层删除、B站 V1 会话/权限层删除、控制台与设置窗口一代入口删除、发布清单按 HEAD 重生成
+改到的文件：src/bridge.js、src/core/*、src/role-card.js、src/preset-prompt.js、src/persona-layers.js、public/console.html、plugins/surfcore/{lib,package.json,qq-mode,scripts}、scripts/*（含新增 test-v2-context-fixture.mjs）、docs/product/*、README.md、docs/cases/2026-11-12-v1-retirement.md、release/install-manifest.json
+删除：dsh/agent-presets/qq-chat/、plugins/surfcore/presets/qq-chat.patch.yml、src/core/memory-v2-legacy-registry.js、memory-v2-migration-plan.js、scripts/test-memory-v2-legacy-registry.mjs、test-memory-v2-migration-plan.mjs、scripts/test-scheduler-permission.mjs
+测试：test:audit 194/194；lint:failures 退出 0（661 ≤ 669）；test:regressions 全通过；test:memory-v2 47/47；plugins/surfcore npm test 未通过，待修复；doc-facts 退出 0；verify-ref HEAD 问题 0 个
+改动层级：实现层 + 接口层（不向后兼容）：删 /api/social* 四路由、/mode 拒 reserved、/bili/session-permission 结构化拒绝、preset 只装 qq-chat-v2
+失败路径：旧 mode.json=reserved 有 hint；旧 routing.json=v1 回 MEMORY_BACKEND_RETIRED 带 hint；B站路由非 v2 抛 code/hint 不回落
+风险/未验证：未启动真实 DSH/QQ/B站；真机装配、回复闭环、B站唤醒闭环待验收；test-console-ui 用系统 Chrome 实跑 17/21（4 个 FAIL 与基线相同，属环境/基线漂移）
+残留：bridge.js 惰性一代状态机、QQ 出站 auditAndSend 双路径、Memory V2 面板 UI 的 v1 夹具值（详见 case）
+建议版本：minor（用户可见行为/接口变化；版本号由发布会话定）
+是否已 rebase/merge 最新 dev：未合并（主树 dev 有非本会话未跟踪 `2026-11-12/`，按 AGENTS §1.9 停手）；待对应会话收走后由协调/发布会话 --no-ff 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
+```
+
+### 批次 2026-11-15 · G7 第二阶段：隔离实例真实宿主验收（**已合入 `dev`** @ `1db3ed9`，功能分支 @ `d6a68a3`，待发版）
+
+> case：[`docs/cases/2026-11-15-mac-real-machine-g7-phase2-isolated-host.md`](cases/2026-11-15-mac-real-machine-g7-phase2-isolated-host.md)
+> 工作树 `/Users/shizihan/Daily/Github/surfcore-g7-phase2`（`feat/g7-phase2-host-acceptance`，基于 `dev` @ `a234f4b`）
+
+**可直接转发的交接块**
+```text
+【合并请求】
+分支：feat/g7-phase2-host-acceptance（基于 dev @ a234f4b = v0.9.0-dev.1）
+范围：G7 第二阶段——把 SurfCore 装进隔离 DSH_HOME 并用真实打包宿主验收（只新增门禁脚本与文档，不改产品行为）
+改到的文件：scripts/test-surfcore-isolated-host.mjs（新增）、scripts/test-audit.mjs（Darwin 块 +3 行）、docs/cases/2026-11-15-mac-real-machine-g7-phase2-isolated-host.md、docs/PITFALLS.md(#156)、docs/cases/README.md、docs/HANDOFF.md、docs/COORDINATION.md、docs/RELEASE-QUEUE.md、release/install-manifest.json
+测试：npm run test:audit 207/207（本脚本 ~22s，门禁超时 60s）；AC1/AC2/AC3/AC6/AC7/AC8 PASS；AC4（GET /dsh-surfcore/health）与 AC5（Chromium 页面渲染）记为环境阻断；AC9 反向重放：去掉基座 bundle → RED_EXIT=1，还原后 sha256 逐字一致 → EXIT=0
+改动层级：测试/门禁层（不碰 src/、不碰用户数据面、不碰真实 ~/.dsh）
+失败路径：任一 AC 断言失败 → exit 1 并写 result.json；环境阻断单独标注，不伪装通过
+风险/未验证：DSH web 面对回环请求一律 401（会话 token 由桌面外壳经 IPC 注入），HTTP 健康面与页面渲染只能在真桌面外壳内复现；Electron/Chromium 与非 Node 子进程出站未做系统级审计
+残留：scripts/setup-dsh.mjs 不会替新 profile 补 @deepseek-ai/dsh-base / dsh-web-app 基座（已写进 PITFALLS #156，属安装器改动，未做）
+建议版本：随 0.9.0 stable 一起发（本批是验收基建，不改变用户可见行为）
+```
+
+### 批次 2026-11-15 · G7 Mac 实机取证（CLI 包装进程孤儿 + SIGTERM 修复）（**已合入 `dev`** @ `c74470d`，功能分支 `feat/v1-retirement-r4` @ `7839039`，待发版）
+
+> case：[`docs/cases/2026-11-15-mac-real-machine-g7-evidence.md`](cases/2026-11-15-mac-real-machine-g7-evidence.md)
+> 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`（`feat/v1-retirement-r4`）
+
+**可直接转发的交接块**
+
+```
+【批次】2026-11-15 · G7 Mac 实机取证（非侵入）
+【改了哪些文件】
+  - plugins/surfcore/tools/bili.mjs（转发型包装进程收到 SIGTERM/SIGINT 后有界自退：3 秒宽限 → SIGKILL → exit 128+signal）
+  - plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs（新常驻合同测试：夹具子进程故意忽略信号）
+  - scripts/test-audit.mjs、plugins/surfcore/package.json（接进常驻门禁，插件 test 链 79→80 段）
+  - docs/cases/2026-11-15-mac-real-machine-g7-evidence.md、docs/{PITFALLS,HANDOFF,COORDINATION,cases/README}.md
+【测了什么、结果如何】（DSH 自带 node v24.21.0）
+  - 先红：test-bili-cli-signal-r4.mjs EXIT=1 / 7 秒，卡在「包装进程收到 SIGTERM 后必须在 6000ms 内退出」
+  - 修后：同一测试 EXIT=0 / 3–4 秒（连跑两次），死扛的子进程被升级 SIGKILL 清掉
+  - 反向重放：删掉 SIGKILL 升级行 → FAIL「忽略信号的子进程必须被升级到 SIGKILL 清掉」；还原后 SHA 407fc4f7… 逐字一致
+  - npm run test:audit → 206/206 exit 0；npm --prefix plugins/surfcore test → PASS 37 ordinary scripts exit 0
+  - 相邻回归：test-bili-media-no-history.mjs、test-bili-dynamic-receipt.mjs 均 exit 0
+【建议版本】minor（与 R3/R4 同批）
+【改动层级】只改 CLI 包装进程自身的退出契约，不改任何子命令语义；唯一可观察差异＝包装进程被信号终止时退出码为 128+signal
+  （scheduler 用 err.code === 'ABORT_ERR' 分类，不依赖这个数字）
+【完整逻辑与爆炸半径】见 case 文档「完整逻辑」：链路（scheduler execFile + 手工调用 → tools/bili.mjs → tools/commands/*.mjs）、
+  机制（所有权契约：宿主终止我 → 我终止子进程 → 我在有界时间内退出）、爆炸半径（2 类调用者 × 4 个读者 × 静默=3）、
+  取舍（A 包装进程自退 vs B 进程组杀 vs C 各命令自注册信号，B/C 否决理由在 case 里）
+【失败路径】不再有「静默孤儿」：最坏 3.2 秒退出，退出码 143（SIGTERM）/130（SIGINT）
+【还有什么没验证】①实机 8988 的确切机制没取到（现场＝包装进程活着、无子进程、无 socket），测试只钉住「子进程死扛信号」这一类；
+  ②真实 CLI 对真实网络未复跑（按用户边界跳过）；③Chromium 页面渲染与真实 native SDK 发送（asar 阻断）沿用 R4 清单；
+  ④用户安装副本 ~/.dsh/profiles/<profile>/node_modules/surfcore/ 要等下次安装/更新才带上该修复
+【实机现场遗留】用户安装版桥接控制台 51037（~/.dsh/profiles/desktop/…/bridge.js）仍在 127.0.0.1:3100 LISTEN，按其批准未动
+【发布前必做】本批只改源码与门禁；发版走正常 release 流程（dev → main），无需额外动作
+```
+
+### 批次 2026-11-15 · V1 退役四轮 R4（接管重驱动合同 + 取消后回执可查）（**已提交 `feat/v1-retirement-r4` @ `59bead0`，已合入 `dev` @ `db17ec3`，待发版**）
+
+> case：[`docs/cases/2026-11-15-v1-retirement-r4-resume-and-receipt.md`](cases/2026-11-15-v1-retirement-r4-resume-and-receipt.md)
+> 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`（`feat/v1-retirement-r4`，基于 `dev` @ `07efab6`）
+
+**可直接转发的交接块**
+
+```
+【批次】2026-11-15 · V1 退役四轮 R4
+【改了哪些文件】
+  - plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs（+ 一条 scheduler 重驱动合同场景，51→52）
+  - plugins/surfcore/lib/douyin-companion.mjs（写记忆前登记 reflection 操作编号；新增 queryReflection）
+  - plugins/surfcore/lib/douyin-companion-memory.mjs（reflectionOperationId / receipt）
+  - plugins/surfcore/lib/douyin-companion-ledger.mjs（账本可选字段 reflectionOperation，向后兼容）
+  - plugins/surfcore/scripts/test-douyin-reflection-receipt.mjs（新常驻合同测试）
+  - scripts/test-audit.mjs、plugins/surfcore/package.json（把新合同测试接进常驻门禁）
+  - docs/{HANDOFF,PITFALLS,cases/README,RELEASE-QUEUE,COORDINATION}.md + 新 case 文档
+【测了什么、结果如何】（DSH 自带 node v24.21.0，冻结快照单跑）
+  - npm run test:audit → 205/205 exit 0
+  - npm run test:regressions → exit 0；npm run test:memory-v2 → PASS 50 ordinary scripts
+  - npm --prefix plugins/surfcore test → PASS 37 ordinary scripts exit 0（native/UI 验收未跑）
+  - npm run lint:failures / doc-facts / preset patches --check → exit 0
+  - node scripts/release-manifest.mjs --verify-ref HEAD → 1107/1107，问题 0
+  - 反向重放：禁掉 bili-v2-agent.mjs:344 的 pre_dispatch 复用条件 → 1 秒内变红（BILI_V2_JOB_REUSED），
+    还原后 SHA 与改动前逐字一致；抖音侧把 memorySaved 断言反向 → RED_EXIT=1 且 0 秒退出、无测试根残留
+【建议版本】minor（与 R3 同批）
+【改动层级】抖音侧加法式：账本新增可选字段（旧账本可读）、取消对外语义不变（ok:true/state:'cancelled'）、
+  新增 queryReflection 入口；R4-A 零产品改动（只加测试）
+【完整逻辑与爆炸半径】见 case 文档「完整逻辑」第 1-5 节：scheduler 用原 requestId 重驱动的链路、
+  registry 复用守卫的判据、取消=撤销后续检查+可查询终态（不回滚已提交写入）；不碰用户角色包/记忆/配置/授权/额度
+【失败路径】DOUYIN_STALE_CHARACTER（刷新当前角色后重新发起）、DOUYIN_RECEIPT_NOT_FOUND（从原作业状态复制编号），
+  两者均带 code/error/hint；页面越界帧数显示"稀疏画面数量未确认"，不声明没有依据的帧数
+【还有什么没验证】①真实 Agent 自动调用模型/真实 provider 派发 → G7 实机（隔离实例）；②取回路径
+  memory-v2-host.mjs:220-223 不校验 frameSamples 0..3；③ELECTRON_RUN_AS_NODE=1 下 native 契约脚本在
+  test-memory-v2-bili-agent.mjs:198 变红（环境敏感性，PITFALLS #154）；④真实 QQ/B站账号链路未启动
+【发布前必做】已提交（`feat/v1-retirement-r4` @ `59bead0`）并生成清单（verify-ref HEAD 1109/1109 问题 0）；
+  发版时按 release 流程把 dev 合并进 main，无需再改本批次
+```
+
+### 批次 2026-11-15 · V1 退役三轮复审 R3 离线修复（**已合入 `dev` @ `07efab6`（merge `ad65bc9`），待发版**）
+
+> 覆盖提交：无。改动还在工作树 `/Users/shizihan/Daily/Github/surfcore-v1-retirement-r3`（分支 `feat/v1-retirement-r3`，基线 `dev` @ `1125d3e`）。
+> case：[`docs/cases/2026-11-15-v1-retirement-r3-offline-fixes.md`](cases/2026-11-15-v1-retirement-r3-offline-fixes.md)
+> 范围：三轮复审 P1/F01–F05 + N01、P2/F08+F10、F12/F13 收口（只做离线修复与常驻门禁；Mac 实机另立一轮）。
+
+**可直接转发的交接块**
+
+```
+改了哪些文件：38 个已跟踪文件 + 10 个新增测试文件。主要面：src/bridge.js、src/task-harness.js、src/core/{memory-v2-qq,qq-native-channel,memory-v2-client,memory-v2-preflight}.js；plugins/surfcore/lib/{index,scheduler,token-budget,bili-round,bili-v2-host,bili-v2-agent,memory-v2-runtime,qq-v2-reply-host,memory-v2-api,douyin-companion,douyin-companion-memory,douyin-companion-ledger,douyin-companion-page}.mjs；plugins/surfcore/tools/{bili.mjs,lib/msgfeed.mjs,commands/dm-await.mjs}；scripts/{test-audit.mjs,test-owner-delivery-r3.mjs,r2-v2-fixture.mjs}；plugins/surfcore/package.json；docs/*（HANDOFF/PITFALLS/RISK_REGISTER/FOLDER_MAP/guides-ARCHITECTURE/cases）
+测过什么、结果如何：冻结快照门禁全绿——npm run test:audit 204/204（基线 195 + 9 条 r3 常驻合同测试）；test:regressions 17/17；test:memory-v2 48/48；npm --prefix plugins/surfcore test exit 0，末行 "PASS 37 ordinary scripts in 39.4s; native/UI acceptance not run."；lint:failures exit 0；doc-facts exit 0；release-manifest --verify-ref HEAD 1096/1096 问题 0；test:preset-patches exit 0
+建议 patch 还是 minor：minor（用户可见行为变化：语音不再被误取消、owner 管理消息真的送达、B站不再假称"已接管"）
+case 文档路径：docs/cases/2026-11-15-v1-retirement-r3-offline-fixes.md
+改动层级：实现层为主，接口层**向后兼容**——新增 qqReplyCancel action / cancelQQReply 客户端方法与 7 个错误码（MEMORY_QQ_ADMISSION_CANCELLED、MEMORY_QQ_JOB_STALE、OWNER_REPLY_UNKNOWN/REJECTED、BILI_V2_NOT_DURABLE、MEMORY_PREFLIGHT_UNREADABLE、MEMORY_SOURCE_RECEIPT_INVALID、QQ_MODE_SAVED_PENDING_BRIDGE）；旧码 MEMORY_PREFLIGHT_ROUTE_UNREADABLE 已无消费者；取消成功语义仍是 ok:true / state:'cancelled'
+完整逻辑与爆炸半径：见 case「完整逻辑」段。桥接进程 + 插件进程；不碰用户记忆/角色/授权/额度，不写真实 ~/.dsh，不调付费模型（离线替身）
+失败路径：见 case 表格。模式保存离线→200+QQ_MODE_SAVED_PENDING_BRIDGE；非 owner→受限系统回复；回执未知→OWNER_REPLY_UNKNOWN 且不自动重发；B站不可持久→BILI_V2_NOT_DURABLE；预检读不了→MEMORY_PREFLIGHT_UNREADABLE+ioCode
+还有什么没验证：①Mac 实机（Native SDK 在 app.asar 内普通 Node 无法解析、长 TTS 跨轮询、真实 CLI 后代退出、真实卸载）②真实 QQ/B站账号链路的发送与读回 ③取消后的 reflection 写入没有保存原操作编号，调用方无法按编号查回可能已提交的写入（产品接口缺口）④方案 A 真持久接管 ⑤越界帧数上游取回路径仍不校验 0..3
+```
+
+**发布前必做**：先提交，再运行 `node scripts/release-manifest.mjs`，把刷新后的 `release/install-manifest.json` 一起提交（新增 10 个 r3 测试文件要进清单），最后跑一次 `--verify-ref HEAD` 复核。
+
+### 当前批次 2026-11-13 · V1 退役与二轮审查 F01–F12 收口（已合入 dev，待发版）
+
+<!-- release-batch: start=2026-11-12T21:00+08:00 end=2026-11-13T14:30+08:00 -->
+
+**状态**：已正式合入本地 `dev`（合并清单提交 `0a35a93`）；离线全门禁通过；未发布。建议与前序 PRD、A6、doc-facts 批次统一发布为 **Minor 版本（0.9.0）**。版本号由发布会话定。
+
+**覆盖范围**：`feat/v1-retirement` 分支全部提交（含破坏式重构、R01–R10 收口与 F01–F12 二轮审查）。
+
+**改了什么**：
+- **V1 彻底退役**：
+  - 记忆后端收口为 V2-only，fresh 缺省即 V2，删除 `legacy-registry` 与 `migration-plan`；
+  - QQ 一代 preset `qq-chat` 目录与 reserved 模式删除，预设仅保留 `qq-chat-v2`；
+  - 控制台与设置窗口删除一代仿真页、导航项与相关接口；
+  - B站调度器瘦身，移除一代自建会话与权限修整层，只保留 V2 触发与工具；
+- **R01–R10 收口**：
+  - R01 V2-only 生产准入移除历史 `shadowEnabled` 门禁；
+  - R02 旧记忆卡写者全部退役（返回 410），旧档案只读保留；
+  - R03 `closed-agent` 明确不可用，owner 远程任务由独立 Task Harness 承接；
+  - R04 B站 owner DM 采用 pending/ack 三态分离；
+  - R05 scheduler 增加 generation / AbortController / 在途任务集合并提供退役屏障；
+  - R06 抖音主 / host / recall / sharing 系列迁到真实 MemoryService/Host 工厂；
+  - R07 模式多状态分离并引入只读预检脚本；
+  - R08 终态失败作业投影最小控制元数据；
+  - R09 QQ/B站 Native 共用 V2 人格编译入口；
+  - R10 分享缺 V2 装配拒绝且零模型调用；
+- **F01–F12 二轮审查与稳定性增强**：
+  - F01 模式阻断在概览与 UI 可见恢复步骤，单调模式修订绑定准入与租约；
+  - F02 owner 管理回执专用传输拦截；
+  - F03 `dm-await.mjs` 稳定身份与持久接管 ACK；
+  - F04 scheduler 退役子进程超时强杀与退出确认；
+  - F05 B站受控单轮经历与评分正式写回 V2，支持查询回执；
+  - F06 旧跨渠道摘要写者彻底退役，仅保留只读查看；
+  - F07 测试夹具唯一根 `isolate-test-home.mjs` 杜绝误写真实配置；
+  - F08 预检显式 `lstat` 区分 EACCES 与文件不存在；
+  - F09 人格编译层 tone/scene 统一清洗未标记旧协议行；
+  - macOS Chrome 探测超时放宽（6000ms）并在无浏览器环境优雅跳过。
+
+**验证**：
+```text
+npm run test:audit          # 195/195 PASS
+npm run test:regressions    # 17/17 PASS
+npm run test:memory-v2      # 48/48 PASS
+npm run lint:failures       # 退出 0，债务 658 ≤ 基线 669
+npm run doc-facts           # 退出 0，数字逐项一致
+cd plugins/surfcore && npm test   # 全部 PASS（含 35 个 Memory V2 脚本）
+node scripts/release-manifest.mjs --verify-ref HEAD   # 0 问题（1096 文件逐字节一致）
+```
+
+**交接块（可直接复制给发布会话）**：
+```text
+【合并请求已执行】
+分支：feat/v1-retirement（已通过 --no-ff 合入 dev，清单提交 0a35a93）
+范围：六项 V1 彻底退役破坏式重构 + R01–R10 审查收口 + F01–F12 二轮审查增强
+改到的文件：src/bridge.js、src/core/*、plugins/surfcore/*、scripts/*、docs/*、release/install-manifest.json
+删除：dsh/agent-presets/qq-chat/、plugins/surfcore/presets/qq-chat.patch.yml、legacy-registry 等 7 个旧文件
+测试：test:audit 195/195、test:regressions 17/17、test:memory-v2 48/48、v2-real-integration 12/12、plugins test 全过、lint:failures 退出 0、doc-facts 退出 0、verify-ref HEAD 0 问题
+建议版本：0.9.0（minor，由于 V1 退役包含破坏式接口与模式变更）
+未验/发布前：独立 profile DSH 安装验证、QQ 入站→ACK、B站真机唤醒与退役
+```
+
+### 批次 2026-11-12 · PRD 拍板修订 + 文档事实校验（含 doc-facts 合并）
+<!-- release-batch: start=2026-11-12T21:00+08:00 end=2026-11-12T22:30+08:00 -->
+
+**建议**：与 A6 批次合并进同一版 **0.8.9（patch，纯文档 + 校验脚本，无行为变化）**
+
+**改了什么**：
+- 新增 `docs/product/`（PRD v0.2 拍板修订 / IMPROVEMENTS v0.2 / ARCHITECTURE v0.2 / V1-INVENTORY.md）：2026-11-12 六条拍板逐条落档（数字角色分身定位、双平台一等公民、默认入口 QQ、无用户分级+V1 过时、桌宠降级、无商业化）+ 抖音暂缓、火山 TTS 第一梯队。
+- V1 清单盘点（只清单未删）：8 类第三方协议 v1 排除 + 6 项 V1 面按"删了最安全→删了最痛"排序，含删除波及与数据依赖。
+- 设置窗口一致性核查结论：**无按用户类型的分叉**（15 标签静态渲染，`client.js:6938-6954,7215`）。
+- 合入 feat/doc-facts（a3f281f/7b274d4）：README/BOUNDARIES 平台事实修正 + `npm run doc-facts` 文档数字校验（口径：控制台路径按出现次数、src 引用含 presets，已写进脚本头部说明）。
+- case：`docs/cases/2026-11-12-prd-revision.md`。
+
+**验证**：
+```text
+npm run test:audit          # 预期 195/195
+npm run lint:failures       # 预期退出 0
+npm run doc-facts           # 预期退出 0
+node scripts/release-manifest.mjs --verify-ref HEAD   # 预期问题 0 个
+```
+
+**交接块（可直接复制给发布会话）**：
+```text
+【合并请求】
+分支：feat/prd-revision + feat/doc-facts（均已 no-ff 合入 dev）
+范围：纯文档批次——PRD 拍板修订（docs/product/ 四份）+ doc-facts 脚本与平台事实修正；不改业务代码、不 bump version
+改到的文件：docs/product/*（新增4）、docs/cases/2026-11-12-prd-revision.md、docs/RELEASE-QUEUE.md、docs/COORDINATION.md、scripts/doc-facts.mjs、README.md、docs/BOUNDARIES.md、docs/guides/*（doc-facts 批次的数字修正）、package.json（doc-facts script）、release/install-manifest.json（合并后重生成）
+测试：test:audit 195/195；lint:failures 退出 0；doc-facts 退出 0；verify-ref HEAD 一致
+风险/未验证：纯文档无运行时风险；入口文档（README/插件README）改写留待"默认只开QQ"实施后同批
+是否已 rebase/merge 最新 dev：是（本批即合并执行方）
+```
+
+### 批次 2026-11-12 20:10 · A6 失败可见性：ok:false 三件套静态检查 + P0 链路补齐
+<!-- release-batch: start=2026-11-12T18:30+08:00 end=2026-11-12T20:10+08:00 -->
+
+**建议**：**0.8.9（patch，工具与失败文案增强，无新功能面）**
+
+**改了什么**：
+- 新增 `scripts/lint-failures.mjs`（`npm run lint:failures`）：静态检查业务代码里每处 `ok:false` 是否带 `code`+`hint`；棘轮基线 `scripts/lint-failures-baseline.json` 记录存量债务 669 处（33 文件），只许降不许升，回潮退出码 1。
+- B站扫码（`plugins/surfcore/lib/bili-qr-login.mjs`）：`validateQrAccount` 失败分支加 `bili.qr-no-mid`/`bili.qr-wrong-account`，会话过期加 `bili.qr-session-gone`，全部带可执行 hint。
+- 更新链路（`plugins/surfcore/lib/updates.js`）：下载/校验/安装各失败点加 `download.*`/`apply.*` 稳定错误码 + hint（含「手动下载 zip 覆盖安装」兜底提示）。
+- 语音包（`src/voice-packs.js`）：卸载/取消导入/取消安装/端口占用加 `pack.*` 错误码 + hint。
+- TTS/语音（`src/voice-core.js`、`plugins/surfcore/lib/voice-health.js`）：内部探测与配置诊断豁免标注（reason 原文已可操作）。
+- 失败分支测试：`scripts/test-bili-qr-login.mjs` 断言 5 个失败分支 code 匹配 `/^bili\.qr-/` 且 hint 非空。
+
+**验证**：
+```text
+npm run lint:failures        # 退出 0；债务 669 处不超基线
+node scripts/test-bili-qr-login.mjs
+npm run test:audit           # 195/195
+# 篡改测试：临时删一处 hint → lint 退出 1 并报 file:line；还原后退出 0
+```
+
+**交付交接块（可直接转发给发布会话）**：
+```text
+改了哪些文件：
+- 新增：scripts/lint-failures.mjs, scripts/lint-failures-baseline.json
+- 修改：package.json（加 lint:failures 脚本）, plugins/surfcore/lib/bili-qr-login.mjs, plugins/surfcore/lib/updates.js, src/voice-packs.js, src/voice-core.js, plugins/surfcore/lib/voice-health.js, scripts/test-bili-qr-login.mjs
+- 文档：docs/cases/2026-11-12-a6-failure-visibility.md, docs/cases/README.md, docs/RELEASE-QUEUE.md, docs/COORDINATION.md
+测过什么、结果如何：
+- npm run lint:failures（PASS，基线 669 处债务、回潮检测经篡改测试验证）
+- node scripts/test-bili-qr-login.mjs（PASS，含新增 code/hint 断言）
+- npm run test:audit（PASS 195/195）
+影响谁、怎么回滚：
+- 仅失败响应新增字段（code/hint），不改控制流、不碰用户数据；git revert 本批提交即可整体回滚
+- 版本建议 0.8.9 patch；未 bump version、未打 tag、未发布
+```
+
+---
+
+### 批次 2026-11-12 12:49 · 文档平台事实校正 + doc-facts 校验（A2/A3）
+<!-- release-batch: start=2026-11-12T11:20+08:00 end=2026-11-12T12:49+08:00 -->
+
+**建议**：**patch**（纯文档 + 开发脚本，无运行时行为变化）
+
+**覆盖提交**：`a3f281f`（本批次主体）；本队列条目与 COORDINATION 登记见紧随其后的 docs 提交。
+
+**改了什么**：
+- **A2 平台事实**：`README.md`、`docs/guides/BOUNDARIES.md` 的“Windows 优先 / 不支持 macOS”改为 Windows / macOS，
+  并写明 macOS 已有 2026-11-12 真机验收（QQ 收发与语音、B站扫码、桌宠、任务 Harness）、Linux 未验证。
+- **A2 易腐数字**（均按代码实测，来源写进文档）：
+  - 版本 `0.8.8`（`ROADMAP.md`、`DSH_SETUP.md`）；
+  - 设置页 15 标签（根 README、ARCHITECTURE、FOLDER_MAP、docs/README、12 课、插件 README 表格补“语音/抖音”）；
+  - 控制台 163 条精确路径 + 17 条前缀判断（ARCHITECTURE、BOUNDARIES、FOLDER_MAP、ROADMAP、RISK_REGISTER）；
+  - `src` 引用 38 个模块 / 96 处（根 README、ARCHITECTURE、FOLDER_MAP、12 课、RISK_REGISTER）；
+  - 桥接 18,221 行（ARCHITECTURE、FOLDER_MAP、docs/README、ROADMAP、RISK_REGISTER）。
+- **A1 文档表达（未删任何渠道）**：根 README 新增「4.1 能力状态与暂不做的渠道」（✅/🟡/🧪 + 暂不做/待确认）；
+  插件 README 主叙事改为“单机运行的数字角色运行环境”，贴吧/微信/小红书标注为占位或提案。
+- **A3 校验工具**：新增 `scripts/doc-facts.mjs` 与 `npm run doc-facts`（离线、只读、不联网、不改业务代码）；
+  输出实测事实与不符/缺失，异常退出码 1；扫描禁止回流的旧表述；`--json` 供机器读。`docs/README.md` 增加调用说明。
+
+**case**：`docs/cases/2026-11-12-doc-facts-and-platform-correction.md`
+
+**验证**：
+```text
+npm run doc-facts        # ✅ 0 不符 / 0 缺失，退出码 0
+npm run test:audit       # Audit suite: 195/195 scripts passed，退出码 0
+```
+反向验证：把 README 的“15 个标签”临时改成 14，脚本报 `README.md:195 文档=14 实测=15` 并退出 1；恢复后通过。
+
+**给发布会话的交接块（可直接转发）**：
+```text
+【SurfCore 发布交接】2026-11-12 · 文档事实校正 + doc-facts
+改了哪些文件：README.md、package.json、plugins/surfcore/README.md、scripts/doc-facts.mjs、docs/{README,FOLDER_MAP,RISK_REGISTER,ROADMAP}.md、docs/guides/{ARCHITECTURE,BOUNDARIES,DSH_SETUP,12-LESSONS-ARCHITECTURE}.md、docs/cases/2026-11-12-doc-facts-and-platform-correction.md、docs/cases/README.md
+测过什么/结果：npm run doc-facts → 0 不符/0 缺失；npm run test:audit → 195/195；反向篡改数字能报错并退出 1
+建议 patch / minor：patch
+case：docs/cases/2026-11-12-doc-facts-and-platform-correction.md
+改动层级：文档 + 开发脚本；运行时接口与行为无变化，向后兼容
+完整逻辑与爆炸半径：见 case「完整逻辑」；0 进程 / 0 运行时读者 / 不碰用户数据、密钥、花费
+失败路径：doc-facts 逐条打印「文件:行 文档=… 实测=…」或「缺失 …」，并退出 1，不会静默通过
+未验证：Windows 未重跑 audit；控制台路径口径（163/17，按出现次数）待用户确认
+```
+
+---
+
 ### 批次 2026-11-11 22:10 · Phase A-E 本地 Agent 审查、副作用防御与执行能力建设
 <!-- release-batch: start=2026-11-11T18:00+08:00 end=2026-11-11T22:10+08:00 -->
 

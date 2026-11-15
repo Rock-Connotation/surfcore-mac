@@ -18,7 +18,7 @@ try {
   // ==========================================
   console.log('\n[B1] Testing QQ Memory Bridge Preset Safety Guard (fail-closed)...');
 
-  const safePresets = new Set(['qq-chat', 'qq-chat-v2', 'closed-agent']);
+  const safePresets = new Set(['qq-chat-v2', 'closed-agent']);
   const bridge = createQQMemoryBridge({
     stateDir: path.join(tmpDir, 'state'),
     getCharacter: () => ({ id: 'default', epoch: 1 }),
@@ -30,7 +30,7 @@ try {
   assert.equal(route.ok, true);
 
   // Assert fail-closed preset safety
-  assert.equal(safePresets.has('qq-chat'), true, 'qq-chat must be safe');
+  assert.equal(safePresets.has('qq-chat'), false, '一代 qq-chat 已随 V1 退役，不再属安全 preset');
   assert.equal(safePresets.has('qq-chat-v2'), true, 'qq-chat-v2 must be safe');
   assert.equal(safePresets.has('closed-agent'), true, 'closed-agent must be safe');
   assert.equal(safePresets.has('default'), false, 'default preset must fail closed');

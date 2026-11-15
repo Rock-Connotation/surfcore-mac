@@ -15,20 +15,16 @@ assert.deepEqual(biliSessionCreateParams({ cwd: 'C:\\tmp' }), { cwd: 'C:\\tmp' }
   '旧版没有工作区服务时才退回 cwd');
 
 const scheduler = fs.readFileSync('plugins/surfcore/lib/scheduler.js', 'utf8');
-assert.ok(scheduler.includes('ensureBiliWorkspace'), 'scheduler 必须创建工作区');
-assert.ok(scheduler.includes('resolveBiliAgentPreset'), 'scheduler 必须解析 DSH preset');
-assert.ok(scheduler.includes('agentPreset: await resolveBiliAgentPreset()'), '建会话必须带 agentPreset');
-assert.ok(scheduler.includes('biliSessionCreateParams'), 'scheduler 必须走 workspaceId/cwd 选择器');
-assert.ok(scheduler.includes('workspaceController'), '必须使用 DSH workspaceController');
-assert.ok(!scheduler.includes('sessionController.create({ sessionId, cwd })'), '不能只传 cwd 创建新会话');
-assert.ok(scheduler.includes('sessionReady = false'), '创建失败不能标 ready');
-assert.ok(scheduler.includes("path.join(biliDir, 'whale-diary.md')"), '日记提示词必须用角色级 platformDir');
-assert.ok(!scheduler.includes('~/.dsh/surfcore/bili/whale-diary.md'), '日记提示词不能再写账号级硬路径');
+// V1 退役（2026-11-12）：B站 会话由 V2 Host 管理，scheduler 不再建 DSH 会话/工作区。
+assert.ok(!scheduler.includes('ensureBiliWorkspace'), 'V1 工作区装配已删除');
+assert.ok(!scheduler.includes('resolveBiliAgentPreset'), 'V1 preset 解析已删除');
+assert.ok(!scheduler.includes('biliSessionCreateParams'), 'V1 workspace/cwd 选择器已删除');
+assert.ok(scheduler.includes('biliV2Agent.enqueue'), '唤醒必须走 V2 Host');
+assert.ok(!scheduler.includes("path.join(biliDir, 'whale-diary.md')"), 'V1 手抄日记提示词已删除');
 
 const index = fs.readFileSync('plugins/surfcore/lib/index.js', 'utf8');
-assert.ok(index.includes('workspacePath: biliWorkspace'), 'index 必须传专用 workspacePath');
-assert.ok(index.includes('cwd: biliWorkspace'), '旧版 fallback cwd 也不能再是用户主目录');
-assert.ok(!index.includes('cwd: os.homedir()'), '不能再用 os.homedir() 当 B站会话 cwd');
+assert.ok(!index.includes('workspacePath: biliWorkspace'), 'V1 工作区参数已删除');
+assert.ok(!index.includes('cwd: biliWorkspace'), 'V1 fallback cwd 已删除');
 
 const bridge = fs.readFileSync('src/bridge.js', 'utf8');
 const memory = fs.readFileSync('src/bili-memory.js', 'utf8');

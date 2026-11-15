@@ -1,8 +1,11 @@
+import { testHome } from './isolate-test-home.mjs';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
+import { createGateEventStore } from '../../../src/gate-events.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-bili-index-'));
 process.env.DSH_HOME = path.join(root, 'dsh');
@@ -50,6 +53,34 @@ try {
   const event = gates.body.events.find(item => item.gate === 'memory-v2' && item.reason?.code === 'BILI_V2_ROUTE_UNPROVEN');
   assert.ok(event, JSON.stringify(gates.body)); assert.equal(event.level, 'L2'); assert.ok(event.reason.message && event.recommendation); assert.ok(event.recommendation.includes('模型'));
   assert.ok(!JSON.stringify(gates).includes('PRIVATE_PROVIDER_SECRET')); assert.deepEqual(external, []); assert.equal(providerCalls, 0);
+  const source = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  const begin = source.indexOf('  function reportMemoryBlocked(result) {');
+  const end = source.indexOf('  biliMemoryHost = createBiliV2Host(', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const gateEvents = createGateEventStore({ dir: path.join(testHome, 'gate-contract'), log() {} });
+  const report = vm.runInNewContext(source.slice(begin, end) + '\nreportMemoryBlocked', { gateEvents, readCurrentCharacter: () => ({ id: 'fixture', epoch: 1 }), pluginLog() {} });
+  const hint = '查询同一原作业，不要另建编号或重复发送。';
+  report({ ok: false, code: 'BILI_V2_NOT_DURABLE', error: '原作业尚无持久接管确认。', hint, channel: 'bili' });
+  const nonDurable = gateEvents.list({ limit: 20, includeAcked: true }).events.find(item => item.reason?.code === 'BILI_V2_NOT_DURABLE');
+  assert.ok(nonDurable, 'actual gate store must contain the non-durable event');
+  assert.equal(nonDurable.recommendation, hint); assert.ok(nonDurable.reason.message);
+  console.log('PASS BILI_V2_NOT_DURABLE gate recommendation: ' + nonDurable.recommendation);
+  const hostSource = fs.readFileSync(new URL('../lib/bili-v2-host.mjs', import.meta.url), 'utf8');
+  const failureLine = hostSource.split('\n').find(line => line.includes('const failure = state ==='));
+  assert.ok(failureLine);
+  const project = state => vm.runInNewContext(failureLine.trim() + '\nfailure', { state });
+  const accepted = project('accepted-needs-retry'), unknown = project('unknown');
+  assert.equal(unknown.unknown, true); assert.equal(accepted.error, unknown.error);
+  assert.match(hostSource, /unknown:\s*failure\.unknown/);
+  assert.doesNotMatch(unknown.error, /已接管|已完成|已发送/);
+  report({ ...accepted, channel: 'bili' }); report({ ...unknown, channel: 'bili' });
+  const events = gateEvents.list({ limit: 20, includeAcked: true }).events.filter(item => item.reason?.code === 'BILI_V2_NOT_DURABLE');
+  assert.ok(events.length >= 3); assert.equal(events[0].reason.message, events[1].reason.message);
+  assert.doesNotMatch(events[0].reason.message, /已接管|已完成|已发送/);
+  assert.match(events[0].recommendation, /不要另建编号/);
+  console.log('PASS accepted-needs-retry / unknown neutral gate text; unknown=true');
+
+
   console.log('PASS actual index Runtime Bili callback publishes sanitized actionable L2 failure to the existing notification endpoint; zero network/provider calls');
 } finally {
   for (const effect of effects.reverse()) { const cleanup = effect(); if (typeof cleanup === 'function') await cleanup(); }
