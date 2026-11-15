@@ -32,6 +32,9 @@ const tests = [
   // R4-B 抖音：取消不得抹掉已提交写入的原操作编号——取消后必须能按原编号查真实 Host 回执，
   // 并如实报告 unknown/completed；同时证明失败路径 1 秒级退出、不残留测试根、不挂住门禁。
   '../plugins/surfcore/scripts/test-douyin-reflection-receipt.mjs',
+  // R4/G7 退役资源：plugins/surfcore/tools/bili.mjs 是转发型包装进程，收到 SIGTERM/SIGINT 后必须自己退出，
+  // 不能只在子进程 'close' 里退出——子进程不可中断时包装进程会变成 PPID=1 的孤儿（实机取证）。
+  '../plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs',
   '../plugins/surfcore/scripts/test-qq-access-panel.mjs',
   '../plugins/surfcore/scripts/test-memory-v2-alerts.mjs',
   'test-update-archive.mjs',
