@@ -1,4 +1,19 @@
-## 2026-11-15 V1 退役三轮复审（P1/F01–F05、N01、P2/F08+F10）离线修复完成并已提交到 `feat/v1-retirement-r3`（HEAD `6feea46`），**未合入 dev**
+## 2026-11-15 V1 退役四轮（R4：接管重驱动合同 + 取消后回执可查）——改动就绪并已过冻结快照门禁，**待提交**
+
+工作树 `/Users/shizihan/Daily/Github/surfcore-r4`（分支 `feat/v1-retirement-r4`，基于 `dev` @ `07efab6`）。用户定范围："先三个代码项，再 G7 实机"；G7 边界＝**只开隔离实例**，不动正式环境。本轮没有 bump/tag/发布。
+
+**本轮做了什么**
+- **R4-A 方案 A 的离线合同（零产品改动）**：往共享夹具 `plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs` 加一条 scenario（51 → 52）——生产 scheduler 在真重建 Runtime 后用**原 `requestId`** 重驱动重启前留在 `pre_dispatch` 的接管任务，`promptSubmissions 0→1`、`providerCalls 0→1`，且进入 `unknown` 后**不再重投**（`enqueues` 保持 2）。反向重放（禁掉 `bili-v2-agent.mjs:344` 的 `pre_dispatch` 复用条件）1 秒内变红，还原后 SHA 逐字一致。
+- **R4-B 抖音取消后按原操作编号可查**：`plugins/surfcore/lib/douyin-companion.mjs`（写记忆前登记 `reflectionOperation = { operationId, state:'unknown' }`，成功后置 `completed`；新增 `queryReflection(context, operationId)`）、`douyin-companion-memory.mjs`（抽出 `reflectionOperationId` / `receipt`）、`douyin-companion-ledger.mjs`（账本可选字段校验，向后兼容）；新增 `plugins/surfcore/scripts/test-douyin-reflection-receipt.mjs`（testHome 根 + `finally` 清理 + 显式 `process.exit`）。
+- **R4-C 经核实关闭**：`douyin-companion.mjs:416` 已 `.slice(0, MAX_FRAME_SAMPLES)`，`:420`/`:493` 的 `images.length` 天然 ≤3，账本要求 0..3 → 边界内无可修缺陷；不反向造红。
+
+**冻结快照门禁（自带 node，全员停手后单跑）**：`test:audit` **205/205** · `test:regressions` 0 · `test:memory-v2` `PASS 50 ordinary scripts` 0 · 插件套件 `PASS 37 ordinary scripts` 0 · `lint:failures` 0 · `doc-facts` 0 · `release-manifest --verify-ref HEAD` 1107/1107 问题 0 · preset patches `--check` 0。
+
+**未验证（别当成已验证）**：①真实 Agent 自动调用模型/真实 provider 派发（离线计数不算证明）→ G7；②取回路径 `plugins/surfcore/lib/memory-v2-host.mjs:220-223` 不校验 `frameSamples ∈ 0..3`；③`ELECTRON_RUN_AS_NODE=1` 下 native 契约脚本在 `:198` 变红（环境敏感性，已记 PITFALLS #154）；④真实 QQ/B站账号链路一律未启动。
+
+**交接前必做**：提交后 `node scripts/release-manifest.mjs` 并提交刷新后的 `release/install-manifest.json`，再 `--verify-ref HEAD`。
+
+## 2026-11-15 V1 退役三轮复审（P1/F01–F05、N01、P2/F08+F10）离线修复完成，**已合入 `dev`** @ `07efab6`（功能分支 `feat/v1-retirement-r3` @ `9d7e235`）
 
 工作树 `/Users/shizihan/Daily/Github/surfcore-v1-retirement-r3`（分支 `feat/v1-retirement-r3` @ `1125d3e`，基于 `dev`）。本轮只做**离线修复 + 常驻门禁**：没有提交、没有合 dev、没有 bump/tag/发布；主工作树 `surfcore-mac`、`dev`、`main` 均未受影响。
 

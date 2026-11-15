@@ -101,9 +101,16 @@ export function createCompanionMemory({ getCharacter, maintainMemory, stateDir =
     const content = JSON.stringify({ system, prompt, images: images.map(frame => ({ atMs: frame.atMs, sha256: imageDigest(frame) })) });
     return ingest(session, [event(session, session.identity, 'model-input', content, { subject: session.context.characterId, speaker: session.context.characterId, certainty: 'observed', attribution: 'action' })], `${session.identity}:model-input`);
   }
+  const reflectionOperationId = session => `${session.identity}:reflection`;
+  async function receipt(session, operationId) {
+    await validate(session);
+    const result = await requireOk(adapter.receipt(session.handle, operationId));
+    await validate(session);
+    return result;
+  }
   async function reflect(session, value) {
     await validate(session);
-    return ingest(session, [event(session, session.identity, 'reflection', JSON.stringify(value), { subject: session.context.characterId, speaker: session.context.characterId, certainty: 'reported', attribution: 'reflection', coverage: value.coverage })], `${session.identity}:reflection`);
+    return ingest(session, [event(session, session.identity, 'reflection', JSON.stringify(value), { subject: session.context.characterId, speaker: session.context.characterId, certainty: 'reported', attribution: 'reflection', coverage: value.coverage })], reflectionOperationId(session));
   }
   async function blocked(session, error, detail = {}) {
     const value = { ...failure(error?.code || 'MEMORY_HOST_FAILED', error?.error || error?.message || 'V2活动已阻止。', error?.hint), ...detail };
@@ -162,5 +169,5 @@ export function createCompanionMemory({ getCharacter, maintainMemory, stateDir =
     if (maintained?.ok === false) return maintained;
     return { ok: true, eventId: appended.eventId };
   }
-  return { buildContext, recordMemory, routing, capture, observe, prepareStep, bindStep, validate, admitNetwork, reflect, blocked, release };
+  return { buildContext, recordMemory, routing, capture, observe, prepareStep, bindStep, validate, admitNetwork, reflect, reflectionOperationId, receipt, blocked, release };
 }

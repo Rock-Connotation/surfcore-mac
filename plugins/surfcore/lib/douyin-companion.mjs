@@ -188,6 +188,7 @@ export function createDouyinCompanion({
     } : { code: null, error: null, hint: null };
     return {
       ...(item.memoryV2Refs ? { memoryV2Refs: item.memoryV2Refs, memoryV2Receipts: item.memoryV2Receipts, memoryV2Receipt: item.memoryV2Receipt } : {}),
+      ...(item.reflectionOperation ? { reflectionOperation: item.reflectionOperation } : {}),
       id: safeSourceId(item.id) || '',
       url: safeSourceUrl(item.url) || '',
       title: safeDisplayText(item.title, 240),
@@ -493,6 +494,10 @@ export function createDouyinCompanion({
         coverage: { ...coverage, visualCoverage: 'sparse', frameSamples: images.length, status: 'partial' },
       };
       let memory;
+      if (session) {
+        item.reflectionOperation = { operationId: v2.reflectionOperationId(session), state: 'unknown' };
+        saveJob(localLedger, job);
+      }
       try {
         assertRole(job, context);
         memory = await guarded(job, context, () => session ? v2.reflect(session, memoryPayload) : recordMemory(context, memoryPayload, { signal: runtime.controller.signal }), operationTimeout,
@@ -503,7 +508,7 @@ export function createDouyinCompanion({
         throw problem('DOUYIN_MEMORY_FAILED', '模型结果未能写入当前角色记忆。', '检查Host记忆服务与角色归属；原始草稿仍在本机作业状态中。');
       }
       check(memory?.ok === true, safeCode(memory?.code, 'DOUYIN_MEMORY_FAILED'), safeDisplayText(memory?.error, 240) || '模型结果未能写入当前角色记忆。', safeDisplayText(memory?.hint, 300) || '检查Host记忆服务与角色归属后再手动恢复。');
-      if (session) { retainProvenance(job, item, memory, 'reflection'); await v2.validate(session); }
+      if (session) { retainProvenance(job, item, memory, 'reflection'); await v2.validate(session); item.reflectionOperation.state = 'completed'; }
       item.state = partial ? 'partial' : 'completed';
       item.partial = partial;
       item.memorySaved = true;
@@ -860,6 +865,19 @@ export function createDouyinCompanion({
       recentJobs: visibleJobs,
     };
   }
+  async function queryReflection(context, operationId) {
+    let session;
+    try {
+      const role = requireCurrentRole(context);
+      const found = Object.values(readLedger().jobs).some(job => job.characterId === role.id && job.characterEpoch === role.epoch && job.items.some(item => item.reflectionOperation?.operationId === operationId));
+      check(found, 'DOUYIN_RECEIPT_NOT_FOUND', '没有找到该角色的反思操作编号。', '查看原作业状态并使用其中的操作编号。');
+      session = await v2.capture(contextStamp(context, role), 'douyin:homepage-recommendation');
+      const result = await v2.receipt(session, operationId);
+      requireCurrentRole(context);
+      return result;
+    } catch (error) { return callIssue(error); }
+    finally { v2.release(session); }
+  }
   async function cancel(context) { return response(context, await cancelValue(context)); }
   async function cancelValue(context) {
     return serialize(async () => {
@@ -963,5 +981,5 @@ export function createDouyinCompanion({
     return { ok: true };
   }
 
-  return { start, status, cancel, configure, tick, withTransition, dispose, validateResponse, releaseResponse };
+  return { start, status, cancel, queryReflection, configure, tick, withTransition, dispose, validateResponse, releaseResponse };
 }

@@ -29,6 +29,9 @@ const tests = [
   // P2/F01 辅项 模式保存回执：桥接没在运行 ≠ 模式非法。合法模式必须"已保存、待桥接启动后生效"，
   // 不得把离线连接失败报成 409/QQ_MODE_INVALID；退役值与非法值仍必须 fail-closed。
   '../plugins/surfcore/scripts/test-qq-mode-save-r3.mjs',
+  // R4-B 抖音：取消不得抹掉已提交写入的原操作编号——取消后必须能按原编号查真实 Host 回执，
+  // 并如实报告 unknown/completed；同时证明失败路径 1 秒级退出、不残留测试根、不挂住门禁。
+  '../plugins/surfcore/scripts/test-douyin-reflection-receipt.mjs',
   '../plugins/surfcore/scripts/test-qq-access-panel.mjs',
   '../plugins/surfcore/scripts/test-memory-v2-alerts.mjs',
   'test-update-archive.mjs',

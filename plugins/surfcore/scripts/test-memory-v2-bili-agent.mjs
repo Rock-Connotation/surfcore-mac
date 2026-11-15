@@ -280,6 +280,49 @@ await fixture('scheduler polls an original unknown job without enqueuing again',
     console.log('SCHEDULER_UNKNOWN_POLLS 5 ENQUEUES ' + enqueues + ' PROMPTS ' + f.trace.filter(value => value === 'prompt').length);
   } finally { scheduler.stop(); }
 });
+// F03 方案 A 的离线证据：scheduler 层用**原 requestId** 重驱动重启前留在 pre_dispatch 的接管任务。
+// 证到的：真实 registry + 真重建 Runtime 后，生产 scheduler 仍提交同一原编号，且 prompt 真的提交到
+// 本夹具的 session controller（prompts 0 → 1）、离线 provider 流回调被触发一次。
+// 证不到的：真实 Agent 自动调用模型 / 真实 provider 派发（providerCalls 是离线流回调计数）——
+// 那需要真实宿主，归 G7 实机。不要把这个计数读成"真模型调用"。
+await fixture('scheduler re-drives the original pre-dispatch ID through a rebuilt runtime', async f => {
+  const { startScheduler } = await import('../lib/scheduler.js');
+  const home = path.join(testHome, 'scheduler-restart-contract'), dir = path.join(home, 'surfcore', 'bili');
+  fs.mkdirSync(dir, { recursive: true });
+  const plan = { date: new Date().toLocaleDateString('sv-SE'), action: 'skip', slotId: 'restart-slot', at: 0, fired: false };
+  let denied = true, prepares = 0, providerCalls = 0;
+  const prepare = f.sourceRuntime.preparePrompt, ids = [], results = [];
+  f.sourceRuntime.preparePrompt = async (...args) => { prepares++; return denied ? { ok: false, code: 'MEMORY_POLICY_DENIED', hint: 'Restore permission.' } : prepare(...args); };
+  let runtime = f.runtime;
+  const prompts = () => f.trace.filter(value => value === 'prompt').length;
+  const host = { query: async ({ requestId }) => { const result = runtime.query(requestId); return result.found ? { ...result, state: result.jobs[0].phase } : result; },
+    enqueue: async args => { ids.push(args.requestId); const result = await runtime.enqueue(args); results.push(result); if (result.ok) await collect(f.stream(f.options(result.sessionId), () => (async function* () { providerCalls++; yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }; })())); return result; },
+    retire: () => runtime.retire() };
+  const scheduler = () => startScheduler(f.ctx, { dshHome: home, biliMjs: path.join(home, 'unused'), memoryV2: { getRouting: () => ({ ok: true, backend: 'v2' }) }, biliV2Agent: host });
+  let active = scheduler();
+  try {
+    fs.writeFileSync(path.join(dir, 'whale-night.json'), JSON.stringify(plan));
+    await active.tick();
+    assert.equal(results[0].code, 'MEMORY_POLICY_DENIED');
+    console.log('SCHEDULER_RESTART_BEFORE ' + JSON.stringify({ id: ids[0], prepareCalls: prepares, promptSubmissions: prompts(), providerCalls }));
+    assert.equal(prepares, 1); assert.equal(prompts(), 0); assert.equal(providerCalls, 0);
+    active.stop(); await runtime.close(); denied = false; runtime = f.restart();
+    assert.equal(runtime.query(ids[0]).jobs[0].phase, 'pre_dispatch');
+    active = scheduler(); fs.writeFileSync(path.join(dir, 'whale-night.json'), JSON.stringify(plan));
+    await active.tick();
+    assert.equal(ids[1], ids[0], 'the rebuilt scheduler must re-drive the original request ID');
+    assert.equal(results[1].ok, true, JSON.stringify(results[1]));
+    assert.equal(prepares, 2); assert.equal(prompts(), 1); assert.equal(providerCalls, 1);
+    console.log('SCHEDULER_RESTART_AFTER ' + JSON.stringify({ id: ids[1], prepareCalls: prepares, promptSubmissions: prompts(), providerCalls }));
+    active.stop(); await runtime.close(); runtime = f.restart();
+    assert.equal(runtime.query(ids[0]).jobs[0].phase, 'unknown');
+    active = scheduler(); fs.writeFileSync(path.join(dir, 'whale-night.json'), JSON.stringify(plan));
+    await active.tick();
+    assert.equal(ids.length, 2, 'an unknown original must never be re-submitted');
+    assert.equal(providerCalls, 1);
+    console.log('SCHEDULER_RESTART_UNKNOWN ' + JSON.stringify({ phase: runtime.query(ids[0]).jobs[0].phase, enqueues: ids.length, providerCalls }));
+  } finally { active.stop(); }
+});
 await fixture('reminder retries original occurrence and later occurrence has a new ID', async f => {
   const { startScheduler } = await import('../lib/scheduler.js');
   const RealDate = globalThis.Date; let clock = new RealDate('2026-11-13T16:10:00').getTime();
