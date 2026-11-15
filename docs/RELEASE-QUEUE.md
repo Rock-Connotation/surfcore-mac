@@ -14,8 +14,9 @@
 
 ## 待发布
 
-> **2026-11-15 dev 测试构建已发布**：`v0.9.0-dev.1`（tag / Pre-release @ `c5da206`，仓库 `Rock-Connotation/surfcore-mac`）已把下方全部批次交到可安装形态；本地 `release-manifest --verify-ref HEAD` 1111/1111 问题 0，远端 `verify-remote-manifest` 一致 1111 / 不符 0 / 缺失 0。测试机把更新通道切 **dev** 后点「检查更新」。
-> **稳定版 `0.9.0` 未发**：待 G7 实机第二阶段（隔离实例）通过后，按本节批次发 stable。
+> **2026-11-15 稳定版 `v0.9.0` 已发布**：`Rock-Connotation/surfcore-mac` 的 `main` @ `29d8ff9`（tree 与本地 `9424cb7` 逐字节相同）、tag `v0.9.0`、Release `SurfCore v0.9.0`（非 Pre-release、`--latest`）；**下方全部批次随本次发布交付**。三条门禁：清单 `--verify-ref HEAD` 1113/1113 问题 0、远端 `verify-remote-manifest v0.9.0` 一致 1113 / 不符 0 / 缺失 0。
+> **2026-11-15 dev 测试构建**：`v0.9.0-dev.1`（tag / Pre-release @ `c5da206`）仍在测试通道；测试机把更新通道切 **dev** 后点「检查更新」。
+> **本次未交付的已知残余**（详见 `docs/HANDOFF.md` 顶部）：AC4/AC5 需在真桌面外壳内才能取产品级证据；Electron/Chromium 与非 Node 子进程的出站未做系统级审计；`scripts/setup-dsh.mjs` 不为全新 profile 补 `@deepseek-ai/dsh-base`/`dsh-web-app`；`plugins/surfcore/lib/memory-v2-host.mjs:220-223` 取回路径不校验 `frameSamples ∈ 0..3`。
 
 ### 历史批次（勿用于发布）：V1 退役破坏式重构第一批
 

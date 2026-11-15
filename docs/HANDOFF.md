@@ -1,3 +1,17 @@
+## 2026-11-15 稳定版 `v0.9.0` 已发布（发布会话）
+
+**发布物**：`Rock-Connotation/surfcore-mac` 的 `main` @ `29d8ff9`（Data API 按树上传，tree 与本地 `9424cb7` 逐字节相同 `c710db096d3e8e73cc0bccb62d182e93a2543a1a`）、tag `v0.9.0` @ `29d8ff9`、Release `SurfCore v0.9.0`（`prerelease=false`、`draft=false`、`targetCommitish=main`、`--latest`）。
+
+**发布三条门禁**：①`node scripts/release-manifest.mjs`（工作区干净、`source=git HEAD`）②`--verify-ref HEAD` → `清单 1113 个，跟踪文件 1113 个，问题 0 个` ③`GH_TOKEN=... node scripts/verify-remote-manifest.mjs Rock-Connotation/surfcore-mac v0.9.0` → `清单 1113 个 · 一致 1113 · 不符 0 · 缺失 0`。
+
+**发布前门禁**（main @ `9424cb7`，日志 `/tmp/v090-main-gate2.log`）：`test:audit` 207/207、`test:regressions` 全通过、`test:memory-v2` 50/50（129.8s）、`lint:failures` 0、`doc-facts` ✅、版本一致性 v0.9.0、preset 契约 ✅、清单 1113/1113 问题 0、插件套件 37 段 exit 0。
+
+**过程记录（两个坑，值得记住）**：
+1. 第一版 main 发布提交（`e9a6af9`）的 `test:audit` 红了一次：新验收脚本 `scripts/test-surfcore-isolated-host.mjs:44` 断言"仓库里已存在 `state/mode.json`"，而 `scripts/setup-dsh.mjs` 的 `ensureLocalModeFile()` 只在运行时才创建它（被 `.gitignore` 的 `state/` 覆盖）→ 在干净 checkout 上必然红、在被我反复跑过的工作树里假绿。修法：改成"运行前快照 + 运行后还原/删除"并记入 `record.environmentSideEffects`（提交 `751b036`）。随后把本地未推送的 main 退回 `9eb4028` 重做，远端未受影响。
+2. `scripts/publish-via-api.mjs --tag v0.9.0` 在 main 推送成功后于 tag 段失败：它用 `git rev-parse v0.9.0^{commit}` 解析 tag，本地还没有这个 tag → `fatal: ambiguous argument`。本次用 `gh api --method POST /repos/.../git/refs -f ref=refs/tags/v0.9.0 -f sha=29d8ff9...` 手工补 tag（指向同一个 API 提交）。
+
+**下一步**：把 main 合回 `dev`（§1.5）；测试通道的 `v0.9.0-dev.1` Pre-release 仍可用（切通道后点「检查更新」）。
+
 ## 2026-11-15 G7 第二阶段：隔离实例里的真实宿主验收（**已合入 `dev`** @ `1db3ed9`，功能分支 `feat/g7-phase2-host-acceptance` @ `d6a68a3`）
 
 工作树 `/Users/shizihan/Daily/Github/surfcore-g7-phase2`（`feat/g7-phase2-host-acceptance`，基于 `dev` @ `a234f4b` = `v0.9.0-dev.1`）。新增 `scripts/test-surfcore-isolated-host.mjs` 并接进 Darwin 门禁块，回答"SurfCore 装进干净 DSH 实例后，在真实打包宿主里能不能激活、退出后留不留后代"。
