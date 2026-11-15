@@ -29,7 +29,7 @@
 
 **为什么**：`frameSamples: 0` 在账本里合法，页面也按"稀疏画面数量未确认"渲染；只有共享存储要求 `>= 1`，于是正常数据被判成 `DOUYIN_CHAT_STORAGE`（"本机伙伴对话记录暂时不可用"）。
 
-**覆盖提交**：本批提交（修复）→（文档）→（清单，1114→1115）→ 收口文档提交（dev；最终 SHA 以 `git log --oneline -6` 现读为准）
+**覆盖提交**：`91206f0`（修复）→ `602f5ff`（文档）→ `255c3e7`（清单，1114→1115）→ 回填文档提交（dev；最终 SHA 以 `git log --oneline -6` 现读为准）
 
 **验证**：
 ```text
@@ -38,7 +38,9 @@ node plugins/surfcore/scripts/test-companion-sharing.mjs   # 未修 RED_EXIT=1�
 # 相邻回归（串行 12 条）全部 EXIT=0：test-companion-sharing(-race/-ui-controller/-ui)、test-memory-v2-sharing、
 #   test-douyin-coverage-r3（页面把 6 渲染成"稀疏画面数量未确认"）、test-douyin-companion(-host/-recall/-ui)、
 #   test-douyin-reflection-receipt、test-douyin-errors-r3
-# 全量门禁：提交后回填（audit / regressions / memory-v2 / lint / doc-facts / preset / manifest / 插件套件）
+# 全量门禁 @ 255c3e7（8 步全部 EXIT=0，日志 /tmp/g7p4-gate.log）：
+#   test:audit 207/207 · test:regressions 全部通过 · test:memory-v2 PASS 50 ordinary scripts in 86.8s
+#   lint:failures 0 · doc-facts ✅ · preset 契约 ✅ · manifest 1115/1115 问题 0 · 插件套件 PASS 37 ordinary scripts in 24.1s
 ```
 
 **可直接转发的交接块**
@@ -46,11 +48,11 @@ node plugins/surfcore/scripts/test-companion-sharing.mjs   # 未修 RED_EXIT=1�
 ```text
 [SurfCore dev 批次] 修复：抖音共享记录接受合法零帧样本（frameSamples 0..3 与账本统一）
 - 建议版本：patch
-- 覆盖提交：（修复）+（文档）（dev）
+- 覆盖提交：`91206f0`（修复）+ `602f5ff`（文档）（dev，后续为清单 `255c3e7` 与回填文档提交）
 - 用户可见：抽不到画面帧的抖音项（frameSamples = 0）此前无法分享，报 "本机伙伴对话记录暂时不可用，原记录未重置"；
   现在可以正常分享，卡片按"稀疏画面数量未确认"显示。越界/非整数值仍被拒绝。
 - 验证：node plugins/surfcore/scripts/test-companion-sharing.mjs exit 0（含先红证据与反向重放）；
-  分享/抖音全家桶 12 条串行 EXIT=0。
+  分享/抖音全家桶 12 条串行 EXIT=0；全量门禁 @ 255c3e7 八步全 EXIT=0（audit 207/207、manifest 1115/1115 问题 0）。
 - case：docs/cases/2026-11-15-douyin-sharing-frame-samples-bound.md
 ```
 

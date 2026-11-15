@@ -10,6 +10,8 @@
 
 **坑**：`docs/PITFALLS.md` #158（"同一条值在生产者/显示层/存储三处区间不一致 → 正常数据被判损坏"）。
 
+**全量门禁**（`dev` @ `255c3e7`，自带 node v24.21.0，串行；日志 `/tmp/g7p4-gate.log`）：`test:audit` **207/207**、`test:regressions` 全部通过、`test:memory-v2` `PASS 50 ordinary scripts in 86.8s`、`lint:failures` 0、`doc-facts` ✅、preset 契约 ✅、`--verify-ref HEAD` **1115/1115 问题 0**、插件套件 `PASS 37 ordinary scripts in 24.1s` —— 八步全 `EXIT=0`。
+
 **case**：`docs/cases/2026-11-15-douyin-sharing-frame-samples-bound.md`。
 
 ## 2026-11-15 修复：setup-dsh 为全新 profile 补 DSH 基座 bundle（dev，未发布）

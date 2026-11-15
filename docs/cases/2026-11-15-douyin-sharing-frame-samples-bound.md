@@ -98,9 +98,20 @@ AssertionError [ERR_ASSERTION]: Missing expected exception: frameSamples=6 必�
 
 日志：`/tmp/g7p4-family.log`。
 
-### 3.2 全量门禁
+### 3.2 全量门禁（`dev` @ `255c3e7`，自带 node v24.21.0，串行；日志 `/tmp/g7p4-gate.log`）
 
-（提交后回填：`npm run test:audit`、`npm run test:regressions`、`npm run test:memory-v2`、`npm run lint:failures`、`npm run doc-facts`、`node scripts/test-agent-preset-patches.mjs --check`、`node scripts/release-manifest.mjs --verify-ref HEAD`、`npm --prefix plugins/surfcore test`）
+| 步骤 | 结果 |
+| --- | --- |
+| `npm run test:audit` | `Audit suite: 207/207 scripts passed.` `EXIT=0` |
+| `npm run test:regressions` | `全部通过` `EXIT=0` |
+| `npm run test:memory-v2` | `PASS 50 ordinary scripts in 86.8s` `EXIT=0` |
+| `npm run lint:failures` | `EXIT=0` |
+| `npm run doc-facts` | `✅ 所有文档数字与代码一致，未发现旧表述残留` `EXIT=0` |
+| `node scripts/test-agent-preset-patches.mjs --check` | `✅ agent preset patch 契约通过` `EXIT=0` |
+| `node scripts/release-manifest.mjs --verify-ref HEAD` | `清单 1115 个，跟踪文件 1115 个，问题 0 个` `EXIT=0` |
+| `npm --prefix plugins/surfcore test` | `PASS 37 ordinary scripts in 24.1s; native/UI acceptance not run.` `EXIT=0` |
+
+本批不新增门禁脚本：主测试 `test-companion-sharing.mjs` 本来就在插件套件里，所以 `test:audit` 仍是 207 条、插件套件仍是 37 段。
 
 ## 4. 回滚与残余
 
