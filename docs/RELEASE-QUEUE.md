@@ -64,7 +64,7 @@ node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
 是否已 rebase/merge 最新 dev：未合并（主树 dev 有非本会话未跟踪 `2026-11-12/`，按 AGENTS §1.9 停手）；待对应会话收走后由协调/发布会话 --no-ff 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
 ```
 
-### 批次 2026-11-15 · G7 Mac 实机取证（CLI 包装进程孤儿 + SIGTERM 修复）（**已提交 `feat/v1-retirement-r4` @ `01f9f85`，待合入 `dev`，待发版**）
+### 批次 2026-11-15 · G7 Mac 实机取证（CLI 包装进程孤儿 + SIGTERM 修复）（**已合入 `dev`** @ `c74470d`，功能分支 `feat/v1-retirement-r4` @ `7839039`，待发版）
 
 > case：[`docs/cases/2026-11-15-mac-real-machine-g7-evidence.md`](cases/2026-11-15-mac-real-machine-g7-evidence.md)
 > 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`（`feat/v1-retirement-r4`）
