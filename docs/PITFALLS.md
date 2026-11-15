@@ -4562,3 +4562,19 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 **处置 / 预防**：①测试里不写 cwd 相对路径，仓库内路径一律从 `import.meta.url` 推导（本轮加 `repoRoot`）；②spawn 后代的夹具测试，放行/清理必须写进 `finally`（断言失败也要放行），收尾显式 `process.exit(码)`，让退出码如实反映断言结果；③把"换 cwd 也通过"作为接入门禁的前置检查；④门禁长时间无输出要当故障处理（本轮靠日志 mtime 与 `ps` 才发现）。
 
 **怎么验证**：`node plugins/surfcore/scripts/test-bili-retire-barrier-r3.mjs` 与 `cd plugins/surfcore && node scripts/test-bili-retire-barrier-r3.mjs` 都应打印 `r3: 0 failures`、立刻退出且退出码 0。
+
+## #153（2026-11-15，P1）审计/工单里的行号是"当时的快照"，拿它当现状会写出过期工单
+
+**现象 / 根因**：我按审查文档（写成于 `b7316ca`）给子代理下工单，称"registry 只存 5 个标识字段"、"`scheduler.js` 自己合成 `durable: true`"。子代理两次 hand_back：R3 已经改过这些文件。实测当前树——`plugins/surfcore/lib/bili-v2-agent.mjs:55-80` 的合法键集已含 `originalRequestId/input/inputDigest/phase/originalInput/originalDigest/scope/groupCount`，`:330-360` 的复用守卫已允许 `pre_dispatch` 用原 `requestId` 重新入队，`plugins/surfcore/lib/scheduler.js:583` 是在**校验** durable 回执（该文件已无 durable 生产者）。根因：pin 过的事实与手写文档都是**登记当时的锚点**，不是当前状态；修完一轮之后引用旧行号，就等于让子代理去修一个已经不存在的缺陷。
+
+**处置 / 预防**：①写工单前先读**当前基线**（`read`/`grep` 到行号），不接受"文档说"；②pin/文档只作入口提示，动手前 re-read；③要求子代理 hand_back 时附它所读文件的 `sha256`，便于我核对它读的是不是当前树；④工单前提被证伪时，先改工单再继续，不要求子代理"想办法造出这个红"。
+
+**怎么验证**：`shasum -a 256 plugins/surfcore/lib/bili-v2-agent.mjs` = `f67ff48365fc41705f9a16e3aae6c5076d6e3b3b985793f3a67ebf240ba29095`；`grep -rn "durable: *true" plugins/surfcore/lib src` 只命中用量持久化三处（`token-budget.js:166`/`:796`、`douyin-companion-model.mjs:163`），没有 B站作业 durable 回执生产者。
+
+## #154（2026-11-15，P2）native 契约脚本对 `ELECTRON_RUN_AS_NODE=1` 敏感——是环境差异，不是产品缺陷
+
+**现象 / 根因**：同一份 `plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs`，用 DSH 自带 node（或系统 node）跑 → `PASS Bili native runtime: 52 scenarios (v24.21.0, actualHostTools=false)`、exit 0；套上真实宿主二进制 + `ELECTRON_RUN_AS_NODE=1`（外加 `SURFCORE_BILI_ACTUAL_HOST_FIXTURE=1` 等夹具开关）跑 → `AssertionError false !== true at plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs:198:12`。根因：该脚本里"守卫是否以字符串拒绝探针"的判定走两条分支（`nativeRoot ? typeof denial !== 'string' || !denial : denial !== 'BILI_V2_TOOL_DENIED'`），宿主内建 root 的 tools 面与仓内 `createIsolatedNativeRoot` 形状不同，于是同一断言在不同 root 下取值相反。
+
+**处置 / 预防**：①离线验收统一用 DSH 自带 node（`export PATH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin:$PATH"`），别用 `ELECTRON_RUN_AS_NODE` 跑契约脚本；②不要把这种红解释成"守卫坏了"，也不要为了让它变绿而放宽产品守卫；③真实宿主下的 native 守卫行为归 G7 实机（隔离 profile）定性；④给子代理的工单要写明用哪个 node、以及禁用哪些宿主环境变量。
+
+**怎么验证**：`export PATH="…/dependencies/node/bin:$PATH" && node plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs --ordinary` → 52 scenarios、exit 0；带 `ELECTRON_RUN_AS_NODE=1` 跑同一文件 → 红在 `:198`（本轮复现两次：子代理一次、我一次）。

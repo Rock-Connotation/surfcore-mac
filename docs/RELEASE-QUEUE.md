@@ -64,7 +64,45 @@ node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
 是否已 rebase/merge 最新 dev：未合并（主树 dev 有非本会话未跟踪 `2026-11-12/`，按 AGENTS §1.9 停手）；待对应会话收走后由协调/发布会话 --no-ff 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
 ```
 
-### 批次 2026-11-15 · V1 退役三轮复审 R3 离线修复（**已提交 `feat/v1-retirement-r3` @ `6feea46`，未合 dev，尚不可发布**）
+### 批次 2026-11-15 · V1 退役四轮 R4（接管重驱动合同 + 取消后回执可查）（**未提交、未合 dev，尚不可发布**）
+
+> case：[`docs/cases/2026-11-15-v1-retirement-r4-resume-and-receipt.md`](cases/2026-11-15-v1-retirement-r4-resume-and-receipt.md)
+> 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`（`feat/v1-retirement-r4`，基于 `dev` @ `07efab6`）
+
+**可直接转发的交接块**
+
+```
+【批次】2026-11-15 · V1 退役四轮 R4
+【改了哪些文件】
+  - plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs（+ 一条 scheduler 重驱动合同场景，51→52）
+  - plugins/surfcore/lib/douyin-companion.mjs（写记忆前登记 reflection 操作编号；新增 queryReflection）
+  - plugins/surfcore/lib/douyin-companion-memory.mjs（reflectionOperationId / receipt）
+  - plugins/surfcore/lib/douyin-companion-ledger.mjs（账本可选字段 reflectionOperation，向后兼容）
+  - plugins/surfcore/scripts/test-douyin-reflection-receipt.mjs（新常驻合同测试）
+  - scripts/test-audit.mjs、plugins/surfcore/package.json（把新合同测试接进常驻门禁）
+  - docs/{HANDOFF,PITFALLS,cases/README,RELEASE-QUEUE,COORDINATION}.md + 新 case 文档
+【测了什么、结果如何】（DSH 自带 node v24.21.0，冻结快照单跑）
+  - npm run test:audit → 205/205 exit 0
+  - npm run test:regressions → exit 0；npm run test:memory-v2 → PASS 50 ordinary scripts
+  - npm --prefix plugins/surfcore test → PASS 37 ordinary scripts exit 0（native/UI 验收未跑）
+  - npm run lint:failures / doc-facts / preset patches --check → exit 0
+  - node scripts/release-manifest.mjs --verify-ref HEAD → 1107/1107，问题 0
+  - 反向重放：禁掉 bili-v2-agent.mjs:344 的 pre_dispatch 复用条件 → 1 秒内变红（BILI_V2_JOB_REUSED），
+    还原后 SHA 与改动前逐字一致；抖音侧把 memorySaved 断言反向 → RED_EXIT=1 且 0 秒退出、无测试根残留
+【建议版本】minor（与 R3 同批）
+【改动层级】抖音侧加法式：账本新增可选字段（旧账本可读）、取消对外语义不变（ok:true/state:'cancelled'）、
+  新增 queryReflection 入口；R4-A 零产品改动（只加测试）
+【完整逻辑与爆炸半径】见 case 文档「完整逻辑」第 1-5 节：scheduler 用原 requestId 重驱动的链路、
+  registry 复用守卫的判据、取消=撤销后续检查+可查询终态（不回滚已提交写入）；不碰用户角色包/记忆/配置/授权/额度
+【失败路径】DOUYIN_STALE_CHARACTER（刷新当前角色后重新发起）、DOUYIN_RECEIPT_NOT_FOUND（从原作业状态复制编号），
+  两者均带 code/error/hint；页面越界帧数显示"稀疏画面数量未确认"，不声明没有依据的帧数
+【还有什么没验证】①真实 Agent 自动调用模型/真实 provider 派发 → G7 实机（隔离实例）；②取回路径
+  memory-v2-host.mjs:220-223 不校验 frameSamples 0..3；③ELECTRON_RUN_AS_NODE=1 下 native 契约脚本在
+  test-memory-v2-bili-agent.mjs:198 变红（环境敏感性，PITFALLS #154）；④真实 QQ/B站账号链路未启动
+【发布前必做】提交本批次 → 重新生成并提交 release/install-manifest.json → 复核 --verify-ref HEAD
+```
+
+### 批次 2026-11-15 · V1 退役三轮复审 R3 离线修复（**已合入 `dev` @ `07efab6`（merge `ad65bc9`），待发版**）
 
 > 覆盖提交：无。改动还在工作树 `/Users/shizihan/Daily/Github/surfcore-v1-retirement-r3`（分支 `feat/v1-retirement-r3`，基线 `dev` @ `1125d3e`）。
 > case：[`docs/cases/2026-11-15-v1-retirement-r3-offline-fixes.md`](cases/2026-11-15-v1-retirement-r3-offline-fixes.md)
