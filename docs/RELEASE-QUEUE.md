@@ -30,7 +30,7 @@
 
 **为什么**：G7 第二阶段在真实打包宿主里看到 `surfcore`/`qq-mode` 停在 `pending (waiting for service: sessionController|settings)`，根因是安装器给全新 profile 只写了 `surfcore`；基座 bundle 只在 DSH 自己创建 profile 时写入（实机 `desktop`/`headless`/`web` 三个 profile 的第一项都是 `@deepseek-ai/dsh-base`）。详见 `docs/PITFALLS.md` #156 / #157。
 
-**覆盖提交**：`37aa526`（修复）→ `82eace6`（文档）→ `c7b459b`（清单，1113→1114）（dev）
+**覆盖提交**：`37aa526`（修复）→ `82eace6`（文档）→ `c7b459b`（清单，1113→1114）→ 收口文档提交（dev；本批起点是 `37aa526`，最终 SHA 以 `git log --oneline -6` 现读为准）
 
 **验证**：
 ```text
