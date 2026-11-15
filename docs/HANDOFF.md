@@ -1,4 +1,4 @@
-## 2026-11-15 G7 第二阶段：隔离实例里的真实宿主验收（本会话，待合入 `dev`）
+## 2026-11-15 G7 第二阶段：隔离实例里的真实宿主验收（**已合入 `dev`** @ `1db3ed9`，功能分支 `feat/g7-phase2-host-acceptance` @ `d6a68a3`）
 
 工作树 `/Users/shizihan/Daily/Github/surfcore-g7-phase2`（`feat/g7-phase2-host-acceptance`，基于 `dev` @ `a234f4b` = `v0.9.0-dev.1`）。新增 `scripts/test-surfcore-isolated-host.mjs` 并接进 Darwin 门禁块，回答"SurfCore 装进干净 DSH 实例后，在真实打包宿主里能不能激活、退出后留不留后代"。
 
