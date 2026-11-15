@@ -1,3 +1,13 @@
+## 2026-11-15 dev 远端镜像已同步（`c5da206 → edf41fd`，快进；未发新 dev 构建）
+
+**做了什么**：把本地 `dev`（含 setup-dsh 基座 bundle 修复、抖音共享记录零帧边界修复、存量红复核文档）推到 `Rock-Connotation/surfcore-mac` 的 `dev` 分支。远端 `main` 未动（`5face06`）。
+
+**怎么处理的"分叉"**：远端 `dev` 的 `c5da206` 是 `scripts/publish-dev.mjs` 用 Data API 造的**合成提交**（父是 `748afe6`、tree `25955f0` = `v0.9.0-dev.1` 快照），与本地 `dev` 不是同一条线；但它对应的内容本地**早已在历史里**（本地 `06edb3d` 是它的祖先且 tree 相同），且 `git diff --name-status origin/dev HEAD` 显示**没有只存在于远端的新增文件、也没有本地删掉的文件**（差异只有本地演进：21 files, +747/−154）。因此用 `git merge -s ours origin/dev` 把它收成祖先（本地 tree 不变：`0228a2f`），再 `git push origin dev:dev` —— 是**快进**（`c5da206..edf41fd`），**没有强推、没有改写远端历史**。
+
+**核对**：`git ls-remote origin refs/heads/dev` = `edf41fd23cb9b7edb1ab75f74d780f941fd75c59`（= 本地 HEAD）；`origin/dev^{tree}` = `0228a2fc6a994fa144c1539522bc7a703b60e500`（= 本地 dev tree）；`origin/dev..HEAD` 与 `HEAD..origin/dev` 都是 0。
+
+**边界（重要）**：更新器读的是 GitHub **Pre-release**，所以测试机切 dev 通道**现在拿不到**这两批修复——需要一个新 dev 构建（`v0.9.0-dev.2`，`GH_TOKEN=… node scripts/publish-dev.mjs --yes`，按 §1.5 发前必须问用户）。远端 `dev` 分支本身已经是最新内容。
+
 ## 2026-11-15 残余复核：`test-memory-v2-bili-agent.mjs --ordinary` 的"存量红"已不存在（无代码改动）
 
 **结论**：清单里那条长期残留的 V1 断言红在 R3 就随破坏式退役改掉了——`ef30eb5`（`[修复] 收紧B站事件身份与真实退役`）把 `else if (mode === 'v1') { assert.equal(legacy,1); … }` 换成 V2-only 分支（`legacy === 0 && inspects === 0 && submitted.length === 0 && blocked[0].code` 非空），`git log -S "assert.equal(legacy,1)" -- plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs` 可证。

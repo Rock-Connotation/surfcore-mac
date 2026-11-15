@@ -15,7 +15,8 @@
 ## 待发布
 
 > **2026-11-15 稳定版 `v0.9.0` 已发布**：`Rock-Connotation/surfcore-mac` 的 `main` @ `29d8ff9`（tree 与本地 `9424cb7` 逐字节相同）、tag `v0.9.0`、Release `SurfCore v0.9.0`（非 Pre-release、`--latest`）；**下方全部批次随本次发布交付**。三条门禁：清单 `--verify-ref HEAD` 1113/1113 问题 0、远端 `verify-remote-manifest v0.9.0` 一致 1113 / 不符 0 / 缺失 0。
-> **2026-11-15 dev 测试构建**：`v0.9.0-dev.1`（tag / Pre-release @ `c5da206`）仍在测试通道；测试机把更新通道切 **dev** 后点「检查更新」。
+> **2026-11-15 dev 测试构建**：`v0.9.0-dev.1`（tag / Pre-release @ `c5da206`）仍是测试通道上的最新 dev 构建；测试机把更新通道切 **dev** 后点「检查更新」。
+> **2026-11-15 补充**：远端 `dev` **分支**已同步到 `edf41fd`（快进，含 setup-dsh 基座 bundle 修复、抖音共享记录零帧边界修复、存量红复核文档），但**这两批还没发成新的 dev Pre-release**——更新器读的是 Pre-release，所以测试机通过「检查更新」暂时收不到；需要时在 `dev` 上跑 `GH_TOKEN=… node scripts/publish-dev.mjs --yes` 发 `v0.9.0-dev.2`（按 §1.5，发前必须问用户）。
 > **本次未交付的已知残余**（详见 `docs/HANDOFF.md` 顶部）：AC4/AC5 需在真桌面外壳内才能取产品级证据；Electron/Chromium 与非 Node 子进程的出站未做系统级审计；`plugins/surfcore/lib/memory-v2-host.mjs:220-223` 取回路径不校验 `frameSamples ∈ 0..3`。（`scripts/setup-dsh.mjs` 的基座 bundle 缺口已在 2026-11-15 第二批修复，见下。）
 
 ### 2026-11-15 第三批：抖音共享记录与账本统一 frameSamples 0..3
