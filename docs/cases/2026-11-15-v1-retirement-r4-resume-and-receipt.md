@@ -2,7 +2,7 @@
 
 > 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`（分支 `feat/v1-retirement-r4`），基线 `dev` @ `07efab6`（R3 已合入）。
 > 用户 2026-11-15 定的范围：「先三个代码项，再 G7 实机」；G7 边界＝**只开隔离实例**，不动正式环境。
-> 本轮状态：改动就绪并已过冻结快照门禁，**尚未提交**；未 bump/tag/发布。
+> 本轮状态：已提交 `feat/v1-retirement-r4` @ `59bead0`，并已合入 `dev` @ `db17ec3`（merge）；未 bump/tag/发布。
 
 ## 现象
 
