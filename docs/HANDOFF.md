@@ -1,3 +1,17 @@
+## 2026-11-15 修复：抖音共享记录接受合法零帧样本（dev，未发布）
+
+**现象**：抖音陪伴一条**已完成项**若 `coverage.frameSamples === 0`（画面一帧都没取到），模型把它当"小发现"分享时 `service.record(...)` 返回 `{"ok":false,"code":"DOUYIN_CHAT_STORAGE","error":"本机伙伴对话记录暂时不可用，原记录未重置。","hint":"保留角色的 sharing.jsonl，检查权限或文件完整性后刷新。"}` —— 把正常数据说成"记录坏了"，还指向无关的排查。
+
+**根因**：同一个值三处区间不一致。账本 `plugins/surfcore/lib/douyin-companion-ledger.mjs` 的 `validCoverage` 允许 0..3（`plugins/surfcore/lib/douyin-companion.mjs:494` 写 `images.length`、`:388` 跳过项写 0）；页面 `plugins/surfcore/lib/douyin-companion-page.mjs:66` 的 `frameCoverage(0)` 渲染成"稀疏画面数量未确认"；只有共享存储 `plugins/surfcore/lib/companion-sharing-store.mjs:34` 要求 `>= 1` → `checkRecord` 抛 `unavailable()`。
+
+**修法**：共享存储 opening 分支的 `frameSamples < 1` → `< 0`（与账本 0..3 对齐，整数与 `<= 3` 检查不变）；**没有**采用"把 0 改写成 1 / 丢掉字段"的绕法（那是把未知伪装成已知）。
+
+**证据**：先红 `RED_EXIT=1 elapsed=1s` + 上面那段 `DOUYIN_CHAT_STORAGE`（日志 `/tmp/g7p4-red1.log`）→ 修后 `GREEN_EXIT=0` + `Companion sharing: persisted dialogue, dedupe, role and shared budget passed`（`/tmp/g7p4-green1.log`）；反向重放（上界临时改 `> 99`）→ `Missing expected exception: frameSamples=6 必须被共享存储拒绝`，还原后 SHA `b8eca697a76ce833d318cb06c815bafe0ca9892eef0cbb1c6c3fe310976a937a` 逐字一致；邻居 12 条串行 `EXIT=0`（`/tmp/g7p4-family.log`）。
+
+**坑**：`docs/PITFALLS.md` #158（"同一条值在生产者/显示层/存储三处区间不一致 → 正常数据被判损坏"）。
+
+**case**：`docs/cases/2026-11-15-douyin-sharing-frame-samples-bound.md`。
+
 ## 2026-11-15 修复：setup-dsh 为全新 profile 补 DSH 基座 bundle（dev，未发布）
 
 **现象**：在独立 `DSH_HOME` / 全新 profile 名上装 SurfCore，装完 profile 的 `dsh.profile.bundles` 只有 `["surfcore"]` → 真实打包宿主里 `surfcore (surfcore): pending (waiting for service: sessionController)`、`qq-mode (…): pending (waiting for service: settings)`，宿主 `StartupError: dsh: startup failed: 1 required plugin did not activate`。

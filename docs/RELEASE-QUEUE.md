@@ -18,6 +18,42 @@
 > **2026-11-15 dev 测试构建**：`v0.9.0-dev.1`（tag / Pre-release @ `c5da206`）仍在测试通道；测试机把更新通道切 **dev** 后点「检查更新」。
 > **本次未交付的已知残余**（详见 `docs/HANDOFF.md` 顶部）：AC4/AC5 需在真桌面外壳内才能取产品级证据；Electron/Chromium 与非 Node 子进程的出站未做系统级审计；`plugins/surfcore/lib/memory-v2-host.mjs:220-223` 取回路径不校验 `frameSamples ∈ 0..3`。（`scripts/setup-dsh.mjs` 的基座 bundle 缺口已在 2026-11-15 第二批修复，见下。）
 
+### 2026-11-15 第三批：抖音共享记录与账本统一 frameSamples 0..3
+
+**建议**：**patch**（修复：抽不到画面帧的抖音项不再被误判为"本机记录损坏"；越界与非整数照旧拒绝）。
+
+**改了什么**：
+- `plugins/surfcore/lib/companion-sharing-store.mjs`：`checkRecord` 的 opening 分支里 `frameSamples < 1` → `< 0`，与 `plugins/surfcore/lib/douyin-companion-ledger.mjs` 的 `validCoverage`（0..3）对齐；`<= 3` 与"必须是整数"不变。
+- `plugins/surfcore/scripts/test-companion-sharing.mjs`：新增两组断言——零帧样本必须能分享且原样保留、越界/非整数（`6` / `-1` / `1.5` / `'3'`）必须被拒绝（该脚本已在门禁内，无需新增接线）。
+- case：`docs/cases/2026-11-15-douyin-sharing-frame-samples-bound.md`。
+
+**为什么**：`frameSamples: 0` 在账本里合法，页面也按"稀疏画面数量未确认"渲染；只有共享存储要求 `>= 1`，于是正常数据被判成 `DOUYIN_CHAT_STORAGE`（"本机伙伴对话记录暂时不可用"）。
+
+**覆盖提交**：本批提交（修复）→（文档）→（清单，1114→1115）→ 收口文档提交（dev；最终 SHA 以 `git log --oneline -6` 现读为准）
+
+**验证**：
+```text
+node plugins/surfcore/scripts/test-companion-sharing.mjs   # 未修 RED_EXIT=1（DOUYIN_CHAT_STORAGE）；修后 EXIT=0
+# 反向重放：上界临时改 >99 → Missing expected exception: frameSamples=6 必须被共享存储拒绝
+# 相邻回归（串行 12 条）全部 EXIT=0：test-companion-sharing(-race/-ui-controller/-ui)、test-memory-v2-sharing、
+#   test-douyin-coverage-r3（页面把 6 渲染成"稀疏画面数量未确认"）、test-douyin-companion(-host/-recall/-ui)、
+#   test-douyin-reflection-receipt、test-douyin-errors-r3
+# 全量门禁：提交后回填（audit / regressions / memory-v2 / lint / doc-facts / preset / manifest / 插件套件）
+```
+
+**可直接转发的交接块**
+
+```text
+[SurfCore dev 批次] 修复：抖音共享记录接受合法零帧样本（frameSamples 0..3 与账本统一）
+- 建议版本：patch
+- 覆盖提交：（修复）+（文档）（dev）
+- 用户可见：抽不到画面帧的抖音项（frameSamples = 0）此前无法分享，报 "本机伙伴对话记录暂时不可用，原记录未重置"；
+  现在可以正常分享，卡片按"稀疏画面数量未确认"显示。越界/非整数值仍被拒绝。
+- 验证：node plugins/surfcore/scripts/test-companion-sharing.mjs exit 0（含先红证据与反向重放）；
+  分享/抖音全家桶 12 条串行 EXIT=0。
+- case：docs/cases/2026-11-15-douyin-sharing-frame-samples-bound.md
+```
+
 ### 2026-11-15 第二批：setup-dsh 为全新 profile 补 DSH 基座 bundle
 
 **建议**：**patch**（修复：独立 `DSH_HOME` / 全新 profile 装完不再停在 `pending`；已由 DSH 创建的 profile 行为逐字不变）。

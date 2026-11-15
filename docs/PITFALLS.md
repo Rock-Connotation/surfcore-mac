@@ -4611,3 +4611,19 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 3. 反例守住"不该动的不动"：重跑同一 profile 补基座日志 0 行；与实机同形的 profile（基座已在）只把 `surfcore` 追加到末尾；`setup-dsh headless` 用 `dsh-headless`。
 
 **怎么验证**：`node scripts/test-surfcore-isolated-host.mjs` → 未修时 `RED_EXIT=1`（`AssertionError`：实际 `["surfcore"]` vs 期望 `["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","surfcore"]`）；修后 `EXIT=0`（AC1/AC2/AC3/AC6/AC7/AC8 PASS）。直证：`HOME=/tmp/h DSH_HOME=/tmp/h/.dsh QQ_BRIDGE_SKIP_DSH_INSTALL=1 node scripts/setup-dsh.mjs freshprofile` → `[setup-dsh] profile 不是 DSH 创建的（缺基座 bundle），已补：@deepseek-ai/dsh-base, @deepseek-ai/dsh-web-app`。已装坏的既有 profile 不自愈，需重跑安装器。
+
+## #158（2026-11-15，P1）共享记录把合法的"零帧样本"当成账本损坏——同一条值在两个模块的允许区间不一致
+
+**现象**：抖音陪伴的一条已完成项若 `coverage.frameSamples === 0`（画面一帧都没取到，账本里合法），模型想把它当"小发现"分享时 `service.record(...)` 返回：
+
+```
+{"ok":false,"code":"DOUYIN_CHAT_STORAGE","error":"本机伙伴对话记录暂时不可用，原记录未重置。","hint":"保留角色的 sharing.jsonl，检查权限或文件完整性后刷新。"}
+```
+
+——把一个正常的 0 说成"记录坏了"，指向的还是无关的权限/完整性排查。
+
+**根因**：同一条值在两个模块的允许区间不一致。生产者 `plugins/surfcore/lib/douyin-companion-ledger.mjs` 的 `validCoverage` 允许 `frameSamples` 0..3（`plugins/surfcore/lib/douyin-companion.mjs:494` 写 `frameSamples: images.length`，`:388` 的跳过项写 0）；显示层 `plugins/surfcore/lib/douyin-companion-page.mjs:66` 的 `frameCoverage` 也把 0 渲染成"稀疏画面数量未确认"；只有共享存储 `plugins/surfcore/lib/companion-sharing-store.mjs:34` 要求 `>= 1`，于是 `checkRecord` 抛 `unavailable()`。
+
+**处置 / 预防**：共享存储的下界改成 0，与账本 `validCoverage` 对齐（仍要求整数且 `<= 3`，越界/非整数照旧拒绝）。不要用"把 0 改写成 1 / 丢掉字段"来绕——那是把未知伪装成已知。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-companion-sharing.mjs` → 未修时 `RED_EXIT=1` + 上面那段 `DOUYIN_CHAT_STORAGE`；修后 `GREEN_EXIT=0`。反向重放：把存储上界放宽成 `> 99` → `Missing expected exception: frameSamples=6 必须被共享存储拒绝`。
