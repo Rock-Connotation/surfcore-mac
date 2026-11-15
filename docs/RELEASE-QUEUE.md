@@ -30,7 +30,7 @@
 
 **为什么**：G7 第二阶段在真实打包宿主里看到 `surfcore`/`qq-mode` 停在 `pending (waiting for service: sessionController|settings)`，根因是安装器给全新 profile 只写了 `surfcore`；基座 bundle 只在 DSH 自己创建 profile 时写入（实机 `desktop`/`headless`/`web` 三个 profile 的第一项都是 `@deepseek-ai/dsh-base`）。详见 `docs/PITFALLS.md` #156 / #157。
 
-**覆盖提交**：`（提交后回填）`（dev）
+**覆盖提交**：`37aa526`（修复）→ `82eace6`（文档）→ `c7b459b`（清单，1113→1114）（dev）
 
 **验证**：
 ```text
@@ -49,7 +49,7 @@ HOME=/tmp/h DSH_HOME=/tmp/h/.dsh QQ_BRIDGE_SKIP_DSH_INSTALL=1 node scripts/setup
 ```text
 [SurfCore dev 批次] 修复：setup-dsh 给全新 profile 补 DSH 基座 bundle
 - 建议版本：patch
-- 覆盖提交：（提交后回填）（dev）
+- 覆盖提交：37aa526（修复）+ 82eace6（文档）（dev）
 - 用户可见：在独立 DSH_HOME 或新 profile 名上装 SurfCore，装完就能在宿主里激活；
   此前 bundles 只写 surfcore，插件行停在 pending (waiting for service: …)、宿主以“1 个必需插件未激活”启动失败。
 - 验证：node scripts/test-surfcore-isolated-host.mjs exit 0（真实打包宿主 + 隔离 DSH_HOME）；
