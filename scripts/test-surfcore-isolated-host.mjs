@@ -59,8 +59,11 @@ try {
   pass('AC1',{setupExit:setup.status,link,realpath:real});
   const profilePackagePath = path.join(project, 'package.json');
   const profilePackage = JSON.parse(fs.readFileSync(profilePackagePath, 'utf8'));
-  profilePackage.dsh.profile.bundles = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'surfcore'];
-  fs.writeFileSync(profilePackagePath, JSON.stringify(profilePackage, null, 2));
+  // 不再由测试自己补基座：全新 profile 的 bundles 必须由 setup-dsh 写全。
+  // 缺了 @deepseek-ai/dsh-base 时，真实宿主里 surfcore/qq-mode 会停在
+  // `pending (waiting for service: ...)`，宿主以“1 个必需插件未激活”启动失败（见 PITFALLS #156/#157）。
+  assert.deepEqual(profilePackage.dsh.profile.bundles, ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'surfcore'],
+    'setup-dsh 为全新 profile 写入的 bundles 必须含 DSH 基座（dsh-base + 外壳 bundle）');
   fs.symlinkSync(path.join(resources,'app.asar'),path.join(dirs.runtime,'app.asar'));
   fs.symlinkSync(path.join(resources,'app.asar.unpacked'),path.join(dirs.runtime,'app.asar.unpacked'),'dir');
   fs.writeFileSync(path.join(fixture,'guard.mjs'), `

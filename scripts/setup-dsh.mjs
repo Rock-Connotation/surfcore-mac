@@ -206,6 +206,13 @@ function restoreProfileFile(file, backup) {
 //        旧目录不再写入、也不删除（见 reportLegacyPresetDir）。
 const BUNDLE_NAMES = ['surfcore'];
 const STALE_BUNDLES = ['qq-agent-presets'];
+// DSH 建 profile 时会先写入基座 bundle；缺了它，插件行会停在
+// `pending (waiting for service: ...)`，宿主以“1 个必需插件未激活”启动失败（见 docs/PITFALLS.md）。
+// 只在基座缺失（即这个 profile 不是 DSH 建的）时补一次；已有列表不动，幂等。
+const DSH_BASE_BUNDLE = '@deepseek-ai/dsh-base';
+function dshSurfaceBundle() {
+  return /headless/i.test(PROFILE) ? '@deepseek-ai/dsh-headless' : '@deepseek-ai/dsh-web-app';
+}
 
 /** 从仓库源重新生成 bundle 里的 patch 文件（人格正文/工具面改了就必须重跑）。 */
 function regeneratePresetPatches() {
@@ -420,6 +427,11 @@ function patchProfilePackage(links) {
   pkg.dsh = pkg.dsh || {};
   pkg.dsh.profile = pkg.dsh.profile || {};
   if (!Array.isArray(pkg.dsh.profile.bundles)) pkg.dsh.profile.bundles = [];
+  if (!pkg.dsh.profile.bundles.includes(DSH_BASE_BUNDLE)) {
+    const seeded = [DSH_BASE_BUNDLE, dshSurfaceBundle()];
+    pkg.dsh.profile.bundles = [...seeded, ...pkg.dsh.profile.bundles];
+    log(`profile 不是 DSH 创建的（缺基座 bundle），已补：${seeded.join(', ')}`);
+  }
   for (const [name, linkDir] of Object.entries(links)) {
     const linkVal = `link:${linkDir.replace(/\\/g, '/')}`;
     if (pkg.dependencies[name] !== linkVal) {

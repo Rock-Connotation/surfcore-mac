@@ -65,7 +65,9 @@ try {
     }
     const pkg = JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/web/package.json')));
     assert.equal(pkg.dependencies.existing, '1.0.0');
-    assert.deepEqual(pkg.dsh.profile.bundles, ['existing', 'surfcore']);
+    // 这个 fixture 的 profile 没有 DSH 基座 bundle（等价于"不是 DSH 建的"），setup-dsh 会按规则补上前两个；
+    // 关键断言是无关内容 'existing' 与追加的 'surfcore' 都在，顺序不被重排。
+    assert.deepEqual(pkg.dsh.profile.bundles, ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'existing', 'surfcore']);
     assert.ok(
       fs.readdirSync(path.join(f.home, 'profiles/web')).some((name) => name.startsWith('package.json.bak-')),
       '写 profile package.json 前必须留备份',
