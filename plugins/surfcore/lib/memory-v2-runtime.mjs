@@ -17,7 +17,7 @@ const routeId = route => deriveMemoryProviderRouteId(route).providerRouteId;
 export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, currentDshUrl,
   getManagementAuthorization = () => false, getQQState = () => null, getQQRoute = () => null,
   getPlatformState = () => null, retireForLifecycle, lifecycleInventory, onControlChanged = () => {},
-  onBlocked = () => null, onQQReply, organizer, migrator, now = Date.now } = {}) {
+  onBlocked = () => null, onQQReply, onQQCancel, organizer, migrator, now = Date.now } = {}) {
   const adminAuthorization = Symbol('memory settings owner'), producerAuthorization = Symbol('official QQ producer');
   let initialized = false, closed = false, initialization, diagnostic = null;
   const role = () => {
@@ -107,7 +107,7 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
   const host = createMemoryHost({ memoryService: service, getCharacter, resolveIdentity, now, handleTtlMs: 300000,
     getProducerReplayAuthorization: ({ channel }) => channel === 'qq' ? producerAuthorization : null });
   const adapters = Object.fromEntries(['local', 'douyin', 'bili', 'qq'].map(channel => [channel, host.createAdapter({ channel, principal: { source: 'surfcore-host' }, canBindInput: true, ...(channel === 'qq' ? { canSubmitSourceFacts: true } : {}) })]));
-  const api = createMemoryApiService({ host, stateDir, currentDshUrl, onQQReply,
+  const api = createMemoryApiService({ host, stateDir, currentDshUrl, onQQReply, onQQCancel,
     scopes: [{ id: 'qq', channel: 'qq', principal: { source: 'surfcore-qq-bridge' }, canBindInput: true, canSubmitSourceFacts: true }] });
   const adminRunner = Object.freeze({
     preview: ({ context, action, payload, expectedRevision }) => service.host.admin?.preview(context, { action, payload }, expectedRevision) ?? failure('MEMORY_ADMIN_UNSUPPORTED', '角色记忆管理模块尚未就绪。'),
@@ -212,7 +212,7 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
     if (closed || !initialized || diagnostic) return failure('MEMORY_RUNTIME_UNAVAILABLE', 'V2 记忆宿主尚未就绪。', '在记忆页核对当前角色与路由后重试。');
     const facts = { channel: 'local', conversationKey: 'local:memory-management', sourceAccountKey: 'local:owner', requesterAccountKey: 'local:owner',
       audiencePolicyId: 'local:management', providerRouteId: 'local:management', processingGrantId: 'local:management' };
-    const captured = await service.captureAdminContext(facts, adminAuthorization);
+    const captured = await service.host.captureAdminContext(facts, adminAuthorization);
     if (captured?.ok !== true) return captured;
     const status = await service.host.admin.status(captured.context);
     if (status?.ok !== true) return status;

@@ -4504,3 +4504,61 @@ QQ旧MCP注册qq_send_voice不代表私有NativeOwner拥有语音工具；Owner/
 - 新增 `src/core/memory-v2-preflight.js` 只读预检：fresh / ready / retired-v1 / control-only / route-only / corrupt / reader-too-new / unreadable 分状态，处理计划明确「不删 routing、不删控制库、不改权限」。
 - QQ 模式来源分离：`absent` 按明确 `chat` 契约；权威 `retired`/`invalid`/`unreadable`/`unavailable` 进入可见 blocked，且不被本地低优先级值掩盖。
 - 回归：`scripts/test-v2-real-integration.mjs`、`scripts/test-issue-regressions.mjs`（R07/R03 四项）、`plugins/surfcore/scripts/test-memory-v2-runtime.mjs`（正式授权后 capture/prepare 可用）。
+
+## #147（2026-11-14，P1）负载下测试等待运行器删除与慢肖像响应不稳定
+
+**现象**：`test-bili-round.mjs` 整套运行 955 秒时失败，单跑约 1.8 秒通过；`test-douyin-companion-ui.mjs` 负载下 30 秒超时。
+
+**根因**：前者断言前置包含 `!runners.has(job.jobId)`，任务完成与 runner 从 Map 删除不是同一步；后者等待故意延迟 5600ms 的 portrait 响应，负载会放大实际等待。
+
+**处置 / 预防**：隔离负载并核对任务终态与 runner 清理时序，使用明确的完成同步点；不要靠吞错、放宽断言或盲目加超时掩盖竞态。UI 超时先确认延迟响应是否完成和负载情况。
+
+**怎么验证**（定向单跑，与受控负载下对照，不与其他写同一工作树的代理并发）：
+```sh
+node plugins/surfcore/scripts/test-bili-round.mjs
+node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
+```
+
+## #148（2026-11-14，P1）故意先红的测试被普通 Memory V2 runner 自动收集
+
+**现象**：一条故意先红的合同测试带红整条插件门禁，尽管没有显式把它接入插件清单。
+
+**根因**：`scripts/run-memory-v2-tests.mjs:28-29` 用 `/^test-memory-v2.*\.mjs$/` 自动收集插件目录，插件测试链最后又运行该 runner；符合命名规则的临时红测自动进入门禁。
+
+**处置 / 预防**：尚未转绿的实验脚本使用不匹配该正则的临时名字或放在隔离位置；转绿后再按计划纳入。查看 runner 列表确认收集范围，不以插件 package 清单推断。
+
+**怎么验证**：`node scripts/run-memory-v2-tests.mjs --list`，检查 `ordinary` 列表中是否包含目标文件；正式红绿验证应在独立隔离工作树进行。
+
+## #149（2026-11-14，P1）取消不能回滚已提交的记忆写入
+
+**现象**：取消后的作业可能显示 `memorySaved=false`，但反思已经写入；调用方没有原操作编号，无法按编号查回终态。审查要求的可查询性仍未满足，需后续修产品接口。
+
+**根因**：`plugins/surfcore/lib/douyin-companion.mjs:498` 调用 `v2.reflect(session, memoryPayload)` 不传 signal；`abortable` 在取消时丢弃迟到结果，作业账本不保存 reflection 的 operationId/unknown。`plugins/surfcore/lib/memory-v2-host.mjs:119-129,197-199` 中 `ingestEvents` 开始后，release 只能使后续句柄检查失败，不能撤销已提交写入。
+
+**处置 / 预防**：不要把取消解释为无副作用，也不要自动重发；应保留原操作编号与不确定状态并允许查询。当前测试只用夹具已知的原编号证明真实回执，不能替代调用方恢复能力。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-douyin-companion-host.mjs` 放行已开始的写入并以已知编号查询一次真实提交；`node plugins/surfcore/scripts/test-douyin-companion.mjs` 检查取消后迟到结果不改写作业终态。
+
+## #150（2026-11-14，P1）越界帧数可能从记忆检索流入展示
+
+**现象 / 根因**：真实 Host 检索可返回 `coverage.frameSamples=6`；叙述层的 1..3 门控令“6帧”不出现，但 `plugins/surfcore/lib/douyin-companion-page.mjs:85,188` 的数字展示当时没有该门控，可能显示“6 张稀疏画面”。账本自身只允许 0..3。产品 owner 已在工作树修改页面门控，最终验收以其报告为准。
+
+**处置 / 预防**：由产品 owner 处理取回及展示边界，避免仅用叙述中不含“6帧”来证明原始数据有效。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-douyin-companion-recall.mjs` 验证理由和 ISO 时间；越界取回与页面展示需由产品缺口的专属测试验证。
+
+## #151（2026-11-14，P1）手工落账的竞态夹具不能证明模型只调用一次
+
+**现象 / 根因**：`test-companion-sharing-race.mjs` 子进程手工写消费账本及 request/answer，主进程模型调用为零；原 PASS 却声称 one paid call。单机 MemoryService 的 writer lock 拒绝第二个写入者，同步 `fs.readFileSync` 注入点也不能等待另一条异步真实模型路径。
+
+**处置 / 预防**：该测试只宣称锁内重读已持久化回复、零次额外模型调用及无重复 assistant 写入；手工数字不是调用证据。真实跨进程付费调用唯一性尚未验证，归 G7 实机验收，不能写成 PASS。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-companion-sharing-race.mjs` 应输出 seeded durable reply reused 和 `NOT VERIFIED`；它不能替代真实多进程模型调用计数。
+
+## #152（2026-11-15，P1）门禁里的测试依赖 cwd，断言失败还会把整条门禁挂住
+
+**现象 / 根因**：`plugins/surfcore/scripts/test-bili-retire-barrier-r3.mjs` 接进 `plugins/surfcore` 的 `npm test` 链后，同一脚本出现两种结果——仓库根 0 失败，cwd=`plugins/surfcore` 时 3 处 `ENOENT ... 'plugins/surfcore/lib/index.js'`（相对路径按 cwd 解析）加 2 处夹具失败（`offline GET not reached`、`hold-ready` 不存在，因为 `biliMjs` 也是 cwd 相对路径）。更糟的是：首次断言失败后进程**永不退出**——它 spawn 的 CLI 后代还在等放行文件，事件循环被挂住，冻结门禁因此静默挂了 17 小时没有任何新输出。
+
+**处置 / 预防**：①测试里不写 cwd 相对路径，仓库内路径一律从 `import.meta.url` 推导（本轮加 `repoRoot`）；②spawn 后代的夹具测试，放行/清理必须写进 `finally`（断言失败也要放行），收尾显式 `process.exit(码)`，让退出码如实反映断言结果；③把"换 cwd 也通过"作为接入门禁的前置检查；④门禁长时间无输出要当故障处理（本轮靠日志 mtime 与 `ps` 才发现）。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-bili-retire-barrier-r3.mjs` 与 `cd plugins/surfcore && node scripts/test-bili-retire-barrier-r3.mjs` 都应打印 `r3: 0 failures`、立刻退出且退出码 0。

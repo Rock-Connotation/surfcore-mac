@@ -64,6 +64,27 @@ node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
 是否已 rebase/merge 最新 dev：未合并（主树 dev 有非本会话未跟踪 `2026-11-12/`，按 AGENTS §1.9 停手）；待对应会话收走后由协调/发布会话 --no-ff 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
 ```
 
+### 批次 2026-11-15 · V1 退役三轮复审 R3 离线修复（**已提交 `feat/v1-retirement-r3` @ `6feea46`，未合 dev，尚不可发布**）
+
+> 覆盖提交：无。改动还在工作树 `/Users/shizihan/Daily/Github/surfcore-v1-retirement-r3`（分支 `feat/v1-retirement-r3`，基线 `dev` @ `1125d3e`）。
+> case：[`docs/cases/2026-11-15-v1-retirement-r3-offline-fixes.md`](cases/2026-11-15-v1-retirement-r3-offline-fixes.md)
+> 范围：三轮复审 P1/F01–F05 + N01、P2/F08+F10、F12/F13 收口（只做离线修复与常驻门禁；Mac 实机另立一轮）。
+
+**可直接转发的交接块**
+
+```
+改了哪些文件：38 个已跟踪文件 + 10 个新增测试文件。主要面：src/bridge.js、src/task-harness.js、src/core/{memory-v2-qq,qq-native-channel,memory-v2-client,memory-v2-preflight}.js；plugins/surfcore/lib/{index,scheduler,token-budget,bili-round,bili-v2-host,bili-v2-agent,memory-v2-runtime,qq-v2-reply-host,memory-v2-api,douyin-companion,douyin-companion-memory,douyin-companion-ledger,douyin-companion-page}.mjs；plugins/surfcore/tools/{bili.mjs,lib/msgfeed.mjs,commands/dm-await.mjs}；scripts/{test-audit.mjs,test-owner-delivery-r3.mjs,r2-v2-fixture.mjs}；plugins/surfcore/package.json；docs/*（HANDOFF/PITFALLS/RISK_REGISTER/FOLDER_MAP/guides-ARCHITECTURE/cases）
+测过什么、结果如何：冻结快照门禁全绿——npm run test:audit 204/204（基线 195 + 9 条 r3 常驻合同测试）；test:regressions 17/17；test:memory-v2 48/48；npm --prefix plugins/surfcore test exit 0，末行 "PASS 37 ordinary scripts in 39.4s; native/UI acceptance not run."；lint:failures exit 0；doc-facts exit 0；release-manifest --verify-ref HEAD 1096/1096 问题 0；test:preset-patches exit 0
+建议 patch 还是 minor：minor（用户可见行为变化：语音不再被误取消、owner 管理消息真的送达、B站不再假称"已接管"）
+case 文档路径：docs/cases/2026-11-15-v1-retirement-r3-offline-fixes.md
+改动层级：实现层为主，接口层**向后兼容**——新增 qqReplyCancel action / cancelQQReply 客户端方法与 7 个错误码（MEMORY_QQ_ADMISSION_CANCELLED、MEMORY_QQ_JOB_STALE、OWNER_REPLY_UNKNOWN/REJECTED、BILI_V2_NOT_DURABLE、MEMORY_PREFLIGHT_UNREADABLE、MEMORY_SOURCE_RECEIPT_INVALID、QQ_MODE_SAVED_PENDING_BRIDGE）；旧码 MEMORY_PREFLIGHT_ROUTE_UNREADABLE 已无消费者；取消成功语义仍是 ok:true / state:'cancelled'
+完整逻辑与爆炸半径：见 case「完整逻辑」段。桥接进程 + 插件进程；不碰用户记忆/角色/授权/额度，不写真实 ~/.dsh，不调付费模型（离线替身）
+失败路径：见 case 表格。模式保存离线→200+QQ_MODE_SAVED_PENDING_BRIDGE；非 owner→受限系统回复；回执未知→OWNER_REPLY_UNKNOWN 且不自动重发；B站不可持久→BILI_V2_NOT_DURABLE；预检读不了→MEMORY_PREFLIGHT_UNREADABLE+ioCode
+还有什么没验证：①Mac 实机（Native SDK 在 app.asar 内普通 Node 无法解析、长 TTS 跨轮询、真实 CLI 后代退出、真实卸载）②真实 QQ/B站账号链路的发送与读回 ③取消后的 reflection 写入没有保存原操作编号，调用方无法按编号查回可能已提交的写入（产品接口缺口）④方案 A 真持久接管 ⑤越界帧数上游取回路径仍不校验 0..3
+```
+
+**发布前必做**：先提交，再运行 `node scripts/release-manifest.mjs`，把刷新后的 `release/install-manifest.json` 一起提交（新增 10 个 r3 测试文件要进清单），最后跑一次 `--verify-ref HEAD` 复核。
+
 ### 当前批次 2026-11-13 · V1 退役与二轮审查 F01–F12 收口（已合入 dev，待发版）
 
 <!-- release-batch: start=2026-11-12T21:00+08:00 end=2026-11-13T14:30+08:00 -->

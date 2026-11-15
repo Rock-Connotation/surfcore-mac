@@ -65,7 +65,7 @@ export function runIsolated(script, label, extraEnv = {}) {
 }
 
 /** 只在本模块被直接作为进程入口时由各用例调用：拼装真实 V2 工厂。 */
-export async function createRealV2Factory({ label = 'case' } = {}) {
+export async function createRealV2Factory({ label = 'case', afterMemoryCall = async () => {}, afterPrepareContext = async () => {}, synthesizeImpl, createOwner, onClientEvent = () => {}, platformReply = () => ({ status: 'ok', retcode: 0, data: { message_id: 9001 } }) } = {}) {
   const root = fs.realpathSync(process.env.R2_CASE_ROOT ?? '');
   const stateDir = fs.realpathSync(process.env.R2_CASE_STATE_DIR ?? '');
   assert.ok(root.startsWith(testHome + path.sep), 'R2 case root must be owned by isolate-test-home/shareTestRoot()');
@@ -74,6 +74,7 @@ export async function createRealV2Factory({ label = 'case' } = {}) {
   const imp = (rel) => import(pathToFileURL(path.join(REPO, rel)).href);
   const { createMemoryService } = await imp('src/core/memory-v2-service.js');
   const { createQQMemoryBridge } = await imp('src/core/memory-v2-qq.js');
+  const { prepareCharacterContext } = await imp('src/core/context.js');
   const { createMemoryClient } = await imp('src/core/memory-v2-client.js');
   const { writeMemoryRouting, deriveMemoryProviderRouteId } = await imp('src/core/memory-v2-routing.js');
   const { createMemoryHost } = await imp('plugins/surfcore/lib/memory-v2-host.mjs');
@@ -81,6 +82,7 @@ export async function createRealV2Factory({ label = 'case' } = {}) {
   const { resolveQQMemoryIdentity } = await imp('plugins/surfcore/lib/memory-v2-identity.mjs');
   const { createCharacter, switchCharacter, readCurrentCharacter, CHARACTERS_DIR } = await imp('src/character-persona.js');
   const { bridgeHarness } = await imp('scripts/audit-bridge-harness.mjs');
+  const { createQQV2ReplyHost } = await imp('plugins/surfcore/lib/qq-v2-reply-host.mjs');
 
   const management = Object.freeze({});
   const replayAuthority = Object.freeze({});
@@ -100,7 +102,7 @@ export async function createRealV2Factory({ label = 'case' } = {}) {
   const base = {
     channel: 'qq', conversationKey: `qq:${LOGIN}:private:${OWNER}`,
     sourceAccountKey: `qq:${OWNER}`, requesterAccountKey: `qq:${OWNER}`,
-    providerRouteId: routeId, purpose: 'conversation',
+    providerRouteId: routeId, purpose: 'conversation', audiencePolicyId: 'management', processingGrantId: 'management',
   };
   let operation = 0;
   const action = async (value) => {
@@ -127,12 +129,14 @@ export async function createRealV2Factory({ label = 'case' } = {}) {
     getProducerReplayAuthorization: () => replayAuthority,
   });
 
-  const nativeSubmissions = [];
-  let api, server;
+  const nativeSubmissions = [], platformSends = [];
+  let api, server, replyHost;
   const onebot = http.createServer((req, res) => {
+    const isSend = req.url === '/send_private_msg' || req.url === '/send_group_msg';
+    if (isSend) platformSends.push(req.url);
     res.writeHead(200, { 'content-type': 'application/json' });
-    const data = req.url === '/get_login_info' ? { user_id: LOGIN, nickname: 'r2' } : { online: true, good: true };
-    res.end(JSON.stringify({ status: 'ok', retcode: 0, data }));
+    const data = req.url === '/get_login_info' ? { user_id: LOGIN, nickname: 'r2' } : req.url === '/get_status' ? { online: true, good: true } : { message_id: 9001 };
+    res.end(JSON.stringify(isSend ? platformReply({ url: req.url }) : { status: 'ok', retcode: 0, data }));
   });
   try {
     await new Promise((resolve) => onebot.listen(0, '127.0.0.1', resolve));
@@ -141,12 +145,24 @@ export async function createRealV2Factory({ label = 'case' } = {}) {
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     api = createMemoryApiService({
       host, stateDir, currentDshUrl: () => `http://127.0.0.1:${server.address().port}`,
-      onQQReply: (input) => { nativeSubmissions.push(input); return { ok: true, accepted: true, requestId: input.requestId }; },
+      onQQReply: (input) => { nativeSubmissions.push(input); return replyHost.submit(input); },
+      onQQCancel: (input) => replyHost.cancel(input),
       scopes: [{ id: 'qq', channel: 'qq', principal: {}, canBindInput: true, canSubmitSourceFacts: true }],
     });
     good(api.writeHostFiles(), 'writeHostFiles');
 
-    const harness = await bridgeHarness({
+    const gatewayFetch = (url, options) => {
+      assert.ok(String(url).startsWith(gatewayUrl + '/'));
+      return fetch(url, options);
+    };
+    class ControlledBot {
+      async sendPrivateMessage(id, text) { platformSends.push({ id, text }); return platformReply({ id, text }); }
+      async sendGroupMessage(id, text) { platformSends.push({ id, text }); return platformReply({ id, text }); }
+    }
+    const previousTmp = process.env.TMPDIR;
+    process.env.TMPDIR = root;
+    let harness;
+    try { harness = await bridgeHarness({
       config: {
         ownerQQ: OWNER,
         allow: { private: [OWNER], groups: [GROUP] },
@@ -159,12 +175,26 @@ export async function createRealV2Factory({ label = 'case' } = {}) {
         fishGuard: { enabled: false },
         chat: { presence: { enabled: false } },
         slang: { enabled: false },
+        socialV2: { tools: { sendVoice: true }, tokenGuard: { enabled: false }, voice: { enabled: true, recordTransport: 'base64', maxPerMinute: 0, maxPerHour: 0, trigger: { who: 'owner', members: [], groups: [] }, tts: { enabled: true, cloudProvider: 'volc', route: 'cloud', maxChars: 120, volcKeyId: 'fixture-key-id', endpoints: { cloud: 'https://voice.invalid' } } } },
       },
+      ...(synthesizeImpl ? { synthesizeImpl } : {}),
       globals: {
+        readVolcKey: () => 'fixture-key',
+        inspectAudio: async () => ({ ok: true, size: 44, duration: 0.1, codec: 'wav', warnings: [] }),
+        describeAudio: () => 'fixture wav',
         readCurrentCharacter,
         // 真实 V2 默认工厂：stateDir/getCharacter 指向真实 Host 持久状态；
         // 不提供 getRouting / getSessionMemorySafety 覆盖（恒真安全谓词被禁止）。
-        createQQMemoryBridge: (options) => createQQMemoryBridge({ ...options, stateDir, getCharacter: readCurrentCharacter }),
+        createQQMemoryBridge: (options) => {
+          const client = createMemoryClient({ stateDir, scope: 'qq', getCharacter: readCurrentCharacter });
+          const tracedClient = { ...client, capture: async (...args) => { const result = await client.capture(...args); onClientEvent('capture', { args, result, client }); return result; }, release: async handle => { const result = await client.release(handle); onClientEvent('release', { handle, result, client }); return result; } };
+          const memory = createQQMemoryBridge({ ...options, stateDir, getCharacter: readCurrentCharacter, client: tracedClient, prepareContext: async (...args) => { const result = await prepareCharacterContext(...args); await afterPrepareContext(result); return result; } });
+          return { ...memory, ...Object.fromEntries(['authorizeSend', 'prepareReply', 'captureSource', 'recordSent'].map(name => [name, async (...args) => {
+            const result = await memory[name](...args);
+            await afterMemoryCall(name, result);
+            return result;
+          }])) };
+        },
         createMemoryClient: (options) => createMemoryClient({ ...options, stateDir, getCharacter: readCurrentCharacter }),
         // 网关 fetch 组合：OneBot 身份/发送动作返回受控假响应（不发真实 QQ），
         // 其余动作走通用兜底。真实 Memory RPC 不经 VM fetch（client 在真实模块域用 node fetch）。
@@ -173,6 +203,15 @@ export async function createRealV2Factory({ label = 'case' } = {}) {
         // 保留 sendToQQ → bot wrapper 的完整生产路径（ticket 旁路、guard、beginMemoryV2Send）。
         SnowLumaWebSocketClient: ControlledBot,
       },
+    }); } finally { if (previousTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTmp; }
+    assert.ok(fs.realpathSync(harness.temp).startsWith(root + path.sep));
+    const ctx = { get: name => name === 'llm' ? { resolveModelInfo: async (provider, id) => ({ provider, id }) } : { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) } };
+    replyHost = createQQV2ReplyHost({ ctx, memoryV2: { adapter: host.createAdapter({ id: 'qq', channel: 'qq', principal: {}, canBindInput: true, canSubmitSourceFacts: true }), getRouting: () => harness.memoryV2Route() }, tokenBudget: {},
+      getCharacter: readCurrentCharacter,
+      getQQIdentity: async () => ({ ok: true, verified: true, accountId: LOGIN, allowedGroups: [GROUP], allowedPrivates: [OWNER], route: { provider: 'fixture', model: 'fixture' } }),
+      callBridge: async (_url, { body }) => { const data = await harness.nativeQQ.request(body); return { ok: data.ok, status: data.ok ? 200 : 409, data }; },
+      loadEnvironment: async () => ({ nativeModules: {}, nativeCodec: { createSystemMessage: value => value, createUserMessage: value => value, createAssistantMessage: value => value, createToolResultMessage: value => value }, llm: {}, getLlmHookContext: () => ctx }),
+      ...(createOwner ? { createOwner } : {}),
     });
     assert.equal(harness.memoryV2Route().backend, 'v2', 'bridge must run on the real V2 route');
     harness.setReady(true);
@@ -180,10 +219,11 @@ export async function createRealV2Factory({ label = 'case' } = {}) {
     harness.setSelfUserId(LOGIN);
     harness.setMode('chat');
     return {
-      root, stateDir, harness, service, host, api, onebot, server,
-      role, routeId, action, publishRoute, nativeSubmissions,
+      root, stateDir, harness, service, host, api, onebot, server, replyHost,
+      role, routeId, action, publishRoute, nativeSubmissions, platformSends,
       KEY, GROUP_KEY, OWNER, LOGIN,
       async close() {
+        await replyHost.close();
         await harness.close();
         api?.close(); host.close();
         await Promise.all([

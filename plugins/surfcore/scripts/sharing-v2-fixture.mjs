@@ -4,7 +4,7 @@
 // 这些是**业务行为**，不能因为 V1 退役就删掉；但也不能再走已删除的 v1 perform 分支。
 // 这里提供一个真实 MemoryService/Host 的隔离工厂，让同一批行为断言跑在 V2 上：
 //   · 隔离 DSH_HOME 与角色目录（导入前设置，绝不读真实 ~/.dsh）；
-//   · 正式 preview/commit 批准 local 会话（不直接改 SQLite）；
+//   · 通过管理上下文调用 host.configurePolicy 批准 local 会话（不直接改 SQLite）；
 //   · 预置一条真实的来源事件，返回可绑定的 refs/receipts 供账本使用。
 //
 // 只用于测试；不联网、不调模型、不写用户数据。

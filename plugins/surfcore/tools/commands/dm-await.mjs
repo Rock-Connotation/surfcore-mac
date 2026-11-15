@@ -2,7 +2,7 @@
 //
 // 状态模型（单文件、原子写 + 跨进程锁；复用 Host registry 的 fsync/rename/同 ID 查询语义）：
 //   version 2，scopes.owner / scopes.all 各自持有 { cursor, seen, pending, receipts, initialized }。
-//   一条通知的 ID = sha256([账号, 角色id, epoch, scope, mid, msgKey, ts])，
+//   一条通知的 ID = sha256([账号, 角色id, epoch, mid, msgKey, ts])，
 //   不含 observedAt / quotaDay / 批次顺序 / 数组下标。
 //   pending 保存第一次观察到的不可变原件（original），--once 优先重放它。
 //   accepted（Host 持久接管）/ terminal（作业或平台完成）/ 游标 ACK 分开记录，不合并成一个布尔。
@@ -19,7 +19,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { accountBili, biliState, currentCharacter } from '../lib/state-paths.mjs'
+import { accountBili, biliState, currentCharacter, SURFCORE_DIR } from '../lib/state-paths.mjs'
 import { config } from '../lib/config.mjs'
 
 const argv = process.argv.slice(2)
@@ -106,12 +106,12 @@ function acquireLock() {
 function emptyScope() { return { cursor: 0, seen: {}, pending: {}, receipts: {}, initialized: false } }
 function emptyState() { return { version: 2, scopes: { owner: emptyScope(), all: emptyScope() } } }
 function normalizeScope(raw) {
-  if (!isObj(raw)) throw blocked('BILI_DM_STATE_CORRUPT', 'scope 状态形状损坏。')
-  const cursor = Number(raw.cursor ?? 0)
-  if (!Number.isFinite(cursor) || cursor < 0 || !isObj(raw.seen) || !isObj(raw.pending) || !isObj(raw.receipts)) {
+  if (!isObj(raw) || Object.keys(raw).some(key => !['cursor', 'seen', 'pending', 'receipts', 'initialized', 'at'].includes(key)) || typeof raw.initialized !== 'boolean') throw blocked('BILI_DM_STATE_CORRUPT', 'scope 状态形状损坏。')
+  const cursor = raw.cursor
+  if (typeof cursor !== 'number' || !Number.isFinite(cursor) || cursor < 0 || !isObj(raw.seen) || !isObj(raw.pending) || !isObj(raw.receipts) || raw.at !== undefined && typeof raw.at !== 'string' || Object.values(raw.seen).some(value => typeof value !== 'number' || !Number.isFinite(value) || value < 0) || [raw.pending, raw.receipts].some(rows => Object.entries(rows).some(([id, row]) => !id || !isObj(row) || row.requestId !== id || !isObj(row.original)))) {
     throw blocked('BILI_DM_STATE_CORRUPT', 'scope 游标/seen/pending/receipts 损坏。')
   }
-  return { cursor, seen: { ...raw.seen }, pending: { ...raw.pending }, receipts: { ...raw.receipts }, initialized: Boolean(raw.initialized) }
+  return { ...raw, seen: { ...raw.seen }, pending: { ...raw.pending }, receipts: { ...raw.receipts } }
 }
 function pickOriginal(row) {
   const { requestId, observedAt, state, receipt, original, scope, ackedAt, ...rest } = row
@@ -120,17 +120,18 @@ function pickOriginal(row) {
 }
 // 旧格式 {lastSeen, seen, pending:[...]} 无损迁移：保留每个真实游标、旧 requestId 与 pending 原件。
 function migrate(raw) {
-  if (raw?.version === 2 && isObj(raw.scopes) && raw.scopes.owner && raw.scopes.all) {
+  if (raw?.version === 2 && isObj(raw.scopes) && raw.scopes.owner && raw.scopes.all && Object.keys(raw).every(key => ['version', 'scopes'].includes(key)) && Object.keys(raw.scopes).every(key => ['owner', 'all'].includes(key))) {
     return { version: 2, scopes: { owner: normalizeScope(raw.scopes.owner), all: normalizeScope(raw.scopes.all) } }
   }
+  if (!isObj(raw) || raw.version !== undefined || Object.keys(raw).some(key => !['lastSeen', 'seen', 'pending', 'at'].includes(key)) || raw.pending !== undefined && !Array.isArray(raw.pending) || raw.seen !== undefined && !isObj(raw.seen) || raw.lastSeen !== undefined && (!Number.isFinite(Number(raw.lastSeen)) || Number(raw.lastSeen) < 0)) throw blocked('BILI_DM_STATE_CORRUPT', '未知或损坏的状态 schema。')
   const oldPending = Array.isArray(raw?.pending) ? raw.pending : []
   const seen = isObj(raw?.seen) ? { ...raw.seen } : {}
+  if (raw.at !== undefined && typeof raw.at !== 'string' || Object.values(seen).some(value => typeof value !== 'number' || !Number.isFinite(value) || value < 0) || oldPending.some(row => !isObj(row) || typeof row.requestId !== 'string' || !row.requestId || row.original !== undefined && !isObj(row.original) || row.state !== undefined && !['observed', 'accepted', 'terminal'].includes(row.state)) || new Set(oldPending.map(row => row.requestId)).size !== oldPending.length) throw blocked('BILI_DM_STATE_CORRUPT', '旧版状态的待处理项或 seen 已损坏。')
   const owner = emptyScope(), all = emptyScope()
   owner.cursor = Number(raw?.lastSeen ?? 0) || 0
   owner.seen = { ...seen }
   owner.initialized = Boolean(raw && (raw.lastSeen !== undefined || 'seen' in raw || oldPending.length))
   for (const row of oldPending) {
-    if (!row || typeof row.requestId !== 'string') continue
     owner.pending[row.requestId] = { ...row, scope: 'owner', state: row.state ?? 'observed', original: row.original ?? pickOriginal(row) }
   }
   all.seen = { ...seen }
@@ -157,9 +158,9 @@ function withState(mutator) {
   } finally { release() }
 }
 
-// ── 稳定身份：账号 + 角色 + 精确消息坐标 + scope；不含时间/日期/批次顺序 ──
+// ── 稳定身份：账号 + 角色 + 精确消息坐标；scope 只管理各自游标；不含时间/日期/批次顺序 ──
 function requestIdOf(row) {
-  const coord = [ACCOUNT, ROLE_ID, ROLE_EPOCH, row.scope ?? (ANY ? 'all' : 'owner'), String(row.mid), String(row.msgKey ?? ''), String(row.ts)]
+  const coord = [ACCOUNT, ROLE_ID, ROLE_EPOCH, String(row.mid), String(row.msgKey ?? ''), String(row.ts)]
   return 'bili-dm-' + crypto.createHash('sha256').update(JSON.stringify(coord)).digest('hex')
 }
 function parseReceipt(id) {
@@ -170,7 +171,28 @@ function parseReceipt(id) {
   if (!isObj(receipt) || receipt.requestId !== id || receipt.durable !== true || !['accepted', 'terminal'].includes(receipt.state)) {
     throw fail('BILI_DM_RECEIPT_INVALID', '接管回执缺少 requestId/durable/state。', '只有可证明的持久接管/完成回执才能推进 ACK。', 7)
   }
+  if (receipt.source !== 'bili-v2-registry' || !Array.isArray(receipt.jobs) || !receipt.jobs.length || new Set(receipt.jobs.map(job => job?.sessionId)).size !== receipt.jobs.length) throw fail('BILI_DM_RECEIPT_INVALID', '回执缺少 Host 作业坐标。', '查询原 Host 持久注册表。', 7)
+  let registry
+  try { registry = JSON.parse(fs.readFileSync(path.join(SURFCORE_DIR, 'bili-v2-managed-sessions.json'), 'utf8')) } catch { throw fail('BILI_DM_RECEIPT_INVALID', 'Host 持久注册表不可读。', '恢复 Host 后查询原作业。', 7) }
+  if (registry?.version !== 1 || !isObj(registry.sessions) || receipt.jobs.some(job => {
+    const saved = registry.sessions[job?.sessionId]
+    return !saved || JSON.stringify(saved.receipt) !== JSON.stringify(receipt) || saved.requestId !== job.requestId || saved.originalRequestId !== id || saved.jobId !== job.jobId || saved.groupCount !== receipt.jobs.length || (ROLE_ID && saved.characterId !== ROLE_ID) || (ROLE_ID && saved.characterEpoch !== ROLE_EPOCH) || (receipt.state === 'terminal' ? saved.phase !== 'terminal' : !['accepted', 'terminal'].includes(saved.phase))
+  })) throw fail('BILI_DM_RECEIPT_INVALID', '回执与 Host 原作业不匹配。', '只使用 Host 对原 ID 的查询回执。', 7)
   return receipt
+}
+function sameOccurrence(a, b) {
+  return String(a?.mid ?? '') === String(b?.mid ?? '') && String(a?.msgKey ?? '') === String(b?.msgKey ?? '') && String(a?.ts ?? '') === String(b?.ts ?? '')
+}
+function findOccurrence(state, item) {
+  for (const [name, scope] of Object.entries(state.scopes)) {
+    for (const row of [...Object.values(scope.pending), ...Object.values(scope.receipts)]) {
+      const original = row.original ?? row
+      if (!sameOccurrence(original, item)) continue
+      if (!original.account) throw blocked('BILI_DM_IDENTITY_UNPROVEN', '已有通知缺少账号坐标，不能推断是否为同一消息。')
+      if (String(original.account) === String(ACCOUNT)) return { name, row }
+    }
+  }
+  return null
 }
 function scopeKey(row) { return row?.scope === 'all' ? 'all' : 'owner' }
 function advanceCursor(scope, row) {
@@ -242,9 +264,10 @@ function findRow(state, id) {
   return null
 }
 
-// ── ACK：只有确认接管/完成后由 scheduler 调用；兼容旧「直接推进」语义但标注 unproven ──
+// ── ACK：只有持久注册表中存在匹配回执后才能推进游标 ──
 function ackCommand() {
   const receipt = parseReceipt(ACK)
+  if (!receipt) throw fail('BILI_DM_RECEIPT_REQUIRED', '确认通知必须提供 Host 接管回执。', '查询原 Host 作业并提交匹配回执。', 7)
   const out = withState((state) => {
     const hit = findRow(state, ACK)
     if (!hit || !state.scopes[hit.name].pending[ACK]) {
@@ -332,9 +355,12 @@ async function pollCommand() {
     const emitted = []
     const byId = new Map(replay.map((row) => [row.requestId, row]))
     for (const item of fresh) {
-      const row = { ...item, scope: scopeName, requestId: requestIdOf({ ...item, scope: scopeName }), observedAt: now, state: 'observed' }
+      const row = { ...item, account: ACCOUNT, scope: scopeName, requestId: requestIdOf({ ...item, scope: scopeName }), observedAt: now, state: 'observed' }
       row.original = pickOriginal(row)
-      if (!byId.has(row.requestId)) { byId.set(row.requestId, row); scope.pending[row.requestId] = row; emitted.push(row) }
+      const existing = findRow(state, row.requestId) ?? findOccurrence(state, item)
+      if (existing && existing.name !== scopeName && existing.row.receipt && ['acked', 'terminal'].includes(existing.row.state)) { advanceCursor(scope, item); scope.receipts[existing.row.requestId] = { ...existing.row, scope: scopeName }; continue }
+      if (!byId.has(row.requestId) && !existing) { byId.set(row.requestId, row); scope.pending[row.requestId] = row; emitted.push(row) }
+      else if (existing && !byId.has(existing.row.requestId)) { byId.set(existing.row.requestId, existing.row); emitted.push({ ...(existing.row.original ?? existing.row), requestId: existing.row.requestId, scope: existing.name, state: existing.row.state }) }
     }
     const items = [...replay, ...emitted]
     scope.at = now

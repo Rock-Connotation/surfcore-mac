@@ -218,13 +218,46 @@ for (const channel of ['bili', 'qq', 'pet']) {
   else assert.ok(external.code && external.hint, 'unprepared channel must fail closed with a code and hint');
 }
 memory.release(session);
+// Once kernel ingest has begun, releasing the handle cannot roll back its eventual commit.
+{
+  const late = await memory.capture(owner, base.conversationKey);
+  late.identity = 'douyin:late-reflection:1234567890123456789:v1';
+  late.observedAt = when;
+  const originalIngest = service.ingestEvents;
+  let entered, unblock;
+  const started = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { unblock = resolve; });
+  let submissions = 0;
+  service.ingestEvents = async (...args) => { submissions++; entered(); await gate; return originalIngest(...args); };
+  try {
+    const pending = memory.reflect(late, { summary: '迟到写入取证', reason: '唯一迟到写入原因', coverage: { complete: true } }).catch(error => error);
+    await started;
+    memory.release(late);
+    unblock();
+    const result = await pending;
+    assert.equal(result.ok, false);
+    assert.equal(result.retry, 'query_receipt');
+    assert.equal(result.operationState, 'completed_before_cancel');
+    const fresh = await memory.capture(owner, base.conversationKey);
+    const receipt = await adapter.receipt(fresh.handle, `${late.identity}:reflection`);
+    assert.equal(receipt.operationState, 'completed');
+    const found = await adapter.search(fresh.handle, '唯一迟到写入原因');
+    assert.equal(found.records.filter(row => row.id === `${late.identity}:reflection`).length, 1);
+    assert.equal(submissions, 1);
+    memory.release(fresh);
+  } finally { unblock(); service.ingestEvents = originalIngest; }
+}
 // 角色世代不符：capture 直接拒绝（抛结构化错误），不会把旧经历投影到新角色。
 const stale = await memory.capture({ ...owner, characterEpoch: 2 }, base.conversationKey).catch(error => error);
 assert.equal(stale.code, 'COMPANION_CHARACTER_STALE'); assert.ok(stale.hint);
 const stopMemory = new AbortController(); stopMemory.abort();
 const cancelledSession = await memory.capture(owner, base.conversationKey);
-const cancelledMemory = await memory.prepareStep(cancelledSession, '取消').catch(error => error);
-assert.ok(cancelledMemory); memory.release(cancelledSession);
+let cancelledDispatches = 0;
+await assert.rejects(memory.admitNetwork(cancelledSession, () => { cancelledDispatches++; }, { signal: stopMemory.signal }),
+  error => error.code === 'MEMORY_ADMISSION_ABORTED' && Boolean(error.error && error.hint));
+assert.equal(cancelledDispatches, 0, 'cancelled admission must not dispatch');
+assert.equal((await adapter.validate(cancelledSession.handle)).ok, true, 'cancellation must leave the captured session valid');
+memory.release(cancelledSession);
 // V1 记忆卡写者在生产装配层已退役（lib/memory-card.js 仍保留纯函数供评测/只读查看）。
 // 这里断言生产入口不再调用维护函数、且旧卡字节不变。
 const indexSource = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');

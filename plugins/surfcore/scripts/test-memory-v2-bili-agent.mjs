@@ -1,3 +1,4 @@
+import { testHome } from './isolate-test-home.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,7 +11,7 @@ import { createTokenBudgetService } from '../lib/token-budget.js';
 import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
 import { decodeBiliV2Request, BILI_V2_ENDPOINTS } from '../tools/lib/bili-v2-dispatch.mjs';
 
-const root = fileURLToPath(new URL('../../../_backups/memory-v2-bili-agent/', import.meta.url));
+const root = path.join(testHome, 'memory-v2-bili-agent');
 fs.mkdirSync(root, { recursive: true });
 const evidence = fs.mkdtempSync(path.join(root, `run-${process.version}-${process.pid}-`));
 const defer = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
@@ -174,6 +175,140 @@ async function fixture(name, test, overrides = {}) {
   try { await test({ runtime, budget, start, options, stream, invoke, ctx, agents, definitions, trace, registryPath, sourceRuntime, dir, commandsDir, unregistered, offFailures, guards, hooks, ownerLock: path.join(registryPath + '.owner', 'token-budget-owner.lock'), restart: () => createBiliV2AgentRuntime(runtimeOptions), setAllowed: (value) => { allowed = value; }, setRole: (value) => { role = value; }, setRoute: (value) => { route = value; }, sends: () => sends, inGate: () => gate }); cases++; console.log('PASS ' + name); }
   finally { await runtime.close().catch(() => {}); budget.dispose(); if (native) await ctx.fiber.dispose(); }
 }
+
+await fixture('different schedule dates submit distinct original IDs through real registry', async f => {
+  const { startScheduler } = await import('../lib/scheduler.js');
+  const OriginalDate = globalThis.Date, ids = [], results = [];
+  const home = path.join(testHome, 'schedule-contract');
+  const account = path.join(home, 'surfcore', 'bili');
+  fs.mkdirSync(account, { recursive: true });
+  let active = f.runtime;
+  try {
+    for (const [index, day] of ['2026-11-13', '2026-11-13', '2026-11-14'].entries()) {
+      globalThis.Date = class extends OriginalDate { constructor(...args) { super(...(args.length ? args : [day + 'T12:00:00'])); } static now() { return new OriginalDate(day + 'T12:00:00').getTime(); } };
+      fs.writeFileSync(path.join(account, 'whale-night.json'), JSON.stringify({ date: day, action: 'skip', slotId: 'same-slot', at: index === 1 ? 1 : 0, fired: false }));
+      const scheduler = startScheduler(f.ctx, { dshHome: home, biliMjs: path.join(home, 'unused.mjs'), memoryV2: { getRouting: () => ({ ok: true, backend: 'v2' }) }, biliV2Agent: { enqueue: async args => { ids.push(args.requestId); const result = await active.enqueue(args); results.push(result); return result; }, retire: () => active.retire() } });
+      try { await scheduler.tick(); } finally { scheduler.stop(); }
+      if (index === 1) { await active.close(); active = f.restart(); }
+    }
+    console.log('N01_IDS ' + JSON.stringify(ids) + ' RESULTS ' + JSON.stringify(results));
+    assert.equal(ids[0], ids[1], 'same occurrence must retain its original ID');
+    assert.equal(results[1].code, 'BILI_V2_JOB_REUSED');
+    assert.notEqual(ids[0], ids[2], 'independent schedule dates must have distinct occurrence IDs');
+    assert.equal(results[2].ok, true);
+    assert.equal(f.trace.filter(x => x === 'prompt').length, 2);
+  } finally { globalThis.Date = OriginalDate; await active.close(); }
+});
+
+await fixture('original request resumes after pre-dispatch denial and runtime restart', async f => {
+  let denied = true;
+  const prepare = f.sourceRuntime.preparePrompt;
+  f.sourceRuntime.preparePrompt = async (...args) => denied ? { ok: false, code: 'MEMORY_POLICY_DENIED', hint: 'Restore permission.' } : prepare(...args);
+  const first = await f.start('same-original');
+  assert.equal(first.code, 'MEMORY_POLICY_DENIED');
+  console.log('DENIED_BEFORE_RESTART ' + JSON.stringify(first));
+  await f.runtime.close();
+  denied = false;
+  const restarted = f.restart();
+  try {
+    const result = await restarted.enqueue({ requestId: 'same-original', input: { kind: 'comment-notification', items: [{ id: '12' }], coverage: 'notification-only' } });
+    console.log('RECOVERY_RESULT ' + JSON.stringify(result));
+    assert.equal(result.ok, true, 'pre-dispatch denial must resume the original ID');
+    assert.equal(f.trace.filter(x => x === 'prompt').length, 1);
+  } finally { await restarted.close(); }
+});
+
+await fixture('same runtime resumes only original pre-dispatch operation', async f => {
+  let denied = true;
+  const prepare = f.sourceRuntime.preparePrompt;
+  f.sourceRuntime.preparePrompt = async (...args) => denied ? { ok: false, code: 'MEMORY_POLICY_DENIED', hint: 'Restore permission.' } : prepare(...args);
+  assert.equal((await f.start('same-original')).code, 'MEMORY_POLICY_DENIED');
+  await f.runtime.retire();
+  denied = false;
+  const resumed = await f.start('same-original');
+  assert.equal(resumed.ok, true, JSON.stringify(resumed));
+  assert.equal(f.trace.filter(x => x === 'prompt').length, 1);
+});
+await fixture('same DM coordinates resume despite a newer polling snapshot', async f => {
+  let denied = true;
+  const prepare = f.sourceRuntime.preparePrompt;
+  f.sourceRuntime.preparePrompt = async (...args) => denied ? { ok: false, code: 'MEMORY_POLICY_DENIED', hint: 'Restore permission.' } : prepare(...args);
+  const input = { kind: 'dm-notification', items: [{ mid: '22000', msgKey: '99001', ts: 1700000000 }] };
+  const original = { ...input, snapshot: { observedAt: 'first' } };
+  const later = { ...input, snapshot: { observedAt: 'later' } };
+  const args = { requestId: 'internal-dm', originalRequestId: 'original-dm', input, originalInput: original, scope: { audience: 'private' } };
+  assert.equal((await f.runtime.enqueue(args)).code, 'MEMORY_POLICY_DENIED');
+  await f.runtime.close(); denied = false;
+  const restarted = f.restart();
+  try {
+    const result = await restarted.enqueue({ ...args, originalInput: later });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(f.trace.filter(x => x === 'prompt').length, 1);
+  } finally { await restarted.close(); }
+});
+await fixture('dispatched original remains queryable and is never replayed after restart', async f => {
+  const accepted = await f.start('dispatched-original');
+  assert.equal(accepted.ok, true);
+  assert.equal(f.runtime.query('dispatched-original').jobs[0].phase, 'accepted');
+  await f.runtime.close();
+  const restarted = f.restart();
+  try {
+    const state = restarted.query('dispatched-original');
+    console.log('DISPATCH_AFTER_RESTART ' + JSON.stringify(state));
+    assert.equal(state.found, true);
+    assert.equal(state.jobs[0].phase, 'unknown');
+    for (let attempt = 0; attempt < 5; attempt++) assert.equal(restarted.query('dispatched-original').jobs[0].phase, 'unknown');
+    assert.equal(f.trace.filter(x => x === 'prompt').length, 1, 'polling the original unknown job must not dispatch a new prompt');
+    console.log('UNKNOWN_POLLS 5 PROMPTS ' + f.trace.filter(x => x === 'prompt').length);
+    const repeat = await restarted.enqueue({ requestId: 'dispatched-original', input: { kind: 'comment-notification', items: [{ id: '12' }], coverage: 'notification-only' } });
+    assert.equal(repeat.code, 'BILI_V2_JOB_REUSED');
+    assert.equal(f.trace.filter(x => x === 'prompt').length, 1);
+  } finally { await restarted.close(); }
+});
+await fixture('scheduler polls an original unknown job without enqueuing again', async f => {
+  const { startScheduler } = await import('../lib/scheduler.js');
+  const home = path.join(testHome, 'unknown-poll-contract'), dir = path.join(home, 'surfcore', 'bili');
+  fs.mkdirSync(dir, { recursive: true });
+  const plan = { date: new Date().toLocaleDateString('sv-SE'), action: 'skip', slotId: 'original-slot', at: 0, fired: false };
+  let enqueues = 0;
+  const host = { enqueue: async args => { enqueues++; return f.runtime.enqueue(args); },
+    query: async ({ requestId }) => { const result = f.runtime.query(requestId); return result.found ? { ...result, state: 'unknown', code: 'BILI_V2_NOT_DURABLE', error: 'unknown', hint: 'Query the original ID.', unknown: true } : result; }, retire: () => f.runtime.retire() };
+  const scheduler = startScheduler(f.ctx, { dshHome: home, biliMjs: path.join(home, 'unused'), memoryV2: { getRouting: () => ({ ok: true, backend: 'v2' }) }, biliV2Agent: host });
+  try {
+    for (let attempt = 0; attempt < 6; attempt++) { fs.writeFileSync(path.join(dir, 'whale-night.json'), JSON.stringify(plan)); await scheduler.tick(); }
+    assert.equal(enqueues, 1); assert.equal(f.trace.filter(value => value === 'prompt').length, 1);
+    console.log('SCHEDULER_UNKNOWN_POLLS 5 ENQUEUES ' + enqueues + ' PROMPTS ' + f.trace.filter(value => value === 'prompt').length);
+  } finally { scheduler.stop(); }
+});
+await fixture('reminder retries original occurrence and later occurrence has a new ID', async f => {
+  const { startScheduler } = await import('../lib/scheduler.js');
+  const RealDate = globalThis.Date; let clock = new RealDate('2026-11-13T16:10:00').getTime();
+  globalThis.Date = class extends RealDate { constructor(...args) { super(...(args.length ? args : [clock])); } static now() { return clock; } };
+  const home = path.join(testHome, 'reminder-contract'); fs.mkdirSync(home, { recursive: true });
+  let denied = true; const prepare = f.sourceRuntime.preparePrompt, gate = defer(), entered = defer();
+  f.sourceRuntime.preparePrompt = async (...args) => { if (denied) { entered.resolve(); await gate.promise; return { ok: false, code: 'MEMORY_POLICY_DENIED', hint: 'Restore permission.' }; } return prepare(...args); };
+  const submitted = [], outcomes = [], kinds = [];
+  const host = { enqueue: async args => { kinds.push(args.input.kind); submitted.push(args.requestId); const result = await f.runtime.enqueue(args); outcomes.push(result); return result; },
+    query: async ({ requestId }) => { const q = f.runtime.query(requestId); if (!q.found) return q; return { ...q, state: q.jobs[0].phase }; }, retire: () => f.runtime.retire() };
+  const scheduler = startScheduler(f.ctx, { dshHome: home, biliMjs: path.join(home, 'unused'), memoryV2: { getRouting: () => ({ ok: true, backend: 'v2' }) }, biliV2Agent: host });
+  try {
+    const pending = scheduler.dynTick(); await entered.promise; await scheduler.dynTick(); assert.equal(submitted.length, 1); gate.resolve(); await pending; assert.equal(outcomes[0].code, 'MEMORY_POLICY_DENIED');
+    await f.runtime.retire(); denied = false;
+    await scheduler.dynTick(); assert.equal(outcomes[1].ok, true, JSON.stringify(outcomes[1]));
+    assert.equal(submitted[0], submitted[1]);
+    const agent = f.agents.get(outcomes[1].sessionId);
+    await collect(f.stream(f.options(outcomes[1].sessionId), () => (async function* () { yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }; })()));
+    agent.cancel(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.runtime.query(submitted[1]).jobs[0].phase, 'terminal');
+    clock += 91 * 60_000;
+    await scheduler.dynTick(); await scheduler.dynTick();
+    assert.equal(outcomes[2].ok, true, JSON.stringify(outcomes[2]));
+    assert.notEqual(submitted[1], submitted[2]);
+    assert.deepEqual(kinds, ['ta-nudge', 'ta-nudge', 'ta-nudge']);
+    console.log('REMINDER_IDS ' + JSON.stringify(submitted));
+  } finally { scheduler.stop(); globalThis.Date = RealDate; }
+});
+if (process.argv.includes('--contract-only')) { console.log('PASS durable runtime contract'); process.exit(0); }
 
 await fixture('retirement waits for an in-flight creation before releasing its real session', async f => {
   let reached, resume; const ready = new Promise(resolve => { reached = resolve; }), gate = new Promise(resolve => { resume = resolve; });
@@ -468,7 +603,7 @@ const {startScheduler}=await import(${JSON.stringify(new URL('../lib/scheduler.j
 for(const mode of ['v2','v2-missing','bad','throws','v1']){let legacy=0,inspects=0,submitted=[],blocked=[];const state=path.join(account,'whale-night.json');fs.writeFileSync(state,JSON.stringify({date:new Date().toLocaleDateString('sv-SE'),action:'skip',at:0,fired:false,reason:'fixture'}));
 const ctx={on:()=>()=>{},sessionController:{inspect:async()=>{inspects++;return{}},prompt:async(args)=>{legacy++;assert.ok(args.content[0].text);return{accepted:true}},cancel:async()=>({accepted:true})}};
 const controller=startScheduler(ctx,{dshHome:home,biliMjs:path.join(root,'never-run.mjs'),memoryV2:{getRouting:()=>{if(mode==='throws')throw Error('fixture');return mode==='bad'?{ok:false,code:'MEMORY_ROUTING_CORRUPT',hint:'Repair fixture route'}:{ok:true,backend:mode==='v1'?'v1':'v2'}}},biliV2Agent:mode==='v2-missing'?null:{enqueue:async value=>{submitted.push(value);return{ok:true,sessionId:'native-fixture'}},retire:async()=>{}},onMemoryBlocked:value=>blocked.push(value)});
-try{await controller.tick().catch(error=>{if(mode!=='bad'&&mode!=='throws')throw error;assert.ok(error.code);assert.ok(error.hint)});if(mode==='v2'){assert.equal(submitted.length,1);assert.equal(submitted[0].input.kind,'night-skip');assert.equal('content' in submitted[0].input,false);assert.equal(legacy,0);assert.equal(inspects,0)}else if(mode==='v1'){assert.equal(legacy,1);assert.equal(submitted.length,0)}else{assert.equal(legacy,0);assert.equal(inspects,0);assert.equal(submitted.length,0);assert.ok(blocked.length);assert.ok(blocked[0].code);assert.ok(blocked[0].hint)}checked++}finally{controller.stop()}}
+try{await controller.tick().catch(error=>{if(mode!=='bad'&&mode!=='throws'&&mode!=='v1')throw error;assert.ok(error.code);assert.ok(error.hint)});if(mode==='v2'){assert.equal(submitted.length,1);assert.equal(submitted[0].input.kind,'night-skip');assert.equal('content' in submitted[0].input,false);assert.equal(legacy,0);assert.equal(inspects,0)}else{assert.equal(legacy,0);assert.equal(inspects,0);assert.equal(submitted.length,0);assert.ok(blocked.length);assert.ok(blocked[0].code);assert.ok(blocked[0].hint)}checked++}finally{controller.stop()}}
 console.log('PASS scheduler routing/lazy inputs '+checked);`;
 const schedulerResult = spawnSync(process.env.SURFCORE_FIXTURE_NODE || process.execPath, ['--input-type=module', '-e', schedulerScript], { env: { ...process.env, DSH_HOME: path.join(schedulerDir, 'home'), SURFCORE_ROOT: path.join(schedulerDir, 'root'), DSH_NODE: process.env.SURFCORE_FIXTURE_NODE || process.execPath }, encoding: 'utf8', timeout: 15000 });
 fs.writeFileSync(path.join(schedulerDir, 'result.log'), schedulerResult.stdout + schedulerResult.stderr);assert.equal(schedulerResult.status,0, schedulerResult.stderr);assert.match(schedulerResult.stdout,/PASS scheduler routing/);

@@ -27,8 +27,9 @@ function inspectRouteFile(file) {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096) return { problem: 'protected' };
   if (process.platform !== 'win32' && (stat.mode & 0o077)) return { problem: 'permissions' };
+  const text = fs.readFileSync(file, 'utf8');
   let value;
-  try { value = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return { problem: 'json' }; }
+  try { value = JSON.parse(text); } catch { return { problem: 'json' }; }
   try { return { value: decodeMemoryRouteDescriptor(value) }; }
   catch (error) {
     if (error.retiredBackend !== undefined) return { retiredBackend: error.retiredBackend };
@@ -81,8 +82,8 @@ export function preflightMemoryConfig({ stateDir } = {}) {
     if (!directory.isDirectory() || directory.isSymbolicLink()) return decision('corrupt', 'MEMORY_PREFLIGHT_ROUTE_UNPROTECTED', '路由目录不是受保护的普通目录。', '恢复为普通目录并保留原文件；不要在符号链接上继续运行。');
     inspected = inspectRouteFile(file);
   } catch (error) {
-    if (error?.code === 'ENOENT') return decision('corrupt', 'MEMORY_PREFLIGHT_ROUTE_UNREADABLE', '路由文件在预检期间消失。', '重新预检；不要凭猜测重建权限或数据库。');
-    return decision('corrupt', 'MEMORY_PREFLIGHT_ROUTE_UNREADABLE', '读取路由文件失败。', `检查文件权限与磁盘（${error?.code ?? 'IO'}），保留原文件后再预检。`);
+    return decision('unreadable', 'MEMORY_PREFLIGHT_UNREADABLE', `无法读取记忆配置文件（${error?.code ?? 'IO'}）。`,
+      '检查状态目录与文件权限后重新预检；不要删除文件或用空库绕过。', { ioCode: error?.code ?? 'IO' });
   }
 
   if (inspected.retiredBackend !== undefined) {

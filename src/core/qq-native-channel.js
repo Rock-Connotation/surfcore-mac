@@ -4,20 +4,22 @@ const fail = (code, error, hint = '打开 SurfCore 概览检查当前角色、QQ
 const sameRole = (a, b) => a?.id === b?.characterId && a?.epoch === b?.characterEpoch;
 
 /** Private Host transport. Model tools cannot acquire these single-use leases. */
-export function createNativeQQChannel({ memory, getCharacter, getIdentity, isAllowed, send, getCapabilities = () => ({ ok: true, voice: { enabled: false } }), onComplete, now = Date.now }) {
+export function createNativeQQChannel({ memory, getCharacter, getIdentity, isAllowed, getAdmissionRevision = () => 0, send, getCapabilities = () => ({ ok: true, voice: { enabled: false } }), onComplete, now = Date.now }) {
   const jobs = new Map(), leases = new Map();
   function begin(key, role, throughSeq) {
     const old = jobs.get(key);
-    if (old && !old.completed && sameRole(role, old)) return fail('MEMORY_QQ_BUSY', '该会话的上一条 Native 回复仍在处理中。', '等待原回复结束；不要重复提交同一条消息。');
+    if (old && !old.completed && !old.retired && sameRole(role, old)) return fail('MEMORY_QQ_BUSY', '该会话的上一条 Native 回复仍在处理中。', '等待原回复结束；不要重复提交同一条消息。');
     if (!role || !isAllowed(key) || jobs.size >= 256 && !jobs.has(key)) return fail('MEMORY_QQ_REQUEST_INVALID', '无法建立当前 QQ 回复。');
     const request = { key, requestId: randomUUID(), characterId: role.id, characterEpoch: role.epoch };
     old?.controller.abort();
-    jobs.set(key, { ...request, throughSeq, at: now(), completed: false, controller: new AbortController() });
+    jobs.set(key, { ...request, admissionRevision: getAdmissionRevision(), throughSeq, at: now(), completed: false, controller: new AbortController(), authorizations: new Set() });
     return { ok: true, request };
   }
   async function request(body) {
     const job = jobs.get(body?.key);
-    if (!job || body.requestId !== job.requestId || body.characterId !== job.characterId || body.characterEpoch !== job.characterEpoch || !sameRole(getCharacter(), job) || !isAllowed(job.key)) return fail('MEMORY_QQ_JOB_STALE', '该 QQ 回复不属于当前角色或已授权作业。');
+    if (!job || body.requestId !== job.requestId || body.characterId !== job.characterId || body.characterEpoch !== job.characterEpoch || !sameRole(getCharacter(), job)) return fail('MEMORY_QQ_JOB_STALE', '该 QQ 回复不属于当前角色或已授权作业。');
+    if (job.cancelled && ['retire', 'complete'].includes(body.action)) return { ok: true };
+    if (job.cancelled || job.admissionRevision !== getAdmissionRevision() || !isAllowed(job.key)) return fail('MEMORY_QQ_JOB_STALE', '该 QQ 回复已取消或权限已变化。');
     const actions = {
       sources: [], capabilities: [], authorize: ['loginAccountId'], send: ['lease', 'text', 'delivery'],
       record: ['lease', 'text', 'messageId', 'deliveryState', 'delivery'], retire: [], complete: ['ok', 'code', 'error', 'hint'],
@@ -36,23 +38,38 @@ export function createNativeQQChannel({ memory, getCharacter, getIdentity, isAll
       job.retired = true;
       job.controller.abort();
       await memory.retire(job.key, { preserveSources: true });
-      for (const [id, item] of leases) if (item.job === job && item.state === 'authorized') leases.delete(id);
+      for (const [id, item] of leases) if (item.job === job && item.state === 'authorized') {
+        leases.delete(id);
+        const discarded = await memory.discardSend(item.lease);
+        if (!discarded.ok) return discarded;
+      }
       return { ok: true };
     }
-    if (job.completed || job.retired || now() - job.at > 240_000) return fail('MEMORY_QQ_JOB_STALE', '该 QQ 回复已结束或过期。');
+    if (job.completed || job.retired || job.admissionRevision !== getAdmissionRevision() || now() - job.at > 240_000) return fail('MEMORY_QQ_JOB_STALE', '该 QQ 回复已结束或过期。');
     const identity = await getIdentity();
-    if (!identity?.ok || identity.verified !== true || !sameRole(getCharacter(), job) || !isAllowed(job.key)) return fail('MEMORY_QQ_IDENTITY_UNVERIFIED', '无法确认当前 QQ 身份与会话权限。');
+    if (!identity?.ok || identity.verified !== true || !sameRole(getCharacter(), job) || job.cancelled || job.admissionRevision !== getAdmissionRevision() || !isAllowed(job.key)) return fail('MEMORY_QQ_IDENTITY_UNVERIFIED', '无法确认当前 QQ 身份与会话权限。');
     if (body.action === 'sources') return memory.exportNativeSources(job.key);
     if (body.action === 'capabilities') return getCapabilities(job.key);
     if (body.action === 'authorize') {
       if (String(body.loginAccountId) !== String(identity.accountId)) return fail('MEMORY_QQ_IDENTITY_CHANGED', 'QQ 登录账号已变化。');
       for (const [id, item] of leases) if (now() - item.at > 300_000) leases.delete(id);
       if (leases.size >= 256) return fail('MEMORY_QQ_BUSY', '待确认的 QQ 发送回执过多。');
-      const authorized = await memory.authorizeSend({ key: job.key, loginAccountId: identity.accountId });
-      if (!authorized.ok) return authorized;
-      const id = randomUUID();
-      leases.set(id, { job, accountId: identity.accountId, lease: authorized.lease, at: now(), state: 'authorized' });
-      return { ok: true, lease: id };
+      let finish;
+      const pending = new Promise(resolve => { finish = resolve; });
+      job.authorizations.add(pending);
+      let cleanup = { ok: true };
+      try {
+        const authorized = await memory.authorizeSend({ key: job.key, loginAccountId: identity.accountId });
+        if (!authorized.ok) return authorized;
+        if (job.controller.signal.aborted || job.admissionRevision !== getAdmissionRevision() || !isAllowed(job.key)) {
+          cleanup = await memory.discardSend(authorized.lease);
+          return cleanup.ok ? fail('MEMORY_QQ_JOB_STALE', '授权期间作业已退役。') : cleanup;
+        }
+        const id = randomUUID();
+        leases.set(id, { job, accountId: identity.accountId, lease: authorized.lease, at: now(), state: 'authorized' });
+        return { ok: true, lease: id };
+      } catch { cleanup = fail('MEMORY_QQ_RETIRE_FAILED', '发送授权清理失败。'); return cleanup; }
+      finally { job.authorizations.delete(pending); finish(cleanup); }
     }
     const item = leases.get(body.lease);
     if (!item || item.job !== job || item.accountId !== identity.accountId) return fail('MEMORY_SOURCE_LEASE_REQUIRED', '缺少属于当前作业和 QQ 账号的发送租约。');
@@ -85,5 +102,19 @@ export function createNativeQQChannel({ memory, getCharacter, getIdentity, isAll
     if (!item.receipt.ok) return item.receipt;
     return { ok: true, messageId: item.messageId, deliveryState: item.deliveryState, ...(result?.warning?.code && result.warning.hint ? { warning: result.warning } : {}) };
   }
-  return Object.freeze({ begin, request });
+  function cancelAll() {
+    const requests = [], cleanup = [];
+    for (const job of jobs.values()) {
+      if (job.completed || job.retired) continue;
+      job.retired = true;
+      memory.invalidatePreparation?.(job.key);
+      job.cancelled = true;
+      job.controller.abort();
+      for (const [id, item] of leases) if (item.job === job && item.state === 'authorized') { leases.delete(id); cleanup.push(Promise.resolve().then(() => memory.discardSend(item.lease))); }
+      cleanup.push(...job.authorizations);
+      requests.push({ key: job.key, requestId: job.requestId, characterId: job.characterId, characterEpoch: job.characterEpoch });
+    }
+    return { requests, cleanup: Promise.all(cleanup).then(results => results.find(result => !result?.ok) ?? { ok: true }).catch(() => fail('MEMORY_QQ_RETIRE_FAILED', '发送租约撤销失败。')) };
+  }
+  return Object.freeze({ begin, request, cancelAll });
 }

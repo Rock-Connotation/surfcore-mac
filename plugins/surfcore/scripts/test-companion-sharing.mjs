@@ -130,8 +130,7 @@ try {
   assert.equal(ledgerStore.readLedger().roles['"alpha"'].days['2026-11-07'].calls, 1, 'cancel never refunds a reserved request');
   console.log('Companion sharing: persisted dialogue, dedupe, role and shared budget passed');
 } finally {
-  await Promise.race([service.dispose().catch(() => {}), new Promise(resolve => setTimeout(resolve, 3000))]);
-  await Promise.race([v2.close().catch(() => {}), new Promise(resolve => setTimeout(resolve, 3000))]);
+  try { await service.dispose(); } finally { await v2.close(); }
 }
 // 隔离 V2 测试会启动 MemoryService worker；某些 Node 版本下 worker 不随主流程退出。
 // 断言已全部同步完成，限时后显式退出，保证完整插件链不被吊住。

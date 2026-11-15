@@ -41,7 +41,7 @@ function validRefs(refs, cap) {
   return Array.isArray(refs) && refs.length <= cap && refs.every(ref => onlyKeys(ref, ['type', 'id', 'revision', 'payloadDigest']) &&
     ['event', 'memory'].includes(ref.type) && provenanceId(ref.id) && Number.isSafeInteger(ref.revision) && ref.revision >= 1 && /^[a-f0-9]{64}$/.test(ref.payloadDigest));
 }
-function validReceipt(receipt) {
+export function validReceipt(receipt) {
   return onlyKeys(receipt, ['phase', 'ok', 'operationId', 'acceptance', 'sourceState', 'selectionState', 'indexState', 'operationState', 'retry', 'commitSequence', 'eventIds', 'eventRefs', 'nextOffset']) &&
     ['source', 'model-input', 'reflection'].includes(receipt.phase) && receipt.ok === true && provenanceId(receipt.operationId) && receipt.acceptance === 'volatile' &&
     receipt.sourceState === 'committed' && receipt.selectionState === 'not_selected' && receipt.indexState === 'ready' && receipt.operationState === 'completed' && receipt.retry === 'none' &&
@@ -57,7 +57,7 @@ function validProvenance(value, refsCap, receiptsCap) {
     receipts.every(receipt => receipt.eventRefs.every(ref => refs.some(actual => actual.type === ref.type && actual.id === ref.id && actual.revision === ref.revision && actual.payloadDigest === ref.payloadDigest))) &&
     (value.memoryV2Receipt === undefined || (validReceipt(value.memoryV2Receipt) && JSON.stringify(value.memoryV2Receipt) === JSON.stringify(receipts.at(-1))));
 }
-function validateLedger(value) {
+export function validateLedger(value) {
   check(onlyKeys(value, ['version', 'acceptanceCalls', 'roles', 'jobs']) && value.version === 1 && Number.isSafeInteger(value.acceptanceCalls) && value.acceptanceCalls >= 0 && value.acceptanceCalls <= 12 && isRecord(value.roles) && isRecord(value.jobs), 'DOUYIN_STATE_INVALID', '陪伴账本格式无法识别，未重置数据。', '保留账本原件并检查本机状态目录后再试。');
   for (const [key, role] of Object.entries(value.roles)) {
     check(onlyKeys(role, ['characterId', 'acceptedEpoch', 'enabled', 'paused', 'lastError', 'days']) && key === roleKey(role.characterId) && storedText(role.characterId, 160) &&

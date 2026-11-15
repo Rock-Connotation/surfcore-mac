@@ -421,16 +421,16 @@ async function startAndFinish(f, options) {
   await f.api.dispose();
 }
 
-// A delayed V2 reflection ingest receives the job signal and cancellation returns without a late write.
+// A cancelled job ignores a delayed reflection result; real Host commit behavior is tested separately.
 {
-  // V1 的 recordMemory 回调已不在 V2 路径上；这里把「慢记忆写入」注入到真实 adapter.ingest 边界，
-  // 断言取消后不会留下迟到的写入，条目失败可见。
-  let reflectCalls = 0;
+  // 在替身 adapter.ingest 边界阻塞反思结果；真实 Host 的迟到提交另由 host 测试覆盖。
+  // 这里只验证迟到结果不会覆盖已经保存的取消状态。
+  let reflectCalls = 0, releaseReflection;
   const f = fixture({ feedItems: [recommendation()],
     hooks: { ingest: ({ events }) => {
       if (!events.some(event => event.attribution === 'reflection')) return null;
       reflectCalls += 1;
-      return new Promise(() => {});
+      return new Promise(resolve => { releaseReflection = resolve; });
     } } });
   const started = await f.api.start(f.context);
   while (!reflectCalls) await wait(5);
@@ -442,6 +442,11 @@ async function startAndFinish(f, options) {
   assert.equal(job.items[0].memorySaved, false);
   assert.equal(job.items[0].code, 'DOUYIN_CANCELLED');
   assert.equal(f.calls.memory.length, 0, 'V2 路径不得再调用旧 recordMemory');
+  releaseReflection({ ok: false, code: 'MEMORY_HANDLE_STALE', hint: '查询原操作回执。' });
+  await wait(10);
+  const afterLateResult = await finishStored(f.stateDir, started.jobId);
+  assert.equal(afterLateResult.state, 'cancelled');
+  assert.equal(afterLateResult.items[0].memorySaved, false);
   await f.api.dispose();
 }
 
