@@ -10,6 +10,9 @@
       装两份会共用配置与记忆。
 - [ ] 使用**测试 QQ 机器人**，不要连正式号。
 - [ ] 记录基线：当前版本号、DSH 版本、SnowLuma 是否启动。
+- [ ] 用 `node scripts/setup-dsh.mjs <profile>` 装到**全新 profile**（不是 DSH 自己建的 `desktop`/`headless`/`web`）时，
+      安装器会按规则补 `@deepseek-ai/dsh-base` + 外壳 bundle，并打印「profile 不是 DSH 创建的（缺基座 bundle），已补：…」——这是正常的。
+      若你手工建 profile，请自己保证这两个 bundle 在 `dsh.profile.bundles` 里，否则插件会停在 `pending (waiting for service: …)`（见 PITFALLS #156/#157）。
 
 ## 1. 安装稳定版 0.8.6
 

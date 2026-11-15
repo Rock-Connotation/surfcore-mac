@@ -194,3 +194,5 @@
 - [G7 Mac 实机取证（非侵入）：CLI 包装进程的孤儿后代与 SIGTERM 修复](2026-11-15-mac-real-machine-g7-evidence.md)：实机捕到 5 个 `PPID=1` 的 CLI 孤儿（最早 1.9 天），根因是 `plugins/surfcore/tools/bili.mjs` 只转发信号、自己不退出；修成有界退出 + 升级 SIGKILL（先红 7s 挂死 → 修后 3–4s 退出），并把实机环境证据（DSH 自带 node v24.21.0、桌面应用在跑、`~/.dsh/profiles` 三 profile）一并落档。
 
 - [G7 第二阶段：把 SurfCore 装进隔离实例的真实宿主验收](2026-11-15-mac-real-machine-g7-phase2-isolated-host.md)：在 `os.tmpdir()` 的隔离 `HOME`/`DSH_HOME` 里用 `setup-dsh` 装本工作树的 `plugins/surfcore`，再用真实应用二进制起 `@deepseek-ai/dsh-desktop-host`，验收真实 loader 激活 `surfcore` + `qq-mode`、shutdown 后零残留、守门进程内零非回环外联（AC1–AC3/AC6–AC8 PASS；HTTP 健康面与页面渲染记为环境阻断；含 AC9 反向重放红→绿与"隔离 profile 必须补基座 bundle"的坑）。
+
+- [setup-dsh 为全新 profile 补 DSH 基座 bundle](2026-11-15-setup-dsh-base-bundle.md)：修"独立 `DSH_HOME` / 新 profile 装完停在 `pending (waiting for service: …)`、宿主启动失败"——安装器缺基座 bundle 时按名字规则补 `@deepseek-ai/dsh-base` + `dsh-web-app`/`dsh-headless`（幂等、不动已有列表）；隔离宿主验收测试不再自己补基座，改为断言安装器写全（先红 `RED_EXIT=1` → 修后 AC1–AC3/AC6–AC8 PASS）。

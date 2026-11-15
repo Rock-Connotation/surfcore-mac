@@ -1,3 +1,15 @@
+## 2026-11-15 修复：setup-dsh 为全新 profile 补 DSH 基座 bundle（dev，未发布）
+
+**现象**：在独立 `DSH_HOME` / 全新 profile 名上装 SurfCore，装完 profile 的 `dsh.profile.bundles` 只有 `["surfcore"]` → 真实打包宿主里 `surfcore (surfcore): pending (waiting for service: sessionController)`、`qq-mode (…): pending (waiting for service: settings)`，宿主 `StartupError: dsh: startup failed: 1 required plugin did not activate`。
+
+**修法**：`scripts/setup-dsh.mjs` 的 `patchProfilePackage()` 在缺 `@deepseek-ai/dsh-base`（= 这个 profile 不是 DSH 建的）时，于追加自身 bundle 之前前插 `[@deepseek-ai/dsh-base, <外壳>]`（`headless*` → `@deepseek-ai/dsh-headless`，否则 `@deepseek-ai/dsh-web-app`）并打一行可见日志；`scripts/test-surfcore-isolated-host.mjs` 不再自己补基座、改为断言安装器写全（于是它同时是安装路径的常驻回归）；`scripts/test-audit-setup.mjs` 的 fixture 期望值跟进。
+
+**证据**：先红 `RED_EXIT=1`（实际 `["surfcore"]` vs 期望三项）→ 修后 `EXIT=0`（AC1/AC2/AC3/AC6/AC7/AC8 PASS，AC4/AC5 仍环境阻断）；干净 `DSH_HOME` 直证日志 `profile 不是 DSH 创建的（缺基座 bundle），已补：@deepseek-ai/dsh-base, @deepseek-ai/dsh-web-app`；反例（重跑幂等 / 与实机同形的 profile 只追加 `surfcore` / `headless` 取 `dsh-headless`）全过；`npm run test:regressions` 全部通过。
+
+**坑**：`docs/PITFALLS.md` #157（含"夹具替产品兜底会把真问题掩盖成绿"的教训）。
+
+**case**：`docs/cases/2026-11-15-setup-dsh-base-bundle.md`。
+
 ## 2026-11-15 稳定版 `v0.9.0` 已发布（发布会话）
 
 **发布物**：`Rock-Connotation/surfcore-mac` 的 `main` @ `29d8ff9`（Data API 按树上传，tree 与本地 `9424cb7` 逐字节相同 `c710db096d3e8e73cc0bccb62d182e93a2543a1a`）、tag `v0.9.0` @ `29d8ff9`、Release `SurfCore v0.9.0`（`prerelease=false`、`draft=false`、`targetCommitish=main`、`--latest`）。

@@ -16,7 +16,46 @@
 
 > **2026-11-15 稳定版 `v0.9.0` 已发布**：`Rock-Connotation/surfcore-mac` 的 `main` @ `29d8ff9`（tree 与本地 `9424cb7` 逐字节相同）、tag `v0.9.0`、Release `SurfCore v0.9.0`（非 Pre-release、`--latest`）；**下方全部批次随本次发布交付**。三条门禁：清单 `--verify-ref HEAD` 1113/1113 问题 0、远端 `verify-remote-manifest v0.9.0` 一致 1113 / 不符 0 / 缺失 0。
 > **2026-11-15 dev 测试构建**：`v0.9.0-dev.1`（tag / Pre-release @ `c5da206`）仍在测试通道；测试机把更新通道切 **dev** 后点「检查更新」。
-> **本次未交付的已知残余**（详见 `docs/HANDOFF.md` 顶部）：AC4/AC5 需在真桌面外壳内才能取产品级证据；Electron/Chromium 与非 Node 子进程的出站未做系统级审计；`scripts/setup-dsh.mjs` 不为全新 profile 补 `@deepseek-ai/dsh-base`/`dsh-web-app`；`plugins/surfcore/lib/memory-v2-host.mjs:220-223` 取回路径不校验 `frameSamples ∈ 0..3`。
+> **本次未交付的已知残余**（详见 `docs/HANDOFF.md` 顶部）：AC4/AC5 需在真桌面外壳内才能取产品级证据；Electron/Chromium 与非 Node 子进程的出站未做系统级审计；`plugins/surfcore/lib/memory-v2-host.mjs:220-223` 取回路径不校验 `frameSamples ∈ 0..3`。（`scripts/setup-dsh.mjs` 的基座 bundle 缺口已在 2026-11-15 第二批修复，见下。）
+
+### 2026-11-15 第二批：setup-dsh 为全新 profile 补 DSH 基座 bundle
+
+**建议**：**patch**（修复：独立 `DSH_HOME` / 全新 profile 装完不再停在 `pending`；已由 DSH 创建的 profile 行为逐字不变）。
+
+**改了什么**：
+- `scripts/setup-dsh.mjs`：`patchProfilePackage()` 在 `dsh.profile.bundles` 缺 `@deepseek-ai/dsh-base`（= 这个 profile 不是 DSH 建的）时，于追加自身 bundle **之前**前插 `[@deepseek-ai/dsh-base, <外壳>]`（profile 名含 `headless` → `@deepseek-ai/dsh-headless`，否则 `@deepseek-ai/dsh-web-app`），并打印一行可见日志；幂等、不改已有列表顺序。
+- `scripts/test-surfcore-isolated-host.mjs`：不再由测试自己补基座，改为断言安装器写全 → 这条 Darwin 门禁测试变成安装路径的常驻回归。
+- `scripts/test-audit-setup.mjs`：fixture 就是"非 DSH 创建"的 profile，期望值跟进（关键断言仍是既有 bundle 未丢、`surfcore` 追加、顺序不重排）。
+- case：`docs/cases/2026-11-15-setup-dsh-base-bundle.md`（七步完整逻辑 + 先红后绿 + 反例）。
+
+**为什么**：G7 第二阶段在真实打包宿主里看到 `surfcore`/`qq-mode` 停在 `pending (waiting for service: sessionController|settings)`，根因是安装器给全新 profile 只写了 `surfcore`；基座 bundle 只在 DSH 自己创建 profile 时写入（实机 `desktop`/`headless`/`web` 三个 profile 的第一项都是 `@deepseek-ai/dsh-base`）。详见 `docs/PITFALLS.md` #156 / #157。
+
+**覆盖提交**：`（提交后回填）`（dev）
+
+**验证**：
+```text
+node scripts/test-surfcore-isolated-host.mjs   # 未修 RED_EXIT=1（实际 bundles=["surfcore"]）；修后 EXIT=0，AC1/AC2/AC3/AC6/AC7/AC8 PASS
+npm run test:regressions                       # 全部通过
+node scripts/test-audit-setup.mjs              # exit 0（期望值跟进后）
+node scripts/test-setup-dsh-idempotent.mjs     # ✅ setup-dsh.mjs 幂等性测试通过
+node scripts/test-setup-dsh-package.mjs        # PASS packaged setup preserves installed bundle…
+HOME=/tmp/h DSH_HOME=/tmp/h/.dsh QQ_BRIDGE_SKIP_DSH_INSTALL=1 node scripts/setup-dsh.mjs freshprofile
+                                               # 日志：[setup-dsh] profile 不是 DSH 创建的（缺基座 bundle），已补：…
+                                               # bundles = ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","surfcore"]
+```
+
+**可直接转发的交接块**
+
+```text
+[SurfCore dev 批次] 修复：setup-dsh 给全新 profile 补 DSH 基座 bundle
+- 建议版本：patch
+- 覆盖提交：（提交后回填）（dev）
+- 用户可见：在独立 DSH_HOME 或新 profile 名上装 SurfCore，装完就能在宿主里激活；
+  此前 bundles 只写 surfcore，插件行停在 pending (waiting for service: …)、宿主以“1 个必需插件未激活”启动失败。
+- 验证：node scripts/test-surfcore-isolated-host.mjs exit 0（真实打包宿主 + 隔离 DSH_HOME）；
+  npm run test:regressions 全部通过；scripts/test-audit-setup.mjs / test-setup-dsh-idempotent.mjs exit 0。
+- case：docs/cases/2026-11-15-setup-dsh-base-bundle.md
+```
 
 ### 历史批次（勿用于发布）：V1 退役破坏式重构第一批
 

@@ -4598,3 +4598,16 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 **怎么验证**：`node scripts/test-surfcore-isolated-host.mjs` → 只看 `['surfcore']` 时 `RED_EXIT=1` 且宿主 `TypeError: Cannot read properties of undefined (reading 'authenticatedUrl')`（`AC2 FAIL`）；补上基座后 `EXIT=0`、`[surfcore] 已激活 v0.9.0-dev.1`。
 
 **附带发现**：DSH web 面对回环请求**一律 401**（本机六种认证方式都试过：无认证 / `?token=` / Bearer / `x-dsh-token` / 先取登录页 cookie 再带 cookie），会话 token 由桌面外壳经 IPC 注入——所以"隔离宿主里用 curl 打 SurfCore 的 HTTP 面"这条路走不通，只能记为环境阻断；要产品级证据得在真桌面外壳内做只读验收。
+
+## #157（2026-11-15，P1）安装器给全新 profile 只写 `surfcore` 一个 bundle——装完必然停在 `pending`，而测试自己补基座把它掩盖了
+
+**现象**：`HOME=<tmp> DSH_HOME=<tmp>/.dsh node scripts/setup-dsh.mjs <新 profile>` 全绿（exit 0、`dsh plugin --profile <新 profile> install: OK`），但该 profile 的 `dsh.profile.bundles` 只有 `["surfcore"]`；用真实打包宿主起这个 profile → `surfcore (surfcore): pending (waiting for service: sessionController)`、`qq-mode (…/qq-mode/index.js): pending (waiting for service: settings)`，宿主最后 `StartupError: dsh: startup failed: 1 required plugin did not activate`。
+
+**根因**：`scripts/setup-dsh.mjs` 的 `patchProfilePackage()` 在 profile `package.json` 不存在时用模板 `dsh.profile.bundles = []`，随后只 push `BUNDLE_NAMES = ['surfcore']`；而 `@deepseek-ai/dsh-base`（+ 外壳 `@deepseek-ai/dsh-web-app` / `@deepseek-ai/dsh-headless`）只在 **DSH 自己创建 profile** 时才写入（实机 `desktop`/`headless`/`web` 三个 profile 的 bundles 第一项都是 `@deepseek-ai/dsh-base`）。更糟的是 `scripts/test-surfcore-isolated-host.mjs` 旧代码**自己**把 bundles 写成三项，等于替安装器兜底 → 测试一直是绿的（见 #156）。
+
+**处置 / 预防**：
+1. `patchProfilePackage()` 里"基座缺失（= 这个 profile 不是 DSH 建的）就在追加 `links` 之前前插 `[base, surface]`"，外壳按 profile 名选（`/headless/i` → `@deepseek-ai/dsh-headless`，否则 `@deepseek-ai/dsh-web-app`），打一行可见日志；幂等、不动已有列表顺序。
+2. 测试不再自己补基座，改为断言安装器写全（`scripts/test-surfcore-isolated-host.mjs`）——否则"夹具替产品兜底"会再次掩盖同类问题。
+3. 反例守住"不该动的不动"：重跑同一 profile 补基座日志 0 行；与实机同形的 profile（基座已在）只把 `surfcore` 追加到末尾；`setup-dsh headless` 用 `dsh-headless`。
+
+**怎么验证**：`node scripts/test-surfcore-isolated-host.mjs` → 未修时 `RED_EXIT=1`（`AssertionError`：实际 `["surfcore"]` vs 期望 `["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","surfcore"]`）；修后 `EXIT=0`（AC1/AC2/AC3/AC6/AC7/AC8 PASS）。直证：`HOME=/tmp/h DSH_HOME=/tmp/h/.dsh QQ_BRIDGE_SKIP_DSH_INSTALL=1 node scripts/setup-dsh.mjs freshprofile` → `[setup-dsh] profile 不是 DSH 创建的（缺基座 bundle），已补：@deepseek-ai/dsh-base, @deepseek-ai/dsh-web-app`。已装坏的既有 profile 不自愈，需重跑安装器。
