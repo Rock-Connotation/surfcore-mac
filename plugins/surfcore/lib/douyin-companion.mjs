@@ -3,7 +3,7 @@ import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing
 import { createCompanionMemory } from './douyin-companion-memory.mjs';
 import { COMPANION_ROUTE } from './douyin-companion-model.mjs';
 import crypto from 'node:crypto';
-import { createDouyinCompanionStore } from './douyin-companion-ledger.mjs';
+import { createDouyinCompanionStore, validateLedger } from './douyin-companion-ledger.mjs';
 import { buildDouyinReflectionSystem, parseDouyinReflection } from './douyin-companion-reflection.mjs';
 import {
   CompanionError, problem, check, isRecord, safeCode as legacySafeCode, safeDisplayText, scrubPromptText,
@@ -254,6 +254,20 @@ export function createDouyinCompanion({
       hint: '已预留请求不会返还；检查保留结果后手动决定是否重新验收。',
     };
   }
+  const fixedIssue = code => {
+    const known = {
+      DOUYIN_FEED_FAILED: ['读取首页推荐失败。', '检查登录账号和推荐页状态后重新手动验收。'],
+      DOUYIN_NO_QUALIFIED_MATERIAL: ['首页推荐没有合格素材。', '检查首页推荐是否可用；没有合格素材时不会调用模型或记为观看。'],
+      DOUYIN_FRAMES_UNAVAILABLE: ['没有可用稀疏画面采样。', '补齐本机画面采样后再验收；音频单独不足以完成本轮。'],
+      DOUYIN_TRANSCRIPT_EMPTY: ['没有可确认的语音转写。', '选择含可辨语音的推荐视频后再验收。'],
+      DOUYIN_MODEL_FAILED: ['模型调用失败。', '检查模型服务与请求账本；不会自动客户端重试。'],
+      DOUYIN_MEMORY_TIMEOUT: ['记忆写入等待超时，活动已停止。', '检查 Host 记忆服务与请求状态；不会自动重复写入。'],
+      DOUYIN_CHAT_SAVE_UNCERTAIN: ['作业终态未确认保存。', '保留现有记录并核对原回执，不要重复发送。'],
+      DOUYIN_INTERRUPTED: ['进程重启打断了上轮活动。', '已预留请求不会返还；查看保留结果后手动决定是否重新验收。'],
+      DOUYIN_CANCELLED: ['这次活动已取消。', '查看已保留结果与用量；不会自动重发。'],
+    }[code] ?? ['这次活动未完成。', '刷新日记查看固定错误码与下一步；原始诊断只在受权通道保留。'];
+    return { code: code || 'DOUYIN_JOB_INCOMPLETE', error: known[0], hint: known[1] };
+  };
   function publicError(value) {
     if (!value) return null;
     return { code: safeCode(value.code), error: safeDisplayText(value.error, 240) || '陪伴活动未能完成。', hint: safeDisplayText(value.hint, 300) || '查看失败阶段并检查本地依赖后再手动操作。' };
@@ -342,10 +356,20 @@ export function createDouyinCompanion({
   }
   function retainProvenance(job, item, saved, phase) {
     const receipt = { ...saved.receipt, phase };
-    for (const target of [job, item]) {
+    const candidate = structuredClone(localLedger);
+    const candidateJob = candidate.jobs[job.jobId];
+    const candidateItem = candidateJob.items[job.items.indexOf(item)];
+    for (const target of [candidateJob, candidateItem]) {
       target.memoryV2Refs = [...(target.memoryV2Refs ?? []), ...saved.refs];
       target.memoryV2Receipts = [...(target.memoryV2Receipts ?? []), receipt];
       target.memoryV2Receipt = receipt;
+    }
+    try { validateLedger(candidate); }
+    catch { throw problem('MEMORY_SOURCE_RECEIPT_INVALID', 'Host回执无法安全并入作业状态。', '用原操作编号查询回执；来源可能已提交，不会重新提交。'); }
+    for (const [target, source] of [[job, candidateJob], [item, candidateItem]]) {
+      target.memoryV2Refs = source.memoryV2Refs;
+      target.memoryV2Receipts = source.memoryV2Receipts;
+      target.memoryV2Receipt = source.memoryV2Receipt;
     }
   }
   async function processOne(job, context, entry, index, sharedContext, trustedPersona = '') {
@@ -605,6 +629,7 @@ export function createDouyinCompanion({
         // 不把失败写回 job 后再次尝试保存（那会用同一个非法对象重试）。
         // 内存保留原 operationId / 来源回执 / 固定诊断，供 status 查询。
         terminalFailures.set(job.jobId, {
+          jobId: job.jobId, characterId: job.characterId, characterEpoch: job.characterEpoch,
           code: 'DOUYIN_CHAT_SAVE_UNCERTAIN',
           error: '作业终态未确认保存，原来源与回执保留。',
           hint: '保留原操作编号并查询回执；磁盘状态以最后有效对象为准，不会自动重跑或退款。',
@@ -714,20 +739,6 @@ export function createDouyinCompanion({
       // 仍然必须满足来源与授权。
       // F10：无 proof 时 error/hint 只能来自「固定 code → 固定用户提示」白名单，
       // 任意依赖/模型正文不得作为控制元数据直出（可能含未授权内容）。
-      const fixedIssue = code => {
-        const known = {
-          DOUYIN_FEED_FAILED: ['读取首页推荐失败。', '检查登录账号和推荐页状态后重新手动验收。'],
-          DOUYIN_NO_QUALIFIED_MATERIAL: ['首页推荐没有合格素材。', '检查首页推荐是否可用；没有合格素材时不会调用模型或记为观看。'],
-          DOUYIN_FRAMES_UNAVAILABLE: ['没有可用稀疏画面采样。', '补齐本机画面采样后再验收；音频单独不足以完成本轮。'],
-          DOUYIN_TRANSCRIPT_EMPTY: ['没有可确认的语音转写。', '选择含可辨语音的推荐视频后再验收。'],
-          DOUYIN_MODEL_FAILED: ['模型调用失败。', '检查模型服务与请求账本；不会自动客户端重试。'],
-          DOUYIN_MEMORY_TIMEOUT: ['记忆写入等待超时，活动已停止。', '检查 Host 记忆服务与请求状态；不会自动重复写入。'],
-          DOUYIN_CHAT_SAVE_UNCERTAIN: ['作业终态未确认保存。', '保留现有记录并核对原回执，不要重复发送。'],
-          DOUYIN_INTERRUPTED: ['进程重启打断了上轮活动。', '已预留请求不会返还；查看保留结果后手动决定是否重新验收。'],
-          DOUYIN_CANCELLED: ['这次活动已取消。', '查看已保留结果与用量；不会自动重发。'],
-        }[code] ?? ['这次活动未完成。', '刷新日记查看固定错误码与下一步；原始诊断只在受权通道保留。'];
-        return { code: code || 'DOUYIN_JOB_INCOMPLETE', error: known[0], hint: known[1] };
-      };
       const safeIssue = row => {
         const code = safeCode(row?.code);
         return fixedIssue(code);
@@ -767,6 +778,8 @@ export function createDouyinCompanion({
         return null;
       };
       if (Array.isArray(value.recentJobs)) {
+        const lastError = value.daily.lastError ? safeIssue(value.daily.lastError) : null;
+        value.daily = { ...value.daily, lastError, windows: Object.fromEntries(Object.entries(value.daily.windows).map(([key, entry]) => [key, { ...entry, error: entry.error ? safeIssue(entry.error) : null }])) };
         value = { ...value, recentJobs: value.recentJobs.map(safeJob).filter(Boolean), activeJob: safeJob(value.activeJob) };
         const visible = new Set(value.recentJobs.map(job => job.jobId));
         value.daily = { ...value.daily, windows: Object.fromEntries(Object.entries(value.daily.windows).filter(([, entry]) => visible.has(entry.jobId))) };
@@ -806,18 +819,18 @@ export function createDouyinCompanion({
     const isAccepted = roleState?.acceptedEpoch === role.epoch;
     const lockActive = store.lockOwnerActive;
     if (lockActive === null) return callIssue(problem('DOUYIN_LOCK_INVALID', '无法确认陪伴账本锁状态，已停止展示可操作状态。', '检查本机状态目录和锁文件权限；保留数据并确认实例归属后再操作。'));
-    const interruptedDaily = lockActive === false ? Object.values(ledger.jobs).find(job => job.characterId === role.id && job.mode === 'daily' && ACTIVE.has(job.state)) : null;
+    const activeFailure = [...terminalFailures.values()].find(row => row.characterId === role.id && row.characterEpoch === role.epoch && ledger.jobs[row.jobId]) ?? null;
+    const interruptedDaily = lockActive === false ? Object.values(ledger.jobs).find(job => job.characterId === role.id && job.characterEpoch === role.epoch && job.jobId !== activeFailure?.jobId && job.mode === 'daily' && ACTIVE.has(job.state)) : null;
     const visibleJobs = Object.values(ledger.jobs)
       .filter(job => job.characterId === role.id && job.characterEpoch === role.epoch)
       .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
       .slice(0, 8)
-      .map(job => projectRecoverableJob(job, lockActive));
+      .map(job => job.jobId === activeFailure?.jobId ? { ...projectJob(job), state: activeFailure.state, phase: activeFailure.phase, ...fixedIssue(activeFailure.code) } : projectRecoverableJob(job, lockActive));
     const localActive = activeJob && activeJob.characterId === role.id && activeJob.characterEpoch === role.epoch ? projectJob(activeJob) : null;
     const paused = roleState?.paused === true || !!interruptedDaily;
     // R08：即使作业没有任何来源证明，失败也必须出现在用户当前入口。
     // 优先用角色账本里的 lastError；否则回退到最近一次失败/中断作业的固定码与清洗 hint。
     const failedJob = visibleJobs.find(job => ['failed', 'interrupted'].includes(job.state) && job.code);
-    const activeFailure = [...terminalFailures.values()].find(row => visibleJobs.some(job => job.jobId === row.jobId) || activeJob?.jobId === row.jobId) ?? null;
     const lastError = activeFailure ? publicError(activeFailure)
       : publicError(roleState?.lastError)
       ?? (interruptedDaily ? publicError({ code: 'DOUYIN_INTERRUPTED', error: '进程重启打断了日常活动。', hint: '已预留请求不会返还；查看保留结果并通过configure显式恢复。' })

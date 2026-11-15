@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { COMPANION_ROUTE } from './douyin-companion-model.mjs';
+import { validReceipt } from './douyin-companion-ledger.mjs';
 import { readMemoryRouting, deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
 import { buildCharacterContext, prepareCharacterContext } from '../../../src/core/context.js';
 import { appendExperienceEvent } from '../../../src/core/experience.js';
@@ -67,6 +68,7 @@ export function createCompanionMemory({ getCharacter, maintainMemory, stateDir =
       && Array.isArray(receipt.eventIds) && receipt.eventIds.length === refs.length
       && refs.every(validRef) && refs.every(ref => receipt.eventIds.includes(ref.id));
     if (!complete) return requireOk(failure('MEMORY_SOURCE_RECEIPT_INVALID', 'Host回执字段不完整，未能并入作业状态。', '用原操作编号查询回执；来源可能已提交，不会重新 ingest 或改写作废状态。'));
+    if (!validReceipt({ ...receipt, phase: 'source' })) return requireOk(failure('MEMORY_SOURCE_RECEIPT_INVALID', 'Host回执字段不完整，未能并入作业状态。', '用原操作编号查询回执；来源可能已提交，不会重新 ingest 或改写作废状态。'));
     await requireOk(adapter.bindActualInput(session.handle, refs));
     session.refs.push(...refs); session.receipts.push(receipt);
     return { ok: true, refs, receipt };
