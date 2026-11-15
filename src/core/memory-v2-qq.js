@@ -30,7 +30,8 @@ function save(file, value) {
 export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () => readMemoryRouting({ stateDir }), client = createMemoryClient({ stateDir, scope: 'qq', getCharacter }), prepareContext = prepareCharacterContext, getSessionMemorySafety = () => false } = {}) {
   if (!stateDir || typeof getCharacter !== 'function') throw new TypeError('QQ memory requires stateDir and a synchronous getCharacter.');
   const directory = path.join(stateDir, 'memory-v2', 'qq-producer');
-  const latest = new Map(), history = new Map(), active = new Map(), failures = new Map(), sendLeases = new WeakMap();
+  const latest = new Map(), history = new Map(), active = new Map(), failures = new Map(), sendLeases = new WeakMap(), preparationRevision = new Map();
+  function invalidatePreparation(key) { const next = (preparationRevision.get(key) ?? 0) + 1; preparationRevision.set(key, next); return next; }
   let sourceChain = Promise.resolve();
   async function release(handle) { try { await client.release(handle); } catch {} }
   function routing() {
@@ -144,6 +145,8 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     sourceChain = task.catch(() => {}); return task;
   }
   async function prepareReply({ key, query } = {}) {
+    const ticket = invalidatePreparation(key);
+    const currentPreparation = () => preparationRevision.get(key) === ticket;
     let captured;
     try {
       const role = roleOf(getCharacter), route = requireRoute();
@@ -176,7 +179,9 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
       const currentText = sourceText(current), retrievalQuery = typeof query === 'string' ? redactContent(query, { scope: 'qq' }) : currentText;
       const prepared = await prepareContext({ characterId: role.id, characterEpoch: role.epoch, scene: 'qq', audience: { channel: 'qq', conversationKey: current.sourceStamp.conversationKey }, includeLife: false, includePurpose: false }, { adapter: client, handle: captured.handle, query: retrievalQuery }); checkRole(role);
       if (!prepared?.ok) return prepared ?? problem('MEMORY_PREPARATION_FAILED', 'QQ memory preparation did not complete.');
+      if (!currentPreparation()) return problem('MEMORY_QQ_ADMISSION_CANCELLED', 'The QQ preparation was superseded or cancelled.');
       const previous = active.get(key); if (previous?.handle) await release(previous.handle);
+      if (!currentPreparation()) return problem('MEMORY_QQ_ADMISSION_CANCELLED', 'The QQ preparation was superseded or cancelled.');
       const packet = { handle: captured.handle, preparedHandle: prepared.preparedHandle, role, route: digest(route.descriptor ?? route), sourceStamp: captured.sourceStamp, inputManifest: prepared.inputManifest, source: current, selectedSources: structuredClone(selected) };
       active.set(key, packet); captured = null;
       const lines = selected.map((entry) => `${entry.sourceFacts.direction === 'outbound' ? '角色' : entry.sourceStamp.sourceAccountKey}：${sourceText(entry)}`);
@@ -283,6 +288,16 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     } catch (error) { return safeError(error); }
     finally { if (captured?.handle) await release(captured.handle); }
   }
+  async function discardSend(lease) {
+    const approved = sendLeases.get(lease);
+    if (!approved) return { ok: true, discarded: false };
+    invalidatePreparation(approved.key);
+    sendLeases.delete(lease);
+    try {
+      const released = await client.release(approved.captured.handle);
+      return released?.ok ? { ok: true, discarded: true } : (released ?? problem('MEMORY_QQ_RETIRE_FAILED', 'The outgoing source handle could not be released.'));
+    } catch { return problem('MEMORY_QQ_RETIRE_FAILED', 'The outgoing source handle could not be released.'); }
+  }
   function recordSent(lease, { text, messageId = null, deliveryState = 'delivery_unknown' } = {}) {
     const approved = sendLeases.get(lease);
     if (!approved) return Promise.resolve(problem('MEMORY_SOURCE_LEASE_REQUIRED', 'The outbound source has no private pre-send authorization lease.'));
@@ -290,7 +305,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     const task = sourceChain.then(() => recordSource({ key: approved.key, ...approved.facts, text, platformMessageId: messageId, deliveryState, expectedCharacter: approved.role }, approved));
     sourceChain = task.catch(() => {}); return task;
   }
-  async function retire(key, { preserveSources = false } = {}) { const packet = active.get(key); active.delete(key); if (!preserveSources) { latest.delete(key); history.delete(key); } if (packet?.handle) await release(packet.handle); }
+  async function retire(key, { preserveSources = false } = {}) { invalidatePreparation(key); const packet = active.get(key); active.delete(key); if (!preserveSources) { latest.delete(key); history.delete(key); } if (packet?.handle) await release(packet.handle); }
   async function drainPending(key) {
     await sourceChain;
     const records = [];
@@ -315,5 +330,5 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     }
     return { ok: outcomes.every((result) => result.ok), outcomes };
   }
-  return Object.freeze({ routing, captureSource, prepareReply, validate, exportNativeSources, validateSessionSafety, authorizeSend, recordSent, retire, drainPending, status: (key) => ({ sourceState: latest.get(key)?.sourceState ?? 'not_saved', active: active.has(key), failure: failures.get(key) ?? null }) });
+  return Object.freeze({ routing, captureSource, prepareReply, invalidatePreparation, validate, exportNativeSources, validateSessionSafety, authorizeSend, discardSend, recordSent, retire, drainPending, status: (key) => ({ sourceState: latest.get(key)?.sourceState ?? 'not_saved', active: active.has(key), failure: failures.get(key) ?? null }) });
 }

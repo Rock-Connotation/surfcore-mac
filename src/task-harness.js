@@ -262,6 +262,13 @@ export function createTaskHarness({
       throw new Error(`Task ${task.taskId} is cancelled or not found.`);
     }
 
+    if (activeTask.delivery?.status === 'delivered') {
+      return { ok: true, status: 'delivered', messageId: activeTask.delivery.messageId, idempotent: true };
+    }
+    if (['delivery_unknown', 'rejected'].includes(activeTask.delivery?.status)) {
+      return { ok: false, status: 'delivery_unknown', code: 'OWNER_REPLY_UNKNOWN', error: '此前的送达结果未知。', hint: '查询平台消息和任务状态，不要自动重发。' };
+    }
+
     if (!activeTask.artifact) {
       throw new Error(`Task ${task.taskId} has no generated artifact to deliver.`);
     }
@@ -295,11 +302,21 @@ export function createTaskHarness({
         platform,
         conversationKey,
         text: messageText,
+        taskId: task.taskId,
+        phase: 'delivery',
         artifact: activeTask.artifact
       });
 
-      if (sendReceipt?.ok === false) {
-        throw new Error(sendReceipt.error || 'Platform send rejected');
+      if (ledger.getTask(task.taskId)?.status === 'cancelled') {
+        const acknowledged = sendReceipt?.ok === true && sendReceipt?.delivery === 'delivered' && sendReceipt?.messageId != null;
+        ledger.updateTask(task.taskId, { delivery: { platform, targetKey: conversationKey, status: acknowledged ? 'delivered' : 'delivery_unknown', messageId: acknowledged ? sendReceipt.messageId : null, at: now() } });
+        return { ok: false, status: 'cancelled', code: 'TASK_CANCELLED', error: '任务在回执期间已取消。', hint: '查询平台消息和任务状态，不要自动重发。' };
+      }
+      if ((sendReceipt?.delivery && sendReceipt.delivery !== 'delivered') || sendReceipt?.ok !== true || sendReceipt?.messageId == null) {
+        const rejected = sendReceipt?.delivery === 'rejected';
+        const result = { ok: false, status: rejected ? 'rejected' : 'delivery_unknown', code: sendReceipt?.code || (rejected ? 'OWNER_REPLY_REJECTED' : 'OWNER_REPLY_UNKNOWN'), error: sendReceipt?.error || '送达结果未知。', hint: sendReceipt?.hint || '查询任务和平台消息，不要自动重发。' };
+        ledger.updateTask(task.taskId, { status: 'unknown', error: result.error, delivery: { platform, targetKey: conversationKey, status: result.status, messageId: null, error: result.error, at: now() } });
+        return result;
       }
 
       ledger.updateTask(task.taskId, {
@@ -327,12 +344,12 @@ export function createTaskHarness({
           at: now()
         }
       });
-      return { ok: false, status: 'delivery_unknown', error: err.message };
+      return { ok: false, status: 'delivery_unknown', code: 'OWNER_REPLY_UNKNOWN', error: err.message, hint: '查询任务和平台消息，不要自动重发。' };
     }
   }
 
   // 5. 编排端到端任务运行流水线
-  async function runTaskPipeline({ requestor, goal, urls = [], findings = [] }) {
+  async function runTaskPipeline({ requestor, goal, urls = [], findings = [], taskId }) {
     // 准入检查
     const admission = checkAdmission({ requestor });
     if (!admission.ok) {
@@ -341,11 +358,22 @@ export function createTaskHarness({
 
     // 创建或复用任务
     const task = ledger.createTask({
+      ...(taskId ? { taskId } : {}),
       goal,
       type: 'research',
       requestor,
       steps: ['admission', 'research', 'synthesis', 'delivery']
     });
+
+    if (task.requestor?.conversationKey !== requestor.conversationKey || String(task.requestor?.userId) !== String(requestor.userId) || task.goal !== goal) {
+      return { ok: false, status: 'rejected', code: 'TASK_OWNER_MISMATCH', error: '任务归属或目标不匹配。', hint: '查询原任务后使用正确的请求身份。' };
+    }
+    if (task.status === 'cancelled') {
+      return { ok: false, taskId: task.taskId, status: 'cancelled', code: 'TASK_CANCELLED', error: '任务已取消。', hint: '查询任务状态；如需执行请新建任务。' };
+    }
+    if (['delivery_unknown', 'rejected'].includes(task.delivery?.status)) {
+      return { ok: false, taskId: task.taskId, status: 'unknown', code: 'OWNER_REPLY_UNKNOWN', error: '此前的送达结果尚未确认。', hint: '查询平台消息和任务状态，不要自动重发。' };
+    }
 
     // 若已经是已完成任务（幂等），直接返回原回执
     if (task.status === 'completed' && task.artifact && task.delivery?.status === 'delivered') {
@@ -365,11 +393,14 @@ export function createTaskHarness({
       return {
         ok: delivery.ok,
         taskId: task.taskId,
-        status: delivery.status === 'delivered' ? 'completed' : 'unknown',
+        status: delivery.status === 'delivered' ? 'completed' : delivery.status === 'cancelled' ? 'cancelled' : 'unknown',
         artifact,
         delivery
       };
     } catch (error) {
+      if (ledger.getTask(task.taskId)?.status === 'cancelled') {
+        return { ok: false, taskId: task.taskId, status: 'cancelled', code: 'TASK_CANCELLED', error: '任务已取消。', hint: '查询任务状态；如需执行请新建任务。' };
+      }
       log(`[Harness] Pipeline failure: ${error.message}`);
       ledger.updateTask(task.taskId, {
         status: 'failed',

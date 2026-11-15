@@ -141,7 +141,7 @@ export function createQQV2ReplyHost({ ctx, memoryV2, tokenBudget, getCharacter, 
     const current = getCharacter();
     if (!request || !/^(group|private):[1-9][0-9]{0,19}$/.test(request.key ?? '') || !/^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/.test(request.requestId ?? '') || request.characterId !== current?.id || request.characterEpoch !== current?.epoch) return fail('CHARACTER_EPOCH_STALE', '该请求不属于当前角色或有效的 QQ 会话。');
     const prior = receipts.get(request.requestId);
-    if (prior) return JSON.stringify(prior.request) === JSON.stringify(request) ? prior.accepted : fail('MEMORY_QQ_REQUEST_REUSE', '该请求编号已属于另一作业。');
+    if (prior) return prior.cancelled ? fail('CHARACTER_EPOCH_STALE', '该 QQ 作业已取消。') : JSON.stringify(prior.request) === JSON.stringify(request) ? prior.accepted : fail('MEMORY_QQ_REQUEST_REUSE', '该请求编号已属于另一作业。');
     if (pending.has(request.key) || pending.size >= 16) return fail('MEMORY_QQ_BUSY', '等待原回复结束，不要重复提交。');
     // Never evict a processed ID and then execute it again in this Host lifetime.
     if (receipts.size >= 4096) return fail('MEMORY_QQ_RECEIPTS_FULL', '本机作业回执已达上限；核对待处理作业后重启宿主。');
@@ -149,6 +149,24 @@ export function createQQV2ReplyHost({ ctx, memoryV2, tokenBudget, getCharacter, 
     receipts.set(req.requestId, state); pending.set(req.key, state);
     state.promise = run(req, state);
     return accepted;
+  }
+  async function cancel(request) {
+    const current = getCharacter();
+    if (request?.characterId !== current?.id || request?.characterEpoch !== current?.epoch) return fail('CHARACTER_EPOCH_STALE', '该请求不属于当前角色。');
+    let state = receipts.get(request.requestId);
+    if (state && JSON.stringify(state.request) !== JSON.stringify(request)) return fail('CHARACTER_EPOCH_STALE', '该请求不属于当前作业。');
+    if (!state) {
+      if (receipts.size >= 4096) return fail('MEMORY_QQ_HOST_UNAVAILABLE', '本机作业回执已达上限。');
+      state = { request: Object.freeze({ ...request }), cancelled: true };
+      receipts.set(request.requestId, state);
+    }
+    state.cancelled = true;
+    try {
+      if (state.owner) await state.owner.retire();
+      if (state.promise) await state.promise;
+      if (state.cleanupFailed) return fail('MEMORY_QQ_RETIRE_FAILED', 'Native 作业清理尚未确认。');
+    } catch { return fail('MEMORY_QQ_RETIRE_FAILED', 'Native 作业取消尚未确认。'); }
+    return { ok: true, cancelled: true, requestId: request.requestId };
   }
   async function retire() {
     if (transition) return transition;
@@ -165,5 +183,5 @@ export function createQQV2ReplyHost({ ctx, memoryV2, tokenBudget, getCharacter, 
     })();
     try { return await transition; } finally { transition = null; }
   }
-  return Object.freeze({ submit, retire, async close() { closed = true; return retire(); }, async whenIdle() { await Promise.all([...pending.values()].map(state => state.promise)); }, getReceipt(id) { return receipts.get(id)?.result ?? null; } });
+  return Object.freeze({ submit, cancel, retire, async close() { closed = true; return retire(); }, async whenIdle() { await Promise.all([...pending.values()].map(state => state.promise)); }, getReceipt(id) { return receipts.get(id)?.result ?? null; } });
 }

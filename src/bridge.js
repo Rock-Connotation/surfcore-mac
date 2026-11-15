@@ -1868,6 +1868,7 @@ async function main() {
   const nativeQQ = createNativeQQChannel({ memory: qqMemory, getCharacter: readCurrentCharacter,
     getIdentity: readOfficialMemoryQQIdentity,
     isAllowed: key => usesMemoryV2() && !modeBlocked && isSessionAllowedInCurrentMode(key) && !shouldBlockSilentReply(key),
+    getAdmissionRevision: () => modeRevision,
     send: sendNativeQQReply,
     getCapabilities: getNativeQQCapabilities,
     onComplete: async (job, result) => {
@@ -1884,35 +1885,57 @@ async function main() {
   const taskLedger = createTaskLedger({ stateDir: STATE_DIR });
   /**
    * F02：owner 管理回执专用传输。只允许 Task Harness / bridge 自身的管理路径调用；
-   * 保留 captureSendGuard 的白名单与模式门禁、owner 准入由调用方 checkAdmission 完成，
+   * owner 准入由调用方 checkAdmission 完成，发送前核对目标、账号、角色、模式和任务状态，
    * 平台 ACK 缺失记 unknown，不伪造 session/safety 证明、不自动重发。
    */
-  async function sendOwnerManagementReply({ conversationKey, text, taskId, phase }) {
-    const ticket = `${taskId ?? 'owner'}:${phase ?? 'reply'}:${crypto.randomUUID()}`;
-    const [kind, id] = String(conversationKey).split(':');
-    if (!/^(group|private):[1-9][0-9]{0,19}$/.test(String(conversationKey))) {
-      return { ok: false, code: 'OWNER_REPLY_TARGET_INVALID', error: '管理回执目标无效。', hint: '检查任务归属的会话键。' };
+  async function sendOwnerManagementReply({ conversationKey, text: message, taskId, phase, system = false }) {
+    const match = /^(group|private):([1-9][0-9]{0,19})$/.exec(String(conversationKey));
+    const fail = (code, error, hint, delivery = 'rejected') => ({ ok: false, delivery, code, error, hint });
+    if (!match || (!system && conversationKey !== `private:${String(cfg.ownerQQ ?? '')}`)) {
+      return fail('OWNER_REPLY_TARGET_INVALID', '管理回执目标无效。', '检查任务归属的会话键。');
     }
-    managementSendTickets.set(conversationKey, ticket);
-    managementDelivery.set(ticket, 'unknown');
-    try {
-      await sendToQQ(conversationKey, text);
-      if (!lastSendSucceeded(conversationKey)) return { ok: false, code: 'OWNER_REPLY_SEND_FAILED', error: '管理回执发送失败。', hint: '检查 QQ 连接后查询任务状态；不会自动重发。' };
-      const state = managementDelivery.get(ticket) ?? 'unknown';
-      return { ok: true, delivery: state, ticket };
-    } finally {
-      managementSendTickets.delete(conversationKey);
-      setTimeout(() => managementDelivery.delete(ticket), 60_000).unref?.();
+    const owner = String(cfg.ownerQQ ?? ''), account = String(selfUserId ?? ''), role = readCurrentCharacter();
+    const mode = currentMode;
+    const requiresTask = ['delivery', 'start', 'failure', 'cancel'].includes(phase) || (phase === 'status' && Boolean(taskId));
+    const task = requiresTask ? taskLedger.getTask(taskId) : null;
+    if (requiresTask && (!task || task.requestor?.conversationKey !== conversationKey || String(task.requestor?.userId) !== owner || !task.requestor?.isOwner || (['start', 'delivery'].includes(phase) && task.status === 'cancelled'))) {
+      return fail('OWNER_REPLY_TASK_INVALID', '任务不存在、归属不符或已取消。', '查询任务状态后重新操作。');
     }
+    const parts = splitForQQ(redactKnownTokensOnly(message));
+    const receipts = [];
+    for (const part of parts) {
+      let outcome;
+      sendChain = sendChain.then(async () => {
+        const currentRole = readCurrentCharacter();
+        const currentTask = requiresTask ? taskLedger.getTask(taskId) : null;
+        if (owner !== String(cfg.ownerQQ ?? '') || account !== String(selfUserId ?? '') || mode !== currentMode || role?.id !== currentRole?.id || role?.epoch !== currentRole?.epoch || !allowed(match[1], match[2], cfg) || (requiresTask && (!currentTask || (['start', 'delivery'].includes(phase) && currentTask.status === 'cancelled') || currentTask.requestor?.conversationKey !== conversationKey || String(currentTask.requestor?.userId) !== owner || !currentTask.requestor?.isOwner))) {
+          outcome = fail('OWNER_REPLY_CONTEXT_CHANGED', '管理回执的授权上下文已变化。', '检查账号、角色和任务状态后重新操作。'); return;
+        }
+        const ticket = `${taskId ?? 'management'}:${phase ?? 'reply'}:${crypto.randomUUID()}`;
+        managementSendTickets.set(conversationKey, ticket);
+        try {
+          const response = await withTimeout(match[1] === 'private' ? bot.sendPrivateMessage(Number(match[2]), text(escapeCqText(part))) : bot.sendGroupMessage(Number(match[2]), text(escapeCqText(part))), SEND_TIMEOUT_MS, '管理回执');
+          const id = response?.data?.message_id ?? response?.message_id ?? null;
+          if (response?.ok === false || (response?.retcode != null && response.retcode !== 0) || (response?.status && response.status !== 'ok')) outcome = fail('OWNER_REPLY_REJECTED', '平台拒绝管理回执。', '检查 QQ 连接和平台状态后查询任务。');
+          else if (!(typeof id === 'number' && Number.isSafeInteger(id) && id > 0) && !(typeof id === 'string' && /^[1-9][0-9]*$/.test(id))) outcome = fail('OWNER_REPLY_UNKNOWN', '管理回执送达结果未知。', '先查询平台消息和任务状态，不要自动重发。', 'unknown');
+          else { receipts.push({ delivery: 'delivered', messageId: id }); outcome = { ok: true }; noteSendSuccess(conversationKey); }
+        } catch (error) {
+          outcome = fail('OWNER_REPLY_UNKNOWN', '管理回执送达结果未知。', '先查询平台消息和任务状态，不要自动重发。', 'unknown');
+          noteSendFailure(conversationKey, error);
+        } finally { managementSendTickets.delete(conversationKey); managementDelivery.delete(ticket); }
+      });
+      await sendChain;
+      if (!outcome.ok) return { ...outcome, receipts };
+    }
+    if (!receipts.length) return fail('OWNER_REPLY_EMPTY', '管理回执为空。', '检查消息内容后重试。');
+    return { ok: true, delivery: 'delivered', messageId: receipts.at(-1).messageId, receipts };
   }
   const taskHarness = createTaskHarness({
     ledger: taskLedger,
     reportsDir: path.join(STATE_DIR, 'reports'),
     sendCallback: async ({ conversationKey, text, taskId, phase }) => {
       const result = await sendOwnerManagementReply({ conversationKey, text, taskId, phase });
-      if (!result.ok) return { ok: false, error: result.error, code: result.code, hint: result.hint };
-      // 只有平台回执明确 delivered 才记成功；unknown 不自动重发。
-      return { ok: true, delivery: result.delivery };
+      return result;
     },
     log
   });
@@ -3989,6 +4012,7 @@ async function main() {
   // F01：单调模式修订。所有 Native job / 发送租约记录准入时的修订；
   // 每次跨 await 恢复与最终平台调用前复核，阻断后旧对象不得复活。
   let modeRevision = 0;
+  let nativeRetirement = Promise.resolve({ ok: true });
   function modeAdmissionSnapshot() {
     return { revision: modeRevision, blocked: modeBlocked?.code ?? null, effective: currentMode };
   }
@@ -4047,9 +4071,24 @@ async function main() {
     if (!normalized) return { state: 'invalid', requested, closedAgentPreset: value.closedAgentPreset };
     return { state: 'valid', mode: normalized, requested, closedAgentPreset: value.closedAgentPreset };
   }
+  function invalidateModeAdmission() {
+    modeRevision += 1;
+    const { requests, cleanup } = nativeQQ.cancelAll();
+    if (requests.length) {
+      const cancellations = Promise.all(requests.map(request => nativeMemoryClient.cancelQQReply(request)));
+      nativeRetirement = nativeRetirement.then(async previous => {
+        const [discarded, cancelled] = await Promise.all([cleanup, cancellations]);
+        if (!previous.ok) return previous;
+        if (!discarded.ok) return discarded;
+        return cancelled.find(result => !result.ok) ?? { ok: true };
+      }).catch(() => ({ ok: false, code: 'MEMORY_QQ_RETIRE_FAILED', error: 'Native 作业取消尚未确认。', hint: '检查宿主作业后重试。' }));
+    }
+  }
   function applyModeSource(state, mode, requested, source, hint) {
     const previous = modeStatus.state;
-    modeRevision += 1;
+    const wasBlocked = !!modeBlocked;
+    const willBlock = state !== 'valid' && state !== 'default';
+    if (wasBlocked !== willBlock || (!willBlock && currentMode !== mode)) invalidateModeAdmission();
     modeStatus = { state, source, requested: requested ?? null, revision: modeRevision, previous };
     if (state === 'valid' || state === 'default') { currentMode = mode; modeBlocked = null; return; }
     modeBlocked = { state, source, requested: requested ?? null, code: state === 'retired' ? 'QQ_MODE_RETIRED' : state === 'unavailable' ? 'QQ_MODE_UNAVAILABLE' : state === 'unreadable' ? 'QQ_MODE_UNREADABLE' : 'QQ_MODE_INVALID',
@@ -4097,7 +4136,9 @@ async function main() {
           const rawOwner = String(rawOwnerValue ?? '').trim();
           if (rawOwner) {
             try {
-              cfg.ownerQQ = normalizeOwnerQQ(rawOwner);
+              const nextOwner = normalizeOwnerQQ(rawOwner);
+              if (cfg.ownerQQ !== nextOwner) invalidateModeAdmission();
+              cfg.ownerQQ = nextOwner;
             } catch (error) {
               log(`DSH settings ownerQQ 无效，已忽略: ${error?.message ?? error}`);
             }
@@ -4663,6 +4704,7 @@ async function main() {
         log(`[allow] 备份 config.json 失败（继续）：${error?.message ?? error}`);
       }
       atomicWriteJson(configFile, file);
+      invalidateModeAdmission();
       for (const w of warnings) log(`[allow] (${reason}) ${w.code}: ${w.message}`);
       gateEvents.record({
         gate: 'allowlist',
@@ -6094,9 +6136,11 @@ async function main() {
           file.deny = deny;
           file.ownerQQ = ownerQQ;
           atomicWriteJson(configFile, file);
+          const admissionBefore = JSON.stringify([cfg.allow, cfg.deny, cfg.ownerQQ]);
           cfg.allow = { private: allow.private, groups: allow.groups };
           cfg.deny = { users: deny.users, private: deny.private, groups: deny.groups };
           cfg.ownerQQ = ownerQQ;
+          if (admissionBefore !== JSON.stringify([cfg.allow, cfg.deny, cfg.ownerQQ])) invalidateModeAdmission();
           reconcileSessionPolicies();
           log(`控制台：白名单已更新（群: ${allow.groups.join(',') || '无'}，私聊: ${allow.private.join(',') || '无'}，黑名单人: ${deny.users.join(',') || '无'}，管理员: ${ownerQQ ?? '未设置'}）`);
           sendJson({ ok: true, allow, deny, ownerQQ, warnings: normalized.warnings });
@@ -13599,15 +13643,21 @@ async function main() {
     if (usesMemoryV2()) {
       try {
       if (modeBlocked) return memoryV2Failure(key, modeBlocked); // F01：主动提交也不得建新 job。
+      const admission = modeAdmissionSnapshot();
+      const cancellation = await nativeRetirement;
+      if (!cancellation.ok) return memoryV2Failure(key, cancellation);
+      assertModeAdmission(admission);
       const role = readCurrentCharacter();
       if (!isSessionAllowedInCurrentMode(key)) return memoryV2Failure(key, { code: 'MEMORY_AUDIENCE_DENIED', error: 'This QQ conversation is not allowed.', hint: 'Check the current channel allowlist.' });
       if (!dshReady) return memoryV2Failure(key, { code: 'MEMORY_DSH_UNAVAILABLE', error: 'DSH is unavailable; the durable source remains queued.', hint: 'Restore DSH and submit a fresh authorized request; old prompt strings are not replayed.' });
       if (currentMode === 'closed-agent') return memoryV2Failure(key, { code: 'MEMORY_PRESET_UNSAFE', error: 'V2 QQ requires a restricted QQ tool surface.', hint: 'Use a restricted QQ conversation preset; a full local-tool owner session cannot admit V2 memory.' });
       const retired = await retireMemoryV2Session(key);
       if (!retired.ok) return retired;
+      assertModeAdmission(admission);
       const started = nativeQQ.begin(key, role, getSocialV2State(key).lastUnreadSeq || 0);
       if (!started.ok) return memoryV2Failure(key, started);
       const prepared = await qqMemory.prepareReply({ key });
+      assertModeAdmission(admission);
       if (!prepared.ok) {
         await nativeQQ.request({ ...started.request, action: 'complete', code: prepared.code, error: prepared.error, hint: prepared.hint, ok: false });
         return memoryV2Failure(key, prepared);
@@ -13622,7 +13672,7 @@ async function main() {
       memoryV2Failures.delete(key);
       return { ok: true, queued: true, requestId: started.request.requestId, providerAdmissionCoverage: 'native-owner' };
       } catch (error) {
-        await retireMemoryV2Session(key); await qqMemory.retire(key);
+        if (!['MEMORY_MODE_REVISION_STALE', 'QQ_MODE_RETIRED', 'QQ_MODE_UNAVAILABLE', 'QQ_MODE_UNREADABLE', 'QQ_MODE_INVALID'].includes(error?.code)) { await retireMemoryV2Session(key); await qqMemory.retire(key); }
         return memoryV2Failure(key, { code: error?.code ?? 'MEMORY_PROMPT_FAILED', error: 'The authorized QQ prompt could not be submitted.', hint: 'Check the restricted QQ preset and DSH status, then use a fresh input; old context remains blocked.' });
       }
     }
@@ -16251,6 +16301,7 @@ async function main() {
   // QQ 消息 → DSH prompt
   async function handleIncoming(kind, id, event, cfg) {
     const ingressCharacter = readCurrentCharacter();
+    const ingressAdmission = modeAdmissionSnapshot();
     const key = convKey(kind, id);
     const transferReceivedAt = Date.now();
     // 群画像：成员数缓存用于小群/大群分层；失败不影响消息处理。
@@ -16332,6 +16383,12 @@ async function main() {
     const displayName = kind === 'group'
       ? (event.sender?.card || event.sender?.nickname || String(event.user_id))
       : '私聊';
+    if (!isOwner && /^(?:(?:\/|#)(?:tasks?|cancel-task|task)|任务状态|取消任务|任务|调研|研究)(?:[：:\s]+[\s\S]*)?$/i.test(plainContent)) {
+      const admission = taskHarness.checkAdmission({ requestor: { platform: 'qq', userId: String(event.user_id), conversationKey: key, isOwner: false } });
+      const label = /^(?:(?:\/|#)task|任务|调研|研究)(?:[：:\s]+[\s\S]*)?$/i.test(plainContent) ? '任务拒绝' : '权限拦截';
+      await sendOwnerManagementReply({ conversationKey: key, text: `[${label}] ${admission.error}\n提示：${admission.hint}`, phase: 'rejection', system: true });
+      return admission;
+    }
     const p = pending.get(key);
     // Strict numbered replies are interaction protocol messages, even after
     // their pending request was cancelled or expired; never turn them into chat.
@@ -16359,6 +16416,7 @@ async function main() {
     if (usesMemoryV2()) {
       const recorded = await qqMemory.captureSource({ key, loginAccountId: String(event.self_id ?? selfUserId), actorAccountId: String(event.user_id ?? ''), objectId: String(event.message_id ?? event.msg_id ?? event.message_seq ?? ''), direction: 'inbound', text: String(plainContent || textContent), occurredAt: Number.isFinite(Number(event.time)) ? new Date(Number(event.time) * 1000).toISOString() : null, expectedCharacter: ingressCharacter });
       if (!recorded.ok) { memoryV2Failure(key, recorded); return; }
+      try { assertModeAdmission(ingressAdmission); } catch (error) { memoryV2Failure(key, error); return; }
     } else recordMemoryInboxEvent({ key, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf });
     if (kind === 'group') {
       recordFishWindow(key, displayName, event.user_id, { isOwner });
@@ -16404,6 +16462,7 @@ async function main() {
     }
 
     // 电脑任务与研究指令：由 Harness 独立准入拦截（硬性：群聊与非主人直接阻断）
+    const ownsTask = task => task?.requestor?.platform === 'qq' && task.requestor.conversationKey === key && String(task.requestor.userId) === String(event.user_id) && task.requestor.isOwner === true;
     const taskStatusMatch = plainContent.match(/^(?:(?:\/|#)tasks?|任务状态)(?:[：:\s]+(\S+))?$/i);
     if (taskStatusMatch) {
       const requestor = {
@@ -16414,14 +16473,14 @@ async function main() {
       };
       const admission = taskHarness.checkAdmission({ requestor });
       if (!admission.ok) {
-        await sendToQQ(key, `[权限拦截] ${admission.error}\n提示：${admission.hint}`);
+        await sendOwnerManagementReply({ conversationKey: key, text: `[权限拦截] ${admission.error}\n提示：${admission.hint}`, phase: 'rejection', system: true });
         return;
       }
       const targetTaskId = taskStatusMatch[1]?.trim();
       if (targetTaskId) {
         const t = taskLedger.getTask(targetTaskId);
-        if (!t) {
-          await sendToQQ(key, `未找到任务编号 [${targetTaskId}]。`);
+        if (!ownsTask(t)) {
+          await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: `未找到任务编号 [${targetTaskId}]。` });
         } else {
           const info = [
             `【任务详情】${t.taskId}`,
@@ -16432,18 +16491,18 @@ async function main() {
             t.delivery ? `- 交付：${t.delivery.status}` : '- 交付：未开始',
             t.error ? `- 错误：${t.error}` : ''
           ].filter(Boolean).join('\n');
-          await sendToQQ(key, info);
+          await sendOwnerManagementReply({ conversationKey: key, taskId: targetTaskId, phase: 'status', text: info });
         }
       } else {
         const tasks = taskLedger.listTasks({ conversationKey: key, limit: 5 });
         if (tasks.length === 0) {
-          await sendToQQ(key, '当前会话暂无任务记录。');
+          await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: '当前会话暂无任务记录。' });
         } else {
           const list = tasks.map((t, idx) => {
             const time = new Date(t.createdAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' });
             return `${idx + 1}. [${t.status}] ${t.taskId} (${time})\n   ${t.goal.slice(0, 40)}`;
           }).join('\n');
-          await sendToQQ(key, `📋 最近任务列表：\n${list}\n\n查询详情发送：任务状态 <任务编号>`);
+          await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: `📋 最近任务列表：\n${list}\n\n查询详情发送：任务状态 <任务编号>` });
         }
       }
       return;
@@ -16459,7 +16518,7 @@ async function main() {
       };
       const admission = taskHarness.checkAdmission({ requestor });
       if (!admission.ok) {
-        await sendToQQ(key, `[权限拦截] ${admission.error}\n提示：${admission.hint}`);
+        await sendOwnerManagementReply({ conversationKey: key, text: `[权限拦截] ${admission.error}\n提示：${admission.hint}`, phase: 'rejection', system: true });
         return;
       }
       let taskId = taskCancelMatch[1]?.trim();
@@ -16468,14 +16527,23 @@ async function main() {
         if (active) taskId = active.taskId;
       }
       if (!taskId) {
-        await sendToQQ(key, '未找到可取消的活跃任务。请指定任务编号：取消任务 <任务编号>');
+        await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: '未找到可取消的活跃任务。请指定任务编号：取消任务 <任务编号>' });
+        return;
+      }
+      const existing = taskLedger.getTask(taskId);
+      if (!ownsTask(existing)) {
+        await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: `未找到任务 [${taskId}]。` });
+        return;
+      }
+      if (existing.status === 'completed' || existing.status === 'failed') {
+        await sendOwnerManagementReply({ conversationKey: key, taskId, phase: 'status', text: `任务 [${taskId}] 已结束，当前状态：${existing.status}；无法取消。` });
         return;
       }
       const res = taskLedger.cancelTask(taskId, '用户主动通过 QQ 取消');
       if (!res) {
-        await sendToQQ(key, `未找到任务 [${taskId}]。`);
+        await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: `未找到任务 [${taskId}]。` });
       } else {
-        await sendToQQ(key, `任务 [${taskId}] 状态已置为 cancelled。`);
+        await sendOwnerManagementReply({ conversationKey: key, taskId, phase: 'cancel', text: `任务 [${taskId}] 状态已置为 cancelled。` });
       }
       return;
     }
@@ -16491,26 +16559,27 @@ async function main() {
       };
       const admission = taskHarness.checkAdmission({ requestor });
       if (!admission.ok) {
-        await sendToQQ(key, `[任务拒绝] ${admission.error}\n提示：${admission.hint}`);
+        await sendOwnerManagementReply({ conversationKey: key, text: `[任务拒绝] ${admission.error}\n提示：${admission.hint}`, phase: 'rejection', system: true });
         return;
       }
       if (!rawGoal) {
-        await sendToQQ(key, '格式：任务：<研究目标或关键词> [网址]');
+        await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: '格式：任务：<研究目标或关键词> [网址]' });
         return;
       }
       const urlMatches = rawGoal.match(/https?:\/\/[^\s]+/g) || [];
-      await sendToQQ(key, `收到电脑研究任务，已创建工单并加入调度：\n「${rawGoal}」\n正在安全执行中…`);
+      const task = taskLedger.createTask({ goal: rawGoal, type: 'research', requestor, steps: ['admission', 'research', 'synthesis', 'delivery'] });
+      await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'start', text: `收到电脑研究任务，已创建工单并加入调度：\n「${rawGoal}」\n正在安全执行中…` });
       try {
         const result = await taskHarness.runTaskPipeline({
-          requestor,
+          taskId: task.taskId, requestor,
           goal: rawGoal,
           urls: urlMatches
         });
-        if (!result.ok) {
-          await sendToQQ(key, `[任务失败] ${result.error || '执行异常'}\n状态：${result.status}`);
+        if (!result.ok && result.status === 'failed') {
+          await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'failure', text: `[任务失败] ${result.error || '执行异常'}\n状态：${result.status}` });
         }
       } catch (err) {
-        await sendToQQ(key, `[任务异常] ${err.message}`);
+        await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'failure', text: `[任务异常] ${err.message}` });
       }
       return;
     }
@@ -17889,17 +17958,9 @@ async function main() {
       const key = `${kind}:${id}`;
       const ticket = managementSendTickets.get(key);
       if (ticket) {
-        // 管理回执：不套旧 model-session 包装；sendToQQ 仍做白名单/模式/发送守卫。
+        // 管理回执由专用入口校验，并由该入口逐段记录 ACK。
         managementSendTickets.delete(key);
-        try {
-          const result = await send(id, body);
-          const messageId = result?.data?.message_id ?? result?.message_id ?? null;
-          managementDelivery.set(ticket, messageId == null ? 'unknown' : 'delivered');
-          return result;
-        } catch (error) {
-          managementDelivery.set(ticket, 'unknown');
-          throw error;
-        }
+        return send(id, body);
       }
       const lease = await beginMemoryV2Send(key);
       let result;
