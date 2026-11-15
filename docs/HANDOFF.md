@@ -16,6 +16,9 @@
 - 清理已合并的 `surfcore-v1-retirement-r3` 工作树；其 gitignored `_backups` 3.7G 经核实**全部是可再生测试替身**（`model.bin` 只有 13 字节字面量 `fixture-model`、`whisper-fixture.cjs` 是脚本内联写出的假引擎、音视频由 ffmpeg lavfi 现生成；共享 ASR 本体走 `ASR_ASSETS`/`FFMPEG_PATH` 等仓外路径）→ 按用户批准删除，磁盘可用 23Gi → 27Gi。
 - `surfcore-mac`（916M）与 `surfcore-r4`（1.5G）的同类 `_backups` 测试残留仍在，本轮未动。
 
+**已知边界（为什么已安装的快照里 `doc-facts` 会红）**
+- dev 构建快照（tag `v0.9.0-dev.1` @ `c5da206`）里 `docs/ROADMAP.md` / `docs/guides/DSH_SETUP.md` 的版本表述还是 bump 前的 `0.9.0`，而该快照的 `package.json` 是 `0.9.0-dev.1` → 在**已安装的快照内**跑 `npm run doc-facts` 会报「文档版本 ≠ package.json」。根因是 `scripts/publish-dev.mjs` 只改写 `package.json` / `README.md` / `CHANGELOG.md`，不改这两个文档 —— 每个 dev 快照都如此。`dev` 分支 HEAD（`27ca5a0`）已把这两处同步成 `0.9.0-dev.1`，所以在仓库里工作是绿的。根治办法是让发布脚本一并同步这两个文档（属发布脚本改动，待评估，未做）。
+
 **未做完**
 - 稳定版 `0.9.0` 未发（要等 G7 实机第二阶段通过）。
 - G7 第二阶段（隔离 `DSH_HOME`/profile 起真实实例：DSH 自带 node 真实解析、Native/IPC、长 TTS 跨轮询、DM 子进程退出、停止/切角色/卸载、真实页面渲染）未开始。

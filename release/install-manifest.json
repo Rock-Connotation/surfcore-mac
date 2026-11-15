@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.9.0-dev.1",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-15T10:28:53.582Z",
+  "generatedAt": "2026-11-15T10:29:12.221Z",
   "files": {
     ".gitattributes": "65b1023623fb87849b0d7e7a39141bd9d2662d98dcd55fefc9e8bf1683d2d934",
     ".gitignore": "a151d62896bdc35fb95370916bb857c33fe3ef675d96e05d9b9ea256e9dde41d",
@@ -19,7 +19,7 @@
     "docs/ARCHITECTURE-DELTA-TOKEN.md": "7bbecf07507ad9bbb93754de3c31b1b6d0e6e148e5229eac8e92b62545093e6f",
     "docs/COORDINATION.md": "be6b93eddbedb0bebef7d9884984744034ebf4814da43b7174af8be23324a351",
     "docs/FOLDER_MAP.md": "a659e8edee0c51f60ec335f901e840c2d02d6a7c40edcfd65a6054c712122efd",
-    "docs/HANDOFF.md": "aa16316716331138944e51721ad6cfc7e80779aa5efbca5f2b05fbf9b076ccdc",
+    "docs/HANDOFF.md": "456f3a452e453924f7b4e31a62523dd407c1e2647bd6c84833e847ddd649dc4c",
     "docs/PITFALLS.md": "b4710f67cf2498c3490ed5119b1f1ebafbda3eb124cb5b8b16714006a7115d5b",
     "docs/README.md": "e93e9b0b0153e6e22d63c9dfda17908fe884f750eb74b11ff5ea2ad66eccc280",
     "docs/RELEASE-QUEUE.md": "a8ee4e85e724e7842a3699181011162e712d8d3eeef6c5ba931a346491adfc1f",
