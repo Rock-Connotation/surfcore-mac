@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { syncDocVersions } from './publish-dev-doc-sync.mjs';
 
 const args = process.argv.slice(2);
 const repoArg = args.find((a) => a.includes('/')) || 'Mieksido/surfcore';
@@ -111,7 +112,9 @@ try {
     fs.writeFileSync(changelogPath, section + cl, 'utf8');
   }
 } catch {}
-git('add', 'package.json', 'plugins/surfcore/package.json', 'README.md', 'CHANGELOG.md');
+// 文档版本字也要跟着走，否则 doc-facts 会红（它对两处做逐字等值校验，见 scripts/doc-facts.mjs）
+syncDocVersions({ dir, version: devVersion, log: (msg) => console.log(msg) });
+git('add', 'package.json', 'plugins/surfcore/package.json', 'README.md', 'CHANGELOG.md', 'docs/ROADMAP.md', 'docs/guides/DSH_SETUP.md');
 git('-c', 'core.safecrlf=false', 'commit', '-q', '-m', `build(dev): ${tag}`);
 execFileSync(process.execPath, ['scripts/release-manifest.mjs'], { cwd: dir, stdio: 'inherit' });
 git('add', 'release/install-manifest.json');
