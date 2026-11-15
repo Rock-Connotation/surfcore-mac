@@ -14,15 +14,6 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
-const originalConnect = net.connect, originalFetch = globalThis.fetch;
-net.connect = () => {
-  const socket = new EventEmitter(); socket.setTimeout = () => socket; socket.destroy = () => socket;
-  queueMicrotask(() => socket.emit('error', new Error('offline fixture'))); return socket;
-};
-globalThis.fetch = async () => { throw new Error('offline fixture'); };
-
-
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-platform-host-'));
 const stateDir = path.join(tmp, 'surfcore');
 fs.mkdirSync(stateDir, { recursive: true });
@@ -69,6 +60,7 @@ const ctx = {
   webServer: { register(route) { routes.push(route); return () => {}; } },
   get(name) {
     if (name === 'connection') return { requestRejection: () => false };
+    if (name === 'webServer') return { protocol: 'http:', port: 12345 };
     return null;
   },
   effect(fn) { effects.push(fn); return () => {}; },
@@ -123,7 +115,7 @@ try {
   assert.equal(memory.status, 200, JSON.stringify(memory));
   assert.equal(memory.data.ok, true, JSON.stringify(memory));
   assert.equal(memory.data.character.id, alpha.character.id);
-  assert.equal(memory.data.backend, 'v1');
+  assert.equal(memory.data.backend, 'v2');
   assert.equal(memory.data.capabilities.activation, false);
   const rpc = routes.find(route => route.path === '/dsh-surfcore/memory-v2-api');
   assert.ok(rpc, 'The separately authenticated channel RPC endpoint must be registered.');

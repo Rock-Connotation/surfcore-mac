@@ -52,6 +52,7 @@ export function createQQV2SourceRuntime({
   const states = new Map();
   let closed = false;
   let lastFailure = null;
+  async function release(handle) { try { await adapter.release(handle); } catch {} }
   const metrics = { admittedInputs: 0, committedOutputs: 0, activeJobs: 0, retiredJobs: 0, sentLeases: 0 };
 
   async function checkLiveIdentity(expectedSnapshot, key) {
@@ -169,7 +170,7 @@ export function createQQV2SourceRuntime({
           requestId: job.requestId,
         };
       } catch (err) {
-        await adapter.release(handle).catch(() => {});
+        await release(handle);
         throw err;
       }
     },
@@ -304,7 +305,7 @@ export function createQQV2SourceRuntime({
       metrics.retiredJobs++;
 
       if (state.handle) {
-        await adapter.release(state.handle).catch(() => {});
+        await release(state.handle);
       }
       if (state.ledger) {
         state.ledger.retire();
@@ -332,7 +333,7 @@ export function createQQV2SourceRuntime({
     async close() {
       closed = true;
       for (const state of states.values()) {
-        if (state.handle) await adapter.release(state.handle).catch(() => {});
+        if (state.handle) await release(state.handle);
         if (state.ledger) state.ledger.retire();
         if (state.key) await bridge.retire(state.key).catch(() => {});
       }

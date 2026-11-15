@@ -201,10 +201,9 @@ async function runV1() {
   fs.mkdirSync(artifactRoot, { recursive: true });
   const runDir = fs.mkdtempSync(path.join(artifactRoot, 'v1-'));
   const fixtureHome = path.join(runDir, 'synthetic-home');
-  // Set before importing the production context module: every role read stays inside the fixture.
+  // Set before importing the production memory-card module: every role read stays inside the fixture.
   process.env.DSH_HOME = fixtureHome;
-  const { addMemoryRecord, createEmptyCard, recallFullMemory, resolveMemoryCardPaths } = await import('../src/memory-card.js');
-  const { buildCharacterContext } = await import('../src/core/context.js');
+  const { addMemoryRecord, createEmptyCard, recallFullMemory, resolveMemoryCardPaths, renderMemoryCard, normalizeMemoryCardConfig } = await import('../src/memory-card.js');
   const { DSH_HOME } = await import('../src/character-persona.js');
   assert.equal(path.resolve(DSH_HOME), fixtureHome, 'Production module was imported before fixture isolation.');
   const fixedNow = Date.parse(data.referenceTime);
@@ -251,21 +250,21 @@ async function runV1() {
       const candidates = recallFullMemory(legacyPaths.get(query.context.characterId), query.text, { limit: 8, maxScanBytes });
       diagnosticTimes.push(performance.now() - start);
       const automaticStart = performance.now();
-      const context = buildCharacterContext({
-        characterId: query.context.characterId, characterEpoch: 1, allowStale: true,
-        audience: { channel: CHANNELS[query.context.channel], conversationKey: CONVERSATIONS[query.context.conversationId] ?? query.context.conversationId },
-        includePersona: false, includeLife: false, includePurpose: false, includeTask: false,
-        budget: { memory: 1800, maxChars: 6000 },
+      // V1 后端已移除：automatic 臂改为直接渲染导出的 V1 记忆卡，保持与冻结基线同口径的测量。
+      const channelKey = CHANNELS[query.context.channel];
+      const conversationKey = CONVERSATIONS[query.context.conversationId] ?? query.context.conversationId;
+      const memoryPlatform = ['qq', 'bili', 'pet', 'local', 'douyin'].includes(channelKey) ? channelKey : 'restricted';
+      const effectivePlatform = memoryPlatform === 'qq' && !conversationKey ? 'restricted' : memoryPlatform;
+      const memoryText = renderMemoryCard(cards.get(query.context.characterId), {
+        platform: effectivePlatform, conversationKey, config: normalizeMemoryCardConfig({}), maxChars: 1800,
       });
       automaticTimes.push(performance.now() - automaticStart);
-      assert(context.ok, `${query.queryId}: ${context.code}`);
-      assert(context.memoryText.length <= 1800);
-      const lines = context.memoryText.split('\n').filter((line) => line.startsWith('- '));
+      const lines = memoryText.split('\n').filter((line) => line.startsWith('- '));
       const renderedIds = lines.flatMap((line) => cards.get(query.context.characterId).records.filter((record) => line.includes(record.text)).map((record) => record.sourceId));
       rows.push({ queryId: query.queryId, split: query.split, group: query.group, lexicalClass: query.lexicalClass,
         diagnostic: measureCandidates(query, candidates.map((record) => record.sourceId), events),
         automatic: measureCandidates(query, [...new Set(renderedIds)], events),
-        automaticMemoryChars: context.memoryText.length, automaticRenderedSources: renderedIds.length,
+        automaticMemoryChars: memoryText.length, automaticRenderedSources: renderedIds.length,
       });
     }
   } finally { Date.now = previousNow; }
@@ -299,7 +298,7 @@ async function runV1() {
       'Automatic context has no query search; source coverage is reconstructed by exact full text in rendered lines and bounded to first8 distinct lines, not production source-ID receipts.',
       'Diagnostic retrieval has no audience input or ACL enforcement. Forbidden counts describe raw candidates and do not demonstrate a platform send leak.',
       '160 queries cover five retrieval groups; remaining 13-category fault/session/lifecycle scenarios are metadata only.',
-      'Character epoch is fixture1 and allowStale:true; no live role switch or revocation exercised.',
+      'Character epoch is fixture1; no live role switch or revocation exercised.',
       'One hot-card reference clock; temporal labels are measured as source coverage, not temporal answer correctness.',
       'No models, generation, network, platform send, V2 kernel dependency or synonyms expansion.',
     ],

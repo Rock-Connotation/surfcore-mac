@@ -60,13 +60,13 @@ export function replyCoordinates({ root, sourceId, targetId } = {}) {
   return { root: rootId, parent, sourceId: source, targetId: target }
 }
 
-export async function pullFeed(kind, { headers, pages = 1 }) {
+export async function pullFeed(kind, { headers, pages = 1, signal }) {
   const out = []
   let cursor = ''
   let lastView = 0
   for (let p = 0; p < pages; p += 1) {
     const url = `https://api.bilibili.com/x/msgfeed/${kind}?platform=web&build=0&mobi_app=web` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '')
-    const j = await (await fetch(url, { headers })).json()
+    const j = await (await fetch(url, signal ? { headers, signal } : { headers })).json()
     if (j.code !== 0) throw new Error(`${kind} code=${j.code} ${j.message}`)
     if (p === 0) lastView = Number(j.data?.last_view_at ?? 0)
     const items = j.data?.items ?? []

@@ -14,7 +14,7 @@ export const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
 
 const VOICE_CUE = /^(?:(?:语气|情绪|声音|动作)\s*[:：]\s*)?(?:温柔|轻声|柔声|小声|低声|微笑|轻笑|笑着|害羞|撒娇|开心|高兴|兴奋|认真|严肃|难过|悲伤|哽咽|安慰|调皮|停顿)(?:地|着)?(?:说|说道|说话)?$/u;
 
-function spokenText(text) {
+export function spokenText(text) {
   // 仅剥离明确的表演提示；保留通知、书名和括号内的实际正文。
   return String(text ?? '').replace(/【([^【】\r\n]{1,32})】|\[([^\[\]\r\n]{1,32})\]|（([^（）\r\n]{1,32})）|\(([^()\r\n]{1,32})\)/gu,
     (tag, chinese, square, fullWidth, round) => VOICE_CUE.test((chinese ?? square ?? fullWidth ?? round).trim()) ? '' : tag).trim();

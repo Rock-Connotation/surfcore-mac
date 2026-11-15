@@ -30,6 +30,13 @@ assert.equal(ready.dshBaseUrl, 'http://127.0.0.1:42212');
 assert.equal(ready.mode, 'reserved2');
 assert.equal(ready.snowluma.connected, true);
 assert.equal(ready.activityTail, '第一行\n第二行');
+assert.equal(ready.replyReady, true);
+const blocked = mapStatusPayload({ dshReady: true, snowluma: { connected: true, accountOnline: true }, memoryV2: { ok: true, backend: 'v2', failures: [{ ok: false, code: 'MEMORY_DISCOVERY_INVALID', error: 'invalid', hint: 'check Host' }] } });
+assert.equal(blocked.running, true);
+assert.equal(blocked.replyReady, false);
+assert.equal(blocked.replyFailure.code, 'MEMORY_DISCOVERY_INVALID');
+assert.ok(blocked.replyFailure.hint);
+assert.equal(blocked.memoryV2.backend, 'v2');
 
 // 2) 启动弹窗的判据（lib/index.js allReady 的同一份逻辑）必须能通过。
 const allReady = (bridge, schedulerRunning) => Boolean(

@@ -7,9 +7,9 @@
 
 | | |
 | --- | --- |
-| 版本 | `0.8.8` |
+| 版本 | `0.9.0` |
 | 目标 DSH | `0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归）`（`npm run verify:adaptation` 可逐项复核） |
-| 平台 | Windows（沙箱 ACL / SnowLuma / 启动脚本都与它绑定） |
+| 平台 | Windows / macOS（macOS 已有真机验收；Linux 未验证。矩阵见 [`BOUNDARIES.md`](docs/guides/BOUNDARIES.md)） |
 | 许可 | MIT（SnowLuma 是第三方专有运行时，**不随本仓库分发**） |
 | 配套仓库 | [surfvoicelocal](https://github.com/Mieksido/surfvoicelocal) · [surfvoicecloud](https://github.com/Mieksido/surfvoicecloud) · [surfpet](https://github.com/Mieksido/surfpet) |
 
@@ -34,7 +34,7 @@
 
 两个实测踩过的点（v0.4.5）：
 
-- **必须从仓库根目录安装**：插件里有 19 处 `../../../src/xxx.js`（人设、存储、token 预算等），
+- **必须从仓库根目录安装**：插件里有 96 处 `../../../src/xxx.js`（38 个模块，人设、存储、token 预算等；`npm run doc-facts` 可复核），
   只装 `plugins/surfcore` 会缺少包根目录的 `src/` 模块，启动时报模块不存在。
 - **装完要刷新页面**（F5）或重启 DSH：客户端模块图是页面加载时的快照，新 bundle 要重新拉，
   否则设置里暂时看不到 SurfCore —— 不是装坏了。
@@ -52,7 +52,7 @@ node scripts/setup-dsh.mjs      # 自动判断 DSH 用的 profile，不用填
 
 > 不想敲命令：`powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Mieksido/surfcore/main/scripts/bootstrap.ps1 | iex"`
 
-前置：Windows + Node ≥22.13 + DSH 0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归） + SnowLuma（第三方，需自己装并扫码）。详见 [INSTALL.md](docs/guides/INSTALL.md)。
+前置：Windows 10/11 或 macOS（macOS 已验收 QQ 收发/语音、B站扫码等，细节见平台矩阵） + Node ≥22.13 + DSH 0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归） + SnowLuma（第三方，需自己装并扫码）。详见 [INSTALL.md](docs/guides/INSTALL.md)。
 
 ---
 
@@ -97,7 +97,7 @@ node scripts/setup-dsh.mjs      # 自动判断 DSH 用的 profile，不用填
 
 | 需要 | 版本 / 说明 | 必装？ |
 | --- | --- | --- |
-| Windows | 10/11（沙箱 ACL 与 `.bat` 启动器按 Windows 写） | ✅ |
+| Windows / macOS | Windows 10/11；macOS 已有真机验收（QQ 收发与语音、B站扫码、桌宠、任务 Harness）。Linux 未验证 | ✅ |
 | Node.js | **≥ 22.13**（`node -v` 确认） | ✅ |
 | DeepSeek Harness（DSH） | **`0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归）`**，能正常打开 Web GUI | ✅ |
 | SnowLuma2 | 第三方 QQ 运行时，**自己去官方 Releases 下载**并扫码登录 | ✅（只收 QQ 才需要） |
@@ -132,7 +132,7 @@ node scripts/setup-dsh.mjs
 
 `setup-dsh.mjs` 做三件事：
 
-1. 把 `qq-chat` / `qq-chat-v2` 两条 **agent preset** 插进 DSH profile（DSH 0.1.7 起的 bundle patch 机制）；
+1. 只把 `qq-chat-v2` **agent preset** 插进 DSH profile（DSH 0.1.7 起的 bundle patch 机制；一代 `qq-chat` 已退役）；
 2. 在 profile 的 `cordis.patch.yml` 挂 **三个 MCP server**（QQ 工具 / SnowLuma 探活 / 只读联网搜索）；
 3. 在 profile `package.json` 注册唯一一个 bundle：`surfcore`。
 
@@ -161,6 +161,7 @@ node scripts/setup-dsh.mjs
 ```
 
 > 其余几百个键都有默认值，全部含义见 [DATA-AND-CONFIG.md §1](docs/guides/DATA-AND-CONFIG.md)。
+> 2026-11-12 起 V1 已退役：安装脚本只装配 `qq-chat-v2` 预设，`reserved` 模式与一代仿真目录不再生成；旧 `state/mode.json` / `memory-v2/routing.json` 保持原样不动，按只读预检给出的计划处理。
 > 装好之后**建议一切都在设置页里改**（保存即生效，且会自动备份）。
 
 ### 2.4 首次验证
@@ -192,17 +193,17 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 
 ### 3.1 设置页（DSH → 设置 → SurfCore）
 
-14 个标签：概览 / 角色 / 目的 / QQ / 语音 / 桌宠 / B站 / Token 额度 / 观看历史 / 记忆 / 对齐 / 扩展 / 全部参数 / 诊断。
+15 个标签：概览 / 角色 / 目的 / QQ / 语音 / 桌宠 / B站 / 抖音 / Token 额度 / 观看历史 / 记忆 / 对齐 / 扩展 / 全部参数 / 诊断。
 逐个说明见 [UI-AND-CONSOLE.md](docs/guides/UI-AND-CONSOLE.md)。
 
 ### 3.2 四种运行模式
 
 | 模式 | 她是谁 | 能干什么 |
 | --- | --- | --- |
-| `chat` | 群友 | 白名单内聊天，工具面受安全守卫限制 |
-| `closed-agent` | 只理管理员 | 私聊 owner，可用完整 DSH 工具 |
-| `reserved` | 一代仿真群友 | 状态机 + 空格分条 + `[SILENT]` |
-| `reserved2` | 二代仿真群友（**默认**） | 一切皆工具：自己看消息、发言、等待、潜水、收尾 |
+| `chat` | 群友 | 白名单内聊天，受限 `qq-chat-v2` 工具面 |
+| `simulation`（=`reserved2`） | 二代仿真群友 | 一切皆工具：自己看消息、发言、等待、潜水、收尾 |
+| `closed-agent` | ❌ 本版本不可用 | 完整本地工具会话已随 V1 退役；owner 远程任务请用「任务：…」入口（独立 Task Harness 准入） |
+| `reserved` | ❌ 已退役 | 一代仿真；权威配置写它时阻断新任务并显示处理计划 |
 
 ### 3.3 让她主动找你（可选）
 
@@ -273,7 +274,30 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 | **桌宠** | 文本/语音对话、气泡与回复按钮、专注模式、目的载体、断线重连 | [SUBSYSTEM-PET.md](docs/guides/SUBSYSTEM-PET.md) |
 | **额度** | 每日 token 额度（QQ/B站/其他/总额，双单位，80% 提醒、100% 停）、消费看板 | [DATA-AND-CONFIG.md](docs/guides/DATA-AND-CONFIG.md) |
 | **工具面** | 39 个 `qq_*` 工具、三个 MCP server、两代 preset、fail-closed 工具守卫 | [AGENT-TOOLS-AND-PRESETS.md](docs/guides/AGENT-TOOLS-AND-PRESETS.md) |
-| **界面** | 设置页 14 个标签、控制台 10 个页面 | [UI-AND-CONSOLE.md](docs/guides/UI-AND-CONSOLE.md) |
+| **界面** | 设置页 15 个标签、控制台 9 个页面 | [UI-AND-CONSOLE.md](docs/guides/UI-AND-CONSOLE.md) |
+
+### 4.1 能力状态与暂不做的渠道（2026-11-12 定位拍板）
+
+产品定位是**单机运行的数字角色运行环境**（身份 / 记忆 / 作息 / 多渠道表达），不再以“QQ×B站 合体插件”为主叙事。
+状态口径：✅ 已实现并验收 · 🟡 部分实现（代码在，但默认关 / 只在 dev / 关键链路未验）· 🧪 仅设计或占位。
+
+| 能力 | 状态 | 前置或说明 |
+| --- | --- | --- |
+| QQ 收发、有效模式/预设、白名单、工具守卫 | ✅ | SnowLuma；`closed-agent`/`reserved` 已退役 |
+| 角色、人格卡、衰减记忆、身份对齐 | ✅ | 无 |
+| B站日常（作息 / 观看 / 评论 / 分享） | ✅ | B站扫码 |
+| 语音库与本地/云端 TTS | ✅ | 语音引擎；火山 TTS 真实计费与音质待验 |
+| 桌宠 | ✅ | 仓库外的 Electron 工程 |
+| 抖音陪伴 | 🟡 | 独立浏览器 profile + 人工登录；日常稳定性待验 |
+| B站 V2 / Memory V2 / QQ V2 Native | ✅ | V1 已破坏式退役；生产路由只认 V2，新安装正式授权后即可 capture/prepare，旧档案只读保留 |
+| 任务 Harness（含 Mac 本地执行） | 🟡 | 在 dev 验收，尚未随版本发布 |
+| B站直播间监听、回私信 | 🟡 | 默认关 |
+
+**暂不做 / 待确认**：
+- 微博：已决定不做（[`platforms/README.md`](plugins/surfcore/platforms/README.md)）。
+- 贴吧：仅占位（`status: planned`，无适配器）。
+- 微信、小红书：仅提案，未接入。
+- 待确认：macOS 与 Windows 的能力差异清单、默认开启哪些渠道、实验能力是否进设置窗口。
 
 ---
 
@@ -326,7 +350,7 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 | 5 | [MODULE-CORE-A.md](docs/guides/MODULE-CORE-A.md) | 1,001 | 记忆/人格/目的/收尾/额度/账本/计价/身份 |
 | 6 | [MODULE-CORE-B.md](docs/guides/MODULE-CORE-B.md) | 1,098 | B站/鱼群/表情/黑话/文本化/SSRF/DSH 客户端 |
 | 7 | [MODULE-PLUGIN.md](docs/guides/MODULE-PLUGIN.md) | 1,101 | 插件宿主：装配、配置模型、设置页 API、B站 调度 |
-| 8 | [UI-AND-CONSOLE.md](docs/guides/UI-AND-CONSOLE.md) | 677 | 设置页 14 标签 + 控制台 10 页 |
+| 8 | [UI-AND-CONSOLE.md](docs/guides/UI-AND-CONSOLE.md) | 677 | 设置页 15 标签 + 控制台 9 页 |
 | 9 | [SUBSYSTEM-VOICE.md](docs/guides/SUBSYSTEM-VOICE.md) | 855 | 语音三条链路 |
 | 10 | [SUBSYSTEM-PET.md](docs/guides/SUBSYSTEM-PET.md) | 904 | 桌宠全链路 |
 | 11 | [SUBSYSTEM-BILI.md](docs/guides/SUBSYSTEM-BILI.md) | 981 | B站 34 命令 / 23 库 |
@@ -358,7 +382,7 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 | 能不用 DSH 吗？ | 不能，插件与 preset 都跑在 DSH 里。 |
 | 会自己发消息吗？ | 默认不会。主动搭话要显式开「目的」；二代下发言必须调工具。 |
 | 数据会上传吗？ | 只有拼进提示词的文本会发给模型 API；不想让黑话词条出机就关 `slang.autoResearch`。 |
-| 支持 Linux/macOS 吗？ | 暂不支持（沙箱 ACL 与启动脚本按 Windows 写）。 |
+| 支持 Linux/macOS 吗？ | macOS 已支持并有真机验收记录（细节见 [`BOUNDARIES.md`](docs/guides/BOUNDARIES.md) 平台矩阵）；Linux 未验证。 |
 | 能多用户/远程吗？ | 不做。控制台只接受回环。 |
 | 语音包/桌宠必须装吗？ | 不必须。不装则语音不可用、目的机制走 QQ。 |
 | 改名/换角色会丢记忆吗？ | 不会。角色包整包隔离，切换带快照，可回档。 |

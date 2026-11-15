@@ -24,8 +24,9 @@ fs.readFileSync = function (file, ...args) {
   return originalRead.call(this, file, ...args);
 };
 try {
+  // V2-only：fresh 缺省即 V2 路由，未接管的单轮入口一律要求受管理回合，不读旧上下文。
   const before = biliContextForRound({ characterId: 'fixture', characterEpoch: 1 });
-  assert.notEqual(before.code, 'BILI_V2_MANAGED_ROUND_REQUIRED');
+  assert.equal(before.ok, false); assert.equal(before.code, 'BILI_V2_MANAGED_ROUND_REQUIRED'); assert.ok(before.hint); assert.equal(before.text, '');
   const explicit = biliContextForRound({ characterId: 'fixture', characterEpoch: 1, memoryBackend: 'v2' });
   assert.equal(explicit.ok, false); assert.equal(explicit.code, 'BILI_V2_MANAGED_ROUND_REQUIRED'); assert.ok(explicit.hint); assert.equal(explicit.text, '');
   assert.equal(writeMemoryRouting({ stateDir: QQ_STATE_DIR, status: { ok: true, activeBackend: 'v2', revision: 1, storeGeneration: 'fixture-generation', minCompatibleReader: 1 } }).ok, true);
@@ -60,5 +61,5 @@ try {
   assert.equal(retired.ok, false);
   assert.equal(retired.code, 'BILI_V2_RETIRE_UNCONFIRMED');
 
-  console.log('PASS selected V2 and explicit V2 block legacy round composition before reading old persona or memory; V1 branch preserved; managed V2 and retire ACK verified');
+  console.log('PASS V2-only round fence: fresh absence demands managed V2, explicit V2 and legacy reads blocked before old persona or memory; managed V2 and retire ACK verified');
 } finally { fs.readFileSync = originalRead; }

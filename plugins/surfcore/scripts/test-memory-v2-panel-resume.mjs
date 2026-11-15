@@ -7,7 +7,7 @@ const ORIGINAL = '她喜欢周末看海（最初确认的纠正原文）';
 const INPUT = '最初确认的纠正原文';
 const digestOf = payload => createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 const previewOf = (operationId, action = 'correct') => ({ ok: true, operationId, revision: 7, payloadDigest: null, preview: { operationId, action, phase: 'intent_confirmed' } });
-const base = (overrides = {}) => ({ ok: true, backend: 'v1', revision: 7, character: { id: 'alpha', epoch: 1, name: 'Alpha' }, capabilities: { shadow: true, correct: true, activation: false, backup: true, restore: true, purge: true, removeHot: true, organize: true, identity: true, migration: true, adminResume: true }, worker: { state: 'idle' }, backups: [], policies: [], approvedConversations: [], operations: [{ operationId: OP, action: 'correct', complete: false, phase: 'intent_confirmed', hint: '纠正原文待重新确认。' }], ...overrides });
+const base = (overrides = {}) => ({ ok: true, backend: 'v2', readiness: 'ready', revision: 7, character: { id: 'alpha', epoch: 1, name: 'Alpha' }, capabilities: { shadow: true, correct: true, activation: false, backup: true, restore: true, purge: true, removeHot: true, organize: true, identity: true, migration: true, adminResume: true }, worker: { state: 'idle' }, backups: [], policies: [], approvedConversations: [], operations: [{ operationId: OP, action: 'correct', complete: false, phase: 'intent_confirmed', hint: '纠正原文待重新确认。' }], ...overrides });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function fixture(handle) {

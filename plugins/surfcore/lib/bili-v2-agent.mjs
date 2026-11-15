@@ -38,6 +38,13 @@ export function biliV2InputDigest(options) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
+function originalTriggerDigest(input) {
+  const value = input?.kind === 'dm-notification' && Array.isArray(input.items)
+    ? { kind: input.kind, items: input.items.map(item => ({ mid: item.mid, msgKey: item.msgKey, ts: item.ts })) }
+    : input;
+  return biliV2InputDigest({ value });
+}
+
 export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharacter, tokenBudget, isAgentLoopRequest, sourceRuntime, modelRequest, getModelRoute, transport, registryPath, nodeRuntime = process.execPath, commandsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../tools/commands'), onBlocked = () => {} } = {}) {
   if (nativeRoot) ctx = nativeRoot.ctx;
   const jobs = new Map(), triggers = new Map(), scopes = new WeakMap();
@@ -52,8 +59,9 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
       const data = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
       if (data?.version !== 1 || !data.sessions || typeof data.sessions !== 'object' || Array.isArray(data.sessions) || Object.keys(data).some((k) => !['version', 'sessions'].includes(k))) throw new Error('registry');
       for (const [id, entry] of Object.entries(data.sessions)) {
-        if (!entry || id !== entry.sessionId || typeof entry.jobId !== 'string' || !entry.jobId || typeof entry.requestId !== 'string' || !entry.requestId || typeof entry.characterId !== 'string' || !entry.characterId || !Number.isSafeInteger(entry.characterEpoch) || entry.characterEpoch < 0 || Object.keys(entry).some((k) => !['sessionId', 'jobId', 'requestId', 'characterId', 'characterEpoch'].includes(k))) throw new Error('registry');
-        triggers.set(entry.requestId, { historical: true, sessionId: id });
+        if (!entry || id !== entry.sessionId || typeof entry.jobId !== 'string' || !entry.jobId || typeof entry.requestId !== 'string' || !entry.requestId || typeof entry.characterId !== 'string' || !entry.characterId || !Number.isSafeInteger(entry.characterEpoch) || entry.characterEpoch < 0 || Object.keys(entry).some((k) => !['sessionId', 'jobId', 'requestId', 'characterId', 'characterEpoch', 'originalRequestId', 'input', 'inputDigest', 'phase', 'originalInput', 'originalDigest', 'scope', 'groupCount'].includes(k))) throw new Error('registry');
+        if (entry.phase !== undefined && (!['pre_dispatch', 'dispatching', 'accepted', 'terminal'].includes(entry.phase) || typeof entry.originalRequestId !== 'string' || !entry.originalRequestId || !entry.input || !entry.originalInput || typeof entry.inputDigest !== 'string' || entry.inputDigest !== biliV2InputDigest({ value: entry.input }) || entry.originalDigest !== originalTriggerDigest(entry.originalInput) || !Number.isSafeInteger(entry.groupCount) || entry.groupCount < 1 || entry.groupCount > 32 || entry.scope === undefined)) throw new Error('registry');
+        triggers.set(entry.requestId, { historical: true, sessionId: id, entry });
       }
       registry = data;
     }
@@ -73,9 +81,9 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
     if (state.stopped || state.controller.signal.aborted || String(current?.id) !== state.job.characterId || Number(current?.epoch) !== state.job.characterEpoch) throw issue('BILI_V2_JOB_REVOKED', 'The original role or job changed; start a newly authorized job.');
     if (state.agent && (ctx.agents?.get(state.job.sessionId) !== state.agent || nativeRoot && !nativeRoot.ownsAgent(state.agent))) throw issue('BILI_V2_SESSION_CHANGED', 'The actual agent binding was lost.');
   }
-  function persist(job) {
+  function persist(job, details = {}) {
     if (owner.issue()) throw issue('BILI_V2_REGISTRY_UNAVAILABLE', 'Restore the protected registry owner.');
-    const next = { version: 1, sessions: { ...registry.sessions, [job.sessionId]: { sessionId: job.sessionId, jobId: job.jobId, requestId: job.requestId, characterId: job.characterId, characterEpoch: job.characterEpoch } } };
+    const next = { version: 1, sessions: { ...registry.sessions, [job.sessionId]: { sessionId: job.sessionId, jobId: job.jobId, requestId: job.requestId, characterId: job.characterId, characterEpoch: job.characterEpoch, ...registry.sessions[job.sessionId], ...details } } };
     fs.mkdirSync(path.dirname(registryPath), { recursive: true });
     const temp = registryPath + '.' + crypto.randomUUID() + '.tmp';
     try {
@@ -222,7 +230,7 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
         started = true;
         await capture('start');
         for await (const chunk of budgetMiddleware.stream(options, next)) { await capture('chunk', chunk); yield chunk; }
-        await capture('complete'); complete = true;
+        await capture('complete'); complete = true; state.modelCompleted = true;
       } catch (error) { failure = error; report(error); throw error; }
       finally {
         if (started && !complete) {
@@ -327,25 +335,28 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
       state.disposers.push(nativeRoot ? nativeRoot.registerTool(definition, state.agent.ctx) : state.agent.ctx.tools.register(definition));
     }
   }
-  async function enqueue({ requestId, input, signal } = {}) {
-    let state;
+  async function enqueue({ requestId, input, signal, originalRequestId = requestId, originalInput = input, scope = null, groupCount = 1 } = {}) {
+    let state, reserved = false;
     try {
       base();
-      if (typeof requestId !== 'string' || !requestId || requestId.length > 200 || !input || typeof input.kind !== 'string') throw issue('BILI_V2_JOB_INVALID', 'Supply a trusted typed scheduler trigger.');
-      if (triggers.has(requestId)) throw issue('BILI_V2_JOB_REUSED', 'This original job was already submitted; inspect its receipt.');
+      if (typeof requestId !== 'string' || !requestId || requestId.length > 200 || typeof originalRequestId !== 'string' || !originalRequestId || originalRequestId.length > 200 || !Number.isSafeInteger(groupCount) || groupCount < 1 || groupCount > 32 || !originalInput || !input || typeof input.kind !== 'string') throw issue('BILI_V2_JOB_INVALID', 'Supply a trusted typed scheduler trigger.');
+      const previous = triggers.get(requestId);
+      if (previous && (!previous.entry || previous.entry.phase !== 'pre_dispatch' || jobs.has(previous.sessionId) || previous.entry.inputDigest !== biliV2InputDigest({ value: input }) || previous.entry.originalRequestId !== originalRequestId || previous.entry.originalDigest !== originalTriggerDigest(originalInput) || previous.entry.groupCount !== groupCount || biliV2InputDigest({ value: previous.entry.scope }) !== biliV2InputDigest({ value: scope }))) throw issue('BILI_V2_JOB_REUSED', 'This original job was already submitted; inspect its receipt.');
       const current = getCharacter();
       const role = { id: String(current?.id ?? ''), epoch: Number(current?.epoch) };
       if (!role.id || !Number.isSafeInteger(role.epoch) || role.epoch < 0) throw issue('BILI_V2_JOB_INVALID', 'Restore the current character identity.');
+      if (previous?.entry && (previous.entry.characterId !== role.id || previous.entry.characterEpoch !== role.epoch)) throw issue('BILI_V2_JOB_REUSED', 'The original job belongs to a different character.');
       const controller = new AbortController();
       if (signal?.aborted) controller.abort();
       signal?.addEventListener('abort', () => { controller.abort(); if (state) stop(state); }, { once: true });
-      triggers.set(requestId, { pending: true });
+      triggers.set(requestId, { pending: true }); reserved = true;
       const route = await getModelRoute();
       if (String(getCharacter()?.id) !== role.id || Number(getCharacter()?.epoch) !== role.epoch || controller.signal.aborted) throw issue('BILI_V2_JOB_REVOKED', 'The role changed while resolving the model route.');
       if (!deriveMemoryProviderRouteId(route).ok || typeof route?.provider !== 'string' || typeof route?.model !== 'string' || route.providerRouteId !== deriveMemoryProviderRouteId(route).providerRouteId) throw issue('BILI_V2_ROUTE_UNPROVEN', 'Select an explicit resolved model route.');
       const job = Object.freeze({ jobId: crypto.randomUUID(), requestId, characterId: role.id, characterEpoch: role.epoch, sessionId: 'bili-v2-' + crypto.randomUUID(), providerRouteId: route.providerRouteId, provider: route.provider, model: route.model });
       state = { job, controller, active: false, stopped: false, definitions: new Map(), disposers: [], children: new Set(), inferences: 0 };
-      jobs.set(job.sessionId, state); persist(job);
+      jobs.set(job.sessionId, state); persist(job, { originalRequestId, input: structuredClone(input), inputDigest: biliV2InputDigest({ value: input }), originalInput: structuredClone(originalInput), originalDigest: originalTriggerDigest(originalInput), scope: structuredClone(scope), groupCount, phase: 'pre_dispatch' });
+      triggers.set(requestId, { sessionId: job.sessionId, entry: registry.sessions[job.sessionId] });
       await startPreset(); check(state);
       const prepared = await sourceRuntime.preparePrompt({ job, input: structuredClone(input), signal: controller.signal });
       check(state);
@@ -372,8 +383,10 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
       register(state); state.active = true;
       if (!getSessionSafety(job.sessionId).ok) throw issue('BILI_V2_GUARD_UNAVAILABLE', 'Restore the complete native session guard.');
       await validate(state, { phase: 'prompt' });
+      if (nativeRoot && typeof state.agent.followup !== 'function') throw issue('MEMORY_NATIVE_ROOT_UNSUPPORTED', 'Use the actual native inbox followup API.');
+      persist(job, { phase: 'dispatching' });
+      triggers.set(requestId, { sessionId: job.sessionId, entry: registry.sessions[job.sessionId] });
       if (nativeRoot) {
-        if (typeof state.agent.followup !== 'function') throw issue('MEMORY_NATIVE_ROOT_UNSUPPORTED', 'Use the actual native inbox followup API.');
         const freeze = (value) => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
         state.agent.followup(freeze({ id: crypto.randomUUID(), role: 'user', source: { kind: 'user-rpc', requestId }, content: structuredClone(prepared.content) }));
       } else {
@@ -381,9 +394,22 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
         if (accepted?.accepted !== true) throw issue('BILI_V2_PROMPT_FAILED', 'The fresh session did not acknowledge the prompt.');
       }
       check(state);
-      state.agent.whenIdle().then(() => finish(state)).catch((error) => report(error));
+      persist(job, { phase: 'accepted' });
+      triggers.set(requestId, { sessionId: job.sessionId, entry: registry.sessions[job.sessionId] });
+      state.agent.whenIdle().then(() => {
+        if (!state.stopped && state.modelCompleted) { persist(job, { phase: 'terminal' }); triggers.set(requestId, { sessionId: job.sessionId, entry: registry.sessions[job.sessionId] }); }
+        return finish(state);
+      }).catch((error) => report(error));
       return { ok: true, accepted: true, sessionId: job.sessionId, jobId: job.jobId };
-    } catch (error) { if (state) { stop(state); finish(state).catch(() => {}); } return report(error); }
+    } catch (error) { if (state) { stop(state); finish(state).catch(() => {}); } else if (reserved && !triggers.get(requestId)?.entry) triggers.delete(requestId); return report(error); }
+  }
+  function query(requestId) {
+    base();
+    const records = Object.values(registry.sessions).filter(entry => (entry.originalRequestId ?? entry.requestId) === requestId);
+    if (!records.length) return { ok: true, found: false };
+    const latest = new Map();
+    for (const entry of records) latest.set(entry.requestId, entry);
+    return { ok: true, found: true, jobs: [...latest.values()].map(entry => ({ requestId: entry.requestId, sessionId: entry.sessionId, jobId: entry.jobId, phase: entry.phase === 'accepted' && !jobs.has(entry.sessionId) ? 'unknown' : entry.phase ?? 'unknown', characterId: entry.characterId, characterEpoch: entry.characterEpoch, groupCount: entry.groupCount ?? null })) };
   }
   async function retire() { const values = [...jobs.values()]; values.forEach(stop); return Promise.all(values.map(finish)); }
   async function close() {
@@ -405,5 +431,5 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
     });
     return closeTask;
   }
-  return Object.freeze({ enqueue, getScope, isManagedSession, getSessionSafety, retire, close, getStatus: () => ({ ok: !fault && !closed && !shuttingDown, lastFailure, managedSessions: Object.keys(registry.sessions).length, activeJobs: jobs.size }) });
+  return Object.freeze({ enqueue, query, getScope, isManagedSession, getSessionSafety, retire, close, getStatus: () => ({ ok: !fault && !closed && !shuttingDown, lastFailure, managedSessions: Object.keys(registry.sessions).length, activeJobs: jobs.size }) });
 }

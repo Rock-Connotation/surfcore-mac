@@ -5,7 +5,7 @@ import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing
 
 const issue = (code, error, hint) => ({ ok: false, code, error, hint });
 export function createBiliRoundController({ ctx, stateDir, tokenBudget, runBili, perception, getCharacter,
-  buildContext, maintainMemory, readConfig, saveConfig, platformEnabled, legacyRunning, stopLegacy, json, readBody,
+  buildContext, maintainMemory, memoryCapability = null, readConfig, saveConfig, platformEnabled, legacyRunning, stopLegacy, json, readBody,
   createRound = createBiliRoundService }) {
   let restartRequired = false, transitions = 0;
   const current = () => transitions === 0 && platformEnabled() && readConfig().night?.controlledOnly === true ? getCharacter() : null;
@@ -35,11 +35,17 @@ export function createBiliRoundController({ ctx, stateDir, tokenBudget, runBili,
   function assertStamp(stamp) {
     if (ownerStamp() !== stamp) throw Object.assign(new Error('角色已切换'), { code: 'ROUND_FORBIDDEN', hint: '刷新当前角色的单轮状态。' });
   }
-  function readiness() {
+  async function readiness() {
     if (transitions > 0) return issue('BILI_ROUND_TRANSITION', '正在切换角色或停止渠道。', '等待操作完成后再开始单轮。');
     if (restartRequired) return issue('BILI_ROUND_RESTART_REQUIRED', '旧巡航已停止，需要重启后开始单轮。', '重启此 App 实例；已有回执和草稿会保留。');
     if (readConfig().night?.controlledOnly !== true || legacyRunning()) return issue('BILI_ROUND_MODE_REQUIRED', '请先暂停自动巡航。', '点击“仅运行单轮”，按提示重启后再试。');
     if (!platformEnabled()) return issue('BILI_ROUND_CHANNEL_DISABLED', 'B站渠道尚未启用。', '启用 B站并保存；单轮模式会保持自动巡航暂停。');
+    // F05：真实 V2 写回能力必须在媒体/模型调用前就绪，否则完整单轮会晚失败。
+    if (memoryCapability) {
+      const capability = await memoryCapability();
+      if (capability?.ok === false) return { ok: false, code: capability.code || 'ROUND_MEMORY_UNAVAILABLE',
+        error: capability.error || 'V2 记忆写回尚未就绪。', hint: capability.hint || '在记忆页核对当前角色、B站来源与精确模型授权后再发起单轮。' };
+    }
     return { ok: true };
   }
   async function models() {
@@ -73,7 +79,7 @@ export function createBiliRoundController({ ctx, stateDir, tokenBudget, runBili,
         if (jobId) value = assertOwner(await round.getJob(jobId));
         else { const raw = await round.status(); const role = getCharacter(); const jobs = raw.jobs.filter(j => role && j.characterId === role.id && Number(j.characterEpoch) === Number(role.epoch)); value = { ...raw, activeJobId: jobs.find(j => ['queued','running'].includes(j.state))?.jobId ?? null, jobs }; }
         const catalog = await models(); assertStamp(stamp);
-        json(res, 200, { ok: true, value, readiness: readiness(), models: catalog }); return true;
+        json(res, 200, { ok: true, value, readiness: await readiness(), models: catalog }); return true;
       }
       if (req.method !== 'POST') { json(res, 405, issue('BILI_ROUND_METHOD', '请求方法不支持。', '使用设置页单轮按钮。')); return true; }
       const body = JSON.parse(await readBody(req) || '{}');
@@ -81,17 +87,17 @@ export function createBiliRoundController({ ctx, stateDir, tokenBudget, runBili,
       if (body.action === 'cancel') { const stamp = ownerStamp(); assertOwner(await round.getJob(body.jobId)); const result = await round.cancel(body.jobId); assertStamp(stamp); json(res, 200, result); return true; }
       if (body.action === 'review-partial') {
         const stamp = ownerStamp();
-        const ready = readiness(); if (!ready.ok) { json(res, 409, ready); return true; }
+        const ready = await readiness(); if (!ready.ok) { json(res, 409, ready); return true; }
         assertOwner(await round.getJob(body.jobId)); assertStamp(stamp);
         if (body.allowPartial !== true) { json(res, 400, issue('ROUND_PARTIAL_APPROVAL_REQUIRED', '需要明确选择仅评价已处理部分。', '核对缺口说明后点击“仅评价已处理部分”；这不会正式评分或发布。')); return true; }
         const result = await round.reviewPartial({ jobId: body.jobId, allowPartial: true });
         assertStamp(stamp); json(res, result.ok === false ? 409 : 200, result); return true;
       }
       if (body.action !== 'start') { json(res, 400, issue('BILI_ROUND_ACTION', '单轮操作无效。', '刷新设置页后重试。')); return true; }
-      const ready = readiness();
+      const ready = await readiness();
       if (!ready.ok) { json(res, 409, ready); return true; }
       const stamp = ownerStamp(); const catalog = await models(); assertStamp(stamp);
-      const afterCatalog = readiness(); if (!afterCatalog.ok) { json(res, 409, afterCatalog); return true; }
+      const afterCatalog = await readiness(); if (!afterCatalog.ok) { json(res, 409, afterCatalog); return true; }
       if (!catalog.some(m => m.provider === body.provider && m.model === body.model)) {
         json(res, 400, issue('BILI_ROUND_MODEL_UNAVAILABLE', '所选模型不在当前 App 模型目录。', '检查该模型的连接和凭据后刷新目录。')); return true;
       }
@@ -110,6 +116,8 @@ export function createBiliRoundController({ ctx, stateDir, tokenBudget, runBili,
           json(res, 400, issue('BILI_ROUND_MODEL_UNAVAILABLE', '无法解析所选模型元数据。', '检查所选模型的网络连接和认证。')); return true;
         }
       }
+      const finalReady = await readiness();
+      if (!finalReady.ok) { json(res, 409, finalReady); return true; }
       const result = await round.start({ provider: body.provider, model: body.model, maxTokens: body.maxTokens, providerRouteId: route.providerRouteId });
       json(res, result.ok === false ? 409 : 200, result); return true;
     } catch (error) {

@@ -4435,3 +4435,166 @@ OneBot容器运行不代表HTTP/WS已监听；账号在线不代表群白名单�
 ## 156. QQ绑定的会话被归档会在模型调用前blocked（2026-11-10）
 
 App0.2.2-rc.1的ArchivedSessionGate会拒绝归档会话及其后代的agent/pre-step；旧代码注释“archiveSession只隐藏”不能用于该版本的运行判断。群@已到达、OneBot在线、dshReady和模型选择成功仍可能完全不回复。先用官方只读workspace/follow查目标是否归档，session/page看turn/end的blocked，session/list核对running；不要凭桥接pendingWakeKey认定模型仍在生成，也不要因此放宽语音/白名单。需要保留历史时，备份后用官方unarchiveSession恢复这个绑定会话，再通过所有权检查重连桥接订阅；不删聊天、不重置整个profile、不绕过Host归档门。原群网关读回发送回执后才称恢复；完整证据及回滚见11月10日语音case的19:49段。本轮只做运行时恢复，未实现自动归档修复策略。
+
+
+## QQ V2 桥接在线却不回复：发现文件和 Native 装配必须同源（2026-11-11）
+
+Host写`memory-v2/qq.json`而QQ默认读`qq-bridge.json`，会在模型前报`MEMORY_DISCOVERY_INVALID`。两者数据根相同，不要改根目录或chmod放宽。仅修文件名仍会被默认拒绝的session safety挡住：必须装配真实NativeOwner/来源账本/预算/发送租约，不能恒真guard或退V1。集成测试使用生产writer+生产QQ工厂，禁止两端在夹具里手工对齐另一份契约。`/api/status`在V2也要保留root/OneBot和失败，管理UI区分进程存活与可回复，否则既误导用户也破坏所有权启停检查。完整证据、回滚及发布块见[case](cases/2026-11-11-qq-v2-native-reply.md)。
+
+
+### QQ授权确认无回复：核对策略回读与预览过期
+
+桥接在线不代表授权已落盘。先读取当前角色revision/policies与原操作回执；过期预览（默认120秒）会在绑定业务请求前拒绝，因此无业务回执不能单凭推测认定具体错误。管理面板现在展示有效期、将失败/待核对结果滚入视口，共享控制成功后回读状态；保留服务端TTL与明确确认，不自动续期或批准。详见2026-11-11 QQ V2案例。
+
+
+### QQ Source生产适配器同步释放与测试隔离
+
+生产Memory Host的release同步返回对象，不能用adapter.release(...).catch假定Promise；使用await兼容同步/异步。QQ来源运行时和Core桥接清理已统一，真实同步适配器及原失败保留断言必须覆盖；测试不再人为async化release。
+
+任何导入character-persona/context/QQ Host的测试，须在模块初始化前隔离DSH_HOME；仅把记忆service stateDir指向fixture并不能保护真实角色目录。QQ source fixture改为先设隔离home再动态导入项目模块，总runner为每个子脚本隔离home。已有Alpha测试污染保留取证并按正式角色切换恢复，不允许用旧index/current覆盖用户新增数据。
+
+## 2026-11-12：Native工具装配与白名单设置不能分裂
+
+QQ旧MCP注册qq_send_voice不代表私有NativeOwner拥有语音工具；Owner/Source toolSpecs必须同源，实际SDK注册使用JSON Schema，不能把参数DSL直接当schema。语音媒体传输不应内嵌旧会话记忆策略，否则Native新租约撞旧state.sessions且重复记账。退役先取消桥接TTS/排队发送再等待Owner，整轮只用一个截止期限。QQ白名单仅接入与Core处理许可分离时，必须在QQ页显示真实可处理状态并提供同入口预览确认；不要让用户保存成功后仍被静默拦截。状态应调用Core resolveAudience，admin policies摘要没有受众/模型明细，不能自行按policyId推断。QQ状态与configure预览仅查询QQ身份，不能等待其它平台。见本轮case。
+
+2026-11-12重复L2补充：dedupeKey只是字段，不等于store已去重。轮询同一许可缺失若每次产生新UUID，确认单条无法止住弹窗。共享store支持生产者显式语义去重，跨确认/重启复用相同事件；仅准确memory-v2许可拒绝归L1，其它真实安全失败保持级别。不得靠扩大授权、ack-all或关安全总闸解决。
+
+### 2026-11-12：唯一历史资料不等于当前业务依赖
+
+清理先核对已提交源码、活动cwd、真实安装目录、profile包引用和依赖symlink。历史ASR夹具、旧程序快照与验收资料即使内容独有，也不自动等于当前业务需要。用户明确“无当前业务用途就删、不需要备份”后，不再建立数GiB归档；取消并删除本轮生成副本，保留Git有效源码与真实运行数据。大tar内容去重方案仅为已取消尝试，不宣称保全完成。见2026-11-12功能提交与清理case。
+
+---
+
+## #101（2026-11-12/13，P0）测试夹具把角色写进真实 `~/.dsh`
+
+**现象**
+- 跑 `test-companion-sharing*.mjs` / `test-douyin-companion*.mjs` 后，真实 `~/.dsh/surfcore/characters/current.json` 变成 `{"id":"alpha","epoch":1}`，`alpha/persona.md` 被夹具文本覆盖，并新建 `alpha/persona.scenes/local.md`、`role-a/`、`role-b/` 目录。
+- 同一事故在加了一层隔离后**第二次复发**（23:48），说明「在某个测试文件里写 `process.env.DSH_HOME = ...`」不够。
+
+**根因**
+- `character-persona.js` 在模块**求值**时就用 `process.env.DSH_HOME` 计算 `CHARACTERS_DIR` 常量。ESM 静态 import 的依赖先于任何赋值语句执行；测试若在 import 链（例如 `companion-sharing.mjs → context.js → character-persona.js`）之后才设 `DSH_HOME`，常量已绑定到真实 `~/.dsh`。
+- 第二次复发是另一个测试文件`import { chromium } ...` + `sharing-fixture.mjs` 的静态链里，隔离模块没有被排到**第一条** import。
+
+**处置**
+- 现场复制到 `~/.dsh/_quarantine/incident-2026-11-12-test-wrote-real-dsh/`；按 `characters/index.json` 权威值恢复 `current.json` = `app`/红豆/epoch 8；`alpha/persona.md` 从 `alpha/snapshots/before-switch/persona.md` 恢复为 `Alpha persona\n`；新建目录 rename 到隔离区。
+- `app` 角色数据、`memory-control.sqlite`、权限、删除屏障、预算与账本 mtime 未变（已核验）。
+
+**怎么验证**
+- 门禁前后 `stat` 真实 `~/.dsh/surfcore/characters/current.json` 与 `alpha/persona.md`；`find ~/.dsh -newer <stamp>` 不得出现角色/控制库写入（QQ 桥接日志除外）。
+- 新增 `plugins/surfcore/scripts/isolate-test-home.mjs`：拒绝把 `DSH_HOME` 指向真实 home；所有会触碰 `character-persona.js` 的测试**第一条 import** 引入它。
+- `scripts/test-v2-real-integration.mjs` 断言隔离库与 persona 哈希不变。
+
+**怎么预防**
+- 任何会写数据的 Node 测试：第一条语句就是隔离模块 import；`sharing-v2-fixture.mjs` 传入 `root` 时复用同目录（跨进程 race），未传时新建。
+- 不要把「设置环境变量」放在 import 之后；不要用静态 import 间接加载 `character-persona.js` 后才想起隔离。
+- 真实 `~/.dsh` 是红线：测试只读、不写；需要旧档案就用隔离副本 + 显式 `DSH_HOME`。
+
+## #102（2026-11-13，P1）V2-only 后影子开关与旧配置提示的误导
+
+**现象**
+- 新安装正式授权后仍 `MEMORY_SHADOW_DISABLED`；旧 `routing.json=v1` 的 hint 曾建议「备份后删除 routing.json」，若照做会丢权限/删除屏障/账本。
+- 旧 `state/mode.json=reserved` 被 `refreshMode` 静默忽略，`currentMode` 仍 `chat` 或保持上次值。
+
+**根因**
+- `shadowEnabled` 是影子期历史列，不是 V2 准入条件；`validate()` 却把它当必要条件，制造「已选 V2 / 已授权 / 仍被拒」三态矛盾。
+- 「路由缺失 + 控制库存在」被当成 fresh；「退役值」与「读取失败/非法值」共用「忽略并沿用上次模式」分支。
+
+**处置 / 预防**
+- V2 业务准入只看角色 epoch、具体 policy、控制修订、来源证明、生命周期与删除屏障；历史列保留但不参与判断、不直接 SQL 改值。
+- 新增 `src/core/memory-v2-preflight.js` 只读预检：fresh / ready / retired-v1 / control-only / route-only / corrupt / reader-too-new / unreadable 分状态，处理计划明确「不删 routing、不删控制库、不改权限」。
+- QQ 模式来源分离：`absent` 按明确 `chat` 契约；权威 `retired`/`invalid`/`unreadable`/`unavailable` 进入可见 blocked，且不被本地低优先级值掩盖。
+- 回归：`scripts/test-v2-real-integration.mjs`、`scripts/test-issue-regressions.mjs`（R07/R03 四项）、`plugins/surfcore/scripts/test-memory-v2-runtime.mjs`（正式授权后 capture/prepare 可用）。
+
+## #147（2026-11-14，P1）负载下测试等待运行器删除与慢肖像响应不稳定
+
+**现象**：`test-bili-round.mjs` 整套运行 955 秒时失败，单跑约 1.8 秒通过；`test-douyin-companion-ui.mjs` 负载下 30 秒超时。
+
+**根因**：前者断言前置包含 `!runners.has(job.jobId)`，任务完成与 runner 从 Map 删除不是同一步；后者等待故意延迟 5600ms 的 portrait 响应，负载会放大实际等待。
+
+**处置 / 预防**：隔离负载并核对任务终态与 runner 清理时序，使用明确的完成同步点；不要靠吞错、放宽断言或盲目加超时掩盖竞态。UI 超时先确认延迟响应是否完成和负载情况。
+
+**怎么验证**（定向单跑，与受控负载下对照，不与其他写同一工作树的代理并发）：
+```sh
+node plugins/surfcore/scripts/test-bili-round.mjs
+node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
+```
+
+## #148（2026-11-14，P1）故意先红的测试被普通 Memory V2 runner 自动收集
+
+**现象**：一条故意先红的合同测试带红整条插件门禁，尽管没有显式把它接入插件清单。
+
+**根因**：`scripts/run-memory-v2-tests.mjs:28-29` 用 `/^test-memory-v2.*\.mjs$/` 自动收集插件目录，插件测试链最后又运行该 runner；符合命名规则的临时红测自动进入门禁。
+
+**处置 / 预防**：尚未转绿的实验脚本使用不匹配该正则的临时名字或放在隔离位置；转绿后再按计划纳入。查看 runner 列表确认收集范围，不以插件 package 清单推断。
+
+**怎么验证**：`node scripts/run-memory-v2-tests.mjs --list`，检查 `ordinary` 列表中是否包含目标文件；正式红绿验证应在独立隔离工作树进行。
+
+## #149（2026-11-14，P1）取消不能回滚已提交的记忆写入
+
+**现象**：取消后的作业可能显示 `memorySaved=false`，但反思已经写入；调用方没有原操作编号，无法按编号查回终态。审查要求的可查询性仍未满足，需后续修产品接口。
+
+**根因**：`plugins/surfcore/lib/douyin-companion.mjs:498` 调用 `v2.reflect(session, memoryPayload)` 不传 signal；`abortable` 在取消时丢弃迟到结果，作业账本不保存 reflection 的 operationId/unknown。`plugins/surfcore/lib/memory-v2-host.mjs:119-129,197-199` 中 `ingestEvents` 开始后，release 只能使后续句柄检查失败，不能撤销已提交写入。
+
+**处置 / 预防**：不要把取消解释为无副作用，也不要自动重发；应保留原操作编号与不确定状态并允许查询。当前测试只用夹具已知的原编号证明真实回执，不能替代调用方恢复能力。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-douyin-companion-host.mjs` 放行已开始的写入并以已知编号查询一次真实提交；`node plugins/surfcore/scripts/test-douyin-companion.mjs` 检查取消后迟到结果不改写作业终态。
+
+## #150（2026-11-14，P1）越界帧数可能从记忆检索流入展示
+
+**现象 / 根因**：真实 Host 检索可返回 `coverage.frameSamples=6`；叙述层的 1..3 门控令“6帧”不出现，但 `plugins/surfcore/lib/douyin-companion-page.mjs:85,188` 的数字展示当时没有该门控，可能显示“6 张稀疏画面”。账本自身只允许 0..3。产品 owner 已在工作树修改页面门控，最终验收以其报告为准。
+
+**处置 / 预防**：由产品 owner 处理取回及展示边界，避免仅用叙述中不含“6帧”来证明原始数据有效。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-douyin-companion-recall.mjs` 验证理由和 ISO 时间；越界取回与页面展示需由产品缺口的专属测试验证。
+
+## #151（2026-11-14，P1）手工落账的竞态夹具不能证明模型只调用一次
+
+**现象 / 根因**：`test-companion-sharing-race.mjs` 子进程手工写消费账本及 request/answer，主进程模型调用为零；原 PASS 却声称 one paid call。单机 MemoryService 的 writer lock 拒绝第二个写入者，同步 `fs.readFileSync` 注入点也不能等待另一条异步真实模型路径。
+
+**处置 / 预防**：该测试只宣称锁内重读已持久化回复、零次额外模型调用及无重复 assistant 写入；手工数字不是调用证据。真实跨进程付费调用唯一性尚未验证，归 G7 实机验收，不能写成 PASS。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-companion-sharing-race.mjs` 应输出 seeded durable reply reused 和 `NOT VERIFIED`；它不能替代真实多进程模型调用计数。
+
+## #152（2026-11-15，P1）门禁里的测试依赖 cwd，断言失败还会把整条门禁挂住
+
+**现象 / 根因**：`plugins/surfcore/scripts/test-bili-retire-barrier-r3.mjs` 接进 `plugins/surfcore` 的 `npm test` 链后，同一脚本出现两种结果——仓库根 0 失败，cwd=`plugins/surfcore` 时 3 处 `ENOENT ... 'plugins/surfcore/lib/index.js'`（相对路径按 cwd 解析）加 2 处夹具失败（`offline GET not reached`、`hold-ready` 不存在，因为 `biliMjs` 也是 cwd 相对路径）。更糟的是：首次断言失败后进程**永不退出**——它 spawn 的 CLI 后代还在等放行文件，事件循环被挂住，冻结门禁因此静默挂了 17 小时没有任何新输出。
+
+**处置 / 预防**：①测试里不写 cwd 相对路径，仓库内路径一律从 `import.meta.url` 推导（本轮加 `repoRoot`）；②spawn 后代的夹具测试，放行/清理必须写进 `finally`（断言失败也要放行），收尾显式 `process.exit(码)`，让退出码如实反映断言结果；③把"换 cwd 也通过"作为接入门禁的前置检查；④门禁长时间无输出要当故障处理（本轮靠日志 mtime 与 `ps` 才发现）。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-bili-retire-barrier-r3.mjs` 与 `cd plugins/surfcore && node scripts/test-bili-retire-barrier-r3.mjs` 都应打印 `r3: 0 failures`、立刻退出且退出码 0。
+
+## #153（2026-11-15，P1）审计/工单里的行号是"当时的快照"，拿它当现状会写出过期工单
+
+**现象 / 根因**：我按审查文档（写成于 `b7316ca`）给子代理下工单，称"registry 只存 5 个标识字段"、"`scheduler.js` 自己合成 `durable: true`"。子代理两次 hand_back：R3 已经改过这些文件。实测当前树——`plugins/surfcore/lib/bili-v2-agent.mjs:55-80` 的合法键集已含 `originalRequestId/input/inputDigest/phase/originalInput/originalDigest/scope/groupCount`，`:330-360` 的复用守卫已允许 `pre_dispatch` 用原 `requestId` 重新入队，`plugins/surfcore/lib/scheduler.js:583` 是在**校验** durable 回执（该文件已无 durable 生产者）。根因：pin 过的事实与手写文档都是**登记当时的锚点**，不是当前状态；修完一轮之后引用旧行号，就等于让子代理去修一个已经不存在的缺陷。
+
+**处置 / 预防**：①写工单前先读**当前基线**（`read`/`grep` 到行号），不接受"文档说"；②pin/文档只作入口提示，动手前 re-read；③要求子代理 hand_back 时附它所读文件的 `sha256`，便于我核对它读的是不是当前树；④工单前提被证伪时，先改工单再继续，不要求子代理"想办法造出这个红"。
+
+**怎么验证**：`shasum -a 256 plugins/surfcore/lib/bili-v2-agent.mjs` = `f67ff48365fc41705f9a16e3aae6c5076d6e3b3b985793f3a67ebf240ba29095`；`grep -rn "durable: *true" plugins/surfcore/lib src` 只命中用量持久化三处（`token-budget.js:166`/`:796`、`douyin-companion-model.mjs:163`），没有 B站作业 durable 回执生产者。
+
+## #154（2026-11-15，P2）native 契约脚本对 `ELECTRON_RUN_AS_NODE=1` 敏感——是环境差异，不是产品缺陷
+
+**现象 / 根因**：同一份 `plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs`，用 DSH 自带 node（或系统 node）跑 → `PASS Bili native runtime: 52 scenarios (v24.21.0, actualHostTools=false)`、exit 0；套上真实宿主二进制 + `ELECTRON_RUN_AS_NODE=1`（外加 `SURFCORE_BILI_ACTUAL_HOST_FIXTURE=1` 等夹具开关）跑 → `AssertionError false !== true at plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs:198:12`。根因：该脚本里"守卫是否以字符串拒绝探针"的判定走两条分支（`nativeRoot ? typeof denial !== 'string' || !denial : denial !== 'BILI_V2_TOOL_DENIED'`），宿主内建 root 的 tools 面与仓内 `createIsolatedNativeRoot` 形状不同，于是同一断言在不同 root 下取值相反。
+
+**处置 / 预防**：①离线验收统一用 DSH 自带 node（`export PATH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin:$PATH"`），别用 `ELECTRON_RUN_AS_NODE` 跑契约脚本；②不要把这种红解释成"守卫坏了"，也不要为了让它变绿而放宽产品守卫；③真实宿主下的 native 守卫行为归 G7 实机（隔离 profile）定性；④给子代理的工单要写明用哪个 node、以及禁用哪些宿主环境变量。
+
+**怎么验证**：`export PATH="…/dependencies/node/bin:$PATH" && node plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs --ordinary` → 52 scenarios、exit 0；带 `ELECTRON_RUN_AS_NODE=1` 跑同一文件 → 红在 `:198`（本轮复现两次：子代理一次、我一次）。
+
+## #155（2026-11-15，P1）CLI 包装进程只会转发信号、自己不退出——宿主退出后变成 PPID=1 孤儿
+
+**现象 / 根因**：实机（macOS 26.6.2）上捕到 5 个 `PPID=1`（launchd 收养）的 B站 CLI 孤儿，最早一个已活 1.9 天：`commands/dm-await.mjs --once --json` 与 `tools/bili.mjs dm-await --once --json`；它们 `STAT=S`、CPU 累计约 3.2–3.9 秒、**没有任何 socket**（活着但不干事）。根因在 `plugins/surfcore/tools/bili.mjs:79-88`（修复前）：这是转发型包装进程（用 `process.execPath` spawn 真正的 `tools/commands/*.mjs`），信号处理器只把 `SIGTERM`/`SIGINT` 转发给子进程、**自己从不退出**，唯一退出路径是 `child.once('close')`；子进程不可中断或已经消失时，包装进程永久存活。实机佐证：`8988` 收到 `SIGTERM` 后 3 秒仍存活、无子进程、`lsof -a -p 8988 -i` 空。
+
+**处置 / 预防**：①包装进程必须自己封口——转发信号 + `GRACE_MS=3000` 后升级 `SIGKILL` + 200ms 后 `process.exit(128+signal)`（`'close'` 里若本次已被信号终止，退出码也用 128+signal）；最坏 3.2 秒退出，不依赖子进程合作。②补常驻合同测试 `plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs`（夹具子进程故意忽略信号），接进 `scripts/test-audit.mjs` 与插件 `test` 链（79→80 段）。③写"包装/转发型"进程时，`child.once('error')` 里只设 `process.exitCode` 不算退出，必须有超时兜底。④已存在的孤儿不会自愈（旧代码起的进程），清理后再验；用户机器上真正跑的是安装副本 `~/.dsh/profiles/<profile>/node_modules/surfcore/`，源码修复要等下次安装/更新才带过去。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs` → 未修时 `EXIT=1 elapsed=7s`、`FAIL 包装进程收到 SIGTERM 后必须在 6000ms 内退出`；修后 `PASS … 转发信号后自己退出，并升级清掉死扛的子进程` exit 0（3–4 秒）。反向重放：删掉 `try { child?.kill('SIGKILL') } catch {}` → `FAIL 忽略信号的子进程必须被升级到 SIGKILL 清掉 / true !== false`，还原后 SHA `407fc4f783e3c0fec836354f7ab184925d77ebff2b3000b3a0a20d885de94a31` 逐字一致。
+
+## #156（2026-11-15，P1）隔离 profile 里插件行 `pending (waiting for service: …)`——缺的是基座 bundle，不是插件坏了
+
+**现象**：用隔离 `DSH_HOME` + `scripts/setup-dsh.mjs <profile>` 装好 SurfCore 后起真实打包宿主，loader 打印 `surfcore (surfcore): pending (waiting for service: sessionController)`、`qq-mode (.../qq-mode/index.js): pending (waiting for service: settings)`，宿主有时直接 `StartupError: dsh: startup failed: 1 required plugin did not activate`。
+
+**根因**：SurfCore 的 `inject = ['webServer','connection','sessionController']`（`plugins/surfcore/lib/index.js:203`）由 DSH 的基座 bundle 提供；而 `scripts/setup-dsh.mjs` 只把 `surfcore` push 进 `dsh.profile.bundles`，**不会补** `@deepseek-ai/dsh-base` / `@deepseek-ai/dsh-web-app`（真实桌面 profile 的这两项是 DSH 自己创建 profile 时写的）。同理，别在 profile patch 里手工再声明基座已经注册的服务（`@deepseek-ai/dsh-host-webserver` / `dsh-credentials-local` / `dsh-client-connection`），否则会 `service "webServer" has been registered at <WebServer>` 而启动失败。
+
+**处置 / 预防**：隔离夹具（与任何手工建 profile 的脚本）必须把 bundles 写成 `['@deepseek-ai/dsh-base','@deepseek-ai/dsh-web-app','surfcore']`，只在 patch 里插自己那一行插件。
+
+**怎么验证**：`node scripts/test-surfcore-isolated-host.mjs` → 只看 `['surfcore']` 时 `RED_EXIT=1` 且宿主 `TypeError: Cannot read properties of undefined (reading 'authenticatedUrl')`（`AC2 FAIL`）；补上基座后 `EXIT=0`、`[surfcore] 已激活 v0.9.0-dev.1`。
+
+**附带发现**：DSH web 面对回环请求**一律 401**（本机六种认证方式都试过：无认证 / `?token=` / Bearer / `x-dsh-token` / 先取登录页 cookie 再带 cookie），会话 token 由桌面外壳经 IPC 注入——所以"隔离宿主里用 curl 打 SurfCore 的 HTTP 面"这条路走不通，只能记为环境阻断；要产品级证据得在真桌面外壳内做只读验收。

@@ -55,7 +55,7 @@ const mkSession = (o = {}) => ({
   },
 });
 
-async function run({ sessions = [], args = ['--once', '--json', '--any'], state, config } = {}) {
+async function run({ sessions = [], args = ['--once', '--json', '--any'], state, config, registry } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-bili-dm-trigger-'));
   const bili = path.join(home, 'surfcore', 'bili');
   fs.mkdirSync(bili, { recursive: true });
@@ -67,6 +67,7 @@ async function run({ sessions = [], args = ['--once', '--json', '--any'], state,
     owner: { mid: OWNER, name: 'SYNTHETIC_OWNER' }, self: { mid: SELF }, notify: { type: 'none' },
   }));
   if (state !== undefined) fs.writeFileSync(path.join(bili, 'dm-await-state.json'), JSON.stringify(state));
+  if (registry) fs.writeFileSync(path.join(home, 'surfcore', 'bili-v2-managed-sessions.json'), JSON.stringify(registry));
   const reqLog = path.join(home, 'requests.log');
   fs.writeFileSync(reqLog, '');
   const env = {
@@ -204,11 +205,16 @@ try {
     assert.equal(r.code, 0, r.stderr);
     const out = jsonOut(r);
     assert.equal(out.hit, true);
-    assert.equal(out.msgKey, DIGIT19);
-    assert.equal(out.mid, OWNER);
-    assert.equal(out.name, 'SYNTHETIC_OWNER');
-    assert.equal(out.text, 'SYNTHETIC_INBOUND');
-    assert.equal(out.ts, TS);
+    // F03 起输出统一为 items[]（含稳定 requestId 与不可变原件）；顶层不再平铺 msgKey。
+    assert.equal(out.items.length, 1);
+    const item = out.items[0];
+    assert.equal(item.msgKey, DIGIT19);
+    assert.equal(item.mid, OWNER);
+    assert.equal(item.name, 'SYNTHETIC_OWNER');
+    assert.equal(item.text, 'SYNTHETIC_INBOUND');
+    assert.equal(item.ts, TS);
+    assert.equal(typeof item.requestId, 'string');
+    assert.equal(item.original?.msgKey, DIGIT19, 'pending 保存首次不可变原件');
     assertClean(r);
   });
 
@@ -232,7 +238,47 @@ try {
     const out = jsonOut(r);
     assert.equal(out.hit, true);
     assert.ok(!('msgKey' in out), 'unsafe number must not become a fake exact ID');
+    assert.ok(out.items.length === 1 && !('msgKey' in out.items[0]), 'unsafe number must not fabricate an ID in items either');
     assertClean(r);
+  });
+
+  await test('owner branch hit does NOT advance lastSeen (Host rejection keeps the notice)', async () => {
+    const sessions = [mkSession({ talker: Number(OWNER), sender: Number(OWNER), name: 'SYNTHETIC_OWNER', msgKey: DIGIT19 })];
+    const first = await run({ sessions, args: ['--once', '--json'], state: { lastSeen: 0 } });
+    const out = jsonOut(first);
+    assert.equal(out.hit, true);
+    const requestId = out.items?.[0]?.requestId;
+    assert.match(String(requestId ?? ''), /^bili-dm-[a-f0-9]{64}$/, 'stable requestId must be derived from exact coordinates');
+    // 同一状态再轮询一次：游标没有前进，所以同一条通知仍然命中，且 requestId 稳定不变。
+    const second = await run({ sessions, args: ['--once', '--json'], state: { lastSeen: 0 } });
+    const again = jsonOut(second);
+    assert.equal(again.hit, true, 'an unacked notice must remain eligible');
+    assert.equal(again.items?.[0]?.requestId, requestId, 'the same notice must keep the same requestId');
+    assertClean(second);
+  });
+
+  await test('--ack advances the cursor exactly once and clears pending', async () => {
+    const sessions = [mkSession({ talker: Number(OWNER), sender: Number(OWNER), name: 'SYNTHETIC_OWNER', msgKey: DIGIT19 })];
+    const hit = jsonOut(await run({ sessions, args: ['--once', '--json'], state: { lastSeen: 0 } }));
+    const requestId = hit.items?.[0]?.requestId;
+    const pendingState = { lastSeen: 0, pending: [{ mid: OWNER, name: 'SYNTHETIC_OWNER', text: 'SYNTHETIC_INBOUND', ts: TS, msgKey: DIGIT19, requestId }] };
+    const job = { requestId: 'internal-test', sessionId: 'session-test', jobId: 'job-test' };
+    const hostReceipt = { requestId, durable: true, state: 'accepted', source: 'bili-v2-registry', jobs: [job] };
+    const registry = { version: 1, sessions: { 'session-test': { ...job, originalRequestId: requestId, phase: 'accepted', groupCount: 1, receipt: hostReceipt } } };
+    const acked = await run({ sessions, args: ['--ack', requestId, '--receipt', JSON.stringify(hostReceipt)], state: pendingState, registry });
+    assert.equal(acked.code, 0, acked.stderr);
+    const receipt = JSON.parse(acked.stdout.trim().split('\n').filter(Boolean)[0]);
+    assert.equal(receipt.ok, true); assert.equal(receipt.acked, requestId); assert.equal(receipt.pending, 0);
+    assert.equal(receipt.lastSeen ?? receipt.cursor, TS);
+    // 确认后再轮询：游标已前进 → 同一条通知不再命中（不重复外发）。
+    const after = jsonOut(await run({ sessions, args: ['--once', '--json'], state: { lastSeen: receipt.lastSeen ?? receipt.cursor, pending: [] } }));
+    assert.equal(after.hit, false);
+  });
+
+  await test('--ack unknown requestId fails visibly and advances nothing', async () => {
+    const result = await run({ sessions: [], args: ['--ack', 'bili-dm-' + 'f'.repeat(64)], state: { lastSeen: 0, pending: [] } });
+    assert.equal(result.code, 7, 'ack without a receipt must exit non-zero');
+    assert.match(result.stderr, /BILI_DM_RECEIPT_REQUIRED/);
   });
 
   console.log('PASS Bili DM trigger: ' + pass + ' cases');

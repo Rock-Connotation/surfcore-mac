@@ -257,7 +257,14 @@ export function createTokenBudgetService({
     };
     if (parsed !== null && !isPlainObject(parsed)) canonicalError = { ok: false, code: 'BUDGET_STATE_INVALID', error: 'The canonical budget state is invalid.', hint: 'Restore a verified budget state before admitting calls.' };
     if (!isPlainObject(parsed)) return out;
-    if (![1, 2].includes(parsed.version) || !/^\d{4}-\d{2}-\d{2}$/.test(parsed.day ?? '')
+    const emptyUndated = parsed.version === 2 && parsed.day === null
+      && isPlainObject(parsed.categories) && CATEGORY_KEYS.every((key) => isPlainObject(parsed.categories[key])
+        && parsed.categories[key].cost === 0 && parsed.categories[key].tokens === 0)
+      && Object.values(parsed.categories).every((bucket) => isPlainObject(bucket) && bucket.cost === 0 && bucket.tokens === 0)
+      && isPlainObject(parsed.sessions) && Object.keys(parsed.sessions).length === 0
+      && isPlainObject(parsed.modelCalls) && parsed.modelCalls.version === 1
+      && isPlainObject(parsed.modelCalls.requests) && Object.keys(parsed.modelCalls.requests).length === 0;
+    if (![1, 2].includes(parsed.version) || (!emptyUndated && !/^\d{4}-\d{2}-\d{2}$/.test(parsed.day ?? ''))
       || !isPlainObject(parsed.categories) || !isPlainObject(parsed.sessions)
       || Object.values(parsed.categories).some((bucket) => !isPlainObject(bucket)
         || !Number.isFinite(bucket.cost) || bucket.cost < 0 || !Number.isSafeInteger(bucket.tokens) || bucket.tokens < 0)
@@ -604,7 +611,7 @@ export function createTokenBudgetService({
     return {
       version: 2,
       modelCalls: admission.snapshot(),
-      day: state.day,
+      day: state.day ?? localDayKey(now()),
       updatedAt: now(),
       categories: state.categories,
       sessions,
