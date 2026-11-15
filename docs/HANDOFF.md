@@ -1,4 +1,4 @@
-## 2026-11-15 V1 退役三轮复审（P1/F01–F05、N01、P2/F08+F10）离线修复完成，**未提交、未合入 dev**
+## 2026-11-15 V1 退役三轮复审（P1/F01–F05、N01、P2/F08+F10）离线修复完成并已提交到 `feat/v1-retirement-r3`（HEAD `6feea46`），**未合入 dev**
 
 工作树 `/Users/shizihan/Daily/Github/surfcore-v1-retirement-r3`（分支 `feat/v1-retirement-r3` @ `1125d3e`，基于 `dev`）。本轮只做**离线修复 + 常驻门禁**：没有提交、没有合 dev、没有 bump/tag/发布；主工作树 `surfcore-mac`、`dev`、`main` 均未受影响。
 
