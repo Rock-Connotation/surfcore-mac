@@ -67,7 +67,7 @@ node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
 是否已 rebase/merge 最新 dev：未合并（主树 dev 有非本会话未跟踪 `2026-11-12/`，按 AGENTS §1.9 停手）；待对应会话收走后由协调/发布会话 --no-ff 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
 ```
 
-### 批次 2026-11-15 · G7 第二阶段：隔离实例真实宿主验收（**待合入 `dev`**）
+### 批次 2026-11-15 · G7 第二阶段：隔离实例真实宿主验收（**已合入 `dev`** @ `1db3ed9`，功能分支 @ `d6a68a3`，待发版）
 
 > case：[`docs/cases/2026-11-15-mac-real-machine-g7-phase2-isolated-host.md`](cases/2026-11-15-mac-real-machine-g7-phase2-isolated-host.md)
 > 工作树 `/Users/shizihan/Daily/Github/surfcore-g7-phase2`（`feat/g7-phase2-host-acceptance`，基于 `dev` @ `a234f4b`）
