@@ -1,3 +1,17 @@
+## 2026-11-15 dev 测试构建 `v0.9.0-dev.2` 已发布（Pre-release；稳定用户不受影响）
+
+**发布物**：tag `v0.9.0-dev.2` @ 远端 `76310d7`（本地构建提交 `53f71db`，两者 tree 逐字节相同 `9118306322f3410b00f7a644c3b967a62cb0f245`）；Release `SurfCore v0.9.0-dev.2`（`prerelease=true`、`draft=false`）→ <https://github.com/Rock-Connotation/surfcore-mac/releases/tag/v0.9.0-dev.2>。
+
+**相对 `v0.9.0-dev.1` 多了什么**：① `scripts/setup-dsh.mjs` 为全新 profile 补 DSH 基座 bundle（否则隔离 `DSH_HOME` 装完停在 `pending (waiting for service: …)`）；② `plugins/surfcore/lib/companion-sharing-store.mjs` 接受合法零帧样本（`frameSamples: 0` 不再被判成"记录损坏"）；③ 隔离宿主验收测试与相关文档/清单。
+
+**发布三条门禁**：① `node scripts/release-manifest.mjs --verify-ref HEAD` → `清单 1115 个，跟踪文件 1115 个，问题 0 个`；② `GH_TOKEN=… node scripts/verify-remote-manifest.mjs Rock-Connotation/surfcore-mac v0.9.0-dev.2` → `一致 1115 · 不符 0 · 缺失 0`；③ Release 为 Pre-release，`gh api …/releases/latest` 仍是 **`v0.9.0`**。
+
+**测试机怎么拿**：更新通道切 **dev** → 点「检查更新」。
+
+**已知边界**：dev 快照内 `doc-facts` 会红（快照的 `docs/ROADMAP.md` / `docs/guides/DSH_SETUP.md` 版本字仍是 `0.9.0`，而该快照 `package.json` 是 `0.9.0-dev.2`）——`scripts/publish-dev.mjs` 的既有行为，仓库 HEAD 是绿的。
+
+**镜像一致性**：`publish-dev` 用 Data API 造的远端 dev 提交 `76310d7`（父 = 上一轮同步点）已在本地用 `git merge -s ours origin/dev` 收成祖先（本地 `0a6488c`，tree 不变），推送为**快进**；远端 `main` 未动（`5face06`）。
+
 ## 2026-11-15 dev 远端镜像已同步（`c5da206 → edf41fd`，快进；未发新 dev 构建）
 
 **做了什么**：把本地 `dev`（含 setup-dsh 基座 bundle 修复、抖音共享记录零帧边界修复、存量红复核文档）推到 `Rock-Connotation/surfcore-mac` 的 `dev` 分支。远端 `main` 未动（`5face06`）。
