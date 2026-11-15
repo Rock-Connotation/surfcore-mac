@@ -1,4 +1,4 @@
-## 2026-11-15 G7 Mac 实机（非侵入取证 + CLI 孤儿修复）——**已提交 `feat/v1-retirement-r4`** @ `01f9f85`
+## 2026-11-15 G7 Mac 实机（非侵入取证 + CLI 孤儿修复）——**已合入 `dev`** @ `c74470d`（功能分支 `feat/v1-retirement-r4` @ `7839039`）
 
 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`。用户定边界：**不启动任何新实例**（不启隔离 profile/桥接、不发真实消息、不扫码），只做只读取证；实机孤儿按批准逐个清理。本轮没有 bump/tag/发布。
 
