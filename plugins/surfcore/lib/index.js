@@ -269,6 +269,7 @@ export function apply(ctx) {
     },
     getQQRoute: state => state ? resolveQQV2ModelRoute(ctx, state) : null,
     onQQReply: request => qqReplyHost?.submit(request) ?? ({ ok: false, code: 'QQ_V2_HOST_NOT_READY', error: 'QQ reply Host is not ready.', hint: 'Wait for the Host to initialize, then retry.' }),
+    onQQCancel: request => qqReplyHost?.cancel(request) ?? ({ ok: false, code: 'MEMORY_QQ_HOST_UNAVAILABLE', error: 'QQ reply Host is not ready.', hint: 'Wait for the Host to initialize, then retry.' }),
     getPlatformState: async channel => {
       if (channel === 'bili') return platformStartEnabled('bili') && biliMemoryHost ? biliMemoryHost.getPlatformState() : null;
       if (channel !== 'douyin' || !douyinMemoryService || !platformStartEnabled('douyin')) return null;
@@ -277,10 +278,12 @@ export function apply(ctx) {
     },
     retireForLifecycle: async ({ characterId, operationId }) => {
       pluginLog(`[记忆V2] 角色 ${characterId} 触发生命周期退役 (operationId: ${operationId})`);
-      if (biliMemoryHost && typeof biliMemoryHost.retire === 'function') {
-        await biliMemoryHost.retire().catch(() => {});
+      try {
+        const retired = scheduler?.retire ? await scheduler.retire() : await biliMemoryHost?.retire?.();
+        return retired ?? { ok: true, retired: true };
+      } catch (error) {
+        return { ok: false, code: error?.code || 'BILI_V2_RETIRE_FAILED', error: error?.message || 'B站退役未确认。', hint: error?.hint || '保留原操作编号，稍后重试。', operationId };
       }
-      return { ok: true, retired: true };
     },
     lifecycleInventory: async ({ characterId, purpose }) => {
       pluginLog(`[记忆V2] 角色 ${characterId} 进行生命周期盘点 (${purpose})`);
@@ -302,9 +305,10 @@ export function apply(ctx) {
     const key = /^(group|private):[1-9][0-9]{0,19}$/.test(result?.conversationKey ?? '') ? result.conversationKey : '';
     const affected = ({ qq: 'QQ', bili: 'B站', douyin: '抖音', local: '本机伙伴', unknown: '记忆渠道' })[channel] + (key ? ` ${key}` : '');
     const role = readCurrentCharacter();
-    const error = code === 'MEMORY_POLICY_DENIED' ? `${affected}尚未确认当前模型的处理许可。` : `${affected}任务未完成。`;
+    const error = code === 'MEMORY_POLICY_DENIED' ? `${affected}尚未确认当前模型的处理许可。` : code === 'BILI_V2_NOT_DURABLE' ? `${affected}原作业结果尚未确认，本机没有持久接管凭证。` : `${affected}任务未完成。`;
     let hint = '打开记忆页的“身份与权限”检查当前账号、模型和完整来源集合；先预览再审批，随后重试原任务。';
-    if (/^(?:BILI_V2_ROUTE|MEMORY_PROVIDER)/.test(code)) hint = '在Host选择有效模型并恢复连接，再刷新记忆页的精确路由与来源审批。';
+    if (code === 'BILI_V2_NOT_DURABLE') hint = result?.hint || '按原作业编号查询该操作，不要新建编号重做；已派发或状态未知时不要重发。';
+    else if (/^(?:BILI_V2_ROUTE|MEMORY_PROVIDER)/.test(code)) hint = '在Host选择有效模型并恢复连接，再刷新记忆页的精确路由与来源审批。';
     else if (/^(?:BILI_OFFICIAL|BILI_VIDEO)/.test(code)) hint = '检查B站登录及官方来源是否仍可读取，再刷新确切来源集合；不要用通知摘要代替原件。';
     else if (/RETIRE|LIFECYCLE/.test(code)) hint = '先停止当前轮次并查询原操作回执；保留未确认的会话与owner，排除原因后显式重试退休。';
     else if (/^CHARACTER_/.test(code)) hint = '选择当前角色并刷新任务与来源列表后重试，不要沿用旧角色的审批。';
@@ -826,10 +830,25 @@ export function apply(ctx) {
     // 同一代 Host/角色只解析一次已核验会话，避免每次 readiness 都触发官方账号探测；
     // Host 退役/角色切换/来源集合变化后重新核验，避免一轮中途换会话。
     const version = biliRoundHostVersion();
-    if (biliRoundScopeCache && biliRoundScopeCache.version === version) return biliRoundScopeCache.value;
+    if (biliRoundScopeCache && biliRoundScopeCache.version === version) {
+      const cached = biliRoundScopeCache;
+      const checkedScope = await biliMemoryHost.roundMemoryScope({ setId: cached.value.publicSourceSetId });
+      if (checkedScope?.ok === true && biliRoundScopeCache === cached) return cached.value;
+      if (biliRoundScopeCache === cached) biliRoundScopeCache = null;
+      return checkedScope?.ok === false ? checkedScope : { ok: false, code: 'BILI_V2_ROUND_SCOPE_CHANGED', error: '单轮来源在检查时发生变化。', hint: '重新确认当前来源后重试。' };
+    }
     const ready = await memoryV2Ready;
     if (!ready.ok) return { ok: false, code: ready.code || 'MEMORY_RUNTIME_UNAVAILABLE', error: ready.error || 'V2 记忆宿主尚未就绪。', hint: ready.hint || '在记忆页核对当前角色与路由后重试。' };
-    const state = await biliMemoryHost.roundMemoryScope();
+    const role = readCurrentCharacter();
+    if (!role) return { ok: false, code: 'CHARACTER_CONTEXT_REQUIRED', error: '当前角色尚未就绪。', hint: '选择角色后重试。' };
+    const feed = await runBili(['feed','--n','3','--per','1','--pages','1','--source','search','--no-remember','--json'], 120_000,
+      { envPatch: { SURFCORE_EXPECTED_CHARACTER_ID: role.id, SURFCORE_EXPECTED_CHARACTER_EPOCH: String(role.epoch) } });
+    const afterFeed = readCurrentCharacter();
+    if (afterFeed?.id !== role.id || afterFeed?.epoch !== role.epoch || biliRoundHostVersion() !== version) return { ok: false, code: 'CHARACTER_EPOCH_STALE', error: '读取候选期间角色或宿主状态发生变化。', hint: '重新发现并确认当前角色的来源集合。' };
+    let body; try { body = JSON.parse(feed.out); } catch { body = null; }
+    const items = Array.isArray(body?.items) ? body.items.filter(item => /^BV[A-Za-z0-9]{10}$/.test(String(item?.bv ?? '')) && Number.isFinite(Number(item.duration)) && Number(item.duration) > 0 && Number(item.duration) <= 180).slice(0, 3) : [];
+    if (!feed.ok || !items.length || new Set(items.map(item => item.bv)).size !== items.length) return { ok: false, code: 'BILI_V2_ROUND_SOURCE_UNAVAILABLE', error: '无法核验单轮候选视频。', hint: '检查B站来源并重新发现候选。' };
+    const state = await biliMemoryHost.roundMemoryScope({ locators: items.map(item => ({ kind: 'video', bvid: item.bv })) });
     if (state?.ok !== true) return { ok: false, code: state?.code || 'BILI_V2_ROUND_SCOPE_UNAVAILABLE',
       error: state?.error || '当前单轮没有已核验的 V2 记忆会话。', hint: state?.hint || '在记忆页按当前角色、账号、精确模型与完整公开来源集合预览并批准后再发起单轮。' };
     // approvedConversations 列的是候选，不是授权状态；还要核对控制库里策略已批准且未撤销。
@@ -840,24 +859,37 @@ export function apply(ctx) {
       const control = await memoryV2.activePolicies();
       active = control?.ok === true && control.policies.some(row => row.policyId === candidate.processorScopes[0].policy.policyId && row.approved === true);
     }
-    const value = active ? { ok: true, conversationKey: state.conversationKey, scopeId: candidate.id, providerRouteId: state.providerRouteId }
+    if (active) {
+      const finalScope = await biliMemoryHost.roundMemoryScope({ setId: state.publicSourceSetId });
+      if (finalScope?.ok !== true || finalScope.providerRouteId !== state.providerRouteId || finalScope.conversationKey !== state.conversationKey) return finalScope?.ok === false ? finalScope : { ok: false, code: 'BILI_V2_ROUND_SCOPE_CHANGED', error: '单轮来源在检查时发生变化。', hint: '重新确认当前来源后重试。' };
+    }
+    const value = active ? { ok: true, conversationKey: state.conversationKey, scopeId: candidate.id, providerRouteId: state.providerRouteId, publicSourceSetId: state.publicSourceSetId, items }
       : { ok: false, code: 'BILI_V2_ROUND_SCOPE_UNAPPROVED',
           error: '当前单轮的 V2 记忆会话尚未正式授权。', hint: '在记忆页按当前角色、B站公开来源集合与精确模型预览并批准后再发起单轮。' };
     // 失败不缓存：授权/网络恢复后下一次 readiness 可重新核验。
-    if (value.ok) biliRoundScopeCache = { version, value };
+    if (value.ok) biliRoundScopeCache = { version: biliRoundHostVersion(), value };
     return value;
   }
   const biliRoundMemoryWriter = createBiliRoundMemoryV2Writer({
     adapter: memoryV2.channelMemory('bili').adapter, scope: biliRoundScope, getCharacter: readCurrentCharacter });
   const biliRoundController = createBiliRoundController({
-    ctx, stateDir: STATE_DIR, tokenBudget, perception, runBili,
+    ctx, stateDir: STATE_DIR, tokenBudget, perception,
+    runBili: async (args, timeout, options) => {
+      if (args[0] !== 'feed') return runBili(args, timeout, options);
+      const scope = await biliRoundScope();
+      if (!scope.ok) return { ok: false, code: scope.code, out: JSON.stringify(scope) };
+      return { ok: true, out: JSON.stringify({ ok: true, items: scope.items }) };
+    },
     getCharacter: readCurrentCharacter,
-    buildContext: (req) => biliContextForRound({
-      ...req,
-      biliMemoryHost,
-      v2: readMemoryRouting({ stateDir: STATE_DIR })?.backend === 'v2',
-      memoryV2: memoryV2.channelMemory('bili'),
-    }),
+    buildContext: async (req) => {
+      const scope = await biliRoundScope();
+      if (!scope.ok || scope.providerRouteId !== req.providerRouteId || (req.sourceSetId && req.sourceSetId !== scope.publicSourceSetId)) return { ok: false, code: 'ROUND_SOURCE_CHANGED', error: '单轮来源集合或模型路由已变化。', hint: '重新确认来源集合与模型后发起新单轮。' };
+      const context = await biliContextForRound({ ...req, biliMemoryHost, v2: memoryV2.routing()?.backend === 'v2', memoryV2: memoryV2.channelMemory('bili') });
+      return { ...context, sourceSetId: scope.publicSourceSetId, approvedBvids: scope.items.map(item => item.bv), verifyBeforeModel: async () => {
+        const verified = await biliMemoryHost.roundMemoryScope({ setId: scope.publicSourceSetId });
+        return verified?.ok === true && verified.providerRouteId === req.providerRouteId && biliRoundScopeCache?.value?.publicSourceSetId === scope.publicSourceSetId;
+      } };
+    },
     // F05：评分事实写回正式 V2，而不是已退役的旧记忆卡。
     // 用同一 operationId 查询原回执；提交未知时只查原操作，不重跑整轮/不重复评分。
     maintainMemory: input => biliRoundMemoryWriter.write(input),
@@ -1042,7 +1074,9 @@ export function apply(ctx) {
     // 桥接没在跑时（portOpen 已证伪）不再打 /api/status，避免概览卡 3 秒超时。
     let bridgeMode = null;
     try {
-      const portProbe = await portOpen(3100, 900);
+      // F01：探测端口必须跟随当前配置，硬编码 3100 会在用户改过 consolePort 后把"桥接在跑"误判成"没跑"。
+      const consoleProbePort = (() => { try { return Number(new URL(consoleBase()).port) || 3100; } catch { return 3100; } })();
+      const portProbe = await portOpen(consoleProbePort, 900);
       if (portProbe) {
         const status = await callBridge('/api/status', { timeoutMs: 3000 });
         if (status?.ok && status.data) bridgeMode = {
@@ -1788,7 +1822,10 @@ ${body}`;
       return;
     }
     const body = JSON.parse(await readBody(req) || '{}');
-    const mode = body.mode ? String(body.mode) : null;
+    // F01：与桥接的 normalizeModeInput 对齐——先 trim 再判定，避免"带空格的合法模式在桥接侧被接受、
+    // 在插件侧被拒"这种同一份名单两处各自漂移的状态。
+    const requested = body.mode === undefined || body.mode === null ? '' : String(body.mode).trim();
+    const mode = requested || null;
     const ownerQQ = body.ownerQQ === undefined ? undefined : (body.ownerQQ === '' || body.ownerQQ === null ? null : String(body.ownerQQ));
     // F01：与 bridge /api/mode 共用同一合法性判定，写任何文件之前拒绝；
     // 不允许先落盘再吞 bridge 409 后向调用方假报成功。
@@ -1821,18 +1858,29 @@ ${body}`;
     }
     if (ownerQQ !== undefined) saveQqConfig({ ownerQQ });
     if (mode) {
+      const savedPendingBridge = () => json(res, 200, {
+        ok: true, applied: false, mode: mode ?? current.mode ?? null, ownerQQ: ownerQQ ?? null,
+        code: 'QQ_MODE_SAVED_PENDING_BRIDGE',
+        hint: '模式已保存；QQ 桥接未运行，启动后自动生效。',
+      });
       try {
         const bridged = await callBridge('/api/mode', { method: 'POST', body: { mode } });
-        if (bridged?.ok === false || bridged?.data?.ok === false) {
+        // F01：桥接没在跑（status 0）不等于"模式非法"。旧实现把离线连接失败解释成 409 / QQ_MODE_INVALID，
+        // 于是一个已经合法落盘的请求对调用方显示成"非法、被拒"——失败可见不等于失败可以撒谎。
+        const reachable = Number(bridged?.status) > 0;
+        if (reachable && (bridged?.ok === false || bridged?.data?.ok === false)) {
           const failure = bridged?.data?.ok === false ? bridged.data : bridged;
-          json(res, 409, { ok: false, code: failure?.code || 'QQ_MODE_INVALID', error: failure?.error || '桥接拒绝本次模式切换。', hint: failure?.hint || '确认模式有效后重试。' });
+          json(res, 409, { ok: false, applied: false, code: failure?.code || 'QQ_MODE_INVALID', error: failure?.error || '桥接拒绝本次模式切换。', hint: failure?.hint || '确认模式有效后重试。' });
           return;
         }
+        if (!reachable) { savedPendingBridge(); return; }
       } catch (error) {
         pluginLog('桥接模式切换未确认：', error?.message ?? error);
+        savedPendingBridge();
+        return;
       }
     }
-    json(res, 200, { ok: true, mode: mode ?? current.mode ?? null, ownerQQ: ownerQQ ?? null, note: '若桥接未运行，下次启动时生效。' });
+    json(res, 200, { ok: true, applied: Boolean(mode), mode: mode ?? current.mode ?? null, ownerQQ: ownerQQ ?? null, note: '若桥接未运行，下次启动时生效。' });
   }
 
   // ── 扩展 ────────────────────────────────────────────────────────────────
@@ -4124,19 +4172,25 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
     clearInterval(companionTimer);
-    void memoryV2Ready.finally(async () => {
+    const retirement = memoryV2Ready.then(async () => {
+      const schedulerRetired = await scheduler?.retire?.();
+      if (schedulerRetired?.ok === false) { reportMemoryBlocked(schedulerRetired); return schedulerRetired; }
       const retired = await biliMemoryHost.close();
+      if (!retired.ok) { reportMemoryBlocked(retired); return retired; }
       await qqReplyHost?.close?.();
-      if (!retired.ok) { reportMemoryBlocked(retired); return; }
       await memoryV2.close();
-    }).catch(() => pluginLog('[记忆] 停止失败，请检查原操作回执'));
+      return retired;
+    }).catch(error => {
+      const failure = { ok: false, code: error?.code || 'BILI_V2_RETIRE_FAILED', error: error?.message || 'B站退役未确认。', hint: error?.hint || '保留原操作编号，稍后重试。' };
+      reportMemoryBlocked(failure);
+      return failure;
+    });
     void voiceManagement.dispose().catch(() => pluginLog('[语音管理] 后台任务尚未结束，请回原管理界面核对进度'));
     void companionSharing.dispose().catch(() => pluginLog('[伙伴对话] 停止回复失败，请打开对话核对已有记录'));
     void douyinCompanion.dispose().catch(() => pluginLog('[抖音陪伴] 停止活动失败，请检查中断状态'));
     void douyin.dispose().then(result => { if (!result?.ok) pluginLog('[抖音] 专用浏览器退出未确认，请手动关闭该窗口；资料保留'); }).catch(() => pluginLog('[抖音] 专用浏览器退出未确认，请手动关闭该窗口；资料保留'));
     if (typeof unregisterDouyinRuntime === 'function') unregisterDouyinRuntime();
     unregisterDouyin();
-    try { scheduler?.stop?.(); } catch {}
     void biliRoundController.dispose().catch(() => pluginLog('[B站单轮] 停止失败，请检查中断状态'));
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
@@ -4153,6 +4207,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (bridgeRepairTimer) clearInterval(bridgeRepairTimer);
     void extensionHost.deactivateAll().finally(() => platforms.dispose());
     for (const dispose of disposers) { try { dispose(); } catch {} }
+    return retirement;
   });
 
   // 诊断日志：证明插件真的被装配，且知道它读的是哪一份配置。
