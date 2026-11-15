@@ -4646,6 +4646,17 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 
 **次生事故（更要记住的）**：我当时用 `npm run doc-facts 2>&1 | tail -2 && git commit …` 判断绿灯 —— **管道的退出码是 `tail` 的**，`&&` 照样继续，于是我带着红灯提交并推送了 `5cf8d42`。教训：跑门禁命令时**不要用管道**；要截断就 `> /tmp/x.log 2>&1; echo EXIT=$?` 之后再 `tail`。审查别人的门禁输出时同理——只看"最后两行看起来没报错"不算证据。
 
-**处置 / 预防**：①本次补同步两处版本字到与 `package.json` 相等（`main` 上的稳定版号在句子后半句单独写明，避免语义错）；②根治是让 `scripts/publish-dev.mjs` 在改 `README.md`/`CHANGELOG.md` 的同一处顺带改写这两个文件里的版本字（两个 `String.replace` 即可，改完 `test-version.mjs` 与 `doc-facts` 都会自证）；在改脚本之前，**每次 dev 发布后必须补一段"文档版本同步"提交**。
+**处置 / 预防**：①本次补同步两处版本字到与 `package.json` 相等（`main` 上的稳定版号在句子后半句单独写明，避免语义错）；②**根治已完成（2026-11-15）**：`scripts/publish-dev.mjs` 现调用 `scripts/publish-dev-doc-sync.mjs` 的 `syncDocVersions()`，在改 `README.md`/`CHANGELOG.md` 的同一处顺带改写这两个文件里的版本字，并把两个文档加进 `git add`；`test-dev-publish.mjs` 加了临时目录红→绿功能自证（见 #161）。在改脚本之前，**每次 dev 发布后必须补一段"文档版本同步"提交**。
 
-**怎么验证**：`export PATH="…/dependencies/node/bin:$PATH" && npm run doc-facts > /tmp/x.log 2>&1; echo EXIT=$?` → `EXIT=0`、`✅ 所有文档数字与代码一致`；`node scripts/test-version.mjs` → `✅ 版本一致性通过（v0.9.0-dev.2）`。
+**怎么验证**：`export PATH="…/dependencies/node/bin:$PATH" && npm run doc-facts > /tmp/x.log 2>&1; echo EXIT=$?` → `EXIT=0`、`✅ 所有文档数字与代码一致`；`node scripts/test-version.mjs` → `✅ 版本一致性通过（v0.9.0-dev.2）`；根治回归：`node scripts/test-dev-publish.mjs` → `✅ 同步前两处文档版本字与目标版本不一致（红）` / `✅ 同步后两处文档版本字与目标版本一致（绿）`，`TEST_EXIT=0`。
+
+## #161（2026-11-15，P2）发布脚本的版本字同步：别把"校验方"当"违约方"，别让发布链路每跑一次都留一个红灯
+
+**现象**：`scripts/publish-dev.mjs` 发完 dev 构建后，仓库 HEAD 的 `npm run doc-facts` 必红（见 #160）。根因不是 `doc-facts` 太严，而是**发布链路自己漏改了被校验的两处文档**：`docs/ROADMAP.md` 的 `当前版本：`x`` 与 `docs/guides/DSH_SETUP.md` 的 `当前 `x``。
+
+**机制**：版本号只写在 `package.json` / `README.md` / `CHANGELOG.md` 里，而 `doc-facts` 额外对那两处文档做逐字等值校验。**发布脚本是唯一会改 `package.json` 版本的地方**，所以「改版本」这个动作必须同时把**所有被校验的版本字**一起改——否则每次发布都留下一个红灯，靠人手工补（`v0.9.0-dev.1` 就是这么补的，`4fbfea5`）。
+
+**处置 / 预防**：①把同步逻辑抽成纯文本模块 `scripts/publish-dev-doc-sync.mjs`（导出 `syncDocVersions`），发布脚本调用、`git add` 一并带上；②用测试做红→绿功能自证（临时目录里构造不一致，同步后断言一致），而不是只断言"源码里有这行字"；③新增/修改版本号时，先 `grep` 所有校验版本字的地方（`doc-facts.mjs`、`test-version.mjs`），把「改版本」和「改文档」当成同一件事。
+
+**怎么验证**：`node scripts/test-dev-publish.mjs`（含同步红→绿断言）→ `TEST_EXIT=0`；`npm run doc-facts > /tmp/x.log 2>&1; echo EXIT=$?` → `EXIT=0`。
+

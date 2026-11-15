@@ -17,7 +17,34 @@
 > **2026-11-15 稳定版 `v0.9.0` 已发布**：`Rock-Connotation/surfcore-mac` 的 `main` @ `29d8ff9`（tree 与本地 `9424cb7` 逐字节相同）、tag `v0.9.0`、Release `SurfCore v0.9.0`（非 Pre-release、`--latest`）；**下方全部批次随本次发布交付**。三条门禁：清单 `--verify-ref HEAD` 1113/1113 问题 0、远端 `verify-remote-manifest v0.9.0` 一致 1113 / 不符 0 / 缺失 0。
 > **2026-11-15 dev 测试构建**：**`v0.9.0-dev.2` 是通道最新**（tag / Pre-release @ 远端 `76310d7`；本地构建提交 `53f71db`，tree 逐字节相同 `9118306…`；三条门禁全过：本地 `--verify-ref HEAD` 1115/1115 问题 0、远端 `verify-remote-manifest v0.9.0-dev.2` 一致 1115/不符 0/缺失 0、Release 为 Pre-release 且 `/releases/latest` 仍是 `v0.9.0`）。测试机把更新通道切 **dev** 后点「检查更新」。上一版 `v0.9.0-dev.1`（@ `c5da206`）保留在通道里，更新器取 semver 最高的那个。
 > **2026-11-15 补充**：远端 `dev` **分支**已同步（含 setup-dsh 基座 bundle 修复、抖音共享记录零帧边界修复、存量红复核文档），并且这两批已随 `v0.9.0-dev.2` 发成 Pre-release——测试机通过「检查更新」即可收到。
-> **本次未交付的已知残余**（详见 `docs/HANDOFF.md` 顶部）：AC4/AC5 需在真桌面外壳内才能取产品级证据；Electron/Chromium 与非 Node 子进程的出站未做系统级审计；`plugins/surfcore/lib/memory-v2-host.mjs:220-223` 取回路径不校验 `frameSamples ∈ 0..3`。（`scripts/setup-dsh.mjs` 的基座 bundle 缺口已在 2026-11-15 第二批修复，见下。）
+> **本次未交付的已知残余**（详见 `docs/HANDOFF.md` 顶部）：AC4/AC5 需在真桌面外壳内才能取产品级证据；Electron/Chromium 与非 Node 子进程的出站未做系统级审计。（`scripts/setup-dsh.mjs` 的基座 bundle 缺口已在 2026-11-15 第二批修复，见下；`plugins/surfcore/lib/memory-v2-host.mjs` 不感知 `frameSamples` 属**设计分工**（通用适配器不做领域校验），非缺陷，见第三批。）
+
+### 2026-11-15 第四批：`publish-dev` 同步文档版本字（根治 dev 构建后 `doc-facts` 必红）
+
+**建议**：随下一次 dev 构建一起带上即可（**纯发布链路修复，无用户可见行为变化**，不需要单独发稳定版；稳定版下次发布时带上）。
+
+**改了什么**：
+- 新增 `scripts/publish-dev-doc-sync.mjs`（导出 `syncDocVersions`，正则与 `scripts/doc-facts.mjs:188-199` 一致）；
+- `scripts/publish-dev.mjs`：在改 `README.md`/`CHANGELOG.md` 的同一处调用 `syncDocVersions()`，把 `docs/ROADMAP.md` 的 `当前版本：\`x\`` 与 `docs/guides/DSH_SETUP.md` 的 `当前 \`x\`` 一并改写为 dev 版本，并加进 `git add`；
+- `scripts/test-dev-publish.mjs`：加功能自证（临时目录红→绿）。
+- case：`docs/cases/2026-11-15-publish-dev-doc-version-sync.md`。
+
+**覆盖提交**（dev 分支，以 `git log --oneline -6` 现读为准）：修复 `[修复] publish-dev 发版时同步文档版本字` + 文档/清单提交。
+
+**验证**：`node scripts/test-dev-publish.mjs` → `TEST_EXIT=0`（含 `✅ 同步前…（红）` / `✅ 同步后…（绿）`）；`npm run doc-facts > /tmp/x.log 2>&1; echo EXIT=$?` → `EXIT=0`。
+
+**交接块（可直接转发）**：
+```
+【发布批次：2026-11-15 第四批 · publish-dev 同步文档版本字】
+- 目的：根治「发一次 dev 构建，仓库 HEAD 的 doc-facts 就红一次」——
+  publish-dev 之前只改 package.json/README/CHANGELOG，漏改被 doc-facts 逐字校验的
+  docs/ROADMAP.md 与 docs/guides/DSH_SETUP.md 两处版本字。
+- 改动：scripts/publish-dev.mjs 调用 scripts/publish-dev-doc-sync.mjs 的 syncDocVersions()，
+  发布时自动同步两处版本字并 git add；test-dev-publish.mjs 加红→绿功能自证。
+- 验证：node scripts/test-dev-publish.mjs → TEST_EXIT=0（红→绿）；npm run doc-facts → EXIT=0。
+- 影响：仅发布链路；已发布的 v0.9.0-dev.2 快照仍红（同步前上传），下次 dev 构建自动带上。
+- 回滚：git revert 本批提交即可。
+```
 
 ### 2026-11-15 第三批：抖音共享记录与账本统一 frameSamples 0..3
 

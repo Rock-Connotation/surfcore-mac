@@ -198,3 +198,5 @@
 - [setup-dsh 为全新 profile 补 DSH 基座 bundle](2026-11-15-setup-dsh-base-bundle.md)：修"独立 `DSH_HOME` / 新 profile 装完停在 `pending (waiting for service: …)`、宿主启动失败"——安装器缺基座 bundle 时按名字规则补 `@deepseek-ai/dsh-base` + `dsh-web-app`/`dsh-headless`（幂等、不动已有列表）；隔离宿主验收测试不再自己补基座，改为断言安装器写全（先红 `RED_EXIT=1` → 修后 AC1–AC3/AC6–AC8 PASS）。
 
 - [零帧样本不再被误判为"记录损坏"：共享记录与账本统一 frameSamples 0..3](2026-11-15-douyin-sharing-frame-samples-bound.md)：抖音陪伴里 `frameSamples: 0` 是合法的"没取到画面样本"（账本 `validCoverage` 允许 0..3、页面按"未确认"渲染），但共享存储要求 `>= 1`，把一条正常记录判成 `DOUYIN_CHAT_STORAGE`；存储下界改 0 对齐账本契约，越界与非整数照旧拒绝。
+
+- [`publish-dev` 同步文档版本字：根治发 dev 构建后 `doc-facts` 必红](2026-11-15-publish-dev-doc-version-sync.md)：发布脚本只改 `package.json`/`README.md`/`CHANGELOG.md`，漏改 `doc-facts` 逐字校验的 `docs/ROADMAP.md` 与 `docs/guides/DSH_SETUP.md` 版本字，于是每发一次 dev 构建 HEAD 就红一次；抽出可测的 `syncDocVersions`，发布时自动同步，`test-dev-publish.mjs` 做红→绿功能自证。

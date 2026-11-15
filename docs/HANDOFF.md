@@ -1,3 +1,15 @@
+## 2026-11-15 根治：`publish-dev` 同步文档版本字（发 dev 构建不再把 `doc-facts` 弄红）
+
+**现象**：`scripts/publish-dev.mjs` 只改 `package.json` / `README.md` / `CHANGELOG.md`，漏改 `docs/ROADMAP.md` 的 `当前版本：\`x\`` 与 `docs/guides/DSH_SETUP.md` 的 `当前 \`x\``；而 `doc-facts` 对这两处做逐字等值校验，于是**每发一次 dev 构建，仓库 HEAD 的 `doc-facts`（及整条 `test:audit`）就红一次**（`v0.9.0-dev.2` 发布后即红，本次发布前已手工补过一次）。
+
+**根因**：发布脚本是**唯一**改 `package.json` 版本的地方，却没把"被校验的版本字"当成同一件事一起改（`v0.9.0-dev.1` 那次也是手工补的，没意识到是结构性问题）。
+
+**修法**：新增 `scripts/publish-dev-doc-sync.mjs`（导出 `syncDocVersions`，正则与 `doc-facts.mjs:188-199` 保持一致）；`scripts/publish-dev.mjs` 在改 `README.md`/`CHANGELOG.md` 的同一处调用它，并把两个文档加进 `git add`。`scripts/test-dev-publish.mjs` 增加功能自证：在临时目录里构造「文档版本字 ≠ 目标版本」的红态 → 跑 `syncDocVersions` → 断言两处一致（绿），不联网、不碰真实仓库。
+
+**证据（先红后绿）**：临时目录自证 `RED_COUNT=2`（文档 `0.9.0-dev.2` vs 目标 `9.9.9-dev.9`）→ 同步后 `GREEN_COUNT=2`；`node scripts/test-dev-publish.mjs` → `TEST_EXIT=0`、含 `✅ 同步前…（红）` / `✅ 同步后…（绿）`；`npm run doc-facts` → `EXIT=0` ✅。
+
+**边界**：已发布的 `v0.9.0-dev.2` 快照本身仍是红的（它在文档同步之前就上传了），修复在下一次发 dev 构建时才带上。`scripts/version.mjs` 的 `bump()` 同样不碰这两处文档（正式发布时手工同步），本轮未扩大改动面。
+
 ## 2026-11-15 dev 测试构建 `v0.9.0-dev.2` 已发布（Pre-release；稳定用户不受影响）
 
 **发布物**：tag `v0.9.0-dev.2` @ 远端 `76310d7`（本地构建提交 `53f71db`，两者 tree 逐字节相同 `9118306322f3410b00f7a644c3b967a62cb0f245`）；Release `SurfCore v0.9.0-dev.2`（`prerelease=true`、`draft=false`）→ <https://github.com/Rock-Connotation/surfcore-mac/releases/tag/v0.9.0-dev.2>。
@@ -8,7 +20,7 @@
 
 **测试机怎么拿**：更新通道切 **dev** → 点「检查更新」。
 
-**已知边界（含本次踩到的坑）**：`scripts/publish-dev.mjs` 只改 `package.json`（根+插件）、`README.md`、`CHANGELOG.md`，**不改** `docs/ROADMAP.md` / `docs/guides/DSH_SETUP.md` 的版本字 —— 所以发完 dev 构建后**仓库 HEAD 上 `doc-facts` 会红**（快照内更是红的）。本次已在发布后补同步这两处到 `0.9.0-dev.2` 修好；已发布的那份 `v0.9.0-dev.2` 快照仍是红的（它在同步之前就上传了）。根治办法是在 `scripts/publish-dev.mjs` 里一并改写这两处，见 `docs/PITFALLS.md` #160。
+**已知边界**：`scripts/publish-dev.mjs` 曾只改 `package.json`（根+插件）、`README.md`、`CHANGELOG.md`，**不改** `docs/ROADMAP.md` / `docs/guides/DSH_SETUP.md` 的版本字，所以发完 dev 构建后**仓库 HEAD 上 `doc-facts` 会红**（快照内更是红的）。本次已在发布后补同步这两处到 `0.9.0-dev.2` 修好；**根治已完成**：`scripts/publish-dev.mjs` 现调用 `scripts/publish-dev-doc-sync.mjs` 的 `syncDocVersions()`，发布时自动同步，见 `docs/PITFALLS.md` #160/#161 与上一段。已发布的那份 `v0.9.0-dev.2` 快照仍是红的（它在同步之前就上传了）。
 
 **镜像一致性**：`publish-dev` 用 Data API 造的远端 dev 提交 `76310d7`（父 = 上一轮同步点）已在本地用 `git merge -s ours origin/dev` 收成祖先（本地 `0a6488c`，tree 不变），推送为**快进**；远端 `main` 未动（`5face06`）。
 
