@@ -4578,3 +4578,11 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 **处置 / 预防**：①离线验收统一用 DSH 自带 node（`export PATH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin:$PATH"`），别用 `ELECTRON_RUN_AS_NODE` 跑契约脚本；②不要把这种红解释成"守卫坏了"，也不要为了让它变绿而放宽产品守卫；③真实宿主下的 native 守卫行为归 G7 实机（隔离 profile）定性；④给子代理的工单要写明用哪个 node、以及禁用哪些宿主环境变量。
 
 **怎么验证**：`export PATH="…/dependencies/node/bin:$PATH" && node plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs --ordinary` → 52 scenarios、exit 0；带 `ELECTRON_RUN_AS_NODE=1` 跑同一文件 → 红在 `:198`（本轮复现两次：子代理一次、我一次）。
+
+## #155（2026-11-15，P1）CLI 包装进程只会转发信号、自己不退出——宿主退出后变成 PPID=1 孤儿
+
+**现象 / 根因**：实机（macOS 26.6.2）上捕到 5 个 `PPID=1`（launchd 收养）的 B站 CLI 孤儿，最早一个已活 1.9 天：`commands/dm-await.mjs --once --json` 与 `tools/bili.mjs dm-await --once --json`；它们 `STAT=S`、CPU 累计约 3.2–3.9 秒、**没有任何 socket**（活着但不干事）。根因在 `plugins/surfcore/tools/bili.mjs:79-88`（修复前）：这是转发型包装进程（用 `process.execPath` spawn 真正的 `tools/commands/*.mjs`），信号处理器只把 `SIGTERM`/`SIGINT` 转发给子进程、**自己从不退出**，唯一退出路径是 `child.once('close')`；子进程不可中断或已经消失时，包装进程永久存活。实机佐证：`8988` 收到 `SIGTERM` 后 3 秒仍存活、无子进程、`lsof -a -p 8988 -i` 空。
+
+**处置 / 预防**：①包装进程必须自己封口——转发信号 + `GRACE_MS=3000` 后升级 `SIGKILL` + 200ms 后 `process.exit(128+signal)`（`'close'` 里若本次已被信号终止，退出码也用 128+signal）；最坏 3.2 秒退出，不依赖子进程合作。②补常驻合同测试 `plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs`（夹具子进程故意忽略信号），接进 `scripts/test-audit.mjs` 与插件 `test` 链（79→80 段）。③写"包装/转发型"进程时，`child.once('error')` 里只设 `process.exitCode` 不算退出，必须有超时兜底。④已存在的孤儿不会自愈（旧代码起的进程），清理后再验；用户机器上真正跑的是安装副本 `~/.dsh/profiles/<profile>/node_modules/surfcore/`，源码修复要等下次安装/更新才带过去。
+
+**怎么验证**：`node plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs` → 未修时 `EXIT=1 elapsed=7s`、`FAIL 包装进程收到 SIGTERM 后必须在 6000ms 内退出`；修后 `PASS … 转发信号后自己退出，并升级清掉死扛的子进程` exit 0（3–4 秒）。反向重放：删掉 `try { child?.kill('SIGKILL') } catch {}` → `FAIL 忽略信号的子进程必须被升级到 SIGKILL 清掉 / true !== false`，还原后 SHA `407fc4f783e3c0fec836354f7ab184925d77ebff2b3000b3a0a20d885de94a31` 逐字一致。
