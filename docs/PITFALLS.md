@@ -4627,3 +4627,13 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 **处置 / 预防**：共享存储的下界改成 0，与账本 `validCoverage` 对齐（仍要求整数且 `<= 3`，越界/非整数照旧拒绝）。不要用"把 0 改写成 1 / 丢掉字段"来绕——那是把未知伪装成已知。
 
 **怎么验证**：`node plugins/surfcore/scripts/test-companion-sharing.mjs` → 未修时 `RED_EXIT=1` + 上面那段 `DOUYIN_CHAT_STORAGE`；修后 `GREEN_EXIT=0`。反向重放：把存储上界放宽成 `> 99` → `Missing expected exception: frameSamples=6 必须被共享存储拒绝`。
+
+## #159（2026-11-15，P2）残余清单里的"存量红"会过期——先复现再判断，关闭必须反向重放
+
+**现象**：残余清单长期挂着 `plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs --ordinary` 后半段有 V1 断言红（`assert.equal(legacy,1)`，`b7316ca` 时在 `:468-471`）。本轮复核该脚本 `EXIT=0`、`PASS Bili native runtime: 52 scenarios (v24.21.0, actualHostTools=false)`。
+
+**根因**：这条红在 R3 就被修掉了——`ef30eb5`（`[修复] 收紧B站事件身份与真实退役`）把 `else if (mode === 'v1') { assert.equal(legacy,1); assert.equal(submitted.length,0) }` 换成 V2-only 分支（要求 `legacy === 0 && inspects === 0 && submitted.length === 0 && blocked[0].code` 非空）。`git log -S "assert.equal(legacy,1)" -- plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs` 可证。清单没同步，于是"已关闭"看起来还开着，下一个人会当新缺陷重查一遍。
+
+**处置 / 预防**：残余项要带（日期 + 复现命令 + 当时 HEAD），每轮至少复现一次；关闭残余时**必须反向重放**证明替代断言仍有牙——否则就是把"悄悄删断言"记成"已修"。
+
+**怎么验证**：`export PATH="…/dependencies/node/bin:$PATH" && node plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs --ordinary` → `EXIT=0`、52 scenarios（证据根在隔离 `surfcore-test-home-*` 下，不依赖工作区残留）。反向重放：把 `plugins/surfcore/lib/scheduler.js:299` 的 `if (!route?.ok || route.backend !== 'v2')` 临时改成 `if (!route?.ok || false)` → `REVERSE_EXIT=1 elapsed=4s`、`AssertionError: 1 !== 0` at `plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs:652:113`；`cp` 还原后 SHA `6bb69815bb31bba771b4e1657ed658e74832ce54a7d3c2095ec0658d77b2b969` 逐字一致，再跑 `EXIT=0`。

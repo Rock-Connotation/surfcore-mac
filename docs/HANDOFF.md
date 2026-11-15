@@ -1,3 +1,15 @@
+## 2026-11-15 残余复核：`test-memory-v2-bili-agent.mjs --ordinary` 的"存量红"已不存在（无代码改动）
+
+**结论**：清单里那条长期残留的 V1 断言红在 R3 就随破坏式退役改掉了——`ef30eb5`（`[修复] 收紧B站事件身份与真实退役`）把 `else if (mode === 'v1') { assert.equal(legacy,1); … }` 换成 V2-only 分支（`legacy === 0 && inspects === 0 && submitted.length === 0 && blocked[0].code` 非空），`git log -S "assert.equal(legacy,1)" -- plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs` 可证。
+
+**复现**：`export PATH="…/dependencies/node/bin:$PATH" && node plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs --ordinary` → `EXIT=0`、`PASS Bili native runtime: 52 scenarios (v24.21.0, actualHostTools=false)`（连跑两次一致；证据根在隔离 `surfcore-test-home-*` 下，不依赖工作区残留）。
+
+**反证替代断言不是空绿**：把 `plugins/surfcore/lib/scheduler.js:299` 的 `if (!route?.ok || route.backend !== 'v2')` 临时改成 `if (!route?.ok || false)` → `REVERSE_EXIT=1 elapsed=4s`、`AssertionError: 1 !== 0` at `plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs:652:113`；`cp` 还原后 SHA `6bb69815bb31bba771b4e1657ed658e74832ce54a7d3c2095ec0658d77b2b969` 逐字一致、再跑 `EXIT=0`。
+
+**覆盖**：该脚本同时在 `plugins/surfcore/package.json:17` 的插件链与 `scripts/run-memory-v2-tests.mjs:24` 里；本批门禁 @ `255c3e7` 的 `test:audit` 207/207 与插件套件 37 段均 `EXIT=0`。
+
+**坑**：`docs/PITFALLS.md` #159（残余清单里的存量红会过期，先复现再判断，关闭必须反向重放）。
+
 ## 2026-11-15 修复：抖音共享记录接受合法零帧样本（dev，未发布）
 
 **现象**：抖音陪伴一条**已完成项**若 `coverage.frameSamples === 0`（画面一帧都没取到），模型把它当"小发现"分享时 `service.record(...)` 返回 `{"ok":false,"code":"DOUYIN_CHAT_STORAGE","error":"本机伙伴对话记录暂时不可用，原记录未重置。","hint":"保留角色的 sharing.jsonl，检查权限或文件完整性后刷新。"}` —— 把正常数据说成"记录坏了"，还指向无关的排查。
