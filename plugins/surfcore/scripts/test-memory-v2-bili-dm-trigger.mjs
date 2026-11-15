@@ -55,7 +55,7 @@ const mkSession = (o = {}) => ({
   },
 });
 
-async function run({ sessions = [], args = ['--once', '--json', '--any'], state, config } = {}) {
+async function run({ sessions = [], args = ['--once', '--json', '--any'], state, config, registry } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-bili-dm-trigger-'));
   const bili = path.join(home, 'surfcore', 'bili');
   fs.mkdirSync(bili, { recursive: true });
@@ -67,6 +67,7 @@ async function run({ sessions = [], args = ['--once', '--json', '--any'], state,
     owner: { mid: OWNER, name: 'SYNTHETIC_OWNER' }, self: { mid: SELF }, notify: { type: 'none' },
   }));
   if (state !== undefined) fs.writeFileSync(path.join(bili, 'dm-await-state.json'), JSON.stringify(state));
+  if (registry) fs.writeFileSync(path.join(home, 'surfcore', 'bili-v2-managed-sessions.json'), JSON.stringify(registry));
   const reqLog = path.join(home, 'requests.log');
   fs.writeFileSync(reqLog, '');
   const env = {
@@ -261,7 +262,10 @@ try {
     const hit = jsonOut(await run({ sessions, args: ['--once', '--json'], state: { lastSeen: 0 } }));
     const requestId = hit.items?.[0]?.requestId;
     const pendingState = { lastSeen: 0, pending: [{ mid: OWNER, name: 'SYNTHETIC_OWNER', text: 'SYNTHETIC_INBOUND', ts: TS, msgKey: DIGIT19, requestId }] };
-    const acked = await run({ sessions, args: ['--ack', requestId], state: pendingState });
+    const job = { requestId: 'internal-test', sessionId: 'session-test', jobId: 'job-test' };
+    const hostReceipt = { requestId, durable: true, state: 'accepted', source: 'bili-v2-registry', jobs: [job] };
+    const registry = { version: 1, sessions: { 'session-test': { ...job, originalRequestId: requestId, phase: 'accepted', groupCount: 1, receipt: hostReceipt } } };
+    const acked = await run({ sessions, args: ['--ack', requestId, '--receipt', JSON.stringify(hostReceipt)], state: pendingState, registry });
     assert.equal(acked.code, 0, acked.stderr);
     const receipt = JSON.parse(acked.stdout.trim().split('\n').filter(Boolean)[0]);
     assert.equal(receipt.ok, true); assert.equal(receipt.acked, requestId); assert.equal(receipt.pending, 0);
@@ -273,8 +277,8 @@ try {
 
   await test('--ack unknown requestId fails visibly and advances nothing', async () => {
     const result = await run({ sessions: [], args: ['--ack', 'bili-dm-' + 'f'.repeat(64)], state: { lastSeen: 0, pending: [] } });
-    assert.equal(result.code, 4, 'unknown ack must exit non-zero');
-    assert.match(result.stderr, /未知或已确认的通知编号/);
+    assert.equal(result.code, 7, 'ack without a receipt must exit non-zero');
+    assert.match(result.stderr, /BILI_DM_RECEIPT_REQUIRED/);
   });
 
   console.log('PASS Bili DM trigger: ' + pass + ' cases');

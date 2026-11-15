@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 统一入口：node bili.mjs <命令> [参数...]
 // 只是把你转到 commands/ 或 verify/ 下的具体脚本，参数原样透传。
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -76,5 +76,13 @@ if (!entry) {
   console.error(`未知命令: ${cmd}\n跑 "node bili.mjs help" 看清单。`)
   process.exit(2)
 }
-const r = spawnSync(process.execPath, [path.join(here, entry[0]), ...rest], { stdio: 'inherit' })
-process.exit(r.status ?? 1)
+let child
+let pendingSignal
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
+  pendingSignal = signal
+  if (child) { try { child.kill(signal) } catch {} }
+})
+child = spawn(process.execPath, [path.join(here, entry[0]), ...rest], { stdio: 'inherit' })
+if (pendingSignal) { try { child.kill(pendingSignal) } catch {} }
+child.once('error', () => { process.exitCode = 1 })
+child.once('close', (code) => { process.exit(code ?? 1) })

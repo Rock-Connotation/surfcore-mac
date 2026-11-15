@@ -19,6 +19,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import crypto from 'node:crypto'
+import { syncBudgetFiles } from './token-budget-sync.mjs'
 import { readMemoryRouting } from '../../../src/core/memory-v2-routing.js'
 import { execFile } from 'node:child_process'
 // 收件箱读取复用工具链的实现（避免在插件里再抄一份 B站 接口 ✓）
@@ -38,7 +39,7 @@ import { readUnified } from './store.js'
 import { memoryCardPromptBlock } from './memory-card.js'
 import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-identity.js'
 import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.js'
-import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText } from '../../../src/character-persona.js'
+import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText, readCurrentCharacter } from '../../../src/character-persona.js'
 import { composePersonaLayers } from '../../../src/persona-layers.js'
 import { buildCharacterContext } from '../../../src/core/context.js'
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js'
@@ -309,14 +310,17 @@ export function startScheduler(ctx, opts) {
    */
   function stableRequestId(input) {
     const kind = String(input?.kind ?? '')
+    const roleId = String(readCurrentCharacter()?.id ?? '')
     if (Array.isArray(input?.items)) {
       const coords = input.items
         .map((it) => [it?.mid, it?.msgKey ?? null, it?.ts, it?.sourceId ?? null, it?.oid ?? null, it?.root ?? null])
         .map((c) => JSON.stringify(c)).sort()
-      return 'bili-v2-' + crypto.createHash('sha256').update(JSON.stringify([kind, coords])).digest('hex')
+      return 'bili-v2-' + crypto.createHash('sha256').update(JSON.stringify([roleId, kind, coords])).digest('hex')
     }
     const snap = input?.snapshot ?? {}
-    const coord = [kind, snap.slotId ?? null, snap.window ?? null, snap.action ?? null, snap.at ?? null, input?.kindKey ?? null]
+    const coord = ['night-skip', 'night-wake'].includes(kind)
+      ? ['night', roleId, snap.date ?? null, snap.slotId ?? 'legacy-daily']
+      : [roleId, kind, input?.occurrenceId ?? null, snap.date ?? null, snap.slotId ?? null, snap.window ?? null, snap.action ?? null, snap.at ?? null, input?.kindKey ?? null]
     return 'bili-v2-' + crypto.createHash('sha256').update(JSON.stringify(coord)).digest('hex')
   }
 
@@ -340,13 +344,21 @@ export function startScheduler(ctx, opts) {
     const effective = effectiveSignal(signal)
     const requestId = typeof opts.requestId === 'string' && opts.requestId ? opts.requestId : stableRequestId(input)
     try {
+      if (typeof biliV2Agent.query === 'function') {
+        const prior = await biliV2Agent.query({ requestId })
+        live(ticket)
+        if (prior?.ok !== true) throw Object.assign(new Error(prior?.error || 'B站原作业状态不可用。'), prior)
+        if (prior.found && prior.state === 'terminal') return { ok: true, accepted: false, duplicate: true, state: 'terminal' }
+        if (prior.found && prior.state !== 'pre_dispatch') throw Object.assign(new Error(prior.error || 'B站原作业结果尚未确认。'), { ...prior, ok: false, code: prior.code || 'BILI_V2_NOT_DURABLE', unknown: true })
+      }
       const result = await biliV2Agent.enqueue({ requestId, input, signal: effective })
       live(ticket)
       if (result?.ok !== true) throw Object.assign(new Error(result?.error || 'B站 V2 已拒绝本轮。'), result)
+      if (result?.state === 'accepted-needs-retry' || result?.state === 'unknown') throw Object.assign(new Error(result.error || '原作业尚无持久接管确认。'), { ...result, ok: false, unknown: true })
       return result
     } catch (error) {
       const failure = Object.assign(new Error('B站 V2 本轮未获准。'), { ok: false, code: error?.code || 'BILI_V2_JOB_FAILED', error: 'B站 V2 本轮未获准。', hint: error?.hint || '检查 Host 来源、当前角色与原作业回执；不要自动重试发送。', unknown: error?.unknown === true })
-      onMemoryBlocked(failure)
+      if (failure.code !== 'BILI_V2_NOT_DURABLE') onMemoryBlocked(failure)
       throw failure
     }
   }
@@ -374,17 +386,18 @@ export function startScheduler(ctx, opts) {
   // abort 只是发出信号，不等于子进程已退出；因此持有句柄 + exit 双证据。
   const cliChildren = new Set()
   function trackChild(child) {
-    const record = { child, exited: false }
+    let resolveClose
+    const closed = new Promise((resolve) => { resolveClose = resolve })
+    const record = { child, closed }
     cliChildren.add(record)
-    child.once('exit', () => { record.exited = true })
-    child.once('close', () => { record.exited = true; cliChildren.delete(record) })
+    child.once('close', () => { cliChildren.delete(record); resolveClose() })
     return record
   }
   const cliFailure = (code, error, hint) => ({ ok: false, out: '', err: error, code, error, hint })
 
   /** 真实 CLI 调用：signal 同时传 execFile 与控制器信号；返回 {ok,out,err,...}。 */
   const runBili = (args, options = {}) => new Promise((resolve) => {
-    const signal = options.signal
+    const signal = effectiveSignal(options.signal)
     if (!NODE_RUNTIME) {
       resolve(cliFailure(String(NODE_RUNTIME_ERROR?.code ?? 'NODE_RUNTIME_NOT_FOUND'),
         String(NODE_RUNTIME_ERROR?.message ?? 'Node runtime unavailable'),
@@ -567,16 +580,7 @@ export function startScheduler(ctx, opts) {
     let lastDmAt = 0
 
     // R2/F03：只有「可查询的持久接管回执」才能推进 ACK；任意 ok:true 不算。
-    const durableReceipt = (r, id) => Boolean(r && r.durable === true && ['accepted', 'terminal'].includes(r.state) && (!r.requestId || r.requestId === id))
-    function receiptFromHost(result, id) {
-      if (durableReceipt(result?.receipt, id)) return result.receipt
-      const job = Array.isArray(result?.jobs) ? result.jobs.find((x) => x && (x.jobId || x.sessionId)) : null
-      if (result?.accepted === true && job) {
-        return { requestId: id, durable: true, state: 'accepted', source: 'bili-v2-registry',
-          jobId: String(job.jobId ?? ''), sessionId: String(job.sessionId ?? ''), acceptedAt: new Date().toISOString() }
-      }
-      return null
-    }
+    const durableReceipt = (r, id) => Boolean(r && r.durable === true && ['accepted', 'terminal'].includes(r.state) && r.requestId === id)
 
     async function dmTick({ force = false } = {}) {
       const ticket = admit()
@@ -608,12 +612,16 @@ export function startScheduler(ctx, opts) {
           const q = await runBiliJson(["dm-await", "--query", id, "--json"], sig)
           live(ticket)
           if (q.ok && q.found && (q.state === 'terminal' || q.acked)) continue
-          if (q.ok && q.found && q.state === 'accepted' && durableReceipt(q.receipt, id)) {
-            // 接管回执已落盘但游标未推进：只补 ACK，不重复 enqueue（避免重复付费/外发）。
-            const ack = await runBiliJson(["dm-await", "--ack", id, "--receipt", JSON.stringify(q.receipt), "--json"], sig)
-            if (!ack.ok) log(`[bili-whale] DM 补 ACK 失败：${ack.error ?? ''}`)
+          if (typeof biliV2Agent?.query !== 'function') continue
+          const hostState = await biliV2Agent.query({ requestId: id })
+          live(ticket)
+          if (hostState?.ok !== true) continue
+          if (hostState.found && ['accepted', 'terminal'].includes(hostState.state) && durableReceipt(hostState.receipt, id)) {
+            const transition = await runBiliJson(["dm-await", "--transition", id, "--receipt", JSON.stringify(hostState.receipt), "--json"], sig)
+            if (transition.ok) await runBiliJson(["dm-await", "--ack", id, "--receipt", JSON.stringify(hostState.receipt), "--json"], sig)
             continue
           }
+          if (hostState.found && hostState.state !== 'pre_dispatch') continue
           // R04：owner 分支必须保留官方精确坐标 mid + msgKey（V2 trigger 投影需要）。
           const item = {
             mid: row.mid, name: row.name, text: row.text, ts: row.ts,
@@ -627,7 +635,8 @@ export function startScheduler(ctx, opts) {
             sig, '叫醒', { requestId: id },
           )
           live(ticket)
-          const receipt = receiptFromHost(result, id)
+          const confirmed = await biliV2Agent.query({ requestId: id })
+          const receipt = durableReceipt(result?.receipt, id) && durableReceipt(confirmed?.receipt, id) && JSON.stringify(result.receipt) === JSON.stringify(confirmed.receipt) ? result.receipt : null
           if (!receipt) {
             // 普通 ok:true / 拒绝 / 超时：保留 pending，只查同 ID，不新建 ID 重试。
             log(`[bili-whale] DM 未获持久接管回执，保留原通知：${id}`)
@@ -668,10 +677,11 @@ export function startScheduler(ctx, opts) {
       const H = makeHeaders(cred)
       const since = Number(readL()?.lastSeen ?? 0)
       const items = []
-      items.push(...(await pullFeed('reply', { headers: H, pages: 1 })).items)
+      items.push(...(await pullFeed('reply', { headers: H, pages: 1, signal: controller.signal })).items)
       if (String(listenerCfg.scope ?? 'both') !== 'reply') {
-        try { items.push(...(await pullFeed('at', { headers: H, pages: 1 })).items) } catch {}
+        try { items.push(...(await pullFeed('at', { headers: H, pages: 1, signal: controller.signal })).items) } catch {}
       }
+      live(ticket)
       // 第一次跑：只把"现在"当基线，不把历史回复全倒一遍 ✓
       if (!since) { writeL({ lastSeen: Math.floor(Date.now() / 1000) }); listening = false; return }
       const fresh = items.filter((x) => Number(x.t) > since && (!listenerCfg.onlyOwner || String(x.mid) === String(cfg.owner?.mid ?? '')))
@@ -796,6 +806,7 @@ export function startScheduler(ctx, opts) {
         liveRetryAt = Date.now() + 12_000
       }
     })
+    trackChild(liveProc)
     liveRoomNow = room   // 记下"现在听的是哪个房间" → 主人换房间时靠它检测 ✓
     log(`[bili-whale] 直播间监听已挂上（房间 ${room} · ${String(L.liveScope ?? 'owner') === 'owner' ? '只回主人' : '只回@她的'}）✓`)
   }
@@ -804,7 +815,11 @@ export function startScheduler(ctx, opts) {
   //   正常：按设置页的 slot 到点提醒（默认 08/12/16/20）
   //   补发：重启后发现今天有类错过了时段 → **一次只提醒一类**，两条之间隔 dynamics.gapMin
   //   （`daily-nudge.json` 记每类最近一次提醒，gapMin 内不重复吵她 ✓）
+  let dynamicsBusy = false
   async function dynTick() {
+    if (dynamicsBusy) return
+    dynamicsBusy = true
+    try {
     const ticket = admit()
     if (!interactEnabled()) return
     if (!ctx.sessionController) return
@@ -819,6 +834,37 @@ export function startScheduler(ctx, opts) {
     const NUDGE = path.join(dshHome, 'daily-nudge.json')
     let ns = {}
     try { ns = JSON.parse(fs.readFileSync(NUDGE, 'utf8')) } catch {}
+    const occurrenceKey = key => `${key}:occurrence:${String(readCurrentCharacter()?.id ?? '')}`
+    async function nudge(key, input) {
+      if (typeof biliV2Agent?.query !== 'function') return false
+      const recordKey = occurrenceKey(key)
+      let record = ns[recordKey]
+      if (record?.id) {
+        const existing = await biliV2Agent.query({ requestId: record.id })
+        live(ticket)
+        if (existing?.ok !== true) return false
+        if (existing.found && existing.state === 'terminal') {
+          record.pending = false
+          delete ns[recordKey]
+          fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2))
+          return false
+        }
+        if (existing.found && existing.state !== 'pre_dispatch') return false
+        if (!record.pending) return false
+      } else {
+        record = { id: `bili-reminder-${crypto.randomUUID()}`, input: structuredClone(input), pending: true }
+        ns[recordKey] = record
+        ns[key] = new Date().toISOString()
+        const temp = `${NUDGE}.${crypto.randomUUID()}.tmp`
+        const fd = fs.openSync(temp, 'wx', 0o600)
+        try { fs.writeFileSync(fd, JSON.stringify(ns, null, 2)); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+        fs.renameSync(temp, NUDGE)
+        syncBudgetFiles([NUDGE], path.dirname(NUDGE))
+      }
+      await promptBili(record.input, controller.signal, '叫醒', { requestId: record.id })
+      return true
+    }
+
     let dstate = {}
     try { dstate = JSON.parse(fs.readFileSync(path.join(PLATFORM_DIR, 'daily-dynamic.json'), 'utf8')) } catch {}
     // 最近一次真发出去的动态（用来保证补发之间有 30 分钟）
@@ -831,7 +877,7 @@ export function startScheduler(ctx, opts) {
     // ── 23:00 待审清单（2026-10-21 用户定：晚上回来审"疑似攻击/阴阳"那些）────
     if (h >= 23 && h < 23.2) {
       const akey = `${today()}:attack-review`
-      if (!ns[akey]) {
+      if (!ns[akey] || ns[occurrenceKey(akey)]?.pending) {
         const n = attackPending()
         ns[akey] = new Date().toISOString()
         try { fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2)) } catch {}
@@ -840,8 +886,7 @@ export function startScheduler(ctx, opts) {
             await ensureSession()
             // V2-only：提示词由 V2 Host 侧按 kind='attack-review' 构造
             live(ticket)
-            await promptBili({ kind: 'attack-review', pendingCount: n }, controller.signal, '叫醒')
-            log(`[bili-whale] 23:00 待审提醒（${n} 条）`)
+            if (await nudge(akey, { kind: 'attack-review', pendingCount: n })) log(`[bili-whale] 23:00 待审提醒（${n} 条）`)
           } catch (e) { log(`[bili-whale] 待审提醒失败：${String(e.message).slice(0, 100)}`) }
           return
         }
@@ -856,15 +901,16 @@ export function startScheduler(ctx, opts) {
       if (left > 0) {
         const tkey = `${today()}:ta-nudge`
         const last = ns[tkey] ? new Date(ns[tkey]).getTime() : 0
-        if (!last || Date.now() - last > 90 * 60_000) {
-          ns[tkey] = new Date().toISOString()
-          try { fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2)) } catch {}
+        if (!last || Date.now() - last > 90 * 60_000 || ns[occurrenceKey(tkey)]?.pending) {
           try {
             await ensureSession()
             // V2-only：提示词由 V2 Host 侧按 kind='ta-nudge' 构造
             live(ticket)
-            await promptBili({ kind: 'ta-nudge', used, limit: L.taDaily }, controller.signal, '叫醒')
-            log(`[bili-whale] 搭话催进度：${used}/${L.taDaily}`)
+            if (await nudge(tkey, { kind: 'ta-nudge', used, limit: L.taDaily })) {
+              ns[tkey] = new Date().toISOString()
+              fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2))
+              log(`[bili-whale] 搭话催进度：${used}/${L.taDaily}`)
+            }
           } catch (e) { log(`[bili-whale] 搭话提醒失败：${String(e.message).slice(0, 100)}`) }
           return
         }
@@ -881,23 +927,24 @@ export function startScheduler(ctx, opts) {
       if (!inSlotNow && today() !== CATCHUP_DAY) continue
       const key = `${today()}:${kind}`
       const lastNudge = ns[key] ? new Date(ns[key]).getTime() : 0
-      if (lastNudge && Date.now() - lastNudge < gapMs) continue
-      ns[key] = new Date().toISOString()
-      try { fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2)) } catch {}
-
+      if (lastNudge && Date.now() - lastNudge < gapMs && !ns[occurrenceKey(key)]?.pending) continue
       // 还在本类时段里 → 正常提醒；已经过了（只有上线日）→ 补发口吻（必须带 --catchup）
       const inSlot = inSlotNow
       try {
         await ensureSession()
         // V2-only：提示词由 V2 Host 侧按 kind='daily-nudge' 构造
         live(ticket)
-        await promptBili({ kind: 'daily-nudge', kindKey: kind, inSlot, definition: structuredClone(k), pin: pinOf(kind), note: noteOf(kind) }, controller.signal, '叫醒')
-        log(`[bili-whale] 动态提醒 · ${kind}（${inSlot ? '到点' : '补发'}）`)
+        if (await nudge(key, { kind: 'daily-nudge', kindKey: kind, inSlot, definition: structuredClone(k), pin: pinOf(kind), note: noteOf(kind) })) {
+          ns[key] = new Date().toISOString()
+          fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2))
+          log(`[bili-whale] 动态提醒 · ${kind}（${inSlot ? '到点' : '补发'}）`)
+        }
       } catch (e) {
         log(`[bili-whale] 动态提醒失败：${String(e.message).slice(0, 120)}`)
       }
       return   // 一次只提醒一类 ✓
     }
+    } finally { dynamicsBusy = false }
   }
 
   // ── 实例生命周期（2026-11-12 R05）──────────────────────────────────────────
@@ -942,6 +989,7 @@ export function startScheduler(ctx, opts) {
   return {
     /** 设置页一保存就调它：清掉旧计划，下一次 tick 按新配置重算 ✓ */
     invalidate() {
+      admit()
       // ⚠️ 2026-10-18 修：以前直接删状态文件 → 把「今天已醒几次」也抹了 ✗
       //   现在只清**计划**，保留 `{ date, wakes }` ✓（tick 里 `!st.action` 会触发重算 ✓）
       try {
@@ -985,6 +1033,15 @@ export function startScheduler(ctx, opts) {
             new Promise((resolve) => { setTimeout(() => resolve(false), remaining()) }),
           ])
           if (drained !== true) return failRetire('B站调度器仍有在途任务未退出。', '保留当前实例与原操作回执，稍后重试退役；期间不会提交新任务。')
+        }
+        if (cliChildren.size) {
+          let timer
+          const closedChildren = await Promise.race([
+            Promise.all([...cliChildren].map((record) => record.closed)).then(() => true),
+            new Promise((resolve) => { timer = setTimeout(() => resolve(false), remaining()) }),
+          ])
+          clearTimeout(timer)
+          if (!closedChildren) return failRetire('B站子进程仍未退出。', '保留当前实例与原操作回执，稍后重试退役。')
         }
         // ④ 等待 Host 退役 ACK；同一 deadline 覆盖，Host 永不返回也不能无限等。
         let v2Retired = { ok: true, retired: true }
@@ -1030,6 +1087,7 @@ export function startScheduler(ctx, opts) {
     // 公开入口也必须经过 tracked()：否则手动 tick 不在在途集合里，退役就等不到它。
     tick: () => tracked(() => tick()),
     listenTick: () => tracked(() => listenTick()),
+    dynTick: () => tracked(() => dynTick()),
     liveTick: () => tracked(() => liveTick()),
     // 显式驱动一轮私信轮询（离线回归用；force 跳过 5 秒节流，生产定时器仍走节流）。
     dmTick: () => tracked(() => dmTick({ force: true })),
