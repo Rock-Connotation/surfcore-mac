@@ -12,6 +12,8 @@
 
 **镜像一致性**：`publish-dev` 用 Data API 造的远端 dev 提交 `76310d7`（父 = 上一轮同步点）已在本地用 `git merge -s ours origin/dev` 收成祖先（本地 `0a6488c`，tree 不变），推送为**快进**；远端 `main` 未动（`5face06`）。
 
+**发布后门禁（@ 文档同步提交 `83c10b4`，自带 node v24.21.0，串行 9 步全 `EXIT=0`，日志 `/tmp/g7p6-gate.log`）**：`test:audit` 207/207；`test:regressions` 全部通过；`test:memory-v2` `PASS 50 ordinary scripts in 90.6s`；`lint:failures` 0；`doc-facts` ✅；`test-version` ✅（`v0.9.0-dev.2`）；preset 契约 ✅；`--verify-ref HEAD` 1115/1115 问题 0；插件套件 `PASS 37 ordinary scripts in 25.5s`。远端 `dev` 已快进到 `83c10b4`（tree 与本地逐字节相同 `40253a7`），远端 `main` 未动（`5face06`）。
+
 ## 2026-11-15 dev 远端镜像已同步（`c5da206 → edf41fd`，快进；未发新 dev 构建）
 
 **做了什么**：把本地 `dev`（含 setup-dsh 基座 bundle 修复、抖音共享记录零帧边界修复、存量红复核文档）推到 `Rock-Connotation/surfcore-mac` 的 `dev` 分支。远端 `main` 未动（`5face06`）。
