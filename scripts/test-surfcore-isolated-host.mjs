@@ -41,10 +41,16 @@ function collect() { if (!child?.pid) return; const list=processes(); let change
 function sockets(stage) { const r=spawnSync('/usr/sbin/lsof',['-nP','-a','-p',String(child.pid),'-i'],{encoding:'utf8'}); const lines=(r.stdout||'').split('\n').filter(x=>x && !x.includes('127.0.0.1')); record.environmentObservations.push({stage,command:`lsof -nP -a -p ${child.pid} -i`,exit:r.status,lines}); if(lines.some(x=>/surfcore/i.test(x))) throw new Error('SurfCore non-loopback socket observed'); }
 async function shutdown() { if (!child || exitResult) return; collect(); if(child.connected) child.send({type:'shutdown'},()=>{}); await Promise.race([exited,sleep(7000)]); if(!exitResult) { child.kill('SIGTERM'); await Promise.race([exited,sleep(3000)]); } if(!exitResult) {child.kill('SIGKILL'); await exited;} }
 try {
-  assert.ok(fs.existsSync(path.join(repo, 'state/mode.json')), 'setup would create repository state/mode.json outside the permitted boundary');
+  const repoModePath = path.join(repo, 'state/mode.json');
+  const repoStateDirBefore = fs.existsSync(path.join(repo, 'state'));
+  const repoModeBefore = fs.existsSync(repoModePath) ? fs.readFileSync(repoModePath) : null;
+  // setup-dsh 的 ensureLocalModeFile() 会写 <repo>/state/mode.json（gitignored 的本地状态）。这里不做"必须已存在"的假设，
+  // 而是在运行后把仓库恢复原状（新建的删掉、改过的写回原字节）并记进 environmentSideEffects——否则本测试只在被污染的工作树上才是绿的。
   const setup=spawnSync('node',['scripts/setup-dsh.mjs',profile],{cwd:repo,env,encoding:'utf8',timeout:30000,maxBuffer:1024*1024});
   record.setup={exit:setup.status,signal:setup.signal,error:setup.error?.message,stdout:setup.stdout,stderr:setup.stderr};
   for (const p of patches) { const file=path.join(repo,p.file); if(hash(fs.readFileSync(file))!==hash(p.bytes)) { fs.writeFileSync(file,p.bytes); record.environmentSideEffects.push({file:p.file,restored:hash(fs.readFileSync(file))===hash(p.bytes)}); } }
+  if (repoModeBefore === null) { if (fs.existsSync(repoModePath)) { fs.rmSync(repoModePath); if (!repoStateDirBefore && fs.existsSync(path.join(repo,'state')) && fs.readdirSync(path.join(repo,'state')).length === 0) fs.rmdirSync(path.join(repo,'state')); record.environmentSideEffects.push({file:'<repo>/state/mode.json',created:true,restored:true}); } }
+  else if (!fs.readFileSync(repoModePath).equals(repoModeBefore)) { fs.writeFileSync(repoModePath, repoModeBefore); record.environmentSideEffects.push({file:'<repo>/state/mode.json',restored:true}); }
   assert.ok(record.environmentSideEffects.every(x=>x.restored),'patch restoration failed');
   assert.equal(setup.status,0,`setup failed: ${setup.error?.message || setup.stderr}`);
   const link=path.join(project,'node_modules/surfcore'); const real=fs.realpathSync(link);
