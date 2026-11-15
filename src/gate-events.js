@@ -44,6 +44,8 @@ export function classifyGateEvent(event = {}) {
   const repeat = Number(event.repeatCount ?? 0);
   const activeTurn = event.activeTurn === true;
   const impact = String(event.impactLevel ?? event.severityHint ?? '');
+  // Permission refusal means the guard worked; keep setup actionable without a modal loop.
+  if (event.gate === 'memory-v2' && kind === 'fault' && (event.action ?? 'blocked') === 'blocked' && name === 'MEMORY_POLICY_DENIED') return 'L1';
 
   // 明确的安全失效 / 已停止：最高。
   if (event.action === 'stopped' && (/turn|loop|budget|step|repeat/i.test(name) || kind === 'cost')) return 'L3';
@@ -130,6 +132,12 @@ export function createGateEventStore({ dir, log = () => {}, maxBytes = 2 * 1024 
       evidence: safeEvidence(event.evidence ?? {}),
       ack: false,
     };
+    if (event.dedupe === true && stored.dedupeKey) {
+      const fields = ['level', 'gate', 'kind', 'event', 'action', 'subject', 'reason', 'impact', 'recommendation', 'confidence', 'dedupeKey', 'evidence'];
+      const signature = row => JSON.stringify(fields.map(key => row[key]));
+      const previous = list({ limit: 500, includeAcked: true }).events.find(row => row.dedupeKey === stored.dedupeKey && signature(row) === signature(stored));
+      if (previous) return { ...previous, deduplicated: true };
+    }
     try {
       rotateIfNeeded();
       fs.appendFileSync(file, `${JSON.stringify(stored)}\n`, 'utf8');

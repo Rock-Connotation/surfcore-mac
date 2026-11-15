@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 统一入口：node bili.mjs <命令> [参数...]
 // 只是把你转到 commands/ 或 verify/ 下的具体脚本，参数原样透传。
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -76,5 +76,22 @@ if (!entry) {
   console.error(`未知命令: ${cmd}\n跑 "node bili.mjs help" 看清单。`)
   process.exit(2)
 }
-const r = spawnSync(process.execPath, [path.join(here, entry[0]), ...rest], { stdio: 'inherit' })
-process.exit(r.status ?? 1)
+// 转发型包装进程：收到信号必须自己退出，不能只靠子进程的 'close' 事件。
+// 2026-11-15 G7 实机：子进程不可中断或已消失时，旧写法让包装进程永远活着（被 launchd 收养成 PPID=1 孤儿）。
+const GRACE_MS = 3000
+const exitCodeFor = (signal) => (signal === 'SIGINT' ? 130 : 143)
+let child
+let pendingSignal
+let hardStop
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
+  pendingSignal = signal
+  try { child?.kill(signal) } catch {}
+  if (!hardStop) hardStop = setTimeout(() => {
+    try { child?.kill('SIGKILL') } catch {}
+    setTimeout(() => process.exit(exitCodeFor(signal)), 200)
+  }, GRACE_MS)
+})
+child = spawn(process.execPath, [path.join(here, entry[0]), ...rest], { stdio: 'inherit' })
+if (pendingSignal) { try { child.kill(pendingSignal) } catch {} }
+child.once('error', () => { process.exitCode = 1 })
+child.once('close', (code) => { process.exit(pendingSignal ? exitCodeFor(pendingSignal) : (code ?? 1)) })

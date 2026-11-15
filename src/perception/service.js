@@ -1045,7 +1045,11 @@ export function createPerceptionService({
         runners.delete(runner.key);
       } else if (runner.state === 'running') {
         runner.controller?.abort();
-        if (runner.promise) await runner.promise;
+        if (runner.promise) {
+          try {
+            await Promise.race([runner.promise, new Promise((resolve) => setTimeout(resolve, 3500))]);
+          } catch {}
+        }
       }
     }
     return publicJob(job);
@@ -1146,7 +1150,11 @@ export function createPerceptionService({
         persist(job);
       }
       activeRunner.controller?.abort();
-      if (activeRunner.promise) await activeRunner.promise;
+      if (activeRunner.promise) {
+        try {
+          await Promise.race([activeRunner.promise, new Promise((resolve) => setTimeout(resolve, 3500))]);
+        } catch {}
+      }
     }
     releaseLock();
     return { disposed: true };

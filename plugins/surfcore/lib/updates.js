@@ -652,7 +652,7 @@ export async function inspectComponent(component, opts = {}) {
   const dir = normalizeDir(component?.dir);
   if (dir) {
     const inside = await runGit(['-C', dir, 'rev-parse', '--is-inside-work-tree']);
-    const top = inside.ok ? await runGit(['-C', dir, 'rev-parse', '--show-toplevel']) : { ok: false };
+    const top = inside.ok ? await runGit(['-C', dir, 'rev-parse', '--show-toplevel']) : { ok: false }; // failure-lint:ignore 内部 git 探测，preflight 边界映射 local-modifications 等 code+hint
     const isOwnRepo = inside.ok && inside.stdout.trim() === 'true'
       && top.ok && samePath(top.stdout.trim(), dir);
     if (isOwnRepo) return inspectGitComponent(component, opts);
@@ -771,11 +771,11 @@ export async function inspectGitComponent(component, { fetch = true } = {}) {
 /** 快进合并一个组件。调用方已经确认过 `updateAvailable` 与 `blocked`。 */
 export async function fastForwardComponent(component) {
   const dir = normalizeDir(component?.dir);
-  if (!dir) return { ok: false, error: '目录不存在' };
+  if (!dir) return { ok: false, error: '目录不存在' }; // failure-lint:ignore 内部步骤，调用方（apply git 路径）边界映射 code+hint
   const branch = String(component?.branch ?? '').trim() || DEFAULT_BRANCH;
   const merged = await runGit(['-C', dir, 'merge', '--ff-only', `origin/${branch}`], { timeout: 60_000 });
   if (!merged.ok) {
-    return { ok: false, error: (merged.stderr || merged.message || '合并失败').trim().slice(0, 400) };
+    return { ok: false, error: (merged.stderr || merged.message || '合并失败').trim().slice(0, 400) }; // failure-lint:ignore 内部步骤，调用方（apply git 路径）边界映射 code+hint
   }
   const head = await runGit(['-C', dir, 'rev-parse', 'HEAD']);
   return { ok: true, head: head.ok ? head.stdout.trim() : '' };
@@ -821,11 +821,11 @@ async function fetchJson(url, { timeout = 15_000, maxBytes = 512 * 1024 } = {}) 
   const local = localPathOf(url);
   if (local) {
     const data = readJsonSafe(local);
-    return data ? { ok: true, json: data } : { ok: false, error: `读不到本地清单：${local}` };
+    return data ? { ok: true, json: data } : { ok: false, error: `读不到本地清单：${local}` }; // failure-lint:ignore 内部取数步骤，check()/apply() 边界统一映射 code+hint
   }
   let mod;
   try { mod = await import(/^https:/i.test(url) ? 'node:https' : 'node:http'); } catch (error) {
-    return { ok: false, error: `加载网络模块失败：${String(error?.message ?? error)}` };
+    return { ok: false, error: `加载网络模块失败：${String(error?.message ?? error)}` }; // failure-lint:ignore 内部取数步骤，check()/apply() 边界统一映射 code+hint
   }
   return new Promise((resolve) => {
     const req = mod.get(url, { timeout, headers: { 'user-agent': 'surfcore-update-check' } }, (res) => {
@@ -834,21 +834,21 @@ async function fetchJson(url, { timeout = 15_000, maxBytes = 512 * 1024 } = {}) 
         resolve(fetchJson(new URL(res.headers.location, url).toString(), { timeout, maxBytes }));
         return;
       }
-      if (res.statusCode !== 200) { res.resume(); resolve({ ok: false, error: `HTTP ${res.statusCode}` }); return; }
+      if (res.statusCode !== 200) { res.resume(); resolve({ ok: false, error: `HTTP ${res.statusCode}` }); return; } // failure-lint:ignore 内部取数步骤，check()/apply() 边界统一映射 code+hint
       let size = 0;
       const chunks = [];
       res.on('data', (chunk) => {
         size += chunk.length;
-        if (size > maxBytes) { res.destroy(); resolve({ ok: false, error: '清单太大' }); return; }
+        if (size > maxBytes) { res.destroy(); resolve({ ok: false, error: '清单太大' }); return; } // failure-lint:ignore 内部取数步骤，check()/apply() 边界统一映射 code+hint
         chunks.push(chunk);
       });
       res.on('end', () => {
         try { resolve({ ok: true, json: JSON.parse(Buffer.concat(chunks).toString('utf8')) }); }
-        catch { resolve({ ok: false, error: '清单不是合法 JSON' }); }
+        catch { resolve({ ok: false, error: '清单不是合法 JSON' }); } // failure-lint:ignore 内部取数步骤，check()/apply() 边界统一映射 code+hint
       });
     });
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: '请求超时' }); });
-    req.on('error', (error) => resolve({ ok: false, error: String(error?.message ?? error) }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: '请求超时' }); }); // failure-lint:ignore 内部取数步骤，check()/apply() 边界统一映射 code+hint
+    req.on('error', (error) => resolve({ ok: false, error: String(error?.message ?? error) })); // failure-lint:ignore 内部取数步骤，check()/apply() 边界统一映射 code+hint
   });
 }
 
@@ -857,12 +857,12 @@ async function downloadTo(url, dest, { timeout = 180_000, maxBytes = 400 * 1024 
   const local = localPathOf(url);
   if (local) {
     try { fs.copyFileSync(local, dest); return { ok: true, bytes: fs.statSync(dest).size }; } catch (error) {
-      return { ok: false, error: String(error?.message ?? error) };
+      return { ok: false, error: String(error?.message ?? error) }; // failure-lint:ignore 内部下载步骤，apply() 边界映射 download.failed + hint
     }
   }
   let mod;
   try { mod = await import(/^https:/i.test(url) ? 'node:https' : 'node:http'); } catch (error) {
-    return { ok: false, error: String(error?.message ?? error) };
+    return { ok: false, error: String(error?.message ?? error) }; // failure-lint:ignore 内部下载步骤，apply() 边界映射 download.failed + hint
   }
   return new Promise((resolve) => {
     const startedAt = Date.now();
@@ -872,13 +872,13 @@ async function downloadTo(url, dest, { timeout = 180_000, maxBytes = 400 * 1024 
         resolve(downloadTo(new URL(res.headers.location, url).toString(), dest, { timeout, maxBytes, onProgress }));
         return;
       }
-      if (res.statusCode !== 200) { res.resume(); resolve({ ok: false, error: `HTTP ${res.statusCode}` }); return; }
+      if (res.statusCode !== 200) { res.resume(); resolve({ ok: false, error: `HTTP ${res.statusCode}` }); return; } // failure-lint:ignore 内部下载步骤，apply() 边界映射 download.failed + hint
       const out = fs.createWriteStream(dest);
       let size = 0;
       const total = Number(res.headers['content-length']) || 0;
       res.on('data', (chunk) => {
         size += chunk.length;
-        if (size > maxBytes) { req.destroy(); res.destroy(); out.destroy(); resolve({ ok: false, error: '安装包太大' }); return; }
+        if (size > maxBytes) { req.destroy(); res.destroy(); out.destroy(); resolve({ ok: false, error: '安装包太大' }); return; } // failure-lint:ignore 内部下载步骤，apply() 边界映射 download.failed + hint
         out.write(chunk);
         if (typeof onProgress === 'function') {
           const elapsed = Math.max(1, Date.now() - startedAt);
@@ -892,10 +892,10 @@ async function downloadTo(url, dest, { timeout = 180_000, maxBytes = 400 * 1024 
         }
       });
       res.on('end', () => out.end(() => resolve({ ok: true, bytes: size })));
-      res.on('error', (error) => { out.destroy(); resolve({ ok: false, error: String(error?.message ?? error) }); });
+      res.on('error', (error) => { out.destroy(); resolve({ ok: false, error: String(error?.message ?? error) }); }); // failure-lint:ignore 内部下载步骤，apply() 边界映射 download.failed + hint
     });
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: '下载超时' }); });
-    req.on('error', (error) => resolve({ ok: false, error: String(error?.message ?? error) }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: '下载超时' }); }); // failure-lint:ignore 内部下载步骤，apply() 边界映射 download.failed + hint
+    req.on('error', (error) => resolve({ ok: false, error: String(error?.message ?? error) })); // failure-lint:ignore 内部下载步骤，apply() 边界映射 download.failed + hint
   });
 }
 
@@ -1022,21 +1022,21 @@ export async function inspectReleaseComponent(component, { fetch = true } = {}) 
 /** 下一份 release 安装包到本机并校验；返回本地路径。 */
 export async function downloadReleaseAsset(component, report, { stateDir, pluginLog = () => {}, onProgress = null } = {}) {
   const asset = report?.asset;
-  if (!asset?.url) return { ok: false, error: '清单里没有下载地址' };
+  if (!asset?.url) return { ok: false, code: 'download.no-asset-url', error: '清单里没有下载地址', hint: '重新「检查更新」拉取最新清单；仍失败就是发布制品缺附件，联系开发者' };
   const ext = /\.zip(\?|$)/i.test(asset.url) ? '.zip' : '';
   const dir = path.join(stateDir, 'downloads');
   const dest = path.join(dir, `${String(component.id)}-${String(report.latestVersion ?? 'latest')}${ext}`);
   const downloaded = await downloadTo(asset.url, dest, { maxBytes: Math.max(asset.size || 0, 400 * 1024 * 1024), onProgress });
-  if (!downloaded.ok) return { ok: false, error: `下载失败：${downloaded.error}` };
+  if (!downloaded.ok) return { ok: false, code: 'download.failed', error: `下载失败：${downloaded.error}`, hint: '检查网络后重试；持续失败可手动下载安装包' };
   if (asset.sha256) {
     const actual = sha256File(dest);
     if (actual.toLowerCase() !== asset.sha256.toLowerCase()) {
       try { fs.rmSync(dest, { force: true }); } catch {}
-      return { ok: false, error: `校验失败（sha256 不匹配：${actual.slice(0, 12)}…）` };
+      return { ok: false, code: 'download.checksum-mismatch', error: `校验失败（sha256 不匹配：${actual.slice(0, 12)}…）`, hint: '点「检查更新」重新下载；重复出现说明制品或网络被篡改，先暂停更新' };
     }
   } else if (Number(asset.size) > 0 && downloaded.bytes !== Number(asset.size)) {
     try { fs.rmSync(dest, { force: true }); } catch {}
-    return { ok: false, error: '校验失败（大小不符）' };
+    return { ok: false, code: 'download.size-mismatch', error: '校验失败（大小不符）', hint: '点「检查更新」重新下载；重复出现就手动下载安装包覆盖' };
   } else {
     pluginLog(`[updates] ${component.id} 的清单没有 sha256，只校验了大小`);
   }
@@ -1145,15 +1145,15 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
   /** 读包里的安装清单（release/install-manifest.json） */
   function readPackageManifest(srcDir) {
     const file = path.join(srcDir, 'release', 'install-manifest.json');
-    if (!fs.existsSync(file)) return { ok: false, code: 'manifest-missing', file };
+    if (!fs.existsSync(file)) return { ok: false, code: 'manifest-missing', file }; // failure-lint:ignore 内部读包步骤，updateFromZip 边界(L1617)映射 code+hint
     try {
       const json = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (!json || typeof json.files !== 'object' || !Object.keys(json.files).length) {
-        return { ok: false, code: 'manifest-invalid', file };
+        return { ok: false, code: 'manifest-invalid', file }; // failure-lint:ignore 内部读包步骤，updateFromZip 边界(L1617)映射 code+hint
       }
       return { ok: true, file, manifest: json };
     } catch (error) {
-      return { ok: false, code: 'manifest-invalid', file, error };
+      return { ok: false, code: 'manifest-invalid', file, error }; // failure-lint:ignore 内部读包步骤，updateFromZip 边界(L1617)映射 code+hint
     }
   }
 
@@ -1209,7 +1209,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         fs.mkdirSync(path.dirname(dst), { recursive: true });
         fs.copyFileSync(src, dst);
         const hash = hashFile(dst);
-        if (!hash) return { ok: false, code: 'backup.write-failed', reason: `备份写入失败：${rel}` };
+        if (!hash) return { ok: false, code: 'backup.write-failed', reason: `备份写入失败：${rel}` }; // failure-lint:ignore 内部备份步骤，apply() 边界(L1691)映射 code+hint
         files[rel] = hash;
         bytes += fs.statSync(dst).size;
       }
@@ -1217,7 +1217,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
 `, 'utf8');
       return { ok: true, dir, files, bytes };
     } catch (error) {
-      return { ok: false, code: 'backup.failed', reason: `备份失败：${String(error?.message ?? error).slice(0, 160)}` };
+      return { ok: false, code: 'backup.failed', reason: `备份失败：${String(error?.message ?? error).slice(0, 160)}` }; // failure-lint:ignore 内部备份步骤，apply() 边界(L1691)映射 code+hint
     }
   }
 
@@ -1719,7 +1719,11 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         restart: '退出并重新打开 DSH',
       };
     } catch (error) {
-      return { ok: false, error: String(error?.message ?? error) };
+      return {
+        ok: false, code: error?.code ?? 'update.zip-failed',
+        error: String(error?.message ?? error),
+        hint: error?.hint ?? '重启 DSH 后重试；或到 Release 页手动下载 zip 覆盖安装',
+      };
     } finally {
       try { fs.rmSync(zipFile, { force: true }); } catch {}
     }
@@ -1779,6 +1783,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       return {
         ok: false, code: 'stage.spawn-failed',
         reason: `启动更新助手失败：${String(error?.message ?? error).slice(0, 160)}`,
+        hint: '重启 DSH 后重试；或到 Release 页手动下载 zip 覆盖安装',
         pendingFile,
       };
     }
@@ -1796,9 +1801,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
   }
 
   async function apply(ids, opts = {}) {
-    if (applying) return { ok: false, error: '正在更新中，请稍候', results: [] };
+    if (applying) return { ok: false, code: 'apply.in-progress', error: '正在更新中，请稍候', hint: '等当前更新结束再点；卡住超过 10 分钟就重启 DSH', results: [] };
     const wanted = new Set((Array.isArray(ids) ? ids : []).map(String));
-    if (!wanted.size) return { ok: false, error: '没有选择要更新的组件', results: [] };
+    if (!wanted.size) return { ok: false, code: 'apply.no-selection', error: '没有选择要更新的组件', hint: '在更新卡片里勾选要更新的组件后再点「更新」', results: [] };
     applying = true;
     downloadProgress = null;
     try {
@@ -1846,12 +1851,12 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           }
           downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'install' };
           if (typeof item.installZip !== 'function') {
-            results.push({ id: item.id, ok: false, error: '这个组件没有配置安装器（installZip）' });
+            results.push({ id: item.id, ok: false, code: 'apply.no-installer', error: '这个组件没有配置安装器（installZip）', hint: '这是组件注册问题，重启 DSH 后仍报错就联系开发者' });
             continue;
           }
           let installed;
           try { installed = await item.installZip(downloaded.path, { report }); }
-          catch (error) { installed = { ok: false, error: String(error?.message ?? error) }; }
+          catch (error) { installed = { ok: false, code: 'apply.install-threw', error: String(error?.message ?? error), hint: '查看该组件安装器日志；或手动下载安装包覆盖' }; }
           try { fs.rmSync(downloaded.path, { force: true }); } catch {}
           if (!installed?.ok) { results.push({ id: item.id, ok: false, code: installed?.code ?? 'apply.install-failed', error: installed?.error ?? '安装失败', hint: installed?.hint ?? '查看该组件安装器日志；或手动下载安装包覆盖' }); continue; }
           results.push({
@@ -1865,7 +1870,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         if (report.channel === 'git') {
           // 同样不能在宿主进程里 merge：工作区文件正在被使用。交给退出后的独立进程。
           const dir = normalizeDir(item.dir);
-          if (!dir) { results.push({ id: item.id, ok: false, error: '目录不存在' }); continue; }
+          if (!dir) { results.push({ id: item.id, ok: false, code: 'apply.no-dir', error: '目录不存在', hint: '确认组件安装目录后重新检查更新' }); continue; }
           const staged = stageDeferredApply({
             kind: 'git', component: String(item.id), target: dir,
             branch: String(item.branch || report.branch || 'main'), to: String(report.latest ?? ''),

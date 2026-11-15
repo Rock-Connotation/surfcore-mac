@@ -11,14 +11,14 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PROVIDER = 'fixture-local:uninvoked-provider';
 const GRANT = 'fixture-local-processing';
 function resolveV1ReportPath() {
-  const preferred = path.join(ROOT, '_backups/memory-v2-evaluation/v1-L3VBpm/report.json');
-  if (fs.existsSync(preferred)) return preferred;
-  const parent = path.join(ROOT, '_backups/memory-v2-evaluation');
-  if (fs.existsSync(parent)) {
-    const candidates = fs.readdirSync(parent).filter(name => name.startsWith('v1-')).map(name => path.join(parent, name, 'report.json')).filter(file => fs.existsSync(file));
-    if (candidates.length > 0) return candidates[candidates.length - 1];
+  // R05：runner 显式编排依赖，把本轮生成的隔离基线路径传进来。
+  // 不再从 `_backups/` 里任选一个历史报告（干净克隆里根本没有、本地历史也可能漂移）。
+  const explicit = process.env.SURFCORE_MEMORY_V2_BASELINE;
+  if (explicit) {
+    if (!path.isAbsolute(explicit) || !fs.existsSync(explicit)) throw new Error(`Baseline report not found: ${explicit}`);
+    return explicit;
   }
-  return preferred;
+  throw new Error('V1 evaluation baseline is required. Run scripts/test-memory-v2-evaluation.mjs first via npm run test:memory-v2 (the runner wires SURFCORE_MEMORY_V2_BASELINE). Never pick a random local _backups report.');
 }
 const V1_PATH = resolveV1ReportPath();
 const KERNEL_FILES = ['contract', 'store', 'worker', 'service'].map((name) => `src/core/memory-v2-${name}.js`);
@@ -122,7 +122,7 @@ export async function runKernelEvaluation() {
   let statusAfterIngest, statusAfterReopen;
   const ingestTimes = [], rows = [], canaryProbes = [], noRelevance = [];
   try {
-    const initial = good(await service.initialize()); assert.equal(initial.activeBackend, 'v1');
+    const initial = good(await service.initialize()); assert.equal(initial.activeBackend, 'v2');
     for (const policy of policyFixture.policies) {
       const ctx = await admin();
       const { policyId: id, approved, audiences, processingGrants } = policy;
@@ -160,7 +160,7 @@ export async function runKernelEvaluation() {
     }
     statusAfterReopen = good(await service.getStatus());
     assert.equal(statusAfterReopen.characters.reduce((n, role) => n + role.eventCount, 0), 10000);
-    assert.equal(statusAfterReopen.activeBackend, 'v1');
+    assert.equal(statusAfterReopen.activeBackend, 'v2');
     const warm = data.queries[0];
     for (let i = 0; i < 3; i++) { const ctx = await queryContext(warm); good(await service.searchMemory(ctx, warm.text, { limit: 8 })); good(await service.prepareMemoryContext(ctx, warm.text, { memory: 1800, total: 6000 })); }
     const searchTimes = [], prepareTimes = [], captureTimes = [], validationTimes = [];

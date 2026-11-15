@@ -1,0 +1,174 @@
+import { testHome } from './isolate-test-home.mjs';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { Readable } from 'node:stream';
+import child from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+
+process.env.DSH_HOME = path.join(testHome, 'dsh');
+process.env.SURFCORE_ROOT = path.join(testHome, 'repo');
+process.env.SURFCORE_SKIP_AUTOSTART = '1';
+process.env.SURFCORE_DISABLE_CHARACTER_MIGRATION = '1';
+process.env.SURFCORE_DISABLE_MEMORY_TIMER = '1';
+fs.mkdirSync(path.join(process.env.SURFCORE_ROOT, 'src'), { recursive: true });
+fs.writeFileSync(path.join(process.env.SURFCORE_ROOT, 'src', 'bridge.js'), '// fixture\n');
+fs.writeFileSync(path.join(process.env.SURFCORE_ROOT, 'config.json'), '{}');
+const state = path.join(process.env.DSH_HOME, 'surfcore');
+fs.mkdirSync(path.join(state, 'bili'), { recursive: true });
+fs.writeFileSync(path.join(state, 'config.json'), JSON.stringify({ version: 1, platforms: { start: { qq: false, bili: true } }, updates: { enabled: false } }));
+fs.writeFileSync(path.join(state, 'bili', 'credentials.json'), JSON.stringify({ cookie: 'fixture' }));
+const commands = []; let includeUnapproved = false, failDebrief = false, changeRouteDuringDebrief = false;
+let selectedModel = 'fixture-model';
+child.execFile = (_file, args, _options, callback) => {
+  commands.push(args);
+  if (args.some(arg => String(arg).endsWith('/feed.mjs'))) queueMicrotask(() => callback(null, JSON.stringify({ ok: true, items: [{ bv: 'BV1234567890', title: 'Fixture', duration: 3 }, ...(includeUnapproved ? [{ bv: 'BVxxxxxxxxxx', title: 'Unapproved', duration: 3 }] : [])] }), ''));
+  else if (args.some(arg => String(arg).endsWith('/debrief.mjs')) && failDebrief) queueMicrotask(() => callback(new Error('fixture media unavailable'), '', ''));
+  else if (args.some(arg => String(arg).endsWith('/debrief.mjs'))) queueMicrotask(() => { if (changeRouteDuringDebrief) selectedModel = 'other-model'; callback(null, JSON.stringify({ ok: true, part: { bvid: 'BV1234567890', page: 1, cid: '12', durationMs: 3000 }, materials: { speech: { jobId: 'bili-00000000-0000-4000-8000-000000000001' }, frames: { jobId: 'bili-00000000-0000-4000-8000-000000000001' } } }), ''); });
+  else if (args.some(arg => String(arg).endsWith('/score.mjs'))) queueMicrotask(() => callback(null, JSON.stringify({ ok: true, items: [{ bv: 'BV1234567890', score: 15, reason: '清楚' }], entry: { bv: 'BV1234567890', score: 15, reason: '清楚' } }), ''));
+  else queueMicrotask(() => callback(Object.assign(new Error('fixture unavailable'), { code: 'FIXTURE_UNAVAILABLE' }), '', ''));
+  return { kill() {} };
+};
+child.spawn = () => { throw Error('Real child process forbidden'); };
+syncBuiltinESMExports();
+const { createCharacter, switchCharacter, readCurrentCharacter } = await import('../../../src/character-persona.js');
+const { createMemoryService } = await import('../../../src/core/memory-v2-service.js');
+const { deriveBiliV2PublicSourceSet } = await import('../lib/bili-v2-public-source-set.mjs');
+const { deriveMemoryProviderRouteId } = await import('../../../src/core/memory-v2-routing.js');
+const { digest } = await import('../../../src/core/memory-v2-contract.js');
+createCharacter({ id: 'fixture', name: 'Fixture', personaText: 'Fixture.' });
+switchCharacter('fixture');
+const { apply } = await import('../lib/index.js');
+let calls = 0; const modelInputs = [];
+globalThis.fetch = async value => {
+  const url = new URL(value);
+  if (url.pathname.endsWith('/nav')) return Response.json({ code: 0, data: { isLogin: true, mid: 9 } });
+  if (url.pathname.endsWith('/feed/all')) return Response.json({ code: 0, data: { items: [{ modules: { module_dynamic: { major: { archive: { bvid: 'BV1234567890' } } } } }] } });
+  if (url.pathname.endsWith('/view')) return Response.json({ code: 0, data: { bvid: url.searchParams.get('bvid'), aid: url.searchParams.get('bvid') === 'BV1234567890' ? 1 : 3, title: 'Fixture', desc: 'Fixture', owner: { mid: 2, name: 'Fixture' }, pubdate: 1700000000 } });
+  throw Error('Unexpected network request: ' + url.pathname);
+};
+function fixture() {
+  const routes = [], effects = [];
+  const ctx = { webServer: { register: route => { routes.push(route); return () => {}; } }, effect: fn => { effects.push(fn); return () => {}; },
+    get(key) {
+      if (key === 'webServer') return { port: 58750, protocol: 'http:' };
+      if (key === 'connection') return { requestRejection: () => false };
+      if (key === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'fixture-provider', model: selectedModel }) };
+      if (key === 'llm') return { resolveModelInfo: async (provider, model) => ({ provider, id: model }), listProviders: () => [{ id: 'fixture-provider' }], listModels: () => [{ id: 'fixture-model' }], stream: async function* (args) { calls++; modelInputs.push(JSON.stringify(args.messages)); yield { type: 'text-delta', text: JSON.stringify(args.system.includes('根据候选选择') ? { bvid: 'BV1234567890' } : { score: 15, reason: '清楚', commentary: '讲解清楚。', dynamicText: '分享讲解。' }) }; yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } }; yield { type: 'finish', reason: { kind: 'stop' } }; } };
+      return null;
+    }, sessionController: { inspect: async () => ({ events: [] }), create: async () => ({}), prompt: async () => { throw Error('Unexpected prompt'); } }, settings: null };
+  apply(ctx);
+  return { async request(method, body, query = '', endpoint = '/dsh-surfcore/api/bili/round') {
+    const req = Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []); req.method = method; req.url = endpoint + query; req.headers = { host: '127.0.0.1:58750', 'content-type': 'application/json' }; req.socket = { remoteAddress: '127.0.0.1' };
+    const res = { statusCode: 200, body: '', writeHead(code) { this.statusCode = code; }, end(body = '') { this.body += body; } };
+    await routes.find(route => route.path === '/dsh-surfcore/api').handler(req, res);
+    return { status: res.statusCode, body: JSON.parse(res.body) };
+  }, async close() { for (const effect of effects.reverse()) { const cleanup = effect(); if (typeof cleanup === 'function') await cleanup(); } } };
+}
+let f = fixture();
+try {
+  const initialBudget = await f.request('GET', null, '', '/dsh-surfcore/api/token-budget');
+  assert.equal(initialBudget.body.ok, true, JSON.stringify(initialBudget.body));
+  const pause = await f.request('POST', { action: 'pause' });
+  console.log('pause', JSON.stringify(pause));
+  const before = await f.request('GET');
+  console.log('before restart', JSON.stringify(before.body.readiness));
+  await f.close();
+  const role = readCurrentCharacter(), route = deriveMemoryProviderRouteId({ provider: 'fixture-provider', model: 'fixture-model' }).providerRouteId;
+  const set = deriveBiliV2PublicSourceSet({ characterId: role.id, characterEpoch: role.epoch, accountMid: '9', providerRouteId: route, selectors: [{ kind: 'video', bvid: 'BV1234567890', aid: '1', authorMid: '2' }], outputTarget: { audience: 'public', kind: 'dynamic' } });
+  assert.equal(set.ok, true, JSON.stringify(set));
+  const requester = 'bili:9:actor:9', id = `bili-public-set-${set.id}`, conversationKey = set.outputConversationKey;
+  const extraAudiences = set.sourceConversations.map(source => ['bili', source.conversationKey, requester]);
+  const policy = { policyId: `policy-${digest({ characterId: role.id, id, conversationKey, requester, providerRouteId: route, extraAudiences }).slice(0, 32)}`, approved: true, audiences: [['bili', conversationKey, requester], ...extraAudiences], processingGrants: [{ grantId: 'approved-route', providerRouteId: route }] };
+  const authorization = Symbol('fixture-owner');
+  const service = createMemoryService({ stateDir: state, charactersDir: path.join(state, 'characters'), getCharacter: () => role, authorizeManagement: value => value === authorization });
+  assert.equal((await service.initialize()).ok, true);
+  const captured = await service.host.captureAdminContext({ channel: 'bili', conversationKey, sourceAccountKey: requester, requesterAccountKey: requester, providerRouteId: route, purpose: 'conversation', audiencePolicyId: 'management', processingGrantId: 'management' }, authorization);
+  const status = await service.getStatus();
+  const approved = await service.host.configurePolicy(captured.context, policy, status.revision, 'fixture-approve');
+  assert.equal(approved.ok, true, JSON.stringify(approved));
+  await service.close();
+  const mediaId = 'bili-00000000-0000-4000-8000-000000000001', activityId = 'fixture-activity';
+  const coverage = { complete: true, requestedRanges: [{ startMs: 0, endMs: 3000 }], acquiredRanges: [{ startMs: 0, endMs: 3000 }], processedRanges: [{ startMs: 0, endMs: 3000 }], missingRanges: [] };
+  const part = { bvid: 'BV1234567890', cid: '12', page: 1 };
+  const media = { jobId: mediaId, activityId, state: 'completed', characterId: role.id, characterEpoch: role.epoch, part, coverage, frames: { status: 'completed' }, result: { activityId, transcriptId: 'fixture-transcript', speechState: 'speech', characterId: role.id, characterEpoch: role.epoch, source: { channel: 'bili', objectId: part.bvid }, provenance: { channel: 'bili', sourceId: part.bvid, partId: part.cid }, segments: [{ startMs: 0, endMs: 1000, text: '讲解清楚' }], coverage } };
+  const mediaDir = path.join(state, 'perception', 'bili-jobs');
+  fs.mkdirSync(mediaDir, { recursive: true });
+  fs.writeFileSync(path.join(mediaDir, `${mediaId}.json`), JSON.stringify(media));
+  f = fixture();
+  const beforeCandidates = await f.request('GET', null, '', '/dsh-surfcore/api/memory-v2/status');
+  const countSets = result => (result.body.approvedConversations ?? []).filter(row => row.id?.startsWith('bili-public-set-')).length;
+  const beforeCount = countSets(beforeCandidates);
+  const ready = await f.request('GET');
+  const afterCandidates = await f.request('GET', null, '', '/dsh-surfcore/api/memory-v2/status');
+  const afterCount = countSets(afterCandidates);
+  console.log('public source sets', beforeCount, '→', afterCount);
+  assert.equal(beforeCount, 0); assert.equal(afterCount, 1);
+  const start = await f.request('POST', { action: 'start', provider: 'fixture-provider', model: 'fixture-model', maxTokens: 300 });
+  console.log('after restart readiness', JSON.stringify(ready.body.readiness));
+  console.log('after restart start', JSON.stringify(start));
+  let job;
+  for (let i = 0; i < 100; i++) {
+    job = (await f.request('GET', null, '?jobId=' + start.body.jobId)).body.value;
+    if (!['queued', 'running'].includes(job.state)) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  console.log('job', JSON.stringify(job));
+  console.log('model calls', calls);
+  console.log('model input membership', modelInputs.map(value => ({ approved: value.includes('BV1234567890'), unapproved: value.includes('BVxxxxxxxxxx') })));
+  assert.ok(modelInputs.every(value => value.includes('BV1234567890') && !value.includes('BVxxxxxxxxxx')));
+  assert.notEqual(ready.body.readiness.code, 'BILI_V2_ROUND_SCOPE_UNAPPROVED');
+  assert.notEqual(start.status, 409);
+  assert.ok(calls > 0);
+  assert.equal(job.state, 'completed', JSON.stringify(job));
+  assert.equal(job.memory?.receipt?.operationState, 'completed');
+  await f.close();
+  includeUnapproved = true;
+  f = fixture();
+  const beforeDenied = calls;
+  const deniedReady = await f.request('GET');
+  const deniedStart = await f.request('POST', { action: 'start', provider: 'fixture-provider', model: 'fixture-model', maxTokens: 300 });
+  console.log('unapproved readiness', JSON.stringify(deniedReady.body.readiness));
+  console.log('unapproved start', JSON.stringify(deniedStart));
+  assert.equal(deniedReady.body.readiness.ok, false);
+  assert.equal(deniedStart.status, 409);
+  assert.equal(calls, beforeDenied);
+  assert.ok(modelInputs.every(value => !value.includes('BVxxxxxxxxxx')));
+  console.log('PASS unapproved candidate denied before model; calls unchanged', calls);
+  await f.close();
+  includeUnapproved = false; failDebrief = true;
+  f = fixture();
+  const beforeScore = commands.filter(args => args.some(arg => String(arg).endsWith('/score.mjs'))).length;
+  const failedStart = await f.request('POST', { action: 'start', provider: 'fixture-provider', model: 'fixture-model', maxTokens: 300 });
+  assert.equal(failedStart.status, 200, JSON.stringify(failedStart));
+  let failedJob;
+  for (let i = 0; i < 100; i++) {
+    failedJob = (await f.request('GET', null, '?jobId=' + failedStart.body.jobId)).body.value;
+    if (!['queued', 'running'].includes(failedJob.state)) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(failedJob.state, 'failed');
+  assert.equal(failedJob.code, 'ROUND_MEDIA_SUBMISSION_UNKNOWN');
+  assert.ok(failedJob.hint);
+  assert.equal(failedJob.score, undefined);
+  assert.equal(failedJob.memory, undefined);
+  assert.equal(commands.filter(args => args.some(arg => String(arg).endsWith('/score.mjs'))).length, beforeScore);
+  console.log('PASS debrief failure visible, no score or memory', failedJob.code);
+  await f.close();
+  failDebrief = false; changeRouteDuringDebrief = true;
+  f = fixture();
+  const callsBeforeChange = calls;
+  const changedStart = await f.request('POST', { action: 'start', provider: 'fixture-provider', model: 'fixture-model', maxTokens: 300 });
+  assert.equal(changedStart.status, 200, JSON.stringify(changedStart));
+  let changedJob;
+  for (let i = 0; i < 100; i++) {
+    changedJob = (await f.request('GET', null, '?jobId=' + changedStart.body.jobId)).body.value;
+    if (!['queued', 'running'].includes(changedJob.state)) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(changedJob.state, 'failed');
+  assert.equal(changedJob.code, 'ROUND_SOURCE_CHANGED');
+  assert.equal(calls, callsBeforeChange + 1);
+  assert.ok(changedJob.hint);
+  console.log('PASS changed model route blocks second model call', changedJob.code);
+} finally { await f.close(); }

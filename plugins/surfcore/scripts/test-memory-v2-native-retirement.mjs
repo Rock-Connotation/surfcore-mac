@@ -150,6 +150,9 @@ for (const asyncTool of [false, true]) {
   }`, {
     ctx: {}, resourcesPath: '/synthetic', characterPaths: () => ({ persona: '/synthetic/core' }),
     fs: { readFileSync: () => 'Fixture approved core.' }, Buffer,
+    // R09：ensureInstance 现在走共享 V2 人格编译入口；本用例只测初始化/退役
+    // 清理状态机，桩掉编译结果，真实人格过滤由 test-v2-real-integration 覆盖。
+    compileV2Persona: () => ({ ok: true, text: 'Fixture approved core.', digest: 'a'.repeat(64), chars: 24 }),
     loadMemoryV2NativeEnvironment: async () => ({}), createIsolatedNativeRoot: async () => { throw failure; },
   });
   const host = create();

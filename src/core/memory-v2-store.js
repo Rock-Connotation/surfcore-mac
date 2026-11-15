@@ -31,7 +31,7 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
     if (faults[name] && n < faults[name]) { faultCounts.set(name, n + 1); throw new Error(`fixture:${name}`); }
   }
   control.exec(`CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, policyRevision INTEGER NOT NULL, bindingRevision INTEGER NOT NULL, deletionRevision INTEGER NOT NULL, activeBackend TEXT NOT NULL, shadowEnabled INTEGER NOT NULL);
-    INSERT OR IGNORE INTO state VALUES(1,0,0,0,0,'v1',0);
+    INSERT OR IGNORE INTO state VALUES(1,0,0,0,0,'v2',0);
     CREATE TABLE IF NOT EXISTS policies(policyId TEXT PRIMARY KEY,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS privacy_actions(operationId TEXT PRIMARY KEY,requestDigest TEXT NOT NULL,revision INTEGER NOT NULL UNIQUE,characterId TEXT NOT NULL,action TEXT NOT NULL,result TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS root_controls(characterId TEXT NOT NULL,rootId TEXT NOT NULL,status TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(characterId,rootId));`);
@@ -106,14 +106,18 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
     requireThat(result.ok, result.code, result.error, result.hint);
     return true;
   }
-  function validate(ctx, { permitAdmin = false, requireShadow = true } = {}) {
+  // V2-only（2026-11-12）：普通业务准入不再检查历史 `shadowEnabled` 列。
+  // 该列只在旧版影子期用于「先观察再切换」，V1 退役后它既不能代表授权、也不能代表就绪；
+  // 留着它做准入会制造「已选 V2、授权已提交、却仍被拒」的矛盾状态（R01）。
+  // 真正必须通过的门禁一律保留：角色/epoch、具体 audience/provider policy、控制修订、
+  // 来源证明、生命周期与删除屏障。列本身不删除、不重置、不做数据迁移。
+  function validate(ctx, { permitAdmin = false } = {}) {
     const s = state();
     admission(ctx.characterId, ctx.admin === true);
     requireThat(ctx.storeGeneration === generation, 'MEMORY_WORKER_STALE', 'This context belongs to a retired worker.');
     requireThat(ctx.purpose !== 'admin' || (permitAdmin && ctx.admin === true), 'MEMORY_ADMIN_REQUIRED', 'This action requires a trusted management capability.');
     for (const key of ['policyRevision', 'bindingRevision', 'deletionRevision', 'controlRevision']) requireThat(ctx[key] === s[key === 'controlRevision' ? 'revision' : key], 'MEMORY_CONTEXT_STALE', `The captured ${key} is stale.`, 'Retire the affected session and capture a new trusted context.');
     requireThat(policyAllows(policy(ctx.audiencePolicyId), ctx, { admin: ctx.admin === true }), 'MEMORY_POLICY_DENIED', 'This specific audience or provider has no approved processing policy.');
-    if (requireShadow) requireThat(s.shadowEnabled === 1, 'MEMORY_SHADOW_DISABLED', 'The V2 shadow kernel has not been explicitly enabled.', 'Use authenticated management to configure shadow mode. Production remains V1.');
     const db = role(ctx.characterId);
     requireThat(db.prepare('SELECT appliedControlRevision FROM metadata WHERE id=1').get().appliedControlRevision === s.revision, 'MEMORY_CONTROL_BLOCKED', 'The character view has not acknowledged current security controls.', 'Reopen the service to finish applying controls before memory, model, or send admission.');
     return db;
@@ -194,7 +198,7 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
     if (ctx.admin === true) {
       requireThat(ctx.purpose === 'admin' && ctx.storeGeneration === generation, 'MEMORY_ADMIN_REQUIRED', 'A live management receipt capability is required.');
       state();
-    } else validate(ctx, { requireShadow: false });
+    } else validate(ctx);
     if (ctx.admin === true && control.prepare('SELECT operationId FROM lifecycle_ops WHERE operationId=?').get(operationId)) return lifecycle.call(ctx, 'progress', { operationId });
     const action = control.prepare('SELECT * FROM privacy_actions WHERE operationId=?').get(operationId);
     if (action) {
@@ -273,20 +277,37 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
       const payload = parse(row.payload);
       if (payload.expiresAt && Date.parse(payload.expiresAt) <= now()) continue;
       if (options.personId && administration.identity(ctx.characterId, payload).personId !== options.personId) continue;
-      authorized.push({ identity: administration.identity(ctx.characterId, payload), type: hit.recordType, id: hit.recordId, revision: hit.revision, payloadDigest: row.payloadDigest, content: payload.content, subject: payload.subject ?? '', certainty: payload.certainty ?? 'unknown', attribution: payload.attribution ?? 'statement', coverage: payload.coverage ?? {}, textCompleteness: payload.textCompleteness ?? 'complete', roots: parse(row.roots), policyIds: parse(row.policies), validFrom: payload.validFrom ?? null, validTo: payload.validTo ?? null, overlap: hit.overlap });
+      authorized.push({ identity: administration.identity(ctx.characterId, payload), type: hit.recordType, id: hit.recordId, revision: hit.revision, payloadDigest: row.payloadDigest, content: payload.content, subject: payload.subject ?? '', certainty: payload.certainty ?? 'unknown', attribution: payload.attribution ?? 'statement', coverage: payload.coverage ?? {}, textCompleteness: payload.textCompleteness ?? 'complete', roots: parse(row.roots), policyIds: parse(row.policies), validFrom: payload.validFrom ?? null, validTo: payload.validTo ?? null, occurredAt: payload.occurredAt ?? null, observedAt: payload.observedAt ?? null, recordedAt: payload.recordedAt ?? null, overlap: hit.overlap });
     }
-    authorized.sort((a, b) => b.overlap - a.overlap || (a.type === b.type ? a.id.localeCompare(b.id) : a.type === 'memory' ? -1 : 1));
+    authorized.sort((a, b) => {
+      if (b.overlap !== a.overlap) return b.overlap - a.overlap;
+      const timeA = Date.parse(a.occurredAt ?? a.recordedAt ?? a.observedAt ?? a.validFrom ?? '') || 0;
+      const timeB = Date.parse(b.occurredAt ?? b.recordedAt ?? b.observedAt ?? b.validFrom ?? '') || 0;
+      if (timeA !== timeB) return timeB - timeA;
+      if (a.type !== b.type) return a.type === 'memory' ? -1 : 1;
+      return a.id.localeCompare(b.id);
+    });
     return { ok: true, records: authorized.slice(0, limit), candidateCount: Math.min(authorized.length, 80), ranking: 'authorized-lexical-overlap', tokenAccounting: 'estimated' };
   }
   function prepareMemoryContext(ctx, query, budget = {}) {
     const found = searchMemory(ctx, query);
     const maxChars = Math.min(1800, Number.isInteger(budget.memory) ? Math.max(0, budget.memory) : 1800, Number.isInteger(budget.total) ? Math.max(0, budget.total) : 6000);
+    const allowExcerpt = Boolean(budget.allowExcerpt);
     const selected = [], roots = new Set(); let text = '';
     for (const item of found.records) {
       if (selected.length === 8) break;
       if (!administration.isHot(role(ctx.characterId), item.type, item.id, item.revision)) continue;
-      if (item.textCompleteness !== 'complete' || item.content.length > 320 || item.roots.some((root) => roots.has(root))) continue;
-      const line = `[${item.type}:${item.id}@${item.revision};${item.certainty};${item.subject};coverage=${canonical(item.coverage)}${item.identity.state === 'confirmed' ? `;identity=${canonical(item.identity)}` : ''}] ${item.content}`;
+      if (item.textCompleteness !== 'complete' || (!allowExcerpt && item.content.length > 320) || item.roots.some((root) => roots.has(root))) continue;
+      let displayContent = item.content;
+      if (displayContent.length > 320) {
+        displayContent = `${displayContent.slice(0, 310)}…`;
+      }
+      const timeParts = [];
+      if (item.validFrom || item.validTo) timeParts.push(`valid=${item.validFrom ?? '*'}..${item.validTo ?? '*'}`);
+      if (item.occurredAt) timeParts.push(`occurredAt=${item.occurredAt}`);
+      else if (item.recordedAt) timeParts.push(`recordedAt=${item.recordedAt}`);
+      const timeTag = timeParts.length > 0 ? `;${timeParts.join(';')}` : '';
+      const line = `[${item.type}:${item.id}@${item.revision};${item.certainty};${item.subject}${timeTag};coverage=${canonical(item.coverage)}${item.identity.state === 'confirmed' ? `;identity=${canonical(item.identity)}` : ''}] ${displayContent}`;
       if ((text ? text.length + 1 : 0) + line.length > maxChars) continue;
       text += `${text ? '\n' : ''}${line}`; selected.push(item); item.roots.forEach((root) => roots.add(root));
     }
@@ -385,7 +406,7 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
       return { ...parse(prior.result), applied: true, appliedControlRevision: state().revision };
     }
     requireThat(expectedRevision === s.revision && ctx.controlRevision === s.revision, 'MEMORY_REVISION_CONFLICT', 'The management preview revision is stale.', 'Refresh the management preview and confirm the exact current revision.');
-    requireThat(['configure_policy', 'enable_shadow', 'suppress', 'invalidate', 'revoke_policy', 'binding_barrier', 'correct'].includes(action.type), 'MEMORY_ACTION_UNAVAILABLE', 'This management action is unavailable in the shadow kernel.', 'Production activation, backup, restore, migration and purge require a later verified phase.');
+    requireThat(['configure_policy', 'enable_shadow', 'suppress', 'invalidate', 'revoke_policy', 'binding_barrier', 'correct'].includes(action.type), 'MEMORY_ACTION_UNAVAILABLE', 'This management action is unavailable in the current memory kernel.', 'Production activation, backup, restore, migration and purge require a later verified phase.');
     let configured, correction;
     if (action.type === 'configure_policy') {
       configured = validatePolicy(action.policy);
@@ -406,12 +427,14 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
       correction={type:'memory',id:row.memoryId,revision:row.revision,payloadDigest:row.payloadDigest};
     }
     const revision = s.revision + 1;
-    const result = receipt(operationId, { controlRevision: revision, accessState: 'access_revoked', sourceState: 'committed', applied: false, activeBackend: 'v1', ...(correction?{correctionState:'persisted-replacement-linked',replacement:correction}:{}) });
+    const result = receipt(operationId, { controlRevision: revision, accessState: 'access_revoked', sourceState: 'committed', applied: false, activeBackend: 'v2', ...(correction?{correctionState:'persisted-replacement-linked',replacement:correction}:{}) });
     const committed = transaction(control, operationId, () => {
       if (configured) control.prepare('INSERT INTO policies VALUES(?,?) ON CONFLICT(policyId) DO UPDATE SET payload=excluded.payload').run(configured.policyId, canonical(configured));
       if (action.type === 'revoke_policy') { const p = policy(action.policyId); control.prepare('UPDATE policies SET payload=? WHERE policyId=?').run(canonical({ ...p, approved: false }), action.policyId); }
       const policyIncrement = ['configure_policy', 'revoke_policy'].includes(action.type) ? 1 : 0;
       const deletionIncrement = ['suppress', 'invalidate', 'correct'].includes(action.type) ? 1 : 0;
+      // `shadowEnabled` 是影子期历史列：保留写入路径只为让旧库结构一致，
+      // 它已不参与任何业务准入（见 validate）。不要据此判断 V2 是否「已激活」。
       control.prepare('UPDATE state SET revision=?,policyRevision=policyRevision+?,bindingRevision=bindingRevision+?,deletionRevision=deletionRevision+?,shadowEnabled=? WHERE id=1').run(revision, policyIncrement, action.type === 'binding_barrier' ? 1 : 0, deletionIncrement, action.type === 'enable_shadow' ? Number(action.enabled === true) : s.shadowEnabled);
       for (const root of action.roots ?? []) control.prepare('INSERT INTO root_controls VALUES(?,?,?,?) ON CONFLICT(characterId,rootId) DO UPDATE SET status=excluded.status,revision=excluded.revision').run(ctx.characterId, root, action.type, revision);
       const descriptor = { type: action.type, roots: action.roots ?? [], policyId: configured?.policyId ?? action.policyId ?? null, replacement: correction ?? null };

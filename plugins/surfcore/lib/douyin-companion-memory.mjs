@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { COMPANION_ROUTE } from './douyin-companion-model.mjs';
+import { validReceipt } from './douyin-companion-ledger.mjs';
 import { readMemoryRouting, deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
 import { buildCharacterContext, prepareCharacterContext } from '../../../src/core/context.js';
 import { appendExperienceEvent } from '../../../src/core/experience.js';
@@ -55,6 +56,19 @@ export function createCompanionMemory({ getCharacter, maintainMemory, stateDir =
     if (receipt?.sourceState !== 'committed') return requireOk(failure('MEMORY_SOURCE_UNCONFIRMED', '原始经历尚未确认保存。', '查询原操作回执；不会自动重新提交或调用模型。'));
     const refs = receipt.eventRefs;
     if (!Array.isArray(refs) || !refs.length) return requireOk(failure('MEMORY_SOURCE_REFS_REQUIRED', 'Host回执缺少已保存原文的精确引用。'));
+    // F10：回执并入持久对象前先验证完整合同；残缺回执不得污染 job/item 的
+    // 最后有效状态，避免 saveJob 抛 DOUYIN_STATE_INVALID 后留下 running。
+    const validRef = ref => ref && ref.type === 'event' && ref.revision === 1
+      && typeof ref.id === 'string' && /^[a-f0-9]{64}$/.test(ref.payloadDigest ?? '');
+    const complete = receipt.ok === true && typeof receipt.operationId === 'string'
+      && receipt.acceptance === 'volatile' && receipt.sourceState === 'committed'
+      && receipt.selectionState === 'not_selected' && receipt.indexState === 'ready'
+      && receipt.operationState === 'completed' && receipt.retry === 'none'
+      && Number.isSafeInteger(receipt.commitSequence) && receipt.commitSequence >= 1
+      && Array.isArray(receipt.eventIds) && receipt.eventIds.length === refs.length
+      && refs.every(validRef) && refs.every(ref => receipt.eventIds.includes(ref.id));
+    if (!complete) return requireOk(failure('MEMORY_SOURCE_RECEIPT_INVALID', 'Host回执字段不完整，未能并入作业状态。', '用原操作编号查询回执；来源可能已提交，不会重新 ingest 或改写作废状态。'));
+    if (!validReceipt({ ...receipt, phase: 'source' })) return requireOk(failure('MEMORY_SOURCE_RECEIPT_INVALID', 'Host回执字段不完整，未能并入作业状态。', '用原操作编号查询回执；来源可能已提交，不会重新 ingest 或改写作废状态。'));
     await requireOk(adapter.bindActualInput(session.handle, refs));
     session.refs.push(...refs); session.receipts.push(receipt);
     return { ok: true, refs, receipt };
@@ -87,9 +101,16 @@ export function createCompanionMemory({ getCharacter, maintainMemory, stateDir =
     const content = JSON.stringify({ system, prompt, images: images.map(frame => ({ atMs: frame.atMs, sha256: imageDigest(frame) })) });
     return ingest(session, [event(session, session.identity, 'model-input', content, { subject: session.context.characterId, speaker: session.context.characterId, certainty: 'observed', attribution: 'action' })], `${session.identity}:model-input`);
   }
+  const reflectionOperationId = session => `${session.identity}:reflection`;
+  async function receipt(session, operationId) {
+    await validate(session);
+    const result = await requireOk(adapter.receipt(session.handle, operationId));
+    await validate(session);
+    return result;
+  }
   async function reflect(session, value) {
     await validate(session);
-    return ingest(session, [event(session, session.identity, 'reflection', JSON.stringify(value), { subject: session.context.characterId, speaker: session.context.characterId, certainty: 'reported', attribution: 'reflection', coverage: value.coverage })], `${session.identity}:reflection`);
+    return ingest(session, [event(session, session.identity, 'reflection', JSON.stringify(value), { subject: session.context.characterId, speaker: session.context.characterId, certainty: 'reported', attribution: 'reflection', coverage: value.coverage })], reflectionOperationId(session));
   }
   async function blocked(session, error, detail = {}) {
     const value = { ...failure(error?.code || 'MEMORY_HOST_FAILED', error?.error || error?.message || 'V2活动已阻止。', error?.hint), ...detail };
@@ -148,5 +169,5 @@ export function createCompanionMemory({ getCharacter, maintainMemory, stateDir =
     if (maintained?.ok === false) return maintained;
     return { ok: true, eventId: appended.eventId };
   }
-  return { buildContext, recordMemory, routing, capture, observe, prepareStep, bindStep, validate, admitNetwork, reflect, blocked, release };
+  return { buildContext, recordMemory, routing, capture, observe, prepareStep, bindStep, validate, admitNetwork, reflect, reflectionOperationId, receipt, blocked, release };
 }

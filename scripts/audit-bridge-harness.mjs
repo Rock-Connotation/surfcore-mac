@@ -1,3 +1,5 @@
+import { createMemoryClient } from '../src/core/memory-v2-client.js';
+import { createNativeQQChannel } from '../src/core/qq-native-channel.js';
 import { deriveMemoryProviderRouteId } from '../src/core/memory-v2-routing.js';
 import { createQQMemoryBridge } from '../src/core/memory-v2-qq.js';
 import { buildCharacterContext } from '../src/core/context.js';
@@ -59,6 +61,9 @@ import * as characterStore from '../src/character-persona.js';
 import * as biliCard from '../src/bili-card.js';
 import * as historyCatchup from '../src/history-catchup.js';
 import * as purposeEngine from '../src/purpose-engine.js';
+import * as interactionLifecycle from '../src/interaction-lifecycle.js';
+import * as taskLedger from '../src/task-ledger.js';
+import * as taskHarness from '../src/task-harness.js';
 import * as conversationClosure from '../src/conversation-closure.js';
 import { fetchVideoInfo } from '../src/bili-api.js';
 import * as stateAcl from '../src/state-acl.mjs';
@@ -103,12 +108,28 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   fs.writeFileSync(path.join(temp, 'state/voice-send-budget.json'), JSON.stringify({version:2,day:localDay,count:0,lastAt:0,pending:null,reconciliations:[]}), {mode:0o600});
   const harnessConfig = {
     dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
-    allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
+    allow: { private: ['123'], groups: ['456'] },
+    deny: { private: [], groups: [], users: [] },
+    consolePort: 0,
     consoleToken: 'fixture-console-token', slang: { enabled: false }, ...config,
   };
   // 旧审计用例按“每条消息都能醒”写；Token 防爆破默认会让部分用例被 2 分钟间隔拦住。
   // 这里默认关掉，专门的 test-token-guard 覆盖开启逻辑，需要开启的用例显式覆盖。
   harnessConfig.socialV2 = { tokenGuard: { enabled: false }, ...(config.socialV2 ?? {}) };
+  // V2-only（2026-11-12）：生产路由缺省已是 v2，旧一代记忆卡路径永远不再走。
+  // 但 VM 夹具没有真实控制库/来源审批，绝大多数会话/发送/唤醒用例需要按旧基线
+  // 的「本地记忆卡路径」测它们自己的行为。这里把路由桩成 v1 仅用于夹具；
+  // 需要真实 V2 语义的用例通过 globals.createQQMemoryBridge 覆盖真实实现
+  // （见 test-memory-v2-qq-integration）。不要把这个桩当成生产可回退依据。
+  if (!globals.createQQMemoryBridge) {
+    globals = {
+      ...globals,
+      createQQMemoryBridge: () => ({
+        routing: () => ({ ok: true, backend: 'v1' }),
+        status: () => ({ active: false, sourceState: 'not_saved', failure: null }),
+      }),
+    };
+  }
   fs.writeFileSync(path.join(temp, 'config.json'), JSON.stringify(harnessConfig));
   if (savedState) fs.writeFileSync(path.join(temp, 'state/sessions.json'), JSON.stringify(savedState));
   // 额外状态文件（用于测试"启动时读到损坏/旧版文件"这类路径）。
@@ -122,7 +143,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   // 所以这里给 VM 注入一个记录型 fetch：既不让测试真的发 QQ 消息，又能断言发出的段内容。
   const fakeFetch = async (url, init = {}) => {
     const body = (() => { try { return JSON.parse(init.body ?? '{}'); } catch { return init.body; } })();
-    calls.http.push({ url: String(url), body });
+    calls.http.push({ url: String(url), body, signal: init.signal });
     const action = String(url).split('/').pop();
     // 本地 TTS（voxd）：返回一个最小合法 wav，别让测试去连真实服务。
     if (String(url).includes('/v1/speak/file')) {
@@ -211,7 +232,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
-    qqMemory, retireMemoryV2Session, memoryV2Failures, memoryV2Route, validateMemoryV2ProviderRoute, beginMemoryV2Send, finishMemoryV2Send, setSelfUserId(value) { selfUserId = Number(value); },
+    qqMemory, nativeQQ, retireMemoryV2Session, memoryV2Failures, memoryV2Route, validateMemoryV2ProviderRoute, beginMemoryV2Send, finishMemoryV2Send,
+    sendOwnerManagementReply, managementDelivery, modeAdmissionSnapshot, assertModeAdmission,
+    setSelfUserId(value) { selfUserId = Number(value); },
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, deliverPromptNow, drainPromptQueue,
     pumpMux, pending, registerPending, handlePendingAnswer,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
@@ -219,9 +242,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     fishChatWindows, evaluateConversationFishGuard, fishGuardSendBlock, recordFishWindow,
     tokenGuardWakeBlock, tokenGuardSendBlock, bridgeDailyUsage, learnerBudgetBlock,
     buildWakePromptV2, buildWakeSnapshotV2, wakeFoldedNoticeV2, sendWakePromptV2, socialV2,
-    currentRoleHint, currentRoleHintV2, adminPromptLine, ownerMessageTag,
+    currentRoleHint, adminPromptLine, ownerMessageTag,
     memoryCardPromptBlock, recordMemoryInboxEvent, recordSelfMemoryEvent,
-    refreshMode, modeAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
+    refreshMode, checkDsh, modeAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
     // 人的黑名单（deny.users）：入站按发送者拦截，见 test-blacklist.mjs
     senderBlocked, handlePokeNotice,
     collectors, setupSleepTimerV2,
@@ -232,6 +255,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     isConversationBusyV2, v2TurnStartAt, turnLeaseNoted, TURN_BUSY_LEASE_MS,
     settingFromDshNamespace, selfIdentityTextV2, buildWakeReminderPromptV2,
     getMode() { return currentMode; },
+    getModeStatus() { return modeStatus; },
+    getModeBlocked() { return modeBlocked; },
+    clearModeBlock() { modeBlocked = null; modeStatus = { state: 'default', source: 'none', requested: null }; },
     setSnowlumaHealth(patch = {}) { Object.assign(snowlumaHealth, patch); },
     setSelfIdentity(display, id) {
       selfDisplayName = String(display ?? '');
@@ -246,8 +272,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // 对话收尾判断：测试可直接调内部函数（不连真 QQ）。
     closeConversationV2, assessClosureV2, closureConfigV2, closureSuppressesWake, noteClosureReopenV2,
     voiceCfg, voiceTriggerBlock, voiceMentionAt, voiceOwnerAt, voiceLastSentAt, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText, readConfigObject, atomicWriteJson,
-    voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
-    setMode(value) { currentMode = value; },
+    voiceBudgetCheck, sendVoiceTransport, sendVoiceV2, sendVoiceForV2, sendNativeQQReply, getNativeQQCapabilities, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
+    taskLedger, taskHarness,
+    setMode(value) { currentMode = value; modeBlocked = null; modeStatus = { state: 'valid', source: 'fixture', requested: value }; },
     getModelStatus() { return modelStatusState; },
     setReady(value) { dshReady = value; },
     setPresets(value) { dshPresetIds = value; dshDefaultPreset = 'standard'; },
@@ -291,10 +318,13 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...dshHealth,
     synthesizeToFile: synthesizeImpl, createVoiceManagement: voiceManagementImpl, encodeVoiceRecord, readVolcKey, startVoxdCloud, voiceSendBudget, commitQqConfigPatch, transactQqConfig, persistSnowLumaEndpoint, persistToken, voiceGroupPolicies, voiceMentionBlock,
     ...tokenBudget,
-    createQQMemoryBridge, buildCharacterContext, deriveMemoryProviderRouteId,
+    createQQMemoryBridge, createMemoryClient, createNativeQQChannel, buildCharacterContext, deriveMemoryProviderRouteId,
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
+    ...interactionLifecycle,
+    ...taskLedger,
+    ...taskHarness,
     ...conversationClosure,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。
     // 不能直接用真实 character-store 的 DSH_HOME（它在主进程 import 时已固定）。
@@ -349,7 +379,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   const bridge = await context.auditReady;
   // 夹具默认模拟“SnowLuma 已连接”；通道断开用例会显式 setSnowlumaHealth({connected:false})。
   bridge.setSnowlumaHealth({ connected: true, lastSendOkAt: Date.now(), lastSendFailAt: 0 });
-  bridge.setPresets(['standard', 'qq-chat', 'qq-chat-v2']);
+  bridge.setPresets(['standard', 'qq-chat-v2']);
   bridge.setReady(true);
   return { ...bridge, calls, temp, async close() {
     for (const timer of timers) clearTimeout(timer);

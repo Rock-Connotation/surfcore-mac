@@ -12,7 +12,7 @@
 
 | 维度 | 现状 | 含义 |
 | --- | --- | --- |
-| 操作系统 | **Windows 优先**（部分脚本有 POSIX 分支，但未系统验证） | 沙箱 ACL、`icacls`、`.bat` 启动器、SnowLuma 都按 Windows 写 |
+| 操作系统 | **Windows 10/11 与 macOS**（macOS 已有真机验收；Linux 仅零星 POSIX 分支，未验证） | Windows 侧依赖沙箱 ACL、`icacls`、`.bat` 启动器；macOS 侧用 `open`/`osascript`/`shortcuts` 与 darwin 分支（`src/task-harness.js:661`、`src/bridge.js:1471`） |
 | DSH 版本 | 实测 `0.2.1-rc.2`；协议自 `0.1.2-alpha.1` 起 | 更早版本不兼容；升级后先跑 `npm run verify:adaptation` |
 | Node | `>= 22.13.0` | 插件用 `fileURLToPath`、顶层 await、`fs.cpSync` 等 |
 | SnowLuma | 第三方专有运行时，**不随仓库分发** | 本程序只探测/打开，不安装、不部署、不代扫码（EULA §5.4） |
@@ -20,8 +20,11 @@
 | 桌宠 | 仓库外的 Electron 工程 | 不装就不影响 QQ/B站，只是没有桌宠载体（目的机制回落 QQ） |
 | 网络 | 本机回环 + 出网（QQ/B站/搜索） | 控制台与插件 API 都只接受回环；出网必须过 SSRF 校验 |
 
-**不支持**：多用户/多租户、远程访问控制台（要远程请 SSH 隧道并自担风险）、Linux/macOS 的正式支持、
+**不支持**：多用户/多租户、远程访问控制台（要远程请 SSH 隧道并自担风险）、Linux 的正式支持、
 把 SnowLuma 打包进发行版。
+
+> macOS 支持范围：QQ 收发与语音、B站扫码、桌宠、任务 Harness 已有 2026-11-12 真机验收记录（[`HANDOFF.md`](../HANDOFF.md) 顶部）；
+> 其余能力按 Windows/macOS 逐项复验后才能标“正式支持”。
 
 ---
 
@@ -170,7 +173,7 @@
 
 | 项 | 性质 | 备注 |
 | --- | --- | --- |
-| `src/bridge.js` 15,000 行单体、控制台 126 条路由一条 if 链 | 架构债 | 拆分需要单独一轮 + 完整回归 |
+| `src/bridge.js` 18,221 行单体、控制台 163 条精确路径 + 17 条前缀判断一条 if 链 | 架构债 | 拆分需要单独一轮 + 完整回归 |
 | 双进程写同一份 `config.json`，无跨进程锁 | 已知风险 | 原子写保证不写坏，极端情况下后写覆盖先写 |
 | 插件 → 核心用相对路径 + `?rev=` 缓存破坏 | 耦合 | 有 `test-core-rev-sync.mjs` 兜底 |
 | `config.example.json` 缺四段 | 模板债 | 见 DATA-AND-CONFIG §1.13 |

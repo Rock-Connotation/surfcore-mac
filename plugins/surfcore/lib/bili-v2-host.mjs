@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { characterPaths } from '../../../src/character-persona.js';
+import { compileV2Persona } from '../../../src/core/persona-v2-compile.js';
 import { deriveMemoryProviderRouteId } from '../../../src/core/memory-v2-routing.js';
 import { createBiliV2AgentRuntime, biliV2InputDigest } from './bili-v2-agent.mjs';
 import { createBiliV2OfficialTransport } from './bili-v2-official-transport.mjs';
@@ -19,12 +19,12 @@ const freeze = value => { if (value && typeof value === 'object') { Object.value
 
 export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getCharacter, getCredentials, getFeedCandidates, fetchImpl = globalThis.fetch, resourcesPath = process.resourcesPath, onBlocked = () => {} } = {}) {
   if (!ctx || typeof ctx.get !== 'function' || !path.isAbsolute(stateDir ?? '') || typeof getCharacter !== 'function' || typeof getCredentials !== 'function') throw issue('BILI_V2_HOST_UNSUPPORTED', 'Connect the actual Host services and protected state directory.');
-  const pending = new Map(), byJob = new Map(), bySignal = new WeakMap(), targets = new Map();
+  const pending = new Map(), byJob = new Map(), bySignal = new WeakMap(), targets = new Map(), reportedOutcomes = new Map();
   let generation = 0, transitions = 0, closed = false, closing = false, transitioning = false, fault, lastFailure, instance, creating, retiring, probe;
   const publicSets = new Map(), preflights = new Set(), preflightHandles = new Set();
   const report = error => {
     const code = /^(BILI|MEMORY|CHARACTER)_[A-Z0-9_]+$/.test(error?.code ?? '') ? error.code : 'BILI_V2_HOST_FAILED';
-    lastFailure = { ok: false, code, error: 'Bili V2 Host refused the operation.', hint: code === 'BILI_V2_PUBLIC_SET_APPROVAL_REQUIRED' ? '打开记忆卡的「身份与权限」，核对当前角色、账号、模型和完整公开来源集合，单独预览并批准后再发起此作业。新增来源须重新批准，私信保持隔离。' : 'Inspect the current role, exact model route and original operation receipt, then start a newly approved job.' };
+    lastFailure = { ok: false, code, error: 'Bili V2 Host refused the operation.', hint: code === 'BILI_V2_PUBLIC_SET_APPROVAL_REQUIRED' ? '打开记忆卡的「身份与权限」，核对当前角色、账号、模型和完整公开来源集合，单独预览并批准后再发起此作业。新增来源须重新批准，私信保持隔离。' : error?.hint || 'Inspect the current role, exact model route and original operation receipt; do not change the original ID.' };
     try { onBlocked(lastFailure); } catch {}
     return lastFailure;
   };
@@ -82,7 +82,7 @@ export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getChar
     if (released !== true && released?.ok !== true) throw issue('BILI_V2_RETIRE_UNCONFIRMED', 'Retry retirement until the original preflight context is released.');
     preflightHandles.delete(handle);
   }
-  async function publicGroup(input, route, ticket, capturedRole, signal) {
+  async function publicGroup(input, route, ticket, capturedRole, signal, roundLocators) {
     const controller = new AbortController(), abort = () => controller.abort();
     if (signal) { signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort(); }
     const entry = { controller };
@@ -94,8 +94,8 @@ export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getChar
         if (!/^BV[A-Za-z0-9]{10}$/.test(input.bv ?? '') || Object.keys(input).some(key => !['kind', 'bv'].includes(key))) throw issue('BILI_V2_TRIGGER_UNPROVEN', 'Provide one exact video BV for debrief.');
         locators = [{ kind: 'video', bvid: input.bv }];
       } else {
-        if (Object.keys(input).some(key => key !== 'kind') || typeof getFeedCandidates !== 'function') throw issue('BILI_V2_SOURCE_UNPROVEN', 'Restore the Host fixed feed candidate reader.');
-        locators = await getFeedCandidates({ signal: controller.signal });
+        if (Object.keys(input).some(key => key !== 'kind') || (!roundLocators && typeof getFeedCandidates !== 'function')) throw issue('BILI_V2_SOURCE_UNPROVEN', 'Restore the Host fixed feed candidate reader.');
+        locators = roundLocators ?? await getFeedCandidates({ signal: controller.signal });
       }
       live(ticket, capturedRole); assertRoute(route);
       if (controller.signal.aborted) throw issue('BILI_V2_TRIGGER_UNPROVEN', 'Start a new request with a live signal.');
@@ -170,7 +170,11 @@ export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getChar
       try {
         const environment = await loadMemoryV2NativeEnvironment({ ctx, resourcesPath });
         live(ticket, capturedRole);
-        const corePersona = fs.readFileSync(characterPaths(capturedRole.id).persona, 'utf8');
+        // R09：与 QQ Reply Host 共用同一 V2 人格编译入口（排除〔一代〕小节与旧协议行）。
+        // 原 persona 文件只读不改；这里得到的字符串同时用于 Native root 与 Source 证明。
+        const compiled = compileV2Persona({ roleId: capturedRole.id, scene: 'bili', maxChars: 6000 });
+        if (compiled?.ok !== true) throw issue('BILI_V2_CORE_UNPROVEN', compiled?.hint || 'Restore the current approved core persona file.');
+        const corePersona = compiled.text;
         if (!corePersona || Buffer.byteLength(corePersona) > 64 * 1024) throw issue('BILI_V2_CORE_UNPROVEN', 'Restore the current approved core persona file.');
         root = await createIsolatedNativeRoot({ ...environment, corePersona, onStream: (options, next) => {
           if (!runtime?.getScope(options)) throw issue('BILI_V2_SESSION_UNBOUND', 'Wait for the retained runtime to bind this original native request.');
@@ -247,6 +251,28 @@ export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getChar
     })();
     try { return await creating; } finally { creating = undefined; }
   }
+  async function query({ requestId } = {}) {
+    try {
+      if (typeof requestId !== 'string' || !requestId || requestId.length > 200) throw issue('BILI_V2_TRIGGER_UNPROVEN', 'Query the original request ID.');
+      const ticket = generation, capturedRole = role();
+      const active = await ensureInstance(ticket, capturedRole);
+      const result = checked(active.runtime.query(requestId));
+      if (!result.found) return result;
+      if (result.jobs.some(job => job.characterId !== capturedRole.id || job.characterEpoch !== capturedRole.epoch)) throw issue('CHARACTER_EPOCH_STALE', 'Query the original character operation.');
+      const complete = result.jobs.length > 0 && result.jobs.every(job => job.groupCount === result.jobs.length);
+      const terminal = complete && result.jobs.every(job => job.phase === 'terminal');
+      const accepted = complete && result.jobs.every(job => ['accepted', 'terminal'].includes(job.phase));
+      const state = terminal ? 'terminal' : accepted ? 'accepted-needs-retry' : complete && result.jobs.every(job => job.phase === 'pre_dispatch') ? 'pre_dispatch' : 'unknown';
+      const failure = state === 'accepted-needs-retry' || state === 'unknown' ? { ok: false, code: 'BILI_V2_NOT_DURABLE', error: 'B站原作业尚无持久接管确认。', hint: '在记忆卡检查 B站阻断提示，保留原通知并查询同一作业；不要另建编号或重复发送。', unknown: true } : null;
+      if (failure) {
+        lastFailure = failure;
+        if (reportedOutcomes.get(requestId) !== state) { try { onBlocked(failure); } catch {} }
+      }
+      reportedOutcomes.delete(requestId); reportedOutcomes.set(requestId, state);
+      if (reportedOutcomes.size > 256) reportedOutcomes.delete(reportedOutcomes.keys().next().value);
+      return { ...result, state, ...(failure ? { code: failure.code, error: failure.error, hint: failure.hint, unknown: failure.unknown } : {}) };
+    } catch (error) { return report(error); }
+  }
   async function enqueue({ requestId, input, signal } = {}) {
     try {
       const receiver = ['night-skip', 'night-wake', 'live-notification', 'attack-review', 'ta-nudge', 'daily-nudge'].includes(input?.kind);
@@ -264,10 +290,20 @@ export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getChar
       } else projection = ['feed', 'debrief'].includes(input.kind) ? { groups: [await publicGroup(input, route, ticket, capturedRole, signal)] } : checked(projectBiliV2Trigger({ input, providerRouteId: route.providerRouteId }));
       if (pending.size + projection.groups.length > 32) throw issue('BILI_V2_BUSY', 'Wait for the original jobs to retire before enqueuing another batch.');
       const active = await ensureInstance(ticket, capturedRole), results = [];
+      const previous = checked(active.runtime.query(requestId));
+      if (previous.found) {
+        const ids = projection.groups.map((group, index) => 'bili-host-' + createHash('sha256').update(JSON.stringify([requestId, index, group.scope])).digest('hex'));
+        if (previous.jobs.some(job => !ids.includes(job.requestId) || job.characterId !== capturedRole.id || job.characterEpoch !== capturedRole.epoch || job.groupCount !== ids.length)) throw issue('BILI_V2_JOB_REUSED', 'The original request has different source coordinates; inspect its receipt.');
+        if (previous.jobs.some(job => job.phase !== 'pre_dispatch')) {
+          const status = await query({ requestId });
+          if (status.state === 'terminal') return { ok: true, accepted: false, duplicate: true, state: 'terminal', jobs: [] };
+          throw issue('BILI_V2_JOB_REUSED', 'The original request was dispatched or is unknown; inspect its receipt.');
+        }
+      }
       for (const [index, group] of projection.groups.entries()) {
         live(ticket, capturedRole);
         const id = 'bili-host-' + createHash('sha256').update(JSON.stringify([requestId, index, group.scope])).digest('hex');
-        if (pending.has(id)) { results.push({ ok: true, accepted: false, duplicate: true }); continue; }
+        if (pending.has(id)) throw issue('BILI_V2_BUSY', 'The same original job is still being admitted; inspect its status without submitting another ID.');
         const controller = new AbortController(), entry = { generation: ticket, role: capturedRole, scope: group.scope, observation: group.observation, inputDigest: biliV2InputDigest({ value: group.input }), controller };
         if (signal) {
           const abort = () => controller.abort(); signal.addEventListener('abort', abort, { once: true });
@@ -279,11 +315,12 @@ export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getChar
           while (targets.size > 32) targets.delete(targets.keys().next().value);
         }
         let result;
-        try { result = await active.runtime.enqueue({ requestId: id, input: group.input, signal: controller.signal }); }
+        try { result = await active.runtime.enqueue({ requestId: id, originalRequestId: requestId, originalInput: input, input: group.input, scope: group.scope, groupCount: projection.groups.length, signal: controller.signal }); }
         finally { if (!entry.job) { pending.delete(id); entry.removeCaller?.(); } }
         results.push(checked(result));
       }
-      return { ok: true, accepted: results.some(result => result.accepted === true), jobs: results };
+      const status = await query({ requestId });
+      return { ok: true, accepted: results.some(result => result.accepted === true), jobs: results, state: status.state, ...(status.code ? { code: status.code, error: status.error, hint: status.hint } : {}) };
     } catch (error) { return report(error); }
   }
   async function retire() {
@@ -323,7 +360,35 @@ export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getChar
     if (result.ok) closed = true;
     return result.ok ? { ok: true, closed: true } : result;
   }
-  return Object.freeze({ enqueue, retire, withTransition, close,
+  // F05：受控单轮的正式 V2 写回会话。只取当前 Host 已核验的公开来源集合，
+  // 不新建授权、不回退旧卡；没有已批准集合时返回显式不可用。
+  async function roundMemoryScope({ locators, setId } = {}) {
+    try {
+      const ticket = generation, capturedRole = role(), route = await resolveRoute(ticket, capturedRole);
+      const retained = setId && publicSets.get(setId);
+      const original = locators ?? retained?.set?.selectors?.map(({ bvid }) => ({ kind: 'video', bvid }));
+      if (!original) throw issue('BILI_V2_ROUND_SCOPE_UNAPPROVED', 'Discover the exact round candidates and approve the full source set.');
+      const group = await publicGroup({ kind: 'feed' }, route, ticket, capturedRole, undefined, original);
+      const set = group.scope.publicSourceSet;
+      if (setId && set.id !== setId) throw issue('BILI_V2_ROUND_SCOPE_CHANGED', 'The approved source set changed; capture and approve the new set.');
+      const account = checked(await accountReader().getAccount());
+      live(ticket, capturedRole); assertRoute(route);
+      const registered = publicSets.get(set.id);
+      if (!registered || registered.accountMid !== account.accountMid) throw issue('BILI_V2_ROUND_SCOPE_CHANGED', 'Capture the current account and source set again.');
+      return freeze({ ok: true, conversationKey: set.outputConversationKey, providerRouteId: route.providerRouteId,
+        characterId: capturedRole.id, characterEpoch: capturedRole.epoch, accountMid: account.accountMid, publicSourceSetId: set.id,
+        hostVersion: roundScopeVersion() });
+    } catch (error) { return report(error?.code ? error : issue('BILI_V2_ROUND_SCOPE_UNPROVEN', 'Restore the approved Host public source set.')); }
+  }
+  // 本地版本戳：让装配方判断已缓存的单轮会话是否仍属于同一代 Host/角色，
+  // 不需要每次 readiness 都重新打官方账号接口。
+  function roundScopeVersion() {
+    let currentRole = null;
+    try { currentRole = role(); } catch {}
+    return freeze({ generation, closed, transitioning: transitioning || transitions > 0,
+      publicSourceSetCount: publicSets.size, characterId: currentRole?.id ?? null, characterEpoch: currentRole?.epoch ?? null });
+  }
+  return Object.freeze({ enqueue, query, retire, withTransition, close, roundMemoryScope, roundScopeVersion,
     getPlatformState: async () => { try { return await platformState(); } catch (error) { return report(error?.code ? error : issue('BILI_V2_ROUTE_UNPROVEN', 'Restore the actual selected Host model.')); } },
     getStatus: () => Object.freeze({ ok: !closed && !closing && !fault, closed, transitioning: transitioning || transitions > 0, activeJobs: pending.size, registeredSources: instance?.source?.getStatus().activeSourceCount ?? 0, targetCount: targets.size, publicSourceSetCount: publicSets.size, activePreflights: preflights.size, preflightHandles: preflightHandles.size, ...(lastFailure ? { lastFailure } : {}) }),
   });

@@ -55,7 +55,7 @@ export function validateCharacter(character, characters) {
   // 常见误填：把音色 id 当角色名（loli12-gsv / age12-cloud / huayan 都是 voice id）
   const looksLikeVoiceId = /-(gsv|cloud)$|^huayan$/i.test(name);
   return {
-    ok: false,
+    ok: false, // failure-lint:ignore 配置校验诊断，reason 即完整可操作提示（含可用角色清单），由调用方原样展示
     reason: looksLikeVoiceId
       ? `「${name}」是音色 id，不是角色名；这里要填 [voice.characters] 里的名字（如 ${list[0]}）`
       : `角色「${name}」不存在；可用角色：${list.join('、')}`,

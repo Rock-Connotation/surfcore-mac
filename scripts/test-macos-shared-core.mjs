@@ -13,8 +13,25 @@ process.env.SURFCORE_ROOT = fixtureRepo;
 const chars = await import('../src/character-persona.js');
 const exp = await import('../src/core/experience.js');
 const context = await import('../src/core/context.js');
+const { buildCharacterContext } = context;
 const life = await import('../src/core/life.js');
 const host = await import('../plugins/surfcore/lib/memory-card.js');
+const { cardText, preparedMemoryView } = await import('./test-v2-context-fixture.mjs');
+// V2-only（2026-11-12）：context.js 的 V1 记忆卡/生活/目的注入已删除，
+// 只接受 Host 签发的准备包。旧「账本→卡→上下文」用例仍要断言卡片内容与作用域，
+// 就把 renderMemoryCard 的结果包成合法准备包；生产的旧读取路径不复活。
+const view = (opts = {}) => {
+  const channel = opts?.audience?.channel ?? opts?.scene ?? 'local';
+  const conversationKey = opts?.audience?.conversationKey ?? '';
+  const limit = Math.max(0, Math.min(1800, Math.floor((opts.budget?.maxChars ?? 6000) * 0.3) - 60));
+  const text = cardText({ memoryJson: role.memoryJson }, { channel, conversationKey }).slice(0, limit);
+  const built = buildCharacterContext({
+    ...opts,
+    ...preparedMemoryView(text, { characterId: opts.characterId ?? chars.readCurrentCharacter()?.id, characterEpoch: opts.characterEpoch ?? chars.readCurrentCharacter()?.epoch, channel, conversationKey }),
+  });
+  if (!built.ok && process.env.V1_VIEW_DEBUG) console.error('VIEW FAIL', built.code, built.error, 'textLen', text.length);
+  return built;
+};
 const role = chars.characterPaths('alpha');
 fs.mkdirSync(role.biliDir, { recursive: true });
 fs.writeFileSync(path.join(chars.CHARACTERS_DIR, 'current.json'), JSON.stringify({ id: 'alpha', epoch: 1, name: 'Alpha' }));
@@ -29,9 +46,9 @@ test('QQ disabled: local ledger reaches experience, card and next context, repea
  fs.writeFileSync(path.join(role.biliDir, 'scores.json'), JSON.stringify({ '2026-11-06': [{ bv: 'BV1234567890', score: 16, reason: '有趣的海洋故事', at: new Date(now).toISOString() }] }));
  let res = await host.runMemoryCardMaintenance({ now }); assert.equal(res.ok, true, JSON.stringify(res));
  assert.ok(res.addedExperience > 0); const queue = exp.readExperienceInbox(role); assert.ok(queue.events.length);
- const view = context.buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' }, budget: { maxChars: 1200 } });
- assert.equal(view.ok, true); assert.ok(view.text.length <= 1200);
- for (const maxChars of [0, 1, 100]) assert.ok(context.buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' }, budget: { maxChars } }).text.length <= maxChars); assert.match(view.memoryText, /海洋故事/); assert.match(view.personaText, /TONE-TEST/); assert.match(view.personaText, /SCENE-TEST/);
+ const built = view({ scene: 'bili', audience: { channel: 'bili' }, budget: { maxChars: 1200 } });
+ assert.equal(built.ok, true); assert.ok(built.text.length <= 1200);
+ for (const maxChars of [0, 1, 100]) assert.ok(view({ scene: 'bili', audience: { channel: 'bili' }, budget: { maxChars } }).text.length <= maxChars); assert.match(built.memoryText, /海洋故事/); assert.match(built.personaText, /TONE-TEST/); assert.match(built.personaText, /SCENE-TEST/);
  res = await host.runMemoryCardMaintenance({ now }); assert.equal(res.ok, true); assert.equal(res.addedExperience, 0); assert.equal(exp.readExperienceInbox(role).events.length, queue.events.length);
 });
 test('scope fail closed, duplicate event projection and pending replay', async () => {
@@ -40,9 +57,9 @@ test('scope fail closed, duplicate event projection and pending replay', async (
  assert.equal(exp.appendExperienceEvent(role, mk('restricted:1', {})).ok, true);
  assert.equal(exp.appendExperienceEvent(role, mk('local:1', { classification: 'public' }, { channel: 'local' })).ok, true);
  const res = await host.runMemoryCardMaintenance({ now }); assert.equal(res.ok, true, JSON.stringify(res)); assert.equal(res.addedExperience, 3);
- assert.match(context.buildCharacterContext({ scene: 'local', audience: { channel: 'local' } }).memoryText, /local:1/);
- const bili = context.buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' } }); assert.doesNotMatch(bili.text, /private:1|restricted:1/);
- const qq = context.buildCharacterContext({ scene: 'qq-private', audience: { channel: 'qq', conversationKey: 'private:123' } }); assert.match(qq.memoryText, /private:1/);
+ assert.match(view({ scene: 'local', audience: { channel: 'local' } }).memoryText, /local:1/);
+ const bili = view({ scene: 'bili', audience: { channel: 'bili' } }); assert.doesNotMatch(bili.text, /private:1|restricted:1/);
+ const qq = view({ scene: 'qq-private', audience: { channel: 'qq', conversationKey: 'private:123' } }); assert.match(qq.memoryText, /private:1/);
 });
 test('failed projection replays without advancing durable cursor', async () => {
  const pending = mk('retry:1', { classification: 'public', legacyScope: 'bili' });
@@ -55,7 +72,7 @@ test('failed projection replays without advancing durable cursor', async () => {
  fs.renameSync(role.memoryJson + '.saved', role.memoryJson);
  assert.equal(JSON.parse(fs.readFileSync(role.memoryJson)).meta.experienceOffset, before);
  const res = await host.runMemoryCardMaintenance({ now }); assert.equal(res.ok, true); assert.equal(res.addedExperience, 1);
- assert.match(context.buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' } }).text, /retry:1/);
+ assert.match(view({ scene: 'bili', audience: { channel: 'bili' } }).text, /retry:1/);
 });
 test('in-flight maintenance stays on original character after switch', async () => {
  const other = chars.characterPaths('beta'); fs.mkdirSync(other.biliDir, { recursive: true });
@@ -73,7 +90,7 @@ test('snapshot restores life while preserving and replaying newer experiences', 
  chars.restoreSnapshot('alpha', 'fixture', { now: now + 1000 });
  assert.equal(life.readCharacterLifeState({ characterId: 'alpha' }).state.currentFocus, '快照中的目标');
  const res = await host.runMemoryCardMaintenance({ now: now + 2000 }); assert.equal(res.ok, true); assert.equal(res.addedExperience, 1);
- assert.match(context.buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' } }).text, /after-snapshot:1/);
+ assert.match(view({ scene: 'bili', audience: { channel: 'bili' } }).text, /after-snapshot:1/);
 });
 test('content observations retain external attribution and separate activity coverage without exposure', async () => {
  const observation = (id, activityId, endMs) => ({ ...mk(id, endMs === 1000 ? { classification: 'restricted', allowedContexts: ['bili'] } : { classification: 'restricted' }, { channel: 'bili', objectId: 'cid:123' }),
@@ -95,21 +112,22 @@ test('content observations retain external attribution and separate activity cov
  assert.equal(observed[0].attributionSubject, 'external');
  assert.equal(observed[0].attributionCertainty, 'observed');
  assert.equal(observed[0].evidenceRefs[0].endMs, 1000);
- const bili = context.buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' } }).text;
+ const bili = view({ scene: 'bili', audience: { channel: 'bili' } }).text;
  assert.match(bili, /外部材料（作者观点，非角色信念）/); assert.match(bili, /0-1000ms/); assert.doesNotMatch(bili, /0-2000ms/);
  for (const channel of ['local', 'pet']) {
-   assert.doesNotMatch(context.buildCharacterContext({ scene: channel, audience: { channel } }).text, /喜欢晴天/);
+   assert.doesNotMatch(view({ scene: channel, audience: { channel } }).text, /喜欢晴天/);
  }
- assert.doesNotMatch(context.buildCharacterContext({ scene: 'qq-private', audience: { channel: 'qq', conversationKey: 'private:123' } }).text, /喜欢晴天/);
+ assert.doesNotMatch(view({ scene: 'qq-private', audience: { channel: 'qq', conversationKey: 'private:123' } }).text, /喜欢晴天/);
  assert.equal(exp.validateExperienceEvent({ ...first, visibility: { classification: 'restricted', allowedContexts: ['unknown'] } }).ok, false);
 });
 test('life operates without channels and old epoch context rejected', () => {
  assert.equal(life.saveCharacterLifeState({ characterId: 'alpha', characterEpoch: 1 }, { currentFocus: '独立生活目标' }).ok, true);
- assert.match(context.buildCharacterContext({ scene: 'local', audience: { channel: 'local' } }).text, /独立生活目标/);
+ // V1 生活状态注入已随 V1 退役删除：直接断言 life 模块本身仍产出行。
+ assert.match(life.lifeContextText(life.readCharacterLifeState({ characterId: 'alpha' }).state, 600), /独立生活目标/);
  const coordinated = life.coordinateCharacterLife({ characterId: 'alpha', characterEpoch: 1 }, { channels: { qq: false, bili: false }, now });
  assert.equal(coordinated.ok, true); assert.equal(coordinated.activity.kind, 'local-maintenance'); assert.deepEqual(coordinated.availableChannels, []);
  const again = life.coordinateCharacterLife({ characterId: 'alpha', characterEpoch: 1 }, { channels: {}, now }); assert.equal(again.state?.activities?.length ?? coordinated.state.activities.length, coordinated.state.activities.length);
- chars.bumpEpoch('alpha'); assert.equal(context.buildCharacterContext({ characterId: 'alpha', characterEpoch: 1 }).code, 'CHARACTER_EPOCH_STALE');
+ chars.bumpEpoch('alpha'); assert.equal(view({ characterId: 'alpha', characterEpoch: 1 }).code, 'CHARACTER_EPOCH_STALE');
 });
 
 test('experience read failures remain actionable and future life state is preserved', () => {
@@ -152,7 +170,7 @@ test('output write failure is visible for captured role, preserves cursor, and c
  assert.equal(retried.ok, true); assert.equal(retried.addedExperience, 1);
  assert.equal(host.memoryCardStatusNow().lastFailure, null);
  assert.equal(host.memoryCardSnapshot().status.lastFailure, null);
- assert.match(context.buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' } }).text, /output-retry:1/);
+ assert.match(view({ scene: 'bili', audience: { channel: 'bili' } }).text, /output-retry:1/);
  const archived = fs.readFileSync(role.memoryFullJsonl, 'utf8').trim().split('\n').map(JSON.parse);
  assert.equal(archived.filter((item) => item.eventId === 'output-retry:1').length, 1, 'replay must not append the same experience twice');
 });

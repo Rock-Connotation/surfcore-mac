@@ -27,16 +27,13 @@ const prepared = { ...context, schemaVersion: 2, queryDigest: digest(query), exp
   eventWatermark: 9, evidenceIds: ['source:umbrella'], inputManifest: [{ type: 'event', eventId: 'source:umbrella' }],
   text: '已确认约定：下次出门不要忘记带雨伞。覆盖范围：这次约定。', budget: { estimated: true } };
 const request = { characterId: 'alpha', characterEpoch: 1, scene: 'local', audience: { channel: 'local', conversationKey: context.conversationKey },
-  memoryBackend: 'v2', memoryContext: context, preparedMemory: prepared, memoryQuery: query, includeLife: true, includePurpose: true,
+  memoryContext: context, preparedMemory: prepared, memoryQuery: query,
   verifyPreparedMemory: () => ({ ok: true }) };
 const view = buildCharacterContext(request);
 assert.equal(view.ok, true, JSON.stringify(view));
 assert.equal(typeof view.then, 'undefined', 'the shared builder must remain synchronous');
 assert.equal(view.memoryText, prepared.text);
 assert.equal(view.memoryBackend, 'v2');
-assert.equal(view.lifeRevision, 'empty');
-assert.equal(view.lifeText, '');
-assert.equal(view.purposeText, '');
 assert.doesNotMatch(view.text, /LEGACY_.*_PRIVATE_CANARY/);
 assert.deepEqual(view.inputManifest, prepared.inputManifest);
 assert.ok(view.text.length <= 6000);
@@ -49,7 +46,6 @@ for (const [patch, code] of [
   [{ preparedMemory: { ...prepared, deletionRevision: 'retired' } }, 'MEMORY_PREPARED_STALE'],
   [{ preparedMemory: { ...prepared, storeGeneration: 'retired' } }, 'MEMORY_PREPARED_STALE'],
   [{ budget: { memory: 1 } }, 'MEMORY_PREPARED_BUDGET'],
-  [{ memoryBackend: 'unknown' }, 'MEMORY_BACKEND_UNSUPPORTED'],
   [{ verifyPreparedMemory: undefined }, 'MEMORY_PREPARED_UNTRUSTED'],
   [{ verifyPreparedMemory: () => Promise.resolve({ ok: true }) }, 'MEMORY_PREPARED_UNTRUSTED'],
   [{ verifyPreparedMemory: value => ({ ok: digest(value) === digest(prepared) }), preparedMemory: { ...prepared, text: 'forged' } }, 'MEMORY_PREPARED_UNTRUSTED'],
