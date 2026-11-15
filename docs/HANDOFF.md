@@ -8,7 +8,7 @@
 
 **测试机怎么拿**：更新通道切 **dev** → 点「检查更新」。
 
-**已知边界**：dev 快照内 `doc-facts` 会红（快照的 `docs/ROADMAP.md` / `docs/guides/DSH_SETUP.md` 版本字仍是 `0.9.0`，而该快照 `package.json` 是 `0.9.0-dev.2`）——`scripts/publish-dev.mjs` 的既有行为，仓库 HEAD 是绿的。
+**已知边界（含本次踩到的坑）**：`scripts/publish-dev.mjs` 只改 `package.json`（根+插件）、`README.md`、`CHANGELOG.md`，**不改** `docs/ROADMAP.md` / `docs/guides/DSH_SETUP.md` 的版本字 —— 所以发完 dev 构建后**仓库 HEAD 上 `doc-facts` 会红**（快照内更是红的）。本次已在发布后补同步这两处到 `0.9.0-dev.2` 修好；已发布的那份 `v0.9.0-dev.2` 快照仍是红的（它在同步之前就上传了）。根治办法是在 `scripts/publish-dev.mjs` 里一并改写这两处，见 `docs/PITFALLS.md` #160。
 
 **镜像一致性**：`publish-dev` 用 Data API 造的远端 dev 提交 `76310d7`（父 = 上一轮同步点）已在本地用 `git merge -s ours origin/dev` 收成祖先（本地 `0a6488c`，tree 不变），推送为**快进**；远端 `main` 未动（`5face06`）。
 

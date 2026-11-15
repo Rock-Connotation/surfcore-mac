@@ -4637,3 +4637,15 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 **处置 / 预防**：残余项要带（日期 + 复现命令 + 当时 HEAD），每轮至少复现一次；关闭残余时**必须反向重放**证明替代断言仍有牙——否则就是把"悄悄删断言"记成"已修"。
 
 **怎么验证**：`export PATH="…/dependencies/node/bin:$PATH" && node plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs --ordinary` → `EXIT=0`、52 scenarios（证据根在隔离 `surfcore-test-home-*` 下，不依赖工作区残留）。反向重放：把 `plugins/surfcore/lib/scheduler.js:299` 的 `if (!route?.ok || route.backend !== 'v2')` 临时改成 `if (!route?.ok || false)` → `REVERSE_EXIT=1 elapsed=4s`、`AssertionError: 1 !== 0` at `plugins/surfcore/scripts/test-memory-v2-bili-agent.mjs:652:113`；`cp` 还原后 SHA `6bb69815bb31bba771b4e1657ed658e74832ce54a7d3c2095ec0658d77b2b969` 逐字一致，再跑 `EXIT=0`。
+
+## #160（2026-11-15，P1）`publish-dev` 只 bump `package.json`——每次发 dev 构建都会把仓库 HEAD 的 `doc-facts` 弄红；而管道会吞掉门禁退出码
+
+**现象**：在 `dev` 上发完 `v0.9.0-dev.2` 后，仓库 HEAD 上 `npm run doc-facts` → `DOCFACTS_EXIT=1`、`❌ 不符 2 处`：`docs/ROADMAP.md:163 文档=0.9.0 实测=0.9.0-dev.2`、`docs/guides/DSH_SETUP.md:16` 同。`npm run test:audit` 里含 `doc-facts`，所以整条代码门禁也是红的。
+
+**根因**：`scripts/publish-dev.mjs` 只改写 `package.json`（根+插件）、`README.md`、`CHANGELOG.md`（`:94-113`），不碰 `docs/ROADMAP.md` 的 `当前版本：\`x\`` 与 `docs/guides/DSH_SETUP.md` 的 `当前 \`x\``；而 `scripts/doc-facts.mjs:188-199` 对这两处做**逐字等值**校验（取每处第一个 ``当前…`x` `` 匹配）。于是"发一次 dev 构建就红一次"，每次都得手工补一段文档同步（`v0.9.0-dev.1` 那次也是手补的，`4fbfea5`）。
+
+**次生事故（更要记住的）**：我当时用 `npm run doc-facts 2>&1 | tail -2 && git commit …` 判断绿灯 —— **管道的退出码是 `tail` 的**，`&&` 照样继续，于是我带着红灯提交并推送了 `5cf8d42`。教训：跑门禁命令时**不要用管道**；要截断就 `> /tmp/x.log 2>&1; echo EXIT=$?` 之后再 `tail`。审查别人的门禁输出时同理——只看"最后两行看起来没报错"不算证据。
+
+**处置 / 预防**：①本次补同步两处版本字到与 `package.json` 相等（`main` 上的稳定版号在句子后半句单独写明，避免语义错）；②根治是让 `scripts/publish-dev.mjs` 在改 `README.md`/`CHANGELOG.md` 的同一处顺带改写这两个文件里的版本字（两个 `String.replace` 即可，改完 `test-version.mjs` 与 `doc-facts` 都会自证）；在改脚本之前，**每次 dev 发布后必须补一段"文档版本同步"提交**。
+
+**怎么验证**：`export PATH="…/dependencies/node/bin:$PATH" && npm run doc-facts > /tmp/x.log 2>&1; echo EXIT=$?` → `EXIT=0`、`✅ 所有文档数字与代码一致`；`node scripts/test-version.mjs` → `✅ 版本一致性通过（v0.9.0-dev.2）`。
