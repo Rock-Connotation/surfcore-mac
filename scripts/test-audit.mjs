@@ -7,6 +7,28 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
   'test-qq-native-channel.mjs',
   'test-qq-native-voice.mjs',
+  // V1 退役三轮复审 F01 的常驻合同测试：准入代数是"权限语义代数"而非"本次轮询时间"，
+  // 同模式轮询不得误取消语音；blocked 边界变更必须让旧 lease/在途 Native 作业永久失效。
+  'test-qq-admission-r3.mjs',
+  // V1 退役三轮复审 F02 的常驻合同测试：owner 管理消息（查询/取消/开始/失败）必须真正送达平台；
+  // 送达未知不得记成 delivered、也不得自动重发；长回执每段各自要有 ACK 与合法 messageId。
+  'test-owner-delivery-r3.mjs',
+  // V1 退役三轮复审 F05 的常驻合同测试：受控单轮必须先有本次已批准来源集合，喂给模型的 BV
+  // 必须属于该集合；未批准候选与模型路由变更都在发起调用之前被拒（不得"绿而无调用"）。
+  '../plugins/surfcore/scripts/test-memory-v2-bili-round-runtime-r3.mjs',
+  '../plugins/surfcore/scripts/test-memory-v2-bili-round-index-r3.mjs',
+  // F04 退役进程树：Host ACK 之后不得再有子进程写入；deadline 等真实 close 而非 AbortError；
+  // 退役失败必须保留原实例与原操作编号并结构化冒泡。
+  '../plugins/surfcore/scripts/test-bili-retire-barrier-r3.mjs',
+  // 预算空快照自拒缺陷：全新状态落盘后必须能被自己重新加载；真正损坏的状态仍必须逐条被拒。
+  '../plugins/surfcore/scripts/test-budget-empty-state-r3.mjs',
+  // P2/F10 抖音投影 + F08 预检 I/O：无 proof 状态文案必须固定、保存未确认按 jobId/角色/epoch 归属、
+  // 读取失败不得被报成 JSON 损坏。
+  '../plugins/surfcore/scripts/test-douyin-errors-r3.mjs',
+  '../plugins/surfcore/scripts/test-preflight-io-r3.mjs',
+  // P2/F01 辅项 模式保存回执：桥接没在运行 ≠ 模式非法。合法模式必须"已保存、待桥接启动后生效"，
+  // 不得把离线连接失败报成 409/QQ_MODE_INVALID；退役值与非法值仍必须 fail-closed。
+  '../plugins/surfcore/scripts/test-qq-mode-save-r3.mjs',
   '../plugins/surfcore/scripts/test-qq-access-panel.mjs',
   '../plugins/surfcore/scripts/test-memory-v2-alerts.mjs',
   'test-update-archive.mjs',

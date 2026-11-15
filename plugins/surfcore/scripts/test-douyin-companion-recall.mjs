@@ -88,6 +88,16 @@ if (process.argv[2] !== '--child') {
   // 用真实准备包读回（V2 不读旧记忆卡）。
   const view = await memory.prepareStep(session, reasons[0].slice(0, 40));
   assert.equal(view.ok !== false, true, JSON.stringify(view));
+  const recovered = await adapter.search(session.handle, '理由证据-DY-1');
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  for (let index = 0; index < 2; index++) {
+    const record = recovered.records.find(row => row.id === `douyin:recall-job-${index + 1}:${ids[index]}:v1:reflection`);
+    assert.ok(record, `missing reflection ${index + 1}`);
+    assert.equal(JSON.parse(record.content).reason, reasons[index]);
+    assert.equal(record.occurredAt, times[index]);
+    assert.equal(new Date(record.occurredAt).toISOString(), times[index]);
+  }
+  assert.ok(view.memoryText.includes(`occurredAt=${times[0]}`), 'prepared context must expose the original ISO timestamp');
   assert.ok(view.memoryText.length <= 1800, `default memory budget exceeded: ${view.memoryText.length}`);
   // V2 准备包对长正文按预算摘录（≤320 字符/条），因此断言「ID 与可辨识片段」，
   // 而不是要求 240 字的完整理由原样出现（那是 V1 记忆卡的语义）。
@@ -130,7 +140,12 @@ if (process.argv[2] !== '--child') {
   assert.equal(invalidReflected.receipt.sourceState, 'committed');
   const invalidView = await memory.prepareStep(session, '超界帧数探针');
   assert.equal(invalidView.ok !== false, true, JSON.stringify(invalidView));
+  // 历史缺口：检索 coverage 未校验 0..3；页面门控由产品 owner 另行修复与验证。
   assert.doesNotMatch(invalidView.memoryText, /6帧/, 'invalid sample count must not be accepted');
+  const invalidRecords = await adapter.search(session.handle, '超界帧数探针');
+  const invalidReflection = invalidRecords.records.find(row => row.id === `douyin:recall-job-invalid:${invalidFrameId}:v1:reflection`);
+  assert.ok(invalidReflection, 'invalid frame reflection must remain queryable');
+  assert.equal(JSON.parse(invalidReflection.content).reason, '超界帧数探针');
   memory.release(session);
   await host.close(); await service.close();
 

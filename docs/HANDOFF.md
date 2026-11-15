@@ -1,3 +1,37 @@
+## 2026-11-15 V1 退役三轮复审（P1/F01–F05、N01、P2/F08+F10）离线修复完成，**未提交、未合入 dev**
+
+工作树 `/Users/shizihan/Daily/Github/surfcore-v1-retirement-r3`（分支 `feat/v1-retirement-r3` @ `1125d3e`，基于 `dev`）。本轮只做**离线修复 + 常驻门禁**：没有提交、没有合 dev、没有 bump/tag/发布；主工作树 `surfcore-mac`、`dev`、`main` 均未受影响。
+
+**已修（逐条对应三轮复审文档）**
+- **F01 准入代数与 lease 撤销**：`src/bridge.js`（`invalidateModeAdmission`、只在真实语义变化时推进代数、每个关键 await 后复核）、`src/core/qq-native-channel.js`（job 绑定 `admissionRevision`、`cancelAll`、`MEMORY_QQ_JOB_STALE`）、`src/core/memory-v2-qq.js`（`invalidatePreparation` 提交点复核、`discardSend` 撤销未消费 lease）、`plugins/surfcore/lib/qq-v2-reply-host.mjs` + `memory-v2-api.mjs`（专用取消路由 `qqReplyCancel`）、`src/core/memory-v2-client.js`（`cancelQQReply`）。修掉"同模式轮询误取消语音"回归；另发现并修掉"迟到 prepare 覆盖新 active"竞态。
+- **F02 管理送达**：`src/bridge.js`（受控管理发送逐段 ACK、非 owner 走受限系统回复）、`src/task-harness.js`（按真实回执写账、unknown 不记 delivered 不自动重发、等待 ACK 期间取消不被覆盖）。
+- **F03 → 方案 B**：全仓不再合成 `durable: true`，`accepted-needs-retry`/`unknown` 可查且文案中性（`plugins/surfcore/lib/scheduler.js`、`bili-v2-agent.mjs`、`bili-v2-host.mjs`、`tools/commands/dm-await.mjs`）。真持久接管（方案 A）留待下一轮。
+- **N01 事件身份**：跨日作息/提醒不再撞同一 requestId（按触发类型定义持久 occurrence 身份）。
+- **F04 退役进程树**：`plugins/surfcore/lib/scheduler.js`、`plugins/surfcore/tools/bili.mjs`、`tools/lib/msgfeed.mjs`、`plugins/surfcore/lib/index.js`（卸载与生命周期共用真实退役协议，失败保留原实例与原操作编号）。
+- **F05 受控单轮**：`plugins/surfcore/lib/memory-v2-runtime.mjs`（`captureAdminContext` 调用点）、`bili-v2-host.mjs`、`bili-round.js`（喂给模型的 BV 必须来自本次已批准集合）。
+- **预算自拒缺陷**（F05 排障时撞出）：`plugins/surfcore/lib/token-budget.js` 空快照不再自拒、新快照不再写 `day: null`。
+- **P2/F10 抖音 + F08 预检**：`douyin-companion*.mjs`、`src/core/memory-v2-preflight.js`；越界帧数显示层另修 `plugins/surfcore/lib/douyin-companion-page.mjs`。
+- **P2/F01 辅项**：`plugins/surfcore/lib/index.js` 模式保存回执（桥接离线 = 已保存待应用，不再假报 409/`QQ_MODE_INVALID`）与概览探测端口（不再硬编码 3100）。
+- **测试可信度**：6 处弱断言加严 + 3 条反向重放实证 + 时长债测试改口径（不再宣称未验证的付费调用唯一性）+ 4 条新 PITFALLS 条目。
+
+**冻结快照门禁（2026-11-15，DSH 自带 node v24.21.0，Asia/Shanghai）**
+- `npm run test:audit`：**204/204 通过**（退出码 0；基线 195 + 新增 9 条 r3 常驻合同测试）
+- `npm run test:regressions`：17/17 通过；`npm run test:memory-v2`：48/48 通过
+- `npm --prefix plugins/surfcore test`：退出码 0，末行 `PASS 37 ordinary scripts in 39.4s; native/UI acceptance not run.`
+- `npm run lint:failures`：退出码 0；`npm run doc-facts`：退出码 0（桥接行数 18257→18318 已同步）
+- `node scripts/release-manifest.mjs --verify-ref HEAD`：1096/1096、问题 0 个；`npm run test:preset-patches`：退出码 0
+
+**未验证 / 下一轮**
+1. Mac 实机（G7）：Native SDK 在 `app.asar` 内普通 Node 无法解析、长 TTS 跨轮询、真实 CLI 后代退出、真实卸载；
+2. 真实 QQ / B站账号链路的发送与读回；
+3. **取消后的 reflection 写入没有保存原操作编号**，调用方无法按编号查回可能已提交的写入（产品接口缺口）；
+4. 方案 A 真持久接管；
+5. 越界帧数的上游取回路径仍不校验 0..3（本轮只防御展示层）。
+
+**交接前必做**：提交后运行 `node scripts/release-manifest.mjs` 并提交刷新后的 `release/install-manifest.json`（新增 10 个 r3 测试文件要进清单），再跑 `--verify-ref HEAD` 复核。
+
+---
+
 ## 2026-11-13 V1 退役与二轮审查已合入 dev（全门禁通过，待真实验收）
 
 分支 `feat/v1-retirement`（含 R01–R10 与 F01–F12 二轮审查提交）已通过 `--no-ff` 正式合入本地 `dev`（合并清单提交 `0a35a93`）。主树未跟踪目录 `2026-11-12/` 已按铁律 6 隔离备份至 `_backups/2026-11-12-prd-scan/`。

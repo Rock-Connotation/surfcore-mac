@@ -67,12 +67,14 @@ try {
   assert.ok(childOut, '子进程必须有自己的输出');
   const other = JSON.parse(childOut), ledger = f.ledger.readLedger();
   assert.equal(other.seeded, true);
-  // 跨进程幂等（V2 语义）：主进程读到的是子进程落盘的持久终态，同一 requestId
-  // 不再发起第二次模型调用，账本只记一次消费。
+  // 子进程手工写入终态和用量：这里只验证锁内重读和去重，不能证明实际模型调用次数。
+  // 真实跨进程模型调用唯一性未在本测试中验证（交由 G7 实机）。
   assert.equal(f.calls.length, 0, 'stale pre-lock history must not dispatch another paid request');
   assert.equal(result.ok, true);
   assert.equal(result.duplicate, true, '同一请求必须返回子实例已保存的回复');
   assert.equal(ledger.acceptanceCalls, 9); assert.equal(ledger.jobs[jobId].calls, 3);
-  assert.equal((await f.service.status(context)).messages.length, 2);
-  console.log('Sharing cross-process request race: one paid call, one durable reply');
+  const messages = (await f.service.status(context)).messages;
+  assert.equal(messages.length, 2);
+  assert.equal(messages.filter(message => message.role === 'assistant').length, 1, 'must retain exactly one seeded assistant reply');
+  console.log('PASS sharing stale snapshot: seeded durable reply reused; real cross-process paid-call uniqueness NOT VERIFIED');
 } finally { fs.readFileSync = read; await f.service.dispose(); await f.v2.close(); }
