@@ -64,7 +64,7 @@ node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
 是否已 rebase/merge 最新 dev：未合并（主树 dev 有非本会话未跟踪 `2026-11-12/`，按 AGENTS §1.9 停手）；待对应会话收走后由协调/发布会话 --no-ff 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
 ```
 
-### 批次 2026-11-15 · V1 退役四轮 R4（接管重驱动合同 + 取消后回执可查）（**未提交、未合 dev，尚不可发布**）
+### 批次 2026-11-15 · V1 退役四轮 R4（接管重驱动合同 + 取消后回执可查）（**已提交 `feat/v1-retirement-r4` @ `59bead0`，已合入 `dev` @ `db17ec3`，待发版**）
 
 > case：[`docs/cases/2026-11-15-v1-retirement-r4-resume-and-receipt.md`](cases/2026-11-15-v1-retirement-r4-resume-and-receipt.md)
 > 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`（`feat/v1-retirement-r4`，基于 `dev` @ `07efab6`）
@@ -99,7 +99,8 @@ node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
 【还有什么没验证】①真实 Agent 自动调用模型/真实 provider 派发 → G7 实机（隔离实例）；②取回路径
   memory-v2-host.mjs:220-223 不校验 frameSamples 0..3；③ELECTRON_RUN_AS_NODE=1 下 native 契约脚本在
   test-memory-v2-bili-agent.mjs:198 变红（环境敏感性，PITFALLS #154）；④真实 QQ/B站账号链路未启动
-【发布前必做】提交本批次 → 重新生成并提交 release/install-manifest.json → 复核 --verify-ref HEAD
+【发布前必做】已提交（`feat/v1-retirement-r4` @ `59bead0`）并生成清单（verify-ref HEAD 1109/1109 问题 0）；
+  发版时按 release 流程把 dev 合并进 main，无需再改本批次
 ```
 
 ### 批次 2026-11-15 · V1 退役三轮复审 R3 离线修复（**已合入 `dev` @ `07efab6`（merge `ad65bc9`），待发版**）

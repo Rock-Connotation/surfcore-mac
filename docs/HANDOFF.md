@@ -1,4 +1,4 @@
-## 2026-11-15 V1 退役四轮（R4：接管重驱动合同 + 取消后回执可查）——改动就绪并已过冻结快照门禁，**待提交**
+## 2026-11-15 V1 退役四轮（R4：接管重驱动合同 + 取消后回执可查）——**已合入 `dev`** @ `db17ec3`（功能分支 `feat/v1-retirement-r4` @ `59bead0`）
 
 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`（分支 `feat/v1-retirement-r4`，基于 `dev` @ `07efab6`）。用户定范围："先三个代码项，再 G7 实机"；G7 边界＝**只开隔离实例**，不动正式环境。本轮没有 bump/tag/发布。
 
@@ -11,7 +11,7 @@
 
 **未验证（别当成已验证）**：①真实 Agent 自动调用模型/真实 provider 派发（离线计数不算证明）→ G7；②取回路径 `plugins/surfcore/lib/memory-v2-host.mjs:220-223` 不校验 `frameSamples ∈ 0..3`；③`ELECTRON_RUN_AS_NODE=1` 下 native 契约脚本在 `:198` 变红（环境敏感性，已记 PITFALLS #154）；④真实 QQ/B站账号链路一律未启动。
 
-**交接前必做**：提交后 `node scripts/release-manifest.mjs` 并提交刷新后的 `release/install-manifest.json`，再 `--verify-ref HEAD`。
+**交接前必做（本轮已完成）**：提交 → `node scripts/release-manifest.mjs` 提交刷新后的 `release/install-manifest.json` → `--verify-ref HEAD` 1109/1109 问题 0。
 
 ## 2026-11-15 V1 退役三轮复审（P1/F01–F05、N01、P2/F08+F10）离线修复完成，**已合入 `dev`** @ `07efab6`（功能分支 `feat/v1-retirement-r3` @ `9d7e235`）
 
