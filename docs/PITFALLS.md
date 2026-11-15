@@ -4586,3 +4586,15 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 **处置 / 预防**：①包装进程必须自己封口——转发信号 + `GRACE_MS=3000` 后升级 `SIGKILL` + 200ms 后 `process.exit(128+signal)`（`'close'` 里若本次已被信号终止，退出码也用 128+signal）；最坏 3.2 秒退出，不依赖子进程合作。②补常驻合同测试 `plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs`（夹具子进程故意忽略信号），接进 `scripts/test-audit.mjs` 与插件 `test` 链（79→80 段）。③写"包装/转发型"进程时，`child.once('error')` 里只设 `process.exitCode` 不算退出，必须有超时兜底。④已存在的孤儿不会自愈（旧代码起的进程），清理后再验；用户机器上真正跑的是安装副本 `~/.dsh/profiles/<profile>/node_modules/surfcore/`，源码修复要等下次安装/更新才带过去。
 
 **怎么验证**：`node plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs` → 未修时 `EXIT=1 elapsed=7s`、`FAIL 包装进程收到 SIGTERM 后必须在 6000ms 内退出`；修后 `PASS … 转发信号后自己退出，并升级清掉死扛的子进程` exit 0（3–4 秒）。反向重放：删掉 `try { child?.kill('SIGKILL') } catch {}` → `FAIL 忽略信号的子进程必须被升级到 SIGKILL 清掉 / true !== false`，还原后 SHA `407fc4f783e3c0fec836354f7ab184925d77ebff2b3000b3a0a20d885de94a31` 逐字一致。
+
+## #156（2026-11-15，P1）隔离 profile 里插件行 `pending (waiting for service: …)`——缺的是基座 bundle，不是插件坏了
+
+**现象**：用隔离 `DSH_HOME` + `scripts/setup-dsh.mjs <profile>` 装好 SurfCore 后起真实打包宿主，loader 打印 `surfcore (surfcore): pending (waiting for service: sessionController)`、`qq-mode (.../qq-mode/index.js): pending (waiting for service: settings)`，宿主有时直接 `StartupError: dsh: startup failed: 1 required plugin did not activate`。
+
+**根因**：SurfCore 的 `inject = ['webServer','connection','sessionController']`（`plugins/surfcore/lib/index.js:203`）由 DSH 的基座 bundle 提供；而 `scripts/setup-dsh.mjs` 只把 `surfcore` push 进 `dsh.profile.bundles`，**不会补** `@deepseek-ai/dsh-base` / `@deepseek-ai/dsh-web-app`（真实桌面 profile 的这两项是 DSH 自己创建 profile 时写的）。同理，别在 profile patch 里手工再声明基座已经注册的服务（`@deepseek-ai/dsh-host-webserver` / `dsh-credentials-local` / `dsh-client-connection`），否则会 `service "webServer" has been registered at <WebServer>` 而启动失败。
+
+**处置 / 预防**：隔离夹具（与任何手工建 profile 的脚本）必须把 bundles 写成 `['@deepseek-ai/dsh-base','@deepseek-ai/dsh-web-app','surfcore']`，只在 patch 里插自己那一行插件。
+
+**怎么验证**：`node scripts/test-surfcore-isolated-host.mjs` → 只看 `['surfcore']` 时 `RED_EXIT=1` 且宿主 `TypeError: Cannot read properties of undefined (reading 'authenticatedUrl')`（`AC2 FAIL`）；补上基座后 `EXIT=0`、`[surfcore] 已激活 v0.9.0-dev.1`。
+
+**附带发现**：DSH web 面对回环请求**一律 401**（本机六种认证方式都试过：无认证 / `?token=` / Bearer / `x-dsh-token` / 先取登录页 cookie 再带 cookie），会话 token 由桌面外壳经 IPC 注入——所以"隔离宿主里用 curl 打 SurfCore 的 HTTP 面"这条路走不通，只能记为环境阻断；要产品级证据得在真桌面外壳内做只读验收。

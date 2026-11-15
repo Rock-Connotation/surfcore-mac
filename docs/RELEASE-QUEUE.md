@@ -67,6 +67,25 @@ node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
 是否已 rebase/merge 最新 dev：未合并（主树 dev 有非本会话未跟踪 `2026-11-12/`，按 AGENTS §1.9 停手）；待对应会话收走后由协调/发布会话 --no-ff 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
 ```
 
+### 批次 2026-11-15 · G7 第二阶段：隔离实例真实宿主验收（**待合入 `dev`**）
+
+> case：[`docs/cases/2026-11-15-mac-real-machine-g7-phase2-isolated-host.md`](cases/2026-11-15-mac-real-machine-g7-phase2-isolated-host.md)
+> 工作树 `/Users/shizihan/Daily/Github/surfcore-g7-phase2`（`feat/g7-phase2-host-acceptance`，基于 `dev` @ `a234f4b`）
+
+**可直接转发的交接块**
+```text
+【合并请求】
+分支：feat/g7-phase2-host-acceptance（基于 dev @ a234f4b = v0.9.0-dev.1）
+范围：G7 第二阶段——把 SurfCore 装进隔离 DSH_HOME 并用真实打包宿主验收（只新增门禁脚本与文档，不改产品行为）
+改到的文件：scripts/test-surfcore-isolated-host.mjs（新增）、scripts/test-audit.mjs（Darwin 块 +3 行）、docs/cases/2026-11-15-mac-real-machine-g7-phase2-isolated-host.md、docs/PITFALLS.md(#156)、docs/cases/README.md、docs/HANDOFF.md、docs/COORDINATION.md、docs/RELEASE-QUEUE.md、release/install-manifest.json
+测试：npm run test:audit 207/207（本脚本 ~22s，门禁超时 60s）；AC1/AC2/AC3/AC6/AC7/AC8 PASS；AC4（GET /dsh-surfcore/health）与 AC5（Chromium 页面渲染）记为环境阻断；AC9 反向重放：去掉基座 bundle → RED_EXIT=1，还原后 sha256 逐字一致 → EXIT=0
+改动层级：测试/门禁层（不碰 src/、不碰用户数据面、不碰真实 ~/.dsh）
+失败路径：任一 AC 断言失败 → exit 1 并写 result.json；环境阻断单独标注，不伪装通过
+风险/未验证：DSH web 面对回环请求一律 401（会话 token 由桌面外壳经 IPC 注入），HTTP 健康面与页面渲染只能在真桌面外壳内复现；Electron/Chromium 与非 Node 子进程出站未做系统级审计
+残留：scripts/setup-dsh.mjs 不会替新 profile 补 @deepseek-ai/dsh-base / dsh-web-app 基座（已写进 PITFALLS #156，属安装器改动，未做）
+建议版本：随 0.9.0 stable 一起发（本批是验收基建，不改变用户可见行为）
+```
+
 ### 批次 2026-11-15 · G7 Mac 实机取证（CLI 包装进程孤儿 + SIGTERM 修复）（**已合入 `dev`** @ `c74470d`，功能分支 `feat/v1-retirement-r4` @ `7839039`，待发版）
 
 > case：[`docs/cases/2026-11-15-mac-real-machine-g7-evidence.md`](cases/2026-11-15-mac-real-machine-g7-evidence.md)
