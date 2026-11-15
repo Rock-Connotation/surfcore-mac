@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import { createSharingController } from '../lib/companion-sharing-controller.mjs';
 import { createDouyinCompanionStore } from '../lib/douyin-companion-ledger.mjs';
+import { createSharingStore } from '../lib/companion-sharing-store.mjs';
 import { createCompanionSharing } from '../lib/companion-sharing.mjs';
 import { createSharingV2Fixture } from './sharing-v2-fixture.mjs';
 
@@ -22,12 +23,18 @@ const item = { id: '123456', url: 'https://www.douyin.com/video/123456', title: 
   occurredAt: now().toISOString(), state: 'partial', memorySaved: true, partial: true,
   coverage: { status: 'partial', transcriptComplete: true, missingRanges: 0, visualCoverage: 'sparse', frameSamples: 3, warningCount: 0, acceptanceQualified: true },
   feeling: 'like', reason: '它把纸箱当成了小窝。', summary: '猫钻进纸箱。', draft: '' };
+// 画面采样为 0 的完成项：douyin-companion-ledger.mjs 的 validCoverage 允许 frameSamples 0..3，
+// 页面 frameCoverage(0) 也把 0 渲染成"稀疏画面数量未确认"。共享记录必须与账本契约一致。
+const zeroFrameItem = { id: '654321', url: 'https://www.douyin.com/video/654321', title: '零帧样本', durationMs: 12000,
+  occurredAt: now().toISOString(), state: 'partial', memorySaved: true, partial: true,
+  coverage: { status: 'partial', transcriptComplete: true, missingRanges: 0, visualCoverage: 'sparse', frameSamples: 0, warningCount: 0, acceptanceQualified: true },
+  feeling: 'like', reason: '画面没有取到样本。', summary: '零帧。', draft: '' };
 const ledgerStore = createDouyinCompanionStore(root, () => now().toISOString());
 const v2 = await createSharingV2Fixture({ role: { id: 'alpha', epoch: 1 } });
 ledgerStore.writeLedger({ version: 1, acceptanceCalls: 8, roles: { '"alpha"': { characterId: 'alpha', acceptedEpoch: 1, enabled: true, paused: false, lastError: null, days: {} } },
   jobs: { [jobId]: { jobId, mode: 'acceptance', state: 'partial', phase: 'finished', characterId: 'alpha', characterEpoch: 1,
     createdAt: now().toISOString(), updatedAt: now().toISOString(), completedAt: now().toISOString(), calls: 2, acceptanceQualified: true, scheduleDate: null, scheduleWindow: null,
-    items: [{ ...item, ...v2.proof }], ...v2.proof } } });
+    items: [{ ...item, ...v2.proof }, { ...zeroFrameItem, ...v2.proof }], ...v2.proof } } });
 const context = { characterId: 'alpha', characterEpoch: 1 };
 const options = { stateDir: root, getCharacter: () => role, now,
   readiness: async () => ({ ok: true }), buildContext: async () => ({ ok: true, sections: [{ kind: 'persona', text: '温柔、有主见的小白鲸。' }], text: '只读到当前角色获准的记忆。' }),
@@ -128,6 +135,19 @@ try {
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal((await service.status(context)).messages.filter(m => m.role === 'assistant').length, beforeAnswers);
   assert.equal(ledgerStore.readLedger().roles['"alpha"'].days['2026-11-07'].calls, 1, 'cancel never refunds a reserved request');
+  // 检索路径边界：账本 validCoverage 允许 0..3，共享存储必须接受同一区间（0 = 画面未确认），
+  // 同时继续拒绝越界与非整数，避免越界值经检索路径写进共享记录。
+  const zeroRecord = await service.record(context, { jobId, id: zeroFrameItem.id, share: '这条只留下了声音。', question: '要听吗？' });
+  assert.equal(zeroRecord.ok, true, `零帧样本必须可以共享：${JSON.stringify(zeroRecord)}`);
+  const zeroOpening = (await service.status(context)).openings.find(o => o.sourceId === zeroFrameItem.id);
+  assert.equal(zeroOpening?.coverage?.frameSamples, 0, '零帧样本必须原样保留，不能被丢弃或改写');
+  const boundaryStore = createSharingStore(root);
+  const boundaryRecord = frameSamples => ({ version: 1, kind: 'opening', id: `${jobId}:boundary-${String(frameSamples)}`, epoch: 1, at: now().toISOString(),
+    jobId, sourceId: '654321', sourceTitle: '零帧样本', text: '这条只留下了声音。', question: '要听吗？', coverage: { transcriptComplete: true, frameSamples } });
+  for (const bad of [6, -1, 1.5, '3']) {
+    assert.throws(() => boundaryStore.append('alpha', boundaryRecord(bad)),
+      error => error?.code === 'DOUYIN_CHAT_STORAGE', `frameSamples=${String(bad)} 必须被共享存储拒绝`);
+  }
   console.log('Companion sharing: persisted dialogue, dedupe, role and shared budget passed');
 } finally {
   try { await service.dispose(); } finally { await v2.close(); }

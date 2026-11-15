@@ -29,9 +29,11 @@ function checkRecord(value) {
   if (value.modelState !== undefined && !['completed', 'failed', 'not_started'].includes(value.modelState)) throw unavailable();
   if (value.kind === 'request' && (value.owner !== undefined || value.pid !== undefined) &&
       (!/^\d+:[0-9a-f-]{36}$/.test(value.owner || '') || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !value.owner.startsWith(`${value.pid}:`))) throw unavailable();
+  // frameSamples 与 douyin-companion-ledger.mjs 的 validCoverage 保持同一区间 0..3：
+  // 0 是合法的"没有取到画面样本"，页面按帧数未确认渲染；越界或非整数仍然拒绝。
   if (value.kind === 'opening' && (!/^\d{1,32}$/.test(value.sourceId) || !/^douyin-[0-9a-f-]{36}$/.test(value.jobId) ||
       !safeDisplayText(value.sourceTitle, 240) || !safeDisplayText(value.question, 100) || !value.coverage ||
-      typeof value.coverage.transcriptComplete !== 'boolean' || !Number.isSafeInteger(value.coverage.frameSamples) || value.coverage.frameSamples < 1 || value.coverage.frameSamples > 3)) throw unavailable();
+      typeof value.coverage.transcriptComplete !== 'boolean' || !Number.isSafeInteger(value.coverage.frameSamples) || value.coverage.frameSamples < 0 || value.coverage.frameSamples > 3)) throw unavailable();
   if (value.kind === 'failure' && (!/^DOUYIN_[A-Z0-9_]{1,72}$/.test(value.code) || !safeDisplayText(value.error, 240) || !safeDisplayText(value.hint, 300))) throw unavailable();
   return value;
 }
