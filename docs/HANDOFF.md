@@ -1,3 +1,26 @@
+## 2026-11-15 dev 测试构建 `v0.9.0-dev.1`（发布会话）——**已发布到公开仓库**
+
+本会话兼任发布会话（用户批准），工作树 `/Users/shizihan/Daily/Github/surfcore-dev-build`（在 `dev` 上）。这一步把 R3 + R4 + G7 三批已经合入 `dev` 的改动第一次交到「可安装的测试机」手上。公开仓库 `Rock-Connotation/surfcore-mac` 在本轮之前**没有任何 release**，`/releases/latest` 至今 404。
+
+**版本线**：仓库从 `0.8.8` bump 到 `0.9.0`（0.x 阶段 minor = 破坏性变更；`publish-dev.mjs` 按 core 自动编 dev.N）→ dev 构建号 **`0.9.0-dev.1`**，将来的稳定版是 `0.9.0`（同号且更低）。`dev` 上 `package.json` 现在是 `0.9.0-dev.1`；`docs/ROADMAP.md` 与 `docs/guides/DSH_SETUP.md` 的版本表述同步成同一字符串（`doc-facts` 要求文档版本与 `package.json` 逐字一致，不能只写 core 版本）。
+
+**发布结果**（原始日志 `/tmp/publish-dev-v090.log`）
+- 远端 `dev` 分支：`748afe6 → c5da206`；tag `v0.9.0-dev.1` → `c5da206`；Pre-release <https://github.com/Rock-Connotation/surfcore-mac/releases/tag/v0.9.0-dev.1>（`isPrerelease=true`、非 draft）。
+- 本地构建提交 `06edb3d`（`build(dev): v0.9.0-dev.1`）与远端发布提交 `c5da206` **tree 逐字节相同**（`25955f0c445cfebb7b099e5d98b733b4094cd34d`）；父提交不同属正常——Data API 建出的提交挂在远端 dev 旧 tip 上。
+- 三条发布门禁：①本地 `release-manifest --verify-ref HEAD` → 清单 1111 个 / 跟踪文件 1111 个 / 问题 0 个；②远端 `verify-remote-manifest Rock-Connotation/surfcore-mac v0.9.0-dev.1` → 一致 1111 / 不符 0 / 缺失 0；③Release 是 Pre-release（`/releases/latest` 天然不含它）。上传期间 `POST /git/trees` 两次 HTTP 502，脚本自带重试（第 3 次成功）。
+- 凭据：用本机已登录的 `gh`（账号 `Rock-Connotation`，scopes `repo`/`workflow`/`gist`/`read:org`）；`GH_TOKEN` 只在命令行环境变量里，未落盘。
+
+**测试机怎么收到**：在测试机的 SurfCore 设置里把更新通道切到 **dev**，再点「检查更新」。稳定用户的更新器查 `/releases/latest`，看不到 Pre-release。
+
+**顺带做完的两件事**
+- 清理已合并的 `surfcore-v1-retirement-r3` 工作树；其 gitignored `_backups` 3.7G 经核实**全部是可再生测试替身**（`model.bin` 只有 13 字节字面量 `fixture-model`、`whisper-fixture.cjs` 是脚本内联写出的假引擎、音视频由 ffmpeg lavfi 现生成；共享 ASR 本体走 `ASR_ASSETS`/`FFMPEG_PATH` 等仓外路径）→ 按用户批准删除，磁盘可用 23Gi → 27Gi。
+- `surfcore-mac`（916M）与 `surfcore-r4`（1.5G）的同类 `_backups` 测试残留仍在，本轮未动。
+
+**未做完**
+- 稳定版 `0.9.0` 未发（要等 G7 实机第二阶段通过）。
+- G7 第二阶段（隔离 `DSH_HOME`/profile 起真实实例：DSH 自带 node 真实解析、Native/IPC、长 TTS 跨轮询、DM 子进程退出、停止/切角色/卸载、真实页面渲染）未开始。
+- 稳定通道在本仓库还没有 release（`/releases/latest` 404）→ 发 stable 前要确认用户实机更新器到底查哪个仓库/哪条通道。
+
 ## 2026-11-15 G7 Mac 实机（非侵入取证 + CLI 孤儿修复）——**已合入 `dev`** @ `c74470d`（功能分支 `feat/v1-retirement-r4` @ `7839039`）
 
 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`。用户定边界：**不启动任何新实例**（不启隔离 profile/桥接、不发真实消息、不扫码），只做只读取证；实机孤儿按批准逐个清理。本轮没有 bump/tag/发布。
