@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.9.0-dev.1",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-15T12:01:01.982Z",
+  "generatedAt": "2026-11-15T12:20:44.175Z",
   "files": {
     ".gitattributes": "65b1023623fb87849b0d7e7a39141bd9d2662d98dcd55fefc9e8bf1683d2d934",
     ".gitignore": "a151d62896bdc35fb95370916bb857c33fe3ef675d96e05d9b9ea256e9dde41d",
@@ -945,7 +945,7 @@
     "scripts/test-snowluma-upstream-health.mjs": "813b784e0eb5904c94080efaf5a5ceff73605c75b1a88a00f55644f703c29c29",
     "scripts/test-sticker-semantics.mjs": "a7da2c674f62872160c1c3cba24c47f79069f7f5922bccd561b06e7d2f1acfe0",
     "scripts/test-stickers.mjs": "e7cba1b20fa6173192c3fc6c625fee10d857189cc1c3babe05906319abdf8bed",
-    "scripts/test-surfcore-isolated-host.mjs": "1d852e907ba43ac108129e03af4bf434d02a84b01701a234023c50b5f2f052bc",
+    "scripts/test-surfcore-isolated-host.mjs": "19fb8d39d285a56e6893ef8c2e1b41e6c8e74ea138b28bf6ee043eb4823e63a4",
     "scripts/test-theme-tokens.mjs": "2a7b841ea784bd7b0a7a55589dc2880794eaa7ac56f004f2b624bf4c63df11f8",
     "scripts/test-time-window.mjs": "43a7747838297b2919762a86576d1c95227e875e4f09ecd2e2128bcf1954411d",
     "scripts/test-token-budget-bridge.mjs": "a38ce757d5c0c5ff195c22eafb15a7abe166b2b8a782232d3e1132d17374551f",
