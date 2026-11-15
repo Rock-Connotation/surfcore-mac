@@ -1,3 +1,15 @@
+## 2026-11-15 G7 第二阶段：隔离实例里的真实宿主验收（本会话，待合入 `dev`）
+
+工作树 `/Users/shizihan/Daily/Github/surfcore-g7-phase2`（`feat/g7-phase2-host-acceptance`，基于 `dev` @ `a234f4b` = `v0.9.0-dev.1`）。新增 `scripts/test-surfcore-isolated-host.mjs` 并接进 Darwin 门禁块，回答"SurfCore 装进干净 DSH 实例后，在真实打包宿主里能不能激活、退出后留不留后代"。
+
+**结论（首手证据，脚本 sha256 `1d852e907ba43ac108129e03af4bf434d02a84b01701a234023c50b5f2f052bc`）**：隔离安装 OK（profile 链接 realpath 落在本工作树）；真实宿主 ready 在 `127.0.0.1:<临时端口>` + token（非 3100/59783）；真实 loader 激活 `surfcore` + `qq-mode`（日志 `[surfcore] 已激活 v0.9.0-dev.1`、`biliTools=…/tools/bili.mjs`）；shutdown `exit {code:0,signal:null}`、三个后代全退、无残留；守门 `denied: []`（`lsof` 两次采样只有表头）。`GET /dsh-surfcore/health` 六种认证方式全 401、Chromium 渲染 4s 超时 → 记为**环境阻断**（会话 token 由桌面外壳经 IPC 注入），不是产品失败。
+
+**两个真实前提（本轮踩过，已进 PITFALLS #156）**：①隔离 profile 必须把 `@deepseek-ai/dsh-base`、`@deepseek-ai/dsh-web-app` 写进 `dsh.profile.bundles`，否则插件行 `pending (waiting for service: sessionController)`、宿主 `startup failed: 1 required plugin did not activate`——`scripts/setup-dsh.mjs` 只补 `surfcore`，不补基座；②不要在 profile patch 里重复声明基座已提供的 `webServer`/`credentials`/`connection`，否则 `service "webServer" has been registered at …`。
+
+**门禁**：`npm run test:audit` → `Audit suite: 207/207 scripts passed.`（此前 206；单脚本超时 60000ms，本脚本 ~22s）。
+
+**未做**：AC4/AC5 若要产品级证据需在真桌面外壳内做只读验收；Electron/Chromium 与非 Node 子进程的出站未做系统级审计；稳定版 `0.9.0` 仍待发（前置就是本批通过）。
+
 ## 2026-11-15 dev 测试构建 `v0.9.0-dev.1`（发布会话）——**已发布到公开仓库**
 
 本会话兼任发布会话（用户批准），工作树 `/Users/shizihan/Daily/Github/surfcore-dev-build`（在 `dev` 上）。这一步把 R3 + R4 + G7 三批已经合入 `dev` 的改动第一次交到「可安装的测试机」手上。公开仓库 `Rock-Connotation/surfcore-mac` 在本轮之前**没有任何 release**，`/releases/latest` 至今 404。

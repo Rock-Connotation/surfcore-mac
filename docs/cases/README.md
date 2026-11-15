@@ -192,3 +192,5 @@
 - [V1 退役破坏式重构](2026-11-12-v1-retirement.md)：六项 V1 按 2026-11-12 拍板退役中（Memory 路由 V2-only、QQ 一代 preset/reserved/人格过滤层、B站 V1 会话层、控制台与设置窗口一代入口）；含七步完整逻辑、失败路径、已知残留与发布交接块。
 
 - [G7 Mac 实机取证（非侵入）：CLI 包装进程的孤儿后代与 SIGTERM 修复](2026-11-15-mac-real-machine-g7-evidence.md)：实机捕到 5 个 `PPID=1` 的 CLI 孤儿（最早 1.9 天），根因是 `plugins/surfcore/tools/bili.mjs` 只转发信号、自己不退出；修成有界退出 + 升级 SIGKILL（先红 7s 挂死 → 修后 3–4s 退出），并把实机环境证据（DSH 自带 node v24.21.0、桌面应用在跑、`~/.dsh/profiles` 三 profile）一并落档。
+
+- [G7 第二阶段：把 SurfCore 装进隔离实例的真实宿主验收](2026-11-15-mac-real-machine-g7-phase2-isolated-host.md)：在 `os.tmpdir()` 的隔离 `HOME`/`DSH_HOME` 里用 `setup-dsh` 装本工作树的 `plugins/surfcore`，再用真实应用二进制起 `@deepseek-ai/dsh-desktop-host`，验收真实 loader 激活 `surfcore` + `qq-mode`、shutdown 后零残留、守门进程内零非回环外联（AC1–AC3/AC6–AC8 PASS；HTTP 健康面与页面渲染记为环境阻断；含 AC9 反向重放红→绿与"隔离 profile 必须补基座 bundle"的坑）。

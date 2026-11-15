@@ -353,6 +353,9 @@ const tests = [
 ];
 if (process.platform === 'darwin') {
   tests.push('test-package-patch-anchor.mjs');
+  // G7 第二阶段（2026-11-15）：在隔离 DSH_HOME 里把 SurfCore 装进真实打包宿主——要求真插件行激活、
+  // 停止后无残留后代、守门进程内零非回环外联。DSH web 的 HTTP 面与页面渲染当前记为「环境阻断」（会话 token 由桌面外壳经 IPC 注入）。
+  tests.push('test-surfcore-isolated-host.mjs');
   tests.push('test-perception-silence.mjs', 'test-perception-resources.mjs', 'test-perception-service.mjs', 'test-perception-cli.mjs', 'test-perception-host.mjs');
 } else {
   console.log('NOT RUN: native ASR integration fixtures currently require the macOS execution matrix; Windows/Intel ASR acceptance remains unverified.');
