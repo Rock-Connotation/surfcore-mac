@@ -64,6 +64,40 @@ node scripts/release-manifest.mjs --verify-ref HEAD   # 问题 0 个
 是否已 rebase/merge 最新 dev：未合并（主树 dev 有非本会话未跟踪 `2026-11-12/`，按 AGENTS §1.9 停手）；待对应会话收走后由协调/发布会话 --no-ff 合并，并从合并后的 HEAD 重新生成 release/install-manifest.json
 ```
 
+### 批次 2026-11-15 · G7 Mac 实机取证（CLI 包装进程孤儿 + SIGTERM 修复）（**已提交 `feat/v1-retirement-r4` @ `01f9f85`，待合入 `dev`，待发版**）
+
+> case：[`docs/cases/2026-11-15-mac-real-machine-g7-evidence.md`](cases/2026-11-15-mac-real-machine-g7-evidence.md)
+> 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`（`feat/v1-retirement-r4`）
+
+**可直接转发的交接块**
+
+```
+【批次】2026-11-15 · G7 Mac 实机取证（非侵入）
+【改了哪些文件】
+  - plugins/surfcore/tools/bili.mjs（转发型包装进程收到 SIGTERM/SIGINT 后有界自退：3 秒宽限 → SIGKILL → exit 128+signal）
+  - plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs（新常驻合同测试：夹具子进程故意忽略信号）
+  - scripts/test-audit.mjs、plugins/surfcore/package.json（接进常驻门禁，插件 test 链 79→80 段）
+  - docs/cases/2026-11-15-mac-real-machine-g7-evidence.md、docs/{PITFALLS,HANDOFF,COORDINATION,cases/README}.md
+【测了什么、结果如何】（DSH 自带 node v24.21.0）
+  - 先红：test-bili-cli-signal-r4.mjs EXIT=1 / 7 秒，卡在「包装进程收到 SIGTERM 后必须在 6000ms 内退出」
+  - 修后：同一测试 EXIT=0 / 3–4 秒（连跑两次），死扛的子进程被升级 SIGKILL 清掉
+  - 反向重放：删掉 SIGKILL 升级行 → FAIL「忽略信号的子进程必须被升级到 SIGKILL 清掉」；还原后 SHA 407fc4f7… 逐字一致
+  - npm run test:audit → 206/206 exit 0；npm --prefix plugins/surfcore test → PASS 37 ordinary scripts exit 0
+  - 相邻回归：test-bili-media-no-history.mjs、test-bili-dynamic-receipt.mjs 均 exit 0
+【建议版本】minor（与 R3/R4 同批）
+【改动层级】只改 CLI 包装进程自身的退出契约，不改任何子命令语义；唯一可观察差异＝包装进程被信号终止时退出码为 128+signal
+  （scheduler 用 err.code === 'ABORT_ERR' 分类，不依赖这个数字）
+【完整逻辑与爆炸半径】见 case 文档「完整逻辑」：链路（scheduler execFile + 手工调用 → tools/bili.mjs → tools/commands/*.mjs）、
+  机制（所有权契约：宿主终止我 → 我终止子进程 → 我在有界时间内退出）、爆炸半径（2 类调用者 × 4 个读者 × 静默=3）、
+  取舍（A 包装进程自退 vs B 进程组杀 vs C 各命令自注册信号，B/C 否决理由在 case 里）
+【失败路径】不再有「静默孤儿」：最坏 3.2 秒退出，退出码 143（SIGTERM）/130（SIGINT）
+【还有什么没验证】①实机 8988 的确切机制没取到（现场＝包装进程活着、无子进程、无 socket），测试只钉住「子进程死扛信号」这一类；
+  ②真实 CLI 对真实网络未复跑（按用户边界跳过）；③Chromium 页面渲染与真实 native SDK 发送（asar 阻断）沿用 R4 清单；
+  ④用户安装副本 ~/.dsh/profiles/<profile>/node_modules/surfcore/ 要等下次安装/更新才带上该修复
+【实机现场遗留】用户安装版桥接控制台 51037（~/.dsh/profiles/desktop/…/bridge.js）仍在 127.0.0.1:3100 LISTEN，按其批准未动
+【发布前必做】本批只改源码与门禁；发版走正常 release 流程（dev → main），无需额外动作
+```
+
 ### 批次 2026-11-15 · V1 退役四轮 R4（接管重驱动合同 + 取消后回执可查）（**已提交 `feat/v1-retirement-r4` @ `59bead0`，已合入 `dev` @ `db17ec3`，待发版**）
 
 > case：[`docs/cases/2026-11-15-v1-retirement-r4-resume-and-receipt.md`](cases/2026-11-15-v1-retirement-r4-resume-and-receipt.md)

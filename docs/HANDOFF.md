@@ -1,3 +1,19 @@
+## 2026-11-15 G7 Mac 实机（非侵入取证 + CLI 孤儿修复）——**已提交 `feat/v1-retirement-r4`** @ `01f9f85`
+
+工作树 `/Users/shizihan/Daily/Github/surfcore-r4`。用户定边界：**不启动任何新实例**（不启隔离 profile/桥接、不发真实消息、不扫码），只做只读取证；实机孤儿按批准逐个清理。本轮没有 bump/tag/发布。
+
+**实机捕到什么**（原始证据 `/tmp/g7-orphan-evidence-20261115.txt`，只读捕获）
+- **5 个 `PPID=1`（launchd 收养）的 B站 CLI 孤儿**，最早一个存活 1.9 天：`commands/dm-await.mjs --once --json` × 4（`surfcore-mac` 1 个 @ `1494`、`surfcore-v1-retirement-r3` 3 个 @ `20533`/`21860`/`49108`）+ `tools/bili.mjs dm-await --once --json` × 1（`8988`）；全部 `STAT=S`、**无任何 socket**、CPU 累计 3.2–3.9 秒。
+- 清理（用户批准）：`SIGTERM` 清掉 4 个；`8988` 拒绝 `SIGTERM`（3 秒后仍存活、无子进程、无 socket）→ 批准补 `SIGKILL` → 退出；最终 5 个全部清理。
+- 用户的安装版桥接控制台 `51037`（`~/.dsh/profiles/desktop/node_modules/surfcore/src/bridge.js`，`127.0.0.1:3100 LISTEN`）按其批准**未动**。
+- 顺带取得的环境证据：实机 CLI 跑在 **DSH 自带 node v24.21.0**（不是系统 v26.5.1）；DSH 桌面应用当时**在运行**（Electron 辅助进程 + `--user-data-dir=…/dsh-desktop` + MCP stdio guard）；`~/.dsh/profiles/` = `desktop`/`headless`/`web`；`DSH_HOME` 只被插件/工具侧尊重（6 处），宿主 `--dsh-home` 语义取不到可读上下文（`app.asar` 打包体）。
+
+**修了什么**：`plugins/surfcore/tools/bili.mjs`——转发型包装进程自己保证有界退出（转发信号 → `GRACE_MS=3000` → `SIGKILL` → `process.exit(128+signal)`；`'close'` 里若本次已被信号终止也用 128+signal）；新增 `plugins/surfcore/scripts/test-bili-cli-signal-r4.mjs`（夹具子进程故意忽略信号）并接进 `scripts/test-audit.mjs` + 插件 `test` 链（79 → 80 段）。
+
+**验证**：先红 `EXIT=1 elapsed=7s`（`FAIL 包装进程收到 SIGTERM 后必须在 6000ms 内退出`）→ 修后 3–4 秒退出 `EXIT=0`（连跑两次）；反向重放删掉 `SIGKILL` 升级那一行 → `FAIL 忽略信号的子进程必须被升级到 SIGKILL 清掉 / true !== false`，还原后 SHA `407fc4f783e3c0fec836354f7ab184925d77ebff2b3000b3a0a20d885de94a31` 逐字一致；代码门禁 `test:audit` **206/206** exit 0、插件套件 `PASS 37 ordinary scripts` exit 0；相邻回归 `test-bili-media-no-history.mjs` / `test-bili-dynamic-receipt.mjs` 均 exit 0。
+
+**未验证（别当成已验证）**：①实机 `8988` 的确切机制没取到（现场是"包装进程活着、无子进程、无 socket"，与"子进程死扛信号"不同类）——修复对三类情形（无活子进程 / 子进程在宽限内退出 / 子进程死扛）都给出有界退出，但**测试只钉住"死扛"这一类**；②没有用真实 CLI 子命令对着真实网络复跑（按用户边界跳过）；③Chromium 页面渲染、真实 native SDK 发送（`asar` 阻断）沿用 R4 清单；④用户安装副本 `~/.dsh/profiles/<profile>/node_modules/surfcore/` 要等下次安装/更新才带上该修复。
+
 ## 2026-11-15 V1 退役四轮（R4：接管重驱动合同 + 取消后回执可查）——**已合入 `dev`** @ `db17ec3`（功能分支 `feat/v1-retirement-r4` @ `59bead0`）
 
 工作树 `/Users/shizihan/Daily/Github/surfcore-r4`（分支 `feat/v1-retirement-r4`，基于 `dev` @ `07efab6`）。用户定范围："先三个代码项，再 G7 实机"；G7 边界＝**只开隔离实例**，不动正式环境。本轮没有 bump/tag/发布。
