@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.8.8",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-15T08:09:44.829Z",
+  "generatedAt": "2026-11-15T08:15:47.845Z",
   "files": {
     ".gitattributes": "65b1023623fb87849b0d7e7a39141bd9d2662d98dcd55fefc9e8bf1683d2d934",
     ".gitignore": "a151d62896bdc35fb95370916bb857c33fe3ef675d96e05d9b9ea256e9dde41d",
@@ -17,7 +17,7 @@
     "_snowluma-catalog.json": "775cf10d4622644eeb0506dea7a30125423e6c70342a2fae2f1b0818d2441cd6",
     "config.example.json": "e7c62c2c2162f891261362092907e569f54ba0fd5d93200dacd7959eadef0764",
     "docs/ARCHITECTURE-DELTA-TOKEN.md": "7bbecf07507ad9bbb93754de3c31b1b6d0e6e148e5229eac8e92b62545093e6f",
-    "docs/COORDINATION.md": "34984d9f4e3d56d4280b7a91c2e3e0e526467bdf87cdf77294b38132c0f53ce7",
+    "docs/COORDINATION.md": "f78451a7e134e3a44afb6e87cf026b24b0e211dc9fa26a2e4b57e42126713d29",
     "docs/FOLDER_MAP.md": "a659e8edee0c51f60ec335f901e840c2d02d6a7c40edcfd65a6054c712122efd",
     "docs/HANDOFF.md": "6a52b97bd6b6636d5a18f0dcd9be1922edb71844dacf28f3b78bdf93ccd832f5",
     "docs/PITFALLS.md": "1f87f8e732a3f6f6b3adce3fab6616dfdec59cbdbbeb0c410a5232c30bb71f89",
