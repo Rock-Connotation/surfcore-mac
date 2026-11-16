@@ -1819,7 +1819,7 @@ async function main() {
    * owner 准入由调用方 checkAdmission 完成，发送前核对目标、账号、角色、模式和任务状态，
    * 平台 ACK 缺失记 unknown，不伪造 session/safety 证明、不自动重发。
    */
-  async function sendOwnerManagementReply({ conversationKey, text: message, taskId, phase, system = false }) {
+  async function sendOwnerManagementReply({ conversationKey, text: message, taskId, phase, system = false, validate }) {
     const match = /^(group|private):([1-9][0-9]{0,19})$/.exec(String(conversationKey));
     const fail = (code, error, hint, delivery = 'rejected') => ({ ok: false, delivery, code, error, hint });
     if (!match || (!system && conversationKey !== `private:${String(cfg.ownerQQ ?? '')}`)) {
@@ -1839,16 +1839,16 @@ async function main() {
       sendChain = sendChain.then(async () => {
         const currentRole = readCurrentCharacter();
         const currentTask = requiresTask ? taskLedger.getTask(taskId) : null;
-        if (owner !== String(cfg.ownerQQ ?? '') || account !== String(selfUserId ?? '') || mode !== currentMode || role?.id !== currentRole?.id || role?.epoch !== currentRole?.epoch || !allowed(match[1], match[2], cfg) || (requiresTask && (!currentTask || (['start', 'delivery'].includes(phase) && currentTask.status === 'cancelled') || currentTask.requestor?.conversationKey !== conversationKey || String(currentTask.requestor?.userId) !== owner || !currentTask.requestor?.isOwner))) {
+        if ((validate && !validate()) || owner !== String(cfg.ownerQQ ?? '') || account !== String(selfUserId ?? '') || mode !== currentMode || role?.id !== currentRole?.id || role?.epoch !== currentRole?.epoch || !allowed(match[1], match[2], cfg) || (requiresTask && (!currentTask || (['start', 'delivery'].includes(phase) && currentTask.status === 'cancelled') || currentTask.requestor?.conversationKey !== conversationKey || String(currentTask.requestor?.userId) !== owner || !currentTask.requestor?.isOwner))) {
           outcome = fail('OWNER_REPLY_CONTEXT_CHANGED', '管理回执的授权上下文已变化。', '检查账号、角色和任务状态后重新操作。'); return;
         }
         const ticket = `${taskId ?? 'management'}:${phase ?? 'reply'}:${crypto.randomUUID()}`;
         managementSendTickets.set(conversationKey, ticket);
         try {
           const response = await withTimeout(match[1] === 'private' ? bot.sendPrivateMessage(Number(match[2]), text(escapeCqText(part))) : bot.sendGroupMessage(Number(match[2]), text(escapeCqText(part))), SEND_TIMEOUT_MS, '管理回执');
-          const id = response?.data?.message_id ?? response?.message_id ?? null;
+          const id = canonicalOneBotMessageId(response?.data?.message_id ?? response?.message_id);
           if (response?.ok === false || (response?.retcode != null && response.retcode !== 0) || (response?.status && response.status !== 'ok')) outcome = fail('OWNER_REPLY_REJECTED', '平台拒绝管理回执。', '检查 QQ 连接和平台状态后查询任务。');
-          else if (!(typeof id === 'number' && Number.isSafeInteger(id) && id > 0) && !(typeof id === 'string' && /^[1-9][0-9]*$/.test(id))) outcome = fail('OWNER_REPLY_UNKNOWN', '管理回执送达结果未知。', '先查询平台消息和任务状态，不要自动重发。', 'unknown');
+          else if (id === null) outcome = fail('OWNER_REPLY_UNKNOWN', '管理回执送达结果未知。', '先查询平台消息和任务状态，不要自动重发。', 'unknown');
           else { receipts.push({ delivery: 'delivered', messageId: id }); outcome = { ok: true }; noteSendSuccess(conversationKey); }
         } catch (error) {
           outcome = fail('OWNER_REPLY_UNKNOWN', '管理回执送达结果未知。', '先查询平台消息和任务状态，不要自动重发。', 'unknown');
@@ -1864,12 +1864,57 @@ async function main() {
   const taskHarness = createTaskHarness({
     ledger: taskLedger,
     reportsDir: path.join(STATE_DIR, 'reports'),
-    sendCallback: async ({ conversationKey, text, taskId, phase }) => {
-      const result = await sendOwnerManagementReply({ conversationKey, text, taskId, phase });
+    readOnlyRoot: path.join(STATE_DIR, 'task-files'),
+    sendCallback: async ({ conversationKey, text, taskId, phase, validate }) => {
+      const result = await sendOwnerManagementReply({ conversationKey, text, taskId, phase, validate });
       return result;
     },
     log
   });
+
+  async function handleOwnerDirectoryList(key, event, target, admissionSnapshot, role) {
+    const userId = String(event.user_id ?? '');
+    const accountId = String(event.self_id ?? '');
+    const requestor = { platform: 'qq', userId, conversationKey: key, isOwner: userId === String(cfg.ownerQQ ?? '') };
+    const admission = taskHarness.checkAdmission({ requestor });
+    if (!admission.ok || key !== `private:${userId}`) {
+      appendActivity(`[Mac 目录清单] ${admission.code === 'ADMISSION_GRANTED' ? 'ADMISSION_OWNER_REQUIRED' : admission.code}`);
+      return;
+    }
+    const checkContext = () => {
+      const current = readCurrentCharacter();
+      return Boolean(role && role.id === current?.id && role.epoch === current?.epoch &&
+        !modeBlocked && modeRevision === admissionSnapshot.revision && currentMode === admissionSnapshot.effective &&
+        String(cfg.ownerQQ ?? '') === userId && String(selfUserId ?? '') === accountId && cfg.allow?.private?.includes(userId) &&
+        isSessionAllowedInCurrentMode(key) && !senderBlocked(userId, cfg.deny?.users));
+    };
+    const replyFailure = async result => {
+      appendActivity(`[Mac 目录清单] ${result.code}`);
+      if (checkContext()) await sendOwnerManagementReply({ conversationKey: key, phase: 'management', validate: checkContext,
+        text: `目录清单未完成（${result.code}）\n${result.error}\n${result.hint}` });
+    };
+    const messageId = canonicalOneBotMessageId(event.message_id);
+    if (!messageId || !Array.isArray(event.message) || !event.message.every(segment => segment?.type === 'text')) {
+      await replyFailure({ code: 'TASK_DIRECTORY_INPUT_INVALID', error: '请发送一条新的纯文字目录指令。', hint: '直接在私聊发送「任务：列出文件 <绝对路径>」。' });
+      return;
+    }
+    const identity = await readOfficialMemoryQQIdentity();
+    if (!identity.ok || identity.accountId !== accountId || !identity.allowedPrivates.includes(userId) || !checkContext()) {
+      await replyFailure({ code: 'TASK_DIRECTORY_IDENTITY_REQUIRED', error: '未确认当前 OneBot 登录和主人的私聊权限。', hint: '在本机确认 QQ 登录和私聊白名单后再发一条新指令。' });
+      return;
+    }
+    const taskId = `mac-list-${crypto.createHash('sha256').update(JSON.stringify([accountId, key, String(messageId)])).digest('hex').slice(0, 16)}`;
+    try {
+      const result = await taskHarness.runDirectoryList({ requestor, taskId, target, validate: checkContext });
+      if (!result.ok && (result.status === 'delivery_unknown' || result.status === 'rejected' || result.status === 'cancelled')) {
+        appendActivity(`[Mac 目录清单] ${taskId} ${result.code}`);
+      } else if (!result.ok) {
+        await replyFailure(result);
+      }
+    } catch {
+      await replyFailure({ code: 'TASK_LEDGER_UNAVAILABLE', error: '本机任务账本无法确认。', hint: '检查任务状态和原消息回执，保留原账本。' });
+    }
+  }
   const memoryV2Failures = new Map();
   const memoryV2Barriers = new Map();
   const memoryV2SelectedRoutes = new Map();
@@ -15178,6 +15223,13 @@ async function main() {
           ref: { session: key },
         });
       }
+      return;
+    }
+    const directoryCommand = plainContent.match(/^(?:任务|[/#]task)[：:\s]+列出文件(?:[：:\s]+([\s\S]*))?$/u);
+    if (directoryCommand) {
+      const raw = directoryCommand[1]?.trim() ?? '';
+      const target = raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+      await handleOwnerDirectoryList(key, event, target, ingressAdmission, ingressCharacter);
       return;
     }
     // 任何入站消息（含纯图片/表情/引用）都先记「谁在说话」，且必须在下面的空文本过滤之前：

@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { listTaskDirectory } from './task-directory.js';
 
 const SYSTEM_RESTRICTED_ROOTS = [
   '/System',
@@ -43,6 +44,7 @@ export function isSystemRestrictedPath(targetPath) {
 export function createTaskHarness({
   ledger,
   reportsDir,
+  readOnlyRoot,
   safeFetchImpl = fetch,
   sendCallback = async () => ({ ok: true }),
   now = Date.now,
@@ -256,7 +258,7 @@ export function createTaskHarness({
   }
 
   // 4. 平台回传步骤：格式化回送私聊并严格确认回执
-  async function executeDeliveryStep(task) {
+  async function executeDeliveryStep(task, { text: resultText, validate } = {}) {
     const activeTask = ledger.getTask(task.taskId);
     if (!activeTask || activeTask.status === 'cancelled') {
       throw new Error(`Task ${task.taskId} is cancelled or not found.`);
@@ -269,7 +271,7 @@ export function createTaskHarness({
       return { ok: false, status: 'delivery_unknown', code: 'OWNER_REPLY_UNKNOWN', error: '此前的送达结果未知。', hint: '查询平台消息和任务状态，不要自动重发。' };
     }
 
-    if (!activeTask.artifact) {
+    if (!activeTask.artifact && !resultText) {
       throw new Error(`Task ${task.taskId} has no generated artifact to deliver.`);
     }
 
@@ -279,7 +281,7 @@ export function createTaskHarness({
       .map((s, idx) => `  ${idx + 1}. ${s.title}: ${s.url}`)
       .join('\n');
 
-    const messageText = [
+    const messageText = resultText ?? [
       `📋 任务完成：${activeTask.goal}`,
       `【任务编号】${activeTask.taskId}`,
       `【研究摘要】${activeTask.artifact.summary}`,
@@ -304,6 +306,7 @@ export function createTaskHarness({
         text: messageText,
         taskId: task.taskId,
         phase: 'delivery',
+        ...(validate ? { validate } : {}),
         artifact: activeTask.artifact
       });
 
@@ -346,6 +349,26 @@ export function createTaskHarness({
       });
       return { ok: false, status: 'delivery_unknown', code: 'OWNER_REPLY_UNKNOWN', error: err.message, hint: '查询任务和平台消息，不要自动重发。' };
     }
+  }
+
+  async function runDirectoryList({ requestor, target, taskId, validate }) {
+    const admission = checkAdmission({ requestor });
+    if (!admission.ok) return admission;
+    if (requestor.platform !== 'qq' || requestor.conversationKey !== `private:${requestor.userId}` ||
+        !readOnlyRoot || !taskId || typeof validate !== 'function' || !validate()) {
+      return { ok: false, code: 'TASK_DIRECTORY_IDENTITY_REQUIRED', error: '未确认主人私聊或本机只读工作区。', hint: '由主人在已允许的 QQ 私聊发起，并检查本机工作区。' };
+    }
+    if (ledger.getTask(taskId)) return { ok: true, idempotent: true };
+    const task = ledger.createTask({ taskId, requestor, type: 'directory_list', goal: '列出本机文件', steps: ['list', 'delivery'] });
+    const listing = listTaskDirectory({ root: readOnlyRoot, target });
+    if (!listing.ok) {
+      ledger.updateTask(taskId, { status: 'failed', error: `${listing.code} ${listing.error}` });
+      return listing;
+    }
+    ledger.updateTask(taskId, { status: 'running', intent: { displayed: listing.displayed, truncated: listing.truncated } });
+    const scope = listing.truncated ? `清单达到上限，已显示 ${listing.displayed} 个文件。` : `共 ${listing.displayed} 个文件。`;
+    const messageText = `Mac 目录清单（只读）\n任务编号 ${taskId}\n${scope}\n${listing.text}`;
+    return executeDeliveryStep(task, { text: messageText, validate });
   }
 
   // 5. 编排端到端任务运行流水线
@@ -771,6 +794,7 @@ export function createTaskHarness({
     executeCommandStep,
     executeMacAppStep,
     runAutonomousIdleActivity,
+    runDirectoryList,
     runTaskPipeline,
     resolvedReportsDir
   };

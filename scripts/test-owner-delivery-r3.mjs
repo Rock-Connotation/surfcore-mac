@@ -203,6 +203,56 @@ try {
     console.log('non-owner sends=' + JSON.stringify(f.platformSends.slice(before)));
     assert.ok(f.platformSends.length > before, 'non-owner must receive restricted system rejection');
   });
+  await test('owner QQ directory request lists regular file names and delivers a deduplicated ACK', async () => {
+    const readRoot = path.join(h.temp, 'state', 'task-files');
+    const directory = path.join(readRoot, '验收 样本');
+    const sibling = path.join(h.temp, 'state', 'task-files-other');
+    fs.mkdirSync(path.join(directory, 'subfolder'), { recursive: true });
+    fs.mkdirSync(sibling);
+    fs.writeFileSync(path.join(directory, '文件甲.txt'), 'CONTENT_MUST_NOT_BE_SENT');
+    fs.writeFileSync(path.join(directory, 'file-b.md'), '');
+    fs.writeFileSync(path.join(directory, 'subfolder', 'recursive.txt'), '');
+    fs.writeFileSync(path.join(sibling, 'outside.txt'), '');
+    if (process.platform !== 'win32') {
+      fs.symlinkSync(sibling, path.join(readRoot, 'escape'));
+      fs.symlinkSync(path.join(sibling, 'outside.txt'), path.join(directory, 'link.txt'));
+    }
+    const command = target => `任务：列出文件 "${target}"`;
+    const packet = (target, messageId, extra = {}) => inbound({
+      message_id: messageId,
+      raw_message: command(target),
+      message: [{ type: 'text', data: { text: command(target) } }],
+      ...extra,
+    });
+    const send = args => h.handleIncoming('private', Number(OWNER), args, h.cfg);
+    reply = { status: 'ok', retcode: 0, data: { message_id: -9002 } };
+    const initial = f.platformSends.length;
+    const nativeBefore = f.nativeSubmissions.length;
+    const first = packet(directory, 812001);
+    await Promise.all([send(first), send(first)]);
+    assert.equal(f.platformSends.length, initial + 1);
+    const text = JSON.stringify(f.platformSends.at(-1).text);
+    assert.match(text, /Mac 目录清单/);
+    assert.match(text, /文件甲\.txt/);
+    assert.match(text, /file-b\.md/);
+    assert.doesNotMatch(text, /CONTENT_MUST_NOT_BE_SENT|recursive\.txt|link\.txt|outside\.txt/);
+    const task = h.taskLedger.listTasks({ conversationKey: KEY, limit: 1 })[0];
+    assert.equal(task.type, 'directory_list');
+    assert.equal(task.delivery.status, 'delivered');
+    assert.equal(task.delivery.messageId, -9002);
+    assert.equal(task.intent.displayed, 2);
+    await send(packet(sibling, 812002));
+    assert.match(JSON.stringify(f.platformSends.at(-1).text), /TASK_DIRECTORY_NOT_ALLOWED/);
+    if (process.platform !== 'win32') {
+      await send(packet(path.join(readRoot, 'escape'), 812003));
+      assert.match(JSON.stringify(f.platformSends.at(-1).text), /TASK_DIRECTORY_NOT_ALLOWED/);
+    }
+    const beforeDenied = f.platformSends.length;
+    await h.handleIncoming('group', 90001, packet(directory, 812004, { group_id: 90001 }), h.cfg);
+    await send(packet(directory, 812005, { self_id: 123456 }));
+    assert.equal(f.platformSends.length, beforeDenied, 'group or wrong account must not deliver a directory result');
+    assert.equal(f.nativeSubmissions.length, nativeBefore, 'directory instructions must not enter a Native chat job');
+  });
 } finally {
   await f.close();
   assert.ok(fs.realpathSync(root).startsWith(testHome + path.sep));
