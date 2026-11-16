@@ -15,3 +15,14 @@
 ## 发布交接
 
 QQ 桥接新增固定的私聊读取命令，默认没有正文读取授权。只有本机创建的单目录授权会启用，复用原目录清单的身份验证和 QQ 回执。发布前沿用仓库门禁。当前为本机候选。
+
+## 本机部署
+
+- 候选树 `c67ad3e818a2abc3cc9dfac2a806370ee7ade3b9`，本机包 398 个清单文件一致。与上一版相比，只有三个 QQ 程序文件及候选元数据变化。
+- 备份在 `~/.dsh/_backups/surfcore-qq-file-nwnTwD/program-previous`。原账号 OneBot 恢复在线，DSH 与 Memory V2 就绪。指定目录原文件用于真机测试。
+- `npm run test:audit` 207/207，`npm run test:regressions`、`npm run lint:failures` 和定向 QQ 回执回归均通过。第一次隔离门禁使用旧源码清单且与本机桥接重启重叠。隔离树重新生成清单并等本机桥接稳定后，完整重跑通过。
+
+## QQ 真机验收
+
+- 用户从本人 QQ 私聊发出 `任务：读取文件 alpha-notes.txt`。OneBot 在真实私聊历史中读回入站消息 `1327977881`，对应任务 `mac-read-5fe681fd0373108f` 状态为 `completed`，送达状态为 `delivered`。
+- 通过 OneBot `get_msg` 及同一私聊历史核对红豆的文字回执 `1661846033`。回传的 17 字节正文与 Mac 上的原文件一致，包含原末尾换行。原文件保持原样，任务账本只存字节数和送达回执。用户在 QQ 客户端确认正文正确。

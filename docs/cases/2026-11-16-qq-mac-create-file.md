@@ -15,3 +15,14 @@
 ## 发布交接
 
 QQ 桥接新增固定的新建文件指令，默认无写入授权。启用后只针对本机选定的单目录，可独立撤权。使用 `test:audit`、`test:regressions`、`lint:failures` 及 `test-owner-delivery-r3.mjs` 核验，回传和本机写入分别确认。
+
+## 本机部署
+
+- 候选树 `5f4c8b6a7ac4b8bd2fb209b61290ae6356e4c1e0`，实装 398 项全部与清单一致。上一版程序备份在 `~/.dsh/_backups/surfcore-qq-create-hLMVX8/program-previous`。
+- `test:audit` 207/207、协议回归、失败可见性检查及定向任务回执回归全部通过。QQ 桥接重启后原号 OneBot 在线，DSH 与 Memory V2 就绪。
+- 部署前确认 `qq-test.txt` 尚不存在，并记录原测试文件的哈希及修改时间。
+
+## QQ 真机验收
+
+- OneBot 在真实主人私聊中读回创建指令 `814045446`。任务 `mac-create-0003cc511f068db6` 记录本机已创建、任务已完成、QQ 已送达。同一私聊的红豆回复 `2137227442` 确认文件名 `qq-test.txt` 及 18 字节。用户确认收到回执。
+- 本机读回 `qq-readonly-nAJcwO/qq-test.txt`，18 字节与「红豆写入测试」的 UTF-8 编码一致，权限为 `0600`，只有一个链接。原有目录条目与文件哈希、修改时间和 inode 一致。任务账本未保存正文。
