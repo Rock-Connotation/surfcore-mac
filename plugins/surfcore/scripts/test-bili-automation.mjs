@@ -152,12 +152,7 @@ assert.equal(snap.dynamics.kinds.length, 4);
 assert.equal(snap.dynamics.kinds.find((k) => k.key === 'best').postedAt !== null, true);
 assert.equal(snap.dynamics.kinds.find((k) => k.key === 'game').enabled, false);
 assert.ok(snap.dynamics.next, '应能算出下一类动态');
-assert.deepEqual(snap.qqShare.times, ['09:00', '21:00']);
-assert.ok(snap.qqShare.nextAt, '应能算出下一班 QQ 分享');
-assert.ok(snap.qqShare.lastSlot.includes('09:00'));
-assert.ok(snap.qqShare.groupsEffective.includes('767098733'), 'groups 留空时应回落到 allow.groups');
-assert.equal(snap.qqShare.cardMode, 'text', '旧 card:true 快照要报文本链接（QQ 卡片显示不了）');
-assert.equal(snap.qqShare.card, true);
+assert.equal(snap.qqShare, undefined);
 assert.ok(snap.dynamicsSync.lastPollAt);
 
 fs.rmSync(tmp, { recursive: true, force: true });

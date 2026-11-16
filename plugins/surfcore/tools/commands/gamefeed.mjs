@@ -107,7 +107,7 @@ for (const kw of QUERIES) {
 // ── 看过 / 最近推过：gamefeed 以前完全没有这层，导致「原神/鸣潮」的旧视频每天原样回来 ──
 const watched = new Set()
 try {
-  const history = readWatchHistory({ limit: 2000 })
+  const history = readWatchHistory({ memoryFile: null, limit: 2000 })
   for (const item of history.items) if (item?.bvid) watched.add(item.bvid)
 } catch {}
 try {
@@ -117,10 +117,6 @@ try {
 try {
   const text = fs.readFileSync(biliState('commented-videos.md'), 'utf8')
   for (const m of text.matchAll(/BV[0-9A-Za-z]{10}/g)) watched.add(m[0])
-} catch {}
-try {
-  const memory = JSON.parse(fs.readFileSync(biliState('bili-memory.json'), 'utf8'))
-  for (const entry of (memory.entries ?? [])) if (entry?.bvid) watched.add(entry.bvid)
 } catch {}
 try {
   const fav = JSON.parse(fs.readFileSync(biliState('favorites.json'), 'utf8'))

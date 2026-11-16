@@ -299,15 +299,8 @@ function localInputs() {
     inputs.push({ text: value, source, weight, ...extra });
   };
   try {
-    const history = readWatchHistory({ limit: 200 });
+    const history = readWatchHistory({ memoryFile: null, limit: 200 });
     for (const item of history.items) push(item.title, 'local-watch', 2, { sample: item.title });
-  } catch {}
-  try {
-    const memory = readJson(biliState('bili-memory.json'), null);
-    for (const entry of (memory?.entries ?? [])) {
-      if (String(entry?.type ?? '') !== 'video') continue;
-      push(entry.title, 'local-memory', 1.5, { sample: entry.title });
-    }
   } catch {}
   try {
     const fav = readJson(biliState('favorites.json'), null);

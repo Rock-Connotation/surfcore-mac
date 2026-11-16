@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { isValidCharacterId } from '../character-persona.js';
+import { isValidCharacterId } from '../../src/character-persona.js';
 
 const CHANNEL_RE = /^[a-z][a-z0-9-]{0,31}$/;
 const EVENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,159}$/;

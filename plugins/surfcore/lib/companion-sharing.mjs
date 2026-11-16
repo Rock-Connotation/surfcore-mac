@@ -23,7 +23,7 @@ function failure(error) {
   return { ok: false, code: 'DOUYIN_CHAT_FAILED', error: '这次伙伴回复未完成。', hint: '刷新查看已有对话并检查模型连接；不会自动重发，已预留额度保留。' };
 }
 
-export function createCompanionSharing({ stateDir, getCharacter, buildContext, modelReply, readiness, now = () => new Date(), timeoutMs = 180000, memoryV2, getModelRequest }) {
+export function createCompanionSharing({ stateDir, getCharacter, modelReply, readiness, now = () => new Date(), timeoutMs = 180000, memoryV2, getModelRequest }) {
   const history = createSharingStore(stateDir), budget = createDouyinCompanionStore(stateDir, () => iso());
   let active = null, disposed = false, transitioning = 0, blocked = null;
   const retained = new Map();

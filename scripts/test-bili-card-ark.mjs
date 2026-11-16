@@ -188,15 +188,8 @@ for (const failure of [
   assert.match(sent[0][0].data.text, /补来的标题/);
 }
 
-// ── 10. 接线：桥接用这个 sender；插件代理必须带 JSON body（PITFALLS #23）────
-{
-  const bridge = fs.readFileSync(path.join(ROOT, 'src', 'bridge.js'), 'utf8');
-  assert.match(bridge, /createBiliCardSender\(/, 'sendBiliCard 必须走 createBiliCardSender');
-  assert.ok(!bridge.includes('biliCardCache'), '旧的 biliCardCache 已搬进 bili-card.js，不能留两份');
-  assert.match(bridge, /normalizeCardMode\(/, 'config 收敛必须用同一个 normalizeCardMode');
-  assert.match(bridge, /cardMode:\s*(shareCardMode|normalizeCardMode)/, 'config 收敛必须带 cardMode');
-  const pluginIndex = fs.readFileSync(path.join(ROOT, 'plugins', 'surfcore', 'lib', 'index.js'), 'utf8');
-  assert.match(pluginIndex, /\/api\/bili\/share-now', \{ method: 'POST', body: \{\}/, '分享代理必须带 JSON body');
-}
-
-console.log('test-bili-card-ark: 全部通过');
+const bridge = fs.readFileSync(path.join(ROOT, 'src', 'bridge.js'), 'utf8');
+const host = fs.readFileSync(path.join(ROOT, 'plugins', 'surfcore', 'lib', 'index.js'), 'utf8');
+assert.doesNotMatch(bridge, /createBiliCardSender\(|biliCardCache/);
+assert.doesNotMatch(host, /\/api\/bili\/share-now/);
+console.log('PASS card encoding fixtures and V1 scheduler retirement');

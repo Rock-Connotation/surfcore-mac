@@ -68,7 +68,7 @@ fs.writeFileSync(pathsB.persona, '被改坏的人格');
 fs.writeFileSync(pathsB.memoryJson, JSON.stringify(memoryCard('被改坏的记忆')));
 store.restoreSnapshot(b.character.id, 'auto-180d');
 assert.equal(fs.readFileSync(pathsB.persona, 'utf8').trim(), '# 角色卡：乙\n\n乙的人格。');
-assert.match(fs.readFileSync(pathsB.memoryJson, 'utf8'), /乙的记忆/);
+assert.match(fs.readFileSync(pathsB.memoryJson, 'utf8'), /被改坏的记忆/);
 assert.ok(fs.readdirSync(pathsB.snapshotsDir).some((name) => name.startsWith('pre-restore-')), '回档前必须自动备份');
 
 // 3.1 自动存档轮换：11 个年龄档 + before-switch，不无限增长。
@@ -110,7 +110,8 @@ assert.equal(migrated.migrated, true);
 assert.equal(store2.readCurrentCharacter().name, '旧角色');
 const migratedPaths = store2.characterPaths(migrated.character.id);
 assert.match(fs.readFileSync(migratedPaths.persona, 'utf8'), /旧人格/);
-assert.match(fs.readFileSync(migratedPaths.memoryJson, 'utf8'), /旧记忆/);
+assert.equal(fs.existsSync(migratedPaths.memoryJson), false);
+assert.match(fs.readFileSync(path.join(legacyMemory, 'memory-card.json'), 'utf8'), /旧记忆/);
 assert.equal(fs.readFileSync(path.join(migratedPaths.biliDir, 'quota.json'), 'utf8'), '{"date":"2026-10-22","log":[]}');
 assert.equal(fs.existsSync(path.join(migratedPaths.biliDir, 'credentials.json')), false, '凭证不能进角色包');
 assert.equal(fs.existsSync(path.join(legacyMemory, 'memory-card.json')), true, '旧数据必须保留（不删除）');

@@ -15,31 +15,10 @@
   },
   "biliBridge": {
     "enabled": true,
-    "memory": {
-      "enabled": true,
-      "refreshIntervalMs": 600000
-    },
     "dynamics": {
       "enabled": true,
       "pollIntervalMs": 180000,
       "groups": []
-    },
-    "share": {
-      "enabled": true,
-      "times": [
-        "07:00",
-        "11:00",
-        "13:00",
-        "15:00",
-        "17:00",
-        "19:00",
-        "21:00",
-        "23:00"
-      ],
-      "groups": [],
-      "gapMs": 4000,
-      "card": true,
-      "cardMode": "text"
     }
   },
   "snowluma": {
@@ -57,7 +36,7 @@
   "ownerQQ": null,
   "admin": null,
   "sessionCwd": "",
-  "agentPreset": "qq-chat",
+  "agentPreset": "qq-chat-v2",
   "workspaceTitle": "QQ 聊天",
   "allow": {
     "private": [],
@@ -131,7 +110,7 @@
       8
     ],
     "injectMax": 8,
-    "learnerPreset": "qq-chat",
+    "learnerPreset": "qq-chat-v2",
     "workspaceTitle": "QQ 黑话学习",
     "autoResearch": true
   },
@@ -359,13 +338,6 @@
       "wakeRecentLimit": 4,
       "wakeMaxChars": 6000,
       "wakeFoldOld": true
-    },
-    "history": {
-      "enabled": true,
-      "limit": 30,
-      "maxAgeMinutes": 720,
-      "wake": true,
-      "includePrivate": true
     },
     "initialPromptMaxChars": 2000,
     "media": {

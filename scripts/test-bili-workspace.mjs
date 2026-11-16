@@ -27,11 +27,5 @@ assert.ok(!index.includes('workspacePath: biliWorkspace'), 'V1 工作区参数�
 assert.ok(!index.includes('cwd: biliWorkspace'), 'V1 fallback cwd 已删除');
 
 const bridge = fs.readFileSync('src/bridge.js', 'utf8');
-const memory = fs.readFileSync('src/bili-memory.js', 'utf8');
-assert.ok(bridge.includes('biliDir: CHARACTER_ID ? characterPaths(CHARACTER_ID).biliDir : null'),
-  'bridge 必须把当前角色的 biliDir 传给记忆');
-assert.ok(memory.includes('if (biliDir) paths.bili = biliDir'),
-  '记忆模块必须支持角色级 biliDir');
-assert.ok(memory.includes("ledgerFile('whale-diary.md')") && memory.includes("ledgerFile('scores.json')"),
-  '角色级缺文件时必须回退账号级账本');
-console.log('✅ B站会话工作区归组测试通过');
+assert.doesNotMatch(bridge, /createBiliMemory\(|createBiliShareScheduler\(/);
+console.log('PASS Bili uses the V2 Host workspace and no legacy feed');

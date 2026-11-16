@@ -22,6 +22,10 @@
 
 ## 1. 项目目标
 
+### 2026-11-16 V1 运行时退役收口
+
+删除 QQ、B 站、抖音和桌宠的剩余 V1 运行时入口。用户资料留原位，离线比较和本机观看历史归档展示独立保留。B 站触发器、转写、官方传输与额度继续为 V2 服务。见 [本轮案例](cases/2026-11-16-v1-runtime-retirement.md)。
+
 ### 2026-11-12 路线变更：V1 退役改为破坏式重构（进行中）
 
 用户拍板「直接把六项 v1 删掉，开发中不需要向后兼容」，推翻 [V1-INVENTORY.md](product/V1-INVENTORY.md) §3 的 D1→D2→D3 观察期方案（该节保留作决策史料）。已开始按「缺省切 V2 + fail-closed 拒绝 v1 + 删 preset/模式/控制台入口 + 测试钉子按 v2-only 改写」实施，仍有残留和未通过的测试；不删 `~/.dsh` 用户数据。取舍与残留见 [case](cases/2026-11-12-v1-retirement.md)：B站调度触发机器与 `tools/commands` 必须留（V2 Host 无自有触发器、worker 直接 fork 它们），`src/memory-card.js` / `src/bili-api.js` 保留（评测与 V2 消费）。路线守则未变；本批不做「默认只开 QQ」等其它拍板项。

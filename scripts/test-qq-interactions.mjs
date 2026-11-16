@@ -22,54 +22,36 @@ function eventStream(h) {
   return (payload) => { queue.push({ rpcId: payload.eventId, payload }); wake?.(); wake = null; };
 }
 const privateMessage = (text, messageId = 100) => ({ user_id: 123, self_id: 1, message_id: messageId, sender: { nickname: 'fixture' }, message: [{ type: 'text', data: { text } }] });
-await test('question notification explains actual answer text and exact option roundtrips', async (h) => {
-  h.cfg.sendDelayMs = 0; const replies = [];
-  h.api.respond = async value => { replies.push(value); return { result: { ok: true } }; };
-  const sessionId = await h.ensureSession('private:123'); const emit = eventStream(h);
-  emit({ type: 'question/requested', sessionId, clientId: 'client', eventId: 'copyable-question', questions: [{ id: 'q', question: '请选择', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] }] });
-  for (let i = 0; i < 50 && !h.calls.sent.length; i++) await tick();
-  const entry = h.pending.get('private:123'); assert.ok(entry);
-  const notification = JSON.stringify(h.calls.sent);
-  assert.ok(notification.includes(entry.requestId));
-  assert.match(notification, /完整选项文字/);
-  assert.ok(!notification.includes(`${entry.requestId} 答案`), 'do not offer placeholder as a copyable answer');
-  await h.handleIncoming('private', '123', privateMessage(`${entry.requestId} A`), h.cfg);
-  assert.equal(replies.length, 1);
-  assert.deepEqual(replies[0].outcome.value.answers[0].selected, ['A']);
-  assert.match(replies[0].outcome.value.answers[0].custom, /回答者：主人/);
-  assert.equal(h.calls.prompts.length, 0);
+await test('an old DSH question cannot recreate a QQ interaction', async h => {
+  const emit = eventStream(h);
+  emit({ type: 'question/requested', sessionId: 'retired-session', clientId: 'client', eventId: 'stale-question', questions: [{ id: 'q', question: '归档提问' }] });
+  await tick();
+  assert.equal(h.pending.size, 0);
+  assert.equal(h.calls.sent.length, 0);
+  assert.equal(h.calls.nativeReplies.length, 0);
 });
-await test('numbered stale reply without pending is visible and never prompts', async (h) => {
-  h.setMode('chat'); h.cfg.sendDelayMs = 0;
+
+await test('numbered stale replies do not go to a model or reuse an old session', async h => {
+  h.setMode('chat');
   for (const text of ['拒绝 273d4825', '通过 abcdef12', 'abcdef12 A', 'approve 0123abcd']) {
-    const before = h.calls.sent.length;
     await h.handleIncoming('private', '123', privateMessage(text), h.cfg);
-    assert.equal(h.calls.prompts.length, 0, `stale response must not call model: ${text}`);
-    assert.equal(h.calls.sent.length, before + 1);
-    assert.match(JSON.stringify(h.calls.sent.at(-1)), /编号已结束或不存在/);
   }
+  assert.equal(h.calls.nativeReplies.length, 0);
+  assert.equal(h.calls.prompts.length, 0);
+  assert.equal(h.calls.created.length, 0);
 });
-await test('cancelled event followed by its numbered reply does not prompt', async (h) => {
-  h.setMode('chat'); h.cfg.sendDelayMs = 0;
-  const sessionId = await h.ensureSession('private:123'); const emit = eventStream(h);
-  emit({ type: 'approval/requested', sessionId, clientId: 'client', eventId: 'expired-case', toolName: 'safe-test' });
-  for (let i = 0; i < 50 && !h.pending.has('private:123'); i++) await tick();
-  const code = h.pending.get('private:123').requestId;
-  emit({ type: 'interaction/cancelled', clientId: 'client', eventId: 'expired-case' });
-  for (let i = 0; i < 50 && h.pending.has('private:123'); i++) await tick();
-  assert.equal(h.pending.has('private:123'), false);
-  await h.handleIncoming('private', '123', privateMessage(`拒绝 ${code}`), h.cfg);
-  assert.equal(h.calls.prompts.length, 0); assert.match(JSON.stringify(h.calls.sent.at(-1)), /编号已结束或不存在/);
-});
+
 await test('legacy mode treats numbered text as ordinary chat', async (h) => {
   h.setMode('chat'); h.cfg.sendDelayMs = 0; h.cfg.interaction.requireRequestId = false;
   await h.handleIncoming('private', '123', privateMessage('拒绝 273d4825'), h.cfg);
-  assert.equal(h.calls.prompts.length, 1);
+  assert.equal(h.calls.nativeReplies.length, 1);
+  assert.equal(h.calls.prompts.length, 0);
 });
 await test('strict mode still delivers ordinary non-interaction chat', async (h) => {
   h.setMode('chat'); h.cfg.sendDelayMs = 0;
   await h.handleIncoming('private', '123', privateMessage('你好，今天天气怎样？'), h.cfg);
-  assert.equal(h.calls.prompts.length, 1);
+  assert.equal(h.calls.nativeReplies.length, 1);
+  assert.equal(h.calls.prompts.length, 0);
 });
 await test('active request still rejects wrong ID and accepts current owner ID', async (h) => {
   h.setMode('chat'); h.cfg.sendDelayMs = 0; const replies = [];
@@ -81,23 +63,6 @@ await test('active request still rejects wrong ID and accepts current owner ID',
   assert.equal(replies.length, 0); assert.equal(h.calls.prompts.length, 0); assert.equal(h.pending.get('private:123'), entry);
   await h.handleIncoming('private', '123', privateMessage(`拒绝 ${entry.requestId}`), h.cfg);
   assert.equal(replies.length, 1); assert.equal(replies[0].outcome.value, 'rejected'); assert.equal(h.calls.prompts.length, 0);
-});
-await test('notification is registered before transport completes', async (h) => {
-  h.cfg.sendDelayMs = 0; const sessionId = await h.ensureSession('private:123');
-  let started, release, responses = 0;
-  h.api.respond = async () => { responses++; return { result: { ok: true } }; };
-  h.bot.sendPrivateMessage = async () => { if (!started) { started = true; await new Promise((resolve) => { release = resolve; }); } };
-  const emit = eventStream(h);
-  emit({ type: 'approval/requested', sessionId, clientId: 'client', eventId: 'event-one', toolName: 'safe-test' });
-  for (let i = 0; i < 30 && !started; i++) await tick();
-  try {
-    assert.ok(started); const entry = h.pending.get('private:123'); assert.equal(entry?.eventId, 'event-one');
-    const incoming = h.handleIncoming('private', '123', { user_id: 123, self_id: 1, message_id: 1, sender: { nickname: 'fixture' }, message: [{ type: 'text', data: { text: `通过 ${entry.requestId}` } }] }, h.cfg);
-    for (let i = 0; i < 50 && !responses; i++) await tick();
-    assert.equal(responses, 1, 'fast reply is consumed before notification returns');
-    release(); await incoming;
-  }
-  finally { release?.(); }
 });
 await test('duplicate event never cancels its own pending request', async (h) => {
   let responses = 0; h.api.respond = async () => { responses++; return { result: { ok: true } }; };
@@ -163,33 +128,23 @@ await test('explicit refusal can retry; transport uncertainty cannot', async (h)
   entry = h.pending.get('private:123'); await h.handlePendingAnswer(entry, `通过 ${entry.requestId}`, 'private:123', true);
   assert.equal(h.pending.has('private:123'), false); assert.equal(calls, 3);
 });
-await test('wire cancel clears only matching request and duplicate is not notified', async (h) => {
-  h.cfg.sendDelayMs = 0; const sessionId = await h.ensureSession('private:123');
-  const emit = eventStream(h); const frame = { type: 'approval/requested', sessionId, clientId: 'client', eventId: 'event-cancel', toolName: 'safe-test' };
-  emit(frame); for (let i = 0; i < 50 && !h.pending.has('private:123'); i++) await tick();
+await test('wire cancellation clears only a matching pending interaction', async h => {
+  await h.registerPending('private:123', { kind: 'approval', eventId: 'event-cancel', clientId: 'client' });
+  const emit = eventStream(h);
+  emit({ type: 'interaction/cancelled', clientId: 'other', eventId: 'event-cancel' });
+  await tick();
   assert.equal(h.pending.get('private:123')?.eventId, 'event-cancel');
-  emit(frame); emit({ type: 'interaction/cancelled', clientId: 'other', eventId: 'event-cancel' });
-  await tick(); assert.equal(h.pending.has('private:123'), true);
   emit({ type: 'interaction/cancelled', clientId: 'client', eventId: 'event-cancel' });
-  for (let i = 0; i < 50 && h.pending.has('private:123'); i++) await tick();
+  await tick();
   assert.equal(h.pending.has('private:123'), false);
-  for (let i = 0; i < 5; i++) await tick();
-  assert.equal(h.calls.sent.length, 1);
 });
+
 await test('legacy bare approval remains compatible', async (h) => {
   h.cfg.sendDelayMs = 0; h.cfg.interaction.requireRequestId = false; let received;
   h.api.respond = async (value) => { received = value; return { result: { ok: true } }; };
   await h.registerPending('private:123', { kind: 'approval', clientId: 'client', eventId: 'legacy', sessionId: 'session' });
   await h.handlePendingAnswer(h.pending.get('private:123'), '拒绝', 'private:123', true);
   assert.equal(received.outcome.value, 'rejected');
-});
-await test('failed notification retains pending request', async (h) => {
-  h.cfg.sendDelayMs = 0; const sessionId = await h.ensureSession('private:123'); let attempted = false;
-  h.bot.sendPrivateMessage = async () => { attempted = true; throw new Error('fixture disconnect'); };
-  const emit = eventStream(h); emit({ type: 'approval/requested', sessionId, clientId: 'client', eventId: 'send-fail', toolName: 'safe' });
-  for (let i = 0; i < 50 && !attempted; i++) await tick();
-  assert.equal(attempted, true);
-  assert.equal(h.pending.get('private:123')?.eventId, 'send-fail');
 });
 await test('timeout rejects pending and stale code cannot decide next event', async (h) => {
   h.cfg.sendDelayMs = 0; h.cfg.questionTimeoutMs = 10; const replies = [];
@@ -207,7 +162,8 @@ await test('timeout rejects pending and stale code cannot decide next event', as
 await test('session retirement cancels old pending and old code cannot approve new', async (h) => {
   h.cfg.sendDelayMs = 0; const replies = [];
   h.api.respond = async (value) => { replies.push(value); return { result: { ok: true } }; };
-  const sessionId = await h.ensureSession('private:123');
+  const sessionId = 'retired-session';
+  h.state.sessions['private:123'] = sessionId;
   await h.registerPending('private:123', { kind: 'approval', clientId: 'client', eventId: 'old-session', sessionId });
   const oldCode = h.pending.get('private:123').requestId; h.retireSession('private:123');
   assert.equal(h.pending.has('private:123'), false);

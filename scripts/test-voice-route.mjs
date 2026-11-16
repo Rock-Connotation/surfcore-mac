@@ -83,8 +83,8 @@ try {
   assert.equal(seen[0].character, 'huayan', 'character 应该来自 voice.tts.character');
 
   // ② 发出去的是 record 段，不是文本
-  const sent = await h.sendVoiceForV2('group:456', null, { resolved: r, verify: false });
-  assert.equal(sent.key, 'group:456');
+  const sent = await h.sendVoiceTransport('group:456', r.path, { audit: true, verify: false });
+  assert.equal(sent.messageId, 9001);
   const onebot = h.calls.http.filter((c) => c.url.endsWith('send_group_msg')).pop();
   assert.ok(onebot, '应该调用 send_group_msg');
   assert.equal(onebot.body.message[0].type, 'record');
@@ -94,7 +94,7 @@ try {
   if (fs.constants.O_NOFOLLOW) {
   const inline = await bridgeHarness({ config: { allow: { groups: ['456'] }, socialV2: { mode: 'reserved2', voice: { enabled: true, trigger: {who: 'anyone'}, recordTransport: 'base64' }, tools: { sendVoice: true } } } });
   try {
-    await inline.sendVoiceForV2('group:456', null, { resolved: r, verify: false });
+    await inline.sendVoiceTransport('group:456', r.path, { audit: true, verify: false });
     const msg = inline.calls.http.filter(c => c.url.endsWith('send_group_msg')).pop();
     assert.equal(msg.body.message[0].data.file, 'base64://' + fs.readFileSync(r.path).toString('base64'));
   } finally { await inline.close(); }

@@ -10,7 +10,7 @@
 //
 // 2026-10-23 重写（用户反馈「总是搜到相同的视频」「只盯着一两个偏好」）：
 //   ① 去重补全：以前只排除日记/审计表里的 BV，**观看历史里 25 个看过的视频没被排除**，
-//      所以刚看完的又被推回来。现在合并日记 + 审计表 + watch-history + B站记忆 + 收藏 + 反馈；
+//      所以刚看完的又被推回来。现在合并日记 + 审计表 + watch-history + 收藏 + 反馈；
 //   ② 搜索轮换：以前每个词固定 page 1 + click/pubdate，B站 对同一个词返回的永远是同一批；
 //      现在按天轮换排序（totalrank/pubdate/click/dm）和页码（1~3）；
 //   ③ 偏好权重：以前 `prefs.slice(0, 6)` 只搜前 6 个词，且 DeepSeek/Deepseek/deepseek
@@ -61,14 +61,14 @@ if (!enabled.length) {
   console.error('（没有启用的偏好：所有关键词权重为 0 或列表为空 → 只从热门/排行/关注里挑，且最多 1 条）')
 }
 
-// ── ② 看过名单：日记 + 审计表 + 观看历史 + B站记忆 + 收藏 + 反馈 ─────────
+// ── ② 看过名单：日记 + 审计表 + 观看历史 + 收藏 + 反馈 ─────────
 const seenTexts = []
 try { seenTexts.push(fs.readFileSync(diary, 'utf8')) } catch { /* 没有日记不致命 */ }
 try { seenTexts.push(fs.readFileSync(audit, 'utf8')) } catch { /* 没有审计表也无妨 */ }
 const seen = bvSetFromTexts(seenTexts)
 let watchSeen = 0
 try {
-  const history = readWatchHistory({ limit: 2000 })
+  const history = readWatchHistory({ memoryFile: null, limit: 2000 })
   for (const item of history.items) {
     if (!item?.bvid || seen.has(item.bvid)) continue
     seen.add(item.bvid)
@@ -78,10 +78,6 @@ try {
 
 const likedBVs = new Set()
 const favBVs = new Set()
-try {
-  const memory = JSON.parse(fs.readFileSync(biliState('bili-memory.json'), 'utf8'))
-  for (const entry of (memory.entries ?? [])) if (entry?.bvid) seen.add(entry.bvid)
-} catch {}
 try {
   const fav = JSON.parse(fs.readFileSync(biliState('favorites.json'), 'utf8'))
   for (const item of (fav.items ?? [])) if (item?.bv) { seen.add(item.bv); favBVs.add(item.bv) }

@@ -1,4 +1,4 @@
-// Actual HTTP transport -> Bili parent -> shared queue -> experience -> memory -> next context.
+// Actual HTTP transport -> Bili parent -> shared recognition queue -> viewing history.
 // The Bili acquisition and recognition executable are deterministic local fixtures; no account calls.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,15 +9,6 @@ import { execFileSync } from 'node:child_process';
 const evidence = path.resolve('_backups', `perception-host-${Date.now()}-${process.pid}`);
 process.env.DSH_HOME = path.join(evidence, 'dsh');
 const chars = await import('../src/character-persona.js');
-const { appendExperienceEvent } = await import('../src/core/experience.js');
-const { buildCharacterContext } = await import('../src/core/context.js');
-const { cardText, preparedMemoryView } = await import('./test-v2-context-fixture.mjs');
-// V2-only（2026-11-12）：context.js 不再直接读记忆卡，测试要把卡片文本包成 Host 准备包。
-const view = (channel, conversationKey = '') => {
-  const text = cardText({ memoryJson: path.join(stateDir, 'characters', chars.readCurrentCharacter().id, 'memory', 'memory-card.json') }, { channel, conversationKey });
-  return buildCharacterContext({ scene: channel, audience: { channel, conversationKey }, ...preparedMemoryView(text, { channel, conversationKey }) });
-};
-const { runMemoryCardMaintenance } = await import('../plugins/surfcore/lib/memory-card.js');
 const { createPerceptionService } = await import('../src/perception/index.js');
 const { createBiliPerceptionService } = await import('../plugins/surfcore/lib/bili-perception.js');
 const { createPerceptionApiService } = await import('../plugins/surfcore/lib/perception-api.js');
@@ -37,11 +28,11 @@ const executable = path.join(evidence, 'recognizer.cjs');
 fs.writeFileSync(executable, `#!/usr/bin/env node\nconst fs=require('fs'),args=process.argv.slice(2); if(args.includes('--version')) console.log('1.9.5-dev'); else fs.writeFileSync(args[args.indexOf('-of')+1]+'.json', JSON.stringify({transcription:[{offsets:{from:0,to:900},text:'外部材料测试'}]}));\n`, { mode: 0o755 });
 const hash = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const asr = createPerceptionService({ dataRoot: stateDir, engine: { provider: 'whisper.cpp', executable, backend: 'cpu', model: { id: 'fixture', path: model, sha256: hash(model) } }, ffmpegPath: media.ffmpegPath, ffprobePath: media.ffprobePath, getCharacter: chars.readCurrentCharacter });
-const events = [];
+const archive = chars.characterPaths(role.id).experienceInbox;
+fs.writeFileSync(archive, 'archived-experience-canary\n');
 const service = createBiliPerceptionService({ asrService: asr, stateDir, getCharacter: chars.readCurrentCharacter, pollMs: 10,
   createApi: () => ({ fetchView: async () => ({ bvid: 'BV1Ab4y1N7cD', title: '隔离媒体', aid: 1, owner: {}, pages: [{ page: 1, cid: 1, duration: 1 }, { page: 2, cid: 2, duration: 1 }] }), fetchPlayurl: async () => ({}) }),
   prepareMedia: async ({ dataRoot }) => { fs.mkdirSync(dataRoot, { recursive: true }); const file = path.join(dataRoot, 'p2.wav'); fs.copyFileSync(wav, file); return { audio: { path: file, status: 'completed', contentSha256: hash(file), durationMs: 1000, acquiredRanges: [{ startMs: 0, endMs: 1000 }], timelineMap: [{ localStartMs: 0, localEndMs: 1000, sourceStartMs: 0, sourceEndMs: 1000 }] } }; },
-  onExperience: async (event) => { events.push(event.eventId); const saved = appendExperienceEvent(chars.characterPaths(event.characterId), event); if (!saved.ok) return saved; return runMemoryCardMaintenance({}); },
 });
 const channels = new PlatformRegistry();
 let biliEnabled = false;
@@ -62,14 +53,11 @@ try {
   biliEnabled = true;
   const submitted = await client.submitBili(request);
   let job;
-  for (let i = 0; i < 400; i++) { job = await client.getJob(submitted.jobId); if (job.memoryState === 'completed' || job.state === 'failed') break; await new Promise(resolve => setTimeout(resolve, 25)); }
-  assert.equal(job.state, 'completed', JSON.stringify(job)); assert.equal(job.memoryState, 'completed', JSON.stringify(job));
+  for (let i = 0; i < 400; i++) { job = await client.getJob(submitted.jobId); if (job.history?.status === 'recorded' || job.state === 'failed') break; await new Promise(resolve => setTimeout(resolve, 25)); }
+  assert.equal(job.state, 'completed', JSON.stringify(job));
   assert.equal(job.part.cid, '2'); assert.equal(job.coverage.complete, true); assert.equal(job.history.status, 'recorded');
   assert.ok(job.result.segments.length); assert.equal(job.request, undefined);
-  const context = view('bili');
-  assert.match(context.memoryText, /BV1Ab4y1N7cD P2/); assert.match(context.memoryText, /外部材料/);
-  const qq = view('qq', 'group:123');
-  assert.doesNotMatch(qq.memoryText, /BV1Ab4y1N7cD P2/);
-  await runMemoryCardMaintenance({}); assert.equal(events.length, 1);
-  console.log(JSON.stringify({ ok: true, scope: 'isolated HTTP + deterministic provider', jobId: job.jobId, cid: job.part.cid, coverage: job.coverage, memoryState: job.memoryState, nextContext: true, qqPrivate: true, evidence }));
+  assert.equal(fs.readFileSync(archive, 'utf8'), 'archived-experience-canary\n');
+  assert.equal(job.memoryState, undefined);
+  console.log(JSON.stringify({ ok: true, scope: 'isolated HTTP + deterministic provider', jobId: job.jobId, cid: job.part.cid, coverage: job.coverage, history: job.history, evidence }));
 } finally { await channels.dispose(); await service.dispose(); await new Promise(resolve => server.close(resolve)); }

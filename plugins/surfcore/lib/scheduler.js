@@ -36,10 +36,9 @@ import {
 } from './paths.js'
 import { resolvePersonaFile } from './persona.js'
 import { readUnified } from './store.js'
-import { memoryCardPromptBlock } from './memory-card.js'
 import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-identity.js'
 import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.js'
-import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText, readCurrentCharacter } from '../../../src/character-persona.js'
+import { activePlatformStateDir, readPersonaLayerText, readCurrentCharacter } from '../../../src/character-persona.js'
 import { composePersonaLayers } from '../../../src/persona-layers.js'
 import { buildCharacterContext } from '../../../src/core/context.js'
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js'
@@ -162,35 +161,6 @@ export function adminBlockForBili() {
   const unifiedState = readUnified()
   const unified = unifiedState.hasAdmin ? unifiedState.config : { ...unifiedState.config, admin: undefined }
   return adminPromptBlock('bili', adminFromSources({ unified, bili, qq: {} }))
-}
-
-/** QQ → B站 的脱敏记忆（默认关闭；开启后才注入）。 */
-function qqMemoryBlockForBili() {
-  const unified = readUnified().config
-  if (unified.memory?.qqToBili?.enabled !== true) return ''
-  const text = readTextFile(activeMemoryPaths().qqForBili)
-  if (!text) return ''
-  return `［QQ 群里的近况（已脱敏；不含私信/联系方式）］\n${text}`
-}
-
-/** 记忆卡（B站侧）：只拿公开冲浪记忆 + 共享锚点，不含 QQ 私事（隐私边界）。 */
-function memoryCardBlockForBili() {
-  const unified = readUnified().config
-  if (unified.memoryCard?.enabled === false) return ''
-  const context = buildCharacterContext({ scene: 'bili', audience: { channel: 'bili' }, includePersona: false, includeLife: false })
-  return context.ok ? context.memoryText : (context.code === 'CHARACTER_CONTEXT_REQUIRED' ? memoryCardPromptBlock('bili') : '')
-}
-
-/** 每次唤醒都放在最前面的合体上下文（顺序：人设 → 自我锚点 → 管理员 → 对齐 → QQ 记忆 → 记忆卡）。 */
-function identityContextLines() {
-  return [
-    personaCardBlock(),
-    selfIdentityBlockForBili(),
-    adminBlockForBili(),
-    alignmentBlockForBili(),
-    qqMemoryBlockForBili(),
-    memoryCardBlockForBili(),
-  ].filter(Boolean)
 }
 
 /** Same Bili persona/memory composition, bound to one role revision. V2-only：本入口不再组装旧记忆上下文。 */

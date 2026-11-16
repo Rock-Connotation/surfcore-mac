@@ -412,7 +412,7 @@ function uniqueId(base, exclude = '') {
 }
 
 /** 新建角色：只负责落盘，不切换、不碰平台。 */
-export function createCharacter({ name, personaText, memoryCard, fullRecords, id: wantedId, source = 'manual', now = Date.now() } = {}) {
+export function createCharacter({ name, personaText, id: wantedId, source = 'manual', now = Date.now() } = {}) {
   const cleanName = String(name ?? '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 40);
   if (!cleanName) throw new Error('角色名不能为空');
   const baseId = sanitizeCharacterId(wantedId || cleanName);
@@ -424,12 +424,6 @@ export function createCharacter({ name, personaText, memoryCard, fullRecords, id
   ensureDir(paths.snapshotsDir);
   const persona = String(personaText ?? '').trim() || defaultPersona(cleanName);
   fs.writeFileSync(paths.persona, `${persona}\n`, { encoding: 'utf8', mode: 0o600 });
-  if (memoryCard && typeof memoryCard === 'object') {
-    atomicWriteJson(paths.memoryJson, memoryCard);
-  }
-  if (Array.isArray(fullRecords) && fullRecords.length) {
-    fs.writeFileSync(paths.memoryFullJsonl, `${fullRecords.map((record) => JSON.stringify(record)).join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
-  }
   const manifest = {
     version: CHARACTER_VERSION,
     id,
@@ -448,14 +442,13 @@ export function createCharacter({ name, personaText, memoryCard, fullRecords, id
   return { ok: true, character: manifest, paths };
 }
 
-export function updateCharacter(id, { name, personaText, memoryCard, now = Date.now() } = {}) {
+export function updateCharacter(id, { name, personaText, now = Date.now() } = {}) {
   const paths = characterPaths(id);
   const manifest = readManifest(id);
   if (!manifest) throw new Error(`角色不存在：${id}`);
   if (typeof personaText === 'string') {
     fs.writeFileSync(paths.persona, `${personaText.trim()}\n`, { encoding: 'utf8', mode: 0o600 });
   }
-  if (memoryCard && typeof memoryCard === 'object') atomicWriteJson(paths.memoryJson, memoryCard);
   const next = {
     ...manifest,
     name: name ? String(name).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 40) || manifest.name : manifest.name,
@@ -642,10 +635,6 @@ export function restoreSnapshot(id, slot, { now = Date.now() } = {}) {
       copyFile(path.join(source, 'persona.scenes', entry.name), path.join(paths.personaScenesDir, entry.name));
     }
   } catch {}
-  // 只回档衰减卡与其注入块；全量记忆是 append-only，连 stats 都不回退（避免把后来的记忆统计抹掉）。
-  for (const file of ['memory-card.json', 'memory-card.md', 'memory-card-prompt-qq.md', 'memory-card-prompt-bili.md', 'memory-inbox.jsonl']) {
-    copyFile(path.join(source, 'memory', file), path.join(paths.memoryDir, file));
-  }
   // Preserve post-snapshot experiences; the restored cursor replays the retained suffix.
   if (!fs.existsSync(paths.experienceInbox)) copyFile(path.join(source, 'memory', 'experience-inbox.jsonl'), paths.experienceInbox);
   copyFile(path.join(source, 'life', 'state.json'), paths.lifeState);
@@ -679,7 +668,7 @@ export function snapshotSize(id, slot) {  let bytes = 0;
 
 /**
  * 从旧布局迁移出第一个角色。**不删除旧数据**（旧目录继续作为冷备份）。
- * 大文件（全量记忆 JSONL）优先硬链接，避免复制 10GB。
+ * 角色导入只建立人格与平台账本，历史记忆原地保留。
  */
 export function migrateLegacy({ personaFile, memoryDir = LEGACY_MEMORY_DIR, biliDir = LEGACY_BILI_DIR, stateDir = '', name, now = Date.now() } = {}) {
   ensureDir(CHARACTERS_DIR);
@@ -703,16 +692,6 @@ export function migrateLegacy({ personaFile, memoryDir = LEGACY_MEMORY_DIR, bili
       backup.files.push({ src, bytes: stat.size });
     } catch {}
   };
-  // 记忆：小文件复制，全量 JSONL 硬链接/复制。
-  for (const file of MEMORY_FILES) {
-    const src = path.join(memoryDir, file);
-    if (!fs.existsSync(src)) continue;
-    copyFile(src, path.join(paths.memoryDir, file));
-    copySmall(src, path.join(backupDir, 'memory', file));
-  }
-  for (const file of MEMORY_APPEND_FILES) {
-    linkOrCopy(path.join(memoryDir, file), path.join(paths.memoryDir, file));
-  }
   // B站 行为账本：只迁行为文件；凭证/表情包/二进制工具留在全局。
   try {
     for (const entry of fs.readdirSync(biliDir, { withFileTypes: true })) {

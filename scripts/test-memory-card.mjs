@@ -12,7 +12,7 @@ import {
   maintainMemoryCard, memoryCardStatus, mergeMemories, normalizeMemoryCardConfig, readAllFullRecords,
   recallFullMemory, redactForMemory, refreshInitialState, renderFullMemoryCard, renderMemoryCard,
   resolveMemoryCardPaths, scoreMemory, shouldNotifyOwner, targetClarity,
-} from '../src/memory-card.js';
+} from './test-fixtures/memory-card.mjs';
 
 const temps = [];
 function tempDir() {

@@ -13,7 +13,7 @@
 //        · 鉴权：本机签名密钥离线铸造 Cookie
 //        · settings/describe 可用，`qq-mode` 命名空间在列且可写
 //          （0.2.0 删除了 ctx.settings.register()，命名空间改由 entry id + Config 推导）
-//        · agentPresets/list 含 qq-chat / qq-chat-v2
+//        · agentPresets/list 含 qq-chat-v2，旧版 qq-chat 已卸下
 //        · session/create 挂 preset + selectModel(deepseek-flash)
 //        · session/projections 一元 RPC 可用（读队列的主路径）
 //        · session/control 开场 baseline 是 value.projections[<id>].values.inbox
@@ -269,7 +269,7 @@ if (!dshReachable) {
   check('DSH 全局默认模型 = deepseek-flash', dm?.value?.model === 'deepseek-flash', `当前 ${dm?.value?.model}`);
   const ap = await rpc('agentPresets/list', {});
   const presetIds = ap?.value?.presets?.map((p) => p.id) ?? [];
-  check('agentPresets/list 含 qq-chat 与 qq-chat-v2', presetIds.includes('qq-chat') && presetIds.includes('qq-chat-v2'), presetIds.join(', '));
+  check('agentPresets/list 仅含二代 QQ 预设', !presetIds.includes('qq-chat') && presetIds.includes('qq-chat-v2'), presetIds.join(', '));
   // 0.1.7 把设置命名空间从 `agent-presets` 改名为 `agent-preset-registry`，而且「用户默认」
   // 是易失字段 selectedDefault，不会出现在 describe 的 value 里。部署默认由 registry 行的
   // config.default 决定（dsh-web-app 的 patch 写的是 standard）。桥接在 closedAgentPreset

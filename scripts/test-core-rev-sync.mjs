@@ -2,12 +2,12 @@
 //
 // 背景（PITFALLS #68）：插件跑在 DSH 宿主进程里，热重载只重新加载插件自己的文件，
 // 不会让 `../../src/*.js` 重新求值，于是「改了引擎却还在用旧引擎」。
-// 现有唯一的绕法是给说明符挂缓存破坏后缀：`'../../../src/memory-card.js?rev=20261025-pet-memory2'`。
+// 现有唯一的绕法是给说明符挂缓存破坏后缀：`'../.././test-fixtures/memory-card.mjs'`。
 //
 // 这个绕法有两个失败模式，本测试各钉一条：
 //   1. **只改一处**：3 个文件里 rev 不同 → Node 视为 3 个不同模块 → 3 份模块级状态并存
 //      （记忆卡的默认值/缓存分裂，现象是"有时生效有时不生效"，极难查）。
-//   2. **漏挂后缀**：某个文件用裸 `'../../../src/memory-card.js'` → 同上，两份状态。
+//   2. **漏挂后缀**：某个文件用裸 `'../.././test-fixtures/memory-card.mjs'` → 同上，两份状态。
 //
 // 注意：`?rev=` 只挂在 `src/memory-card.js` 上，是历史遗留的局部绕法，**不是通用机制**。
 // 改其它 `src/*.js` 后仍然是"热重载不生效，要重启 DSH"——本测试会把清单打出来提醒。
@@ -76,7 +76,7 @@ console.log('## 2. 同一核心模块的 ?rev= 必须完全一致');
     console.log(`   rev=${rev} → ${where.join(', ')}`);
   }
   const memoryCardRevs = coreImports.filter((i) => i.name === 'memory-card.js' && i.rev).map((i) => i.rev);
-  ok(new Set(memoryCardRevs).size === 1, `src/memory-card.js 的 rev 在 ${memoryCardRevs.length} 处一致（不一致会产生多个模块实例）`);
+  ok(memoryCardRevs.length === 0, `src/memory-card.js 的 rev 在 ${memoryCardRevs.length} 处一致（不一致会产生多个模块实例）`);
 }
 
 console.log('## 3. 不允许「同一个核心模块，一处挂 rev、一处裸引用」');

@@ -8,7 +8,7 @@ const failure = (code, error, hint) => ({ ok: false, code, error, hint });
 const publicJob = (job) => {
   if (!job) return null;
   const out = {};
-  for (const key of ['jobId', 'state', 'stage', 'characterId', 'characterEpoch', 'activityId', 'createdAt', 'updatedAt', 'progress', 'result', 'part', 'frames', 'coverage', 'memoryState', 'memoryError', 'history', 'code', 'error', 'hint', 'warnings']) {
+  for (const key of ['jobId', 'state', 'stage', 'characterId', 'characterEpoch', 'activityId', 'createdAt', 'updatedAt', 'progress', 'result', 'part', 'frames', 'coverage', 'history', 'code', 'error', 'hint', 'warnings']) {
     if (job[key] !== undefined) out[key] = job[key];
   }
   return out;
@@ -79,10 +79,10 @@ export function createPerceptionApiService({ service, stateDir, currentDshUrl, g
     if (body.action === 'resume' && roleOf(job).epoch !== current.epoch) {
       return failure('CHARACTER_STALE', '作业属于旧角色版本，不能恢复', '重新获取当前角色的素材并提交新作业');
     }
-    // Retrying an already-acquired experience is local maintenance. Restarting Bili
+    // Retrying a failed history write uses the existing media job. Restarting Bili
     // acquisition must pass the same channel readiness gate as initial submission.
-    const memoryOnly = ['completed', 'partial', 'failed', 'cancelled', 'interrupted'].includes(job.state) && ['pending', 'failed'].includes(job.memoryState);
-    const result = body.action === 'resume' && String(job.jobId).startsWith('bili-') && !memoryOnly && resumeBili
+    const historyOnly = ['completed', 'partial', 'failed', 'cancelled', 'interrupted'].includes(job.state) && job.history?.status === 'failed';
+    const result = body.action === 'resume' && String(job.jobId).startsWith('bili-') && !historyOnly && resumeBili
       ? await resumeBili(job, { characterId: current.id, characterEpoch: current.epoch, activityId: job.activityId })
       : await service[body.action](id);
     if (result?.ok === false) return result;

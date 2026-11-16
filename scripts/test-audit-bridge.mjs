@@ -9,170 +9,30 @@ async function test(name, run, options) {
   catch (error) { failures++; console.error('FAIL', name, error.message); }
   finally { await h.close(); }
 }
-await test('closed-agent session is not reused after switching to chat', async (h) => {
+await test('retired unrestricted mode cannot create a QQ model session', async h => {
   h.setMode('closed-agent');
-  const privileged = await h.ensureSession('private:123');
-  h.setMode('chat');
-  const restricted = await h.ensureSession('private:123');
-  assert.notEqual(restricted, privileged);
-  assert.equal(h.calls.created.at(-1).agentPreset, 'qq-chat-v2');
-  assert.ok(h.calls.cancelled.includes(privileged));
-});
-await test('unavailable preset catalogue fails closed for QQ and learner sessions', async (h) => {
-  h.setPresets([]);
-  assert.equal(h.resolvePresetName('missing', { strict: true }), '');
-  await assert.rejects(h.ensureSession('group:456'));
-  await assert.rejects(h.ensureSlangLearnerSession());
+  await assert.rejects(h.ensureSession('private:123'), { code: 'MEMORY_PRESET_UNSAFE' });
   assert.equal(h.calls.created.length, 0);
+  assert.equal(h.calls.nativeReplies.length, 0);
 });
-await test('session creation crossing a mode change never accepts stale permissions', async (h) => {
-  h.setMode('closed-agent');
-  let release;
-  const original = h.api.sessions.create;
-  h.api.sessions.create = async (params) => {
-    const result = await original(params);
-    await new Promise((resolve) => { release = resolve; });
-    return result;
-  };
-  const pending = h.ensureSession('private:123');
-  while (!release) await new Promise((resolve) => setImmediate(resolve));
-  h.setMode('chat');
-  release();
-  await assert.rejects(pending);
-  assert.equal(h.state.sessions['private:123'], undefined);
-});
-await test('queued send rechecks allowlist at actual transport time', async (h) => {
+
+await test('queued send rechecks allowlist at transport time', async h => {
   const sending = h.sendToQQ('group:456', 'fixture');
   h.cfg.allow.groups = [];
   await sending;
   assert.equal(h.calls.sent.length, 0);
 });
-await test('old prompt completion cannot delete replacement queue after reset', async (h) => {
-  const release = [];
-  h.api.sessions.prompt = async () => {
-    await new Promise((resolve) => release.push(resolve));
-    return { result: { ok: true, value: {} } };
-  };
-  const first = h.deliverPrompt('group:456', 'first');
-  while (release.length < 1) await new Promise((resolve) => setImmediate(resolve));
-  h.drainPromptQueue('group:456', 'reset');
-  const second = h.deliverPrompt('group:456', 'second');
-  while (release.length < 2) await new Promise((resolve) => setImmediate(resolve));
-  const replacement = h.promptQueues.get('group:456');
-  release[0](); await first;
-  assert.equal(h.promptQueues.get('group:456'), replacement);
-  release[1](); await second;
+
+await test('accepted QQ reply queues Native instead of selecting models or submitting prompts', async h => {
+  h.api.sessions.selectModel = () => assert.fail('legacy model selection');
+  h.api.sessions.prompt = () => assert.fail('legacy prompt');
+  const queued = await h.deliverPrompt('private:123', 'old queued string');
+  assert.equal(queued.ok, true);
+  assert.equal(queued.providerAdmissionCoverage, 'native-owner');
+  assert.equal(h.calls.nativeReplies.length, 1);
+  assert.ok(!JSON.stringify(h.calls.nativeReplies).includes('old queued string'));
 });
-await test('same-policy sessions are reused but legacy unlabelled sessions are replaced', async (h) => {
-  const first = await h.ensureSession('private:123');
-  assert.equal(await h.ensureSession('private:123'), first);
-  delete h.state.sessionPolicies['private:123'];
-  assert.notEqual(await h.ensureSession('private:123'), first);
-});
-for (const existing of [false, true]) for (const failure of ['response', 'throw']) {
-  await test(`model selection ${failure} blocks ${existing ? 'existing' : 'new'} session prompt`, async (h) => {
-    h.setReady(true);
-    if (existing) {
-      await h.ensureSession('private:123');
-      h.cfg.dsh.model = 'changed-fixture-model';
-    }
-    h.api.sessions.selectModel = async () => {
-      if (failure === 'throw') throw new Error('fixture selection failed');
-      return { result: { ok: false, error: { code: 'fixture-failure', message: 'selection failed' } } };
-    };
-    const result = await h.deliverPrompt('private:123', 'fixture');
-    assert.equal(h.calls.prompts.length, 0);
-    assert.equal(result.ok, false);
-    assert.equal(result.code, 'MODEL_APPLY_FAILED');
-    assert.ok(result.error && result.hint);
-    assert.equal(h.getModelStatus().pending, false);
-    assert.equal(h.getModelStatus().lastApply.ok, false);
-    assert.equal(h.getModelStatus().lastApply.code, 'MODEL_APPLY_FAILED');
-    assert.ok(h.getModelStatus().lastApply.hint);
-    assert.ok(h.calls.sent.length > 0, 'QQ user receives actionable failure');
-  });
-}
-await test('ordinary incoming message sees selection failure without prompt', async (h) => {
-  h.setMode('chat'); h.setReady(true);
-  h.api.sessions.selectModel = async () => { throw new Error('fixture selection failed'); };
-  await h.handleIncoming('private', '123', { user_id: 123, self_id: 1, message_id: 1234, sender: { nickname: 'fixture' }, message: [{ type: 'text', data: { text: 'fixture message' } }] }, h.cfg);
-  assert.equal(h.calls.prompts.length, 0);
-  assert.ok(h.calls.sent.length > 0, 'QQ user receives actionable failure');
-  const sent = JSON.stringify(h.calls.sent);
-  assert.match(sent, /模型选择失败/); assert.match(sent, /检查 DSH 模型连接/);
-});
-await test('console notify reports model failure with code and hint', async (h) => {
-  h.setReady(true);
-  h.api.sessions.selectModel = async () => { throw new Error('fixture selection failed'); };
-  const server = h.startConsoleServer();
-  if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
-  try {
-    const reply = await new Promise((resolve, reject) => {
-      const request = http.request({ host: '127.0.0.1', port: server.address().port, path: '/api/console/notify-ai?token=fixture-console-token', method: 'POST', headers: { 'content-type': 'application/json' } }, (response) => {
-        let body = ''; response.on('data', (chunk) => { body += chunk; }); response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(body) }));
-      });
-      request.on('error', reject); request.end(JSON.stringify({ key: 'private:123', message: 'fixture' }));
-    });
-    assert.equal(reply.status, 500); assert.equal(reply.body.code, 'MODEL_APPLY_FAILED');
-    assert.ok(reply.body.error && reply.body.hint); assert.equal(h.calls.prompts.length, 0);
-  } finally { await new Promise((resolve) => server.close(resolve)); }
-});
-await test('unsupported reasoning effort still retries without effort and delivers', async (h) => {
-  h.setReady(true);
-  const selections = [];
-  h.api.sessions.selectModel = async (params) => {
-    selections.push(params);
-    if (selections.length === 1) throw new Error('does not support reasoning effort');
-    return { result: { ok: true, value: { selected: { provider: 'fixture', model: 'fixture' } } } };
-  };
-  const result = await h.deliverPrompt('private:123', 'fixture');
-  assert.equal(result.ok, true);
-  assert.equal(selections.length, 2);
-  assert.ok('reasoningEffort' in selections[0]);
-  assert.equal('reasoningEffort' in selections[1], false);
-  assert.equal(h.calls.prompts.length, 1);
-});
-await test('disabled model fallback never selects another provider or prompts', async (h) => {
-  h.setReady(true);
-  h.cfg.dsh.followDefaultModel = false;
-  h.cfg.dsh.allowModelFallback = false;
-  h.cfg.dsh.provider = 'requested-provider'; h.cfg.dsh.model = 'requested-model';
-  const selections = [];
-  h.api.sessions.selectModel = async (params) => { selections.push(params); throw new Error('model-unavailable'); };
-  const result = await h.deliverPrompt('private:123', 'fixture');
-  assert.equal(result.ok, false); assert.equal(result.code, 'MODEL_APPLY_FAILED'); assert.ok(result.error && result.hint);
-  assert.equal(h.calls.prompts.length, 0);
-  assert.ok(selections.length > 0);
-  assert.ok(selections.every((s) => s.provider === 'requested-provider' && s.model === 'requested-model'));
-  assert.equal(h.calls.cancelled.filter((call) => call.method === 'session.models' || call.method === 'session.modelCatalog').length, 0);
-});
-await test('legacy default still allows catalogue model fallback', async (h) => {
-  h.setReady(true); h.cfg.dsh.followDefaultModel = false;
-  h.cfg.dsh.provider = 'requested-provider'; h.cfg.dsh.model = 'requested-model';
-  const selections = [];
-  h.api.callUnary = async () => ({ result: { ok: true, value: { groups: [{ id: 'alternate', models: [{ id: 'alternate-model' }] }] } } });
-  h.api.sessions.selectModel = async (params) => {
-    selections.push(params);
-    if (selections.length === 1) throw new Error('model-unavailable');
-    return { result: { ok: true, value: { selected: { provider: params.provider, model: params.model } } } };
-  };
-  const result = await h.deliverPrompt('private:123', 'fixture');
-  assert.equal(result.ok, true); assert.equal(selections[1].provider, 'alternate');
-  assert.equal(selections[1].model, 'alternate-model'); assert.equal(h.calls.prompts.length, 1);
-  h.cfg.dsh.allowModelFallback = false;
-  h.api.sessions.selectModel = async (params) => { selections.push(params); throw new Error('model-unavailable'); };
-  const afterPolicyChange = await h.deliverPrompt('private:123', 'after-policy-change');
-  assert.equal(h.calls.prompts.length, 1, 'must not prompt with cached alternate after fallback disabled');
-  assert.equal(afterPolicyChange.ok, false); assert.equal(afterPolicyChange.code, 'MODEL_APPLY_FAILED');
-});
-await test('reset during model selection cannot return a detached session', async (h) => {
-  h.api.sessions.selectModel = async () => {
-    h.resetEpoch();
-    return { result: { ok: true, value: { selected: {} } } };
-  };
-  await assert.rejects(h.ensureSession('private:123'));
-  assert.equal(h.state.sessions['private:123'], undefined);
-});
+
 await test('malformed HTTP request targets return 400 without hanging', async (h) => {
   const server = h.startConsoleServer();
   if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
@@ -193,8 +53,9 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
   const server = h.startConsoleServer();
   try {
     if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
-    const sessionId = await h.ensureSession('private:123');
-    assert.ok(h.state.sessionPolicies['private:123'], 'policy should exist before reset');
+    const sessionId = 'fixture-retired-session';
+    h.state.sessions['private:123'] = sessionId;
+    h.state.sessionPolicies['private:123'] = { seed: true };
     h.calls.cancelled.length = 0;
     const status = await new Promise((resolve, reject) => {
       const request = http.request({ host: '127.0.0.1', port: server.address().port, path: '/api/session/reset?token=fixture-console-token', method: 'POST',
@@ -226,9 +87,9 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     },
   } });
   try {
-    await h.sendStickerV2('group:456', 'fixture-sticker');
-    assert.equal(body.message.find((part) => part.type === 'image').data.file, 'base64://' + image.toString('base64'));
-    console.log('PASS sticker sending gives OneBot validated bytes, never a URL to refetch');
+    await assert.rejects(h.sendStickerV2('group:456', 'fixture-sticker'), { code: 'MEMORY_PRESET_UNSAFE' });
+    assert.equal(body, undefined);
+    console.log('PASS unauthorised sticker sending cannot reach OneBot');
   } catch (error) { failures++; console.error('FAIL safe sticker sending:', error.message); }
   finally { await h.close(); }
 }
@@ -269,7 +130,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     }
 
     // 4) 真发一条（虚拟网关）：必须是 record 段、且 file 指向库内文件
-    const sent = await h.sendVoiceForV2('group:456', 'hello.mp3', { readback: false });
+    const sent = await h.sendVoiceTransport('group:456', okPath.path, { guard: true });
     const call = h.calls.http.find((c) => c.url.endsWith('/send_group_msg'));
     assert.ok(call, '语音走 send_group_msg');
     assert.equal(call.body.group_id, 456, '语音发给正确群');
@@ -277,33 +138,12 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     assert.equal(call.body.message[0].type, 'record', '段类型是 record');
     assert.equal(call.body.message[0].data.file, fs.realpathSync(path.join(audioDir, 'hello.mp3')), 'record 段指向库内绝对路径');
     assert.equal(sent.messageId, 9001, '返回网关 message_id');
-    assert.equal(sent.readback, null, '显式关掉回读时不调 fetch_ptt_text');
+    assert.ok(!h.calls.http.some(c => c.url.endsWith('/fetch_ptt_text')));
 
-    // 5) 落地校验：默认用 get_msg 回读确认这条消息真的带 record 段
-    const h2 = await bridgeHarness({ config: voiceOn });
-    try {
-      const dir2 = path.join(h2.temp, 'audio');
-      fs.mkdirSync(dir2, { recursive: true });
-      fs.writeFileSync(path.join(dir2, 'hi.mp3'), Buffer.alloc(512, 1));
-      const sent2 = await h2.sendVoiceForV2('group:456', 'hi.mp3');
-      // 注意：这些对象来自 vm realm，deepEqual 会因原型不同而失败 → 逐字段断言
-      assert.equal(sent2.verification?.confirmed, true, '默认回读 get_msg 确认 record 段');
-      assert.equal(sent2.verification?.duration, 3, '回读到语音时长');
-      // 校验结果**不能**把源文件路径回传给 AI（私聊 get_msg 会把本机路径塞进 record.url）
-      assert.equal(sent2.verification?.file, undefined, '校验结果不回传文件路径（防路径泄露进模型上下文）');
-      assert.ok(h2.calls.http.some((c) => c.url.endsWith('/get_msg')), '校验走 get_msg');
-      assert.equal(sent2.readback, null, '默认不索取转写（自己发的语音没有转写）');
-      // 关掉校验时不发 get_msg
-      const h2b = await bridgeHarness({ config: voiceOn });
-      try {
-        const dir2b = path.join(h2b.temp, 'audio');
-        fs.mkdirSync(dir2b, { recursive: true });
-        fs.writeFileSync(path.join(dir2b, 'hi.mp3'), Buffer.alloc(512, 1));
-        const sent2b = await h2b.sendVoiceForV2('group:456', 'hi.mp3', { verify: false });
-        assert.equal(sent2b.verification, null, 'verify=false 时不做回读校验');
-        assert.ok(!h2b.calls.http.some((c) => c.url.endsWith('/get_msg')), 'verify=false 时不发 get_msg');
-      } finally { await h2b.close(); }
-    } finally { await h2.close(); }
+    const verification = await h.verifyVoiceMessageSent(sent.messageId);
+    assert.equal(verification.confirmed, true);
+    assert.equal(verification.duration, 3);
+    assert.equal(verification.file, undefined);
 
     // 6) 文件名审计：含本机路径特征的名字不许外发。
     //    resolveVoicePathForV2 允许绝对路径的"文件名形态"由 allowAbsolutePath 管；
@@ -314,30 +154,11 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       '文件名含本机路径特征被审计/来源校验拦截'
     );
 
-    // 7) 限流：语音额度独立计数，超限拒绝
-    const h3 = await bridgeHarness({ config: { socialV2: { voice: { enabled: true, trigger: {who:'anyone'}, maxPerMinute: 1, maxPerHour: 2 } } } });
-    try {
-      const dir3 = path.join(h3.temp, 'audio');
-      fs.mkdirSync(dir3, { recursive: true });
-      fs.writeFileSync(path.join(dir3, 'a.mp3'), Buffer.alloc(512, 1));
-      await h3.sendVoiceForV2('group:456', 'a.mp3', { readback: false });
-      await assert.rejects(
-        () => h3.sendVoiceForV2('group:456', 'a.mp3', { readback: false }),
-        /频率超限|每分钟/,
-        '同一分钟内第二条语音被限流（每分钟 1 条）'
-      );
-      // 额度只在发出后才记账：参数错误不应吃掉配额
-      const h4 = await bridgeHarness({ config: { socialV2: { voice: { enabled: true, trigger: {who:'anyone'}, maxPerMinute: 1, maxPerHour: 2 } } } });
-      try {
-        const dir4 = path.join(h4.temp, 'audio');
-        fs.mkdirSync(dir4, { recursive: true });
-        fs.writeFileSync(path.join(dir4, 'a.mp3'), Buffer.alloc(512, 1));
-        await assert.rejects(() => h4.sendVoiceForV2('group:456', 'nope.mp3'), /找不到/, '不存在的音频被拒');
-        // 失败没有消耗额度 → 紧接着真发一条应当成功
-        const ok2 = await h4.sendVoiceForV2('group:456', 'a.mp3', { readback: false });
-        assert.equal(ok2.messageId, 9001, '失败不吃额度：随后发送成功');
-      } finally { await h4.close(); }
-    } finally { await h3.close(); }
+    // A declined memory lease has no network side effects. The Native suite
+    // exercises successful authorised synthesis and per-conversation limits.
+    const gatewayCalls = h.calls.http.length;
+    await assert.rejects(h.sendVoiceForV2('group:456', 'hello.mp3'), { code: 'MEMORY_PRESET_UNSAFE' });
+    assert.equal(h.calls.http.length, gatewayCalls);
 
     // 8) 语音功能总开关关闭时，**AI 通道**彻底拒绝
     const h5 = await bridgeHarness({ config: { socialV2: { voice: { enabled: false } } } });
@@ -351,7 +172,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       const dir6 = path.join(h6.temp, 'audio');
       fs.mkdirSync(dir6, { recursive: true });
       fs.writeFileSync(path.join(dir6, 'a.mp3'), Buffer.alloc(512, 1));
-      const sent6 = await h6.sendVoiceV2('group:456', path.join(dir6, 'a.mp3'), { guard: false, audit: true });
+      const sent6 = await h6.sendVoiceTransport('group:456', path.join(dir6, 'a.mp3'), { guard: false, audit: true });
       assert.equal(sent6.messageId, 9001, 'voice.enabled=false 时操作者仍能发（AI 开关不该封死手动路径）');
     } finally { await h6.close(); }
 
@@ -361,14 +182,14 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       const dir7 = path.join(h7.temp, 'audio');
       fs.mkdirSync(dir7, { recursive: true });
       fs.writeFileSync(path.join(dir7, 'a.mp3'), Buffer.alloc(512, 1));
-      const loud = await h7.sendVoiceV2('group:456', path.join(dir7, 'a.mp3'), { guard: false, audit: true, audio: { volume: 2.5 } });
+      const loud = await h7.sendVoiceTransport('group:456', path.join(dir7, 'a.mp3'), { guard: false, audit: true, audio: { volume: 2.5 } });
       assert.equal(loud.volume, 2.5, '音量倍数透传到音频处理');
       assert.equal(loud.audioMode, 'volume', 'mode 标为 volume');
       assert.match(loud.audioProcessing, /250%/, '处理说明含百分比');
-      const normal = await h7.sendVoiceV2('group:456', path.join(dir7, 'a.mp3'), { guard: false, audit: true });
+      const normal = await h7.sendVoiceTransport('group:456', path.join(dir7, 'a.mp3'), { guard: false, audit: true });
       assert.equal(normal.audioMode, 'original', '不传音量时保持原样（不转码）');
       assert.equal(normal.audioProcessing, '原始音量', '原样时说明为"原始音量"');
-      const smart = await h7.sendVoiceV2('group:456', path.join(dir7, 'a.mp3'), { guard: false, audit: true, audio: { normalize: true, loudness: 'loud' } });
+      const smart = await h7.sendVoiceTransport('group:456', path.join(dir7, 'a.mp3'), { guard: false, audit: true, audio: { normalize: true, loudness: 'loud' } });
       assert.equal(smart.audioMode, 'loudnorm', '智能音量 mode=loudnorm');
       assert.match(smart.audioProcessing, /-13/, '智能音量按档位给出目标 LUFS');
       // 非法音量必须被拦下（而不是把奇怪的值丢给 ffmpeg）
@@ -420,7 +241,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       '相对路径穿越必须被拒绝'
     );
     // 库内的绝对路径应当仍然可用（开关的合理用途）
-    const inside = await h.sendVoiceForV2('group:456', path.join(libraryDir, 'inside.mp3'), { readback: false });
+    const inside = await h.sendVoiceTransport('group:456', h.resolveVoicePathForV2(path.join(libraryDir, 'inside.mp3')).path, { guard: true });
     assert.equal(inside.messageId, 9001, '库内绝对路径仍可发送');
     console.log('PASS voice absolute paths stay confined to the library even when allowAbsolutePath is on');
   } catch (error) { failures++; console.error('FAIL voice library confinement:', error.message); }
@@ -450,7 +271,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       request.end(body === undefined ? undefined : JSON.stringify(body));
     });
     const adminOnly = { 'x-console-token': 'fixture-console-token' };
-    const asAgent = { ...adminOnly, 'x-agent-token': 'fixture-agent-token' };
+    const asAgent = { ...adminOnly, 'x-agent-token': h.getSocialV2State('group:456').agentToken };
     const mustDeny = [
       ['GET', '/api/roles'], ['GET', '/api/roles/content?name=x'], ['GET', '/api/roles?x=1'],
       ['POST', '/api/roles/create'], ['POST', '/api/roles/update'],
@@ -567,21 +388,12 @@ await test('fish guard blocks reserved2 sends when the group is overfished', asy
   assert.equal(h.fishGuardSendBlock(key, st), null, '干净窗口应放行');
 });
 
-// 黑话学习会话自愈：磁盘上记着的会话若在 DSH 侧已不存在（工作区被清理、DSH 重置），
-// 以前只会一直往死会话里发 prompt，日志刷 "session/not-found"，学习功能永久停摆。
-await test('slang learner session self-heals when the saved session is gone', async (h) => {
-  h.api.sessions.selectModel = async ({ sessionId }) => {
-    if (sessionId === 'session-dead') throw new Error('session/not-found: session "session-dead" not found');
-    return { result: { ok: true, value: { selected: { provider: 'fixture', model: 'fixture', reasoningEffort: 'max' } } } };
-  };
-  const id = await h.ensureSlangLearnerSession();
-  assert.notEqual(id, 'session-dead', '死会话不能被复用');
-  assert.equal(h.calls.created.length, 1, '应该只重建一个新会话');
-  assert.ok(h.calls.follows.includes(id), '新会话要被 follow');
-  // 再取一次必须复用刚建的那个，不能每次唤醒都再建一个。
-  assert.equal(await h.ensureSlangLearnerSession(), id);
-  assert.equal(h.calls.created.length, 1);
-}, { files: { 'state/slang-session.json': { sessionId: 'session-dead', preset: 'qq-chat-v2' } } });
-
+await test('retired slang derivation has a recoverable error and never sends old chat to a model', async h => {
+  const result = await h.runSlangExtraction('private:123');
+  assert.equal(result.code, 'MEMORY_DERIVATION_UNAVAILABLE');
+  assert.ok(result.hint);
+  assert.equal(h.calls.created.length, 0);
+  assert.equal(h.calls.prompts.length, 0);
+});
 
 if (failures) process.exitCode = 1;

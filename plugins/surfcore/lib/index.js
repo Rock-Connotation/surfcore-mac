@@ -39,7 +39,7 @@ import {
   deleteCharacter, manualSnapshot, migrateIfNeeded, restoreCharacterSnapshot, switchToCharacter,
   updateCharacterFromPayload,
 } from './characters.js';
-import { CHARACTERS_DIR, activeMemoryPaths, activePlatformStateDir, characterPaths, personaLayersForCharacter, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
+import { CHARACTERS_DIR, activePlatformStateDir, characterPaths, personaLayersForCharacter, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
 import {
   backupFile, listBackups, pathSummary,
@@ -54,11 +54,7 @@ import {
   listLinks, rejectCandidate, removeLink, stats as alignStats,
   updateLink, writeAlignmentBriefs,
 } from './align.js';
-// F06：旧 QQ→B站摘要生产写者已退役；只保留只读状态/预览/审计查看。
-import {
-  auditTail, biliToQqStatus, memoryStatus, previewQqForBili,
-  scanBiliFeedForCandidates, scanQqFeedForCandidates,
-} from './memory.js';
+import { scanBiliFeedForCandidates } from './alignment-scan.js';
 import {
   bridgeLogTail, callBridge, restart as restartBridge, start as startBridge,
   status as bridgeStatus, stop as stopBridge,
@@ -78,7 +74,6 @@ import { createDouyinPerception } from './douyin-perception.mjs';
 import { createDouyinCompanion } from './douyin-companion.mjs';
 import { createVoiceManagement } from '../../../src/voice-management.js';
 import { createCompanionModel } from './douyin-companion-model.mjs';
-import { createCompanionMemory } from './douyin-companion-memory.mjs';
 import { createCompanionController } from './douyin-companion-controller.mjs';
 import { createCompanionSharing } from './companion-sharing.mjs';
 import { createSharingController } from './companion-sharing-controller.mjs';
@@ -86,7 +81,6 @@ import { createMemoryV2Runtime } from './memory-v2-runtime.mjs';
 import { preflightMemoryConfig, preflightPlan } from '../../../src/core/memory-v2-preflight.js';
 import { createBiliV2Host } from './bili-v2-host.mjs';
 import { createQQV2ReplyHost, resolveQQV2ModelRoute } from './qq-v2-reply-host.mjs';
-import { appendExperienceEvent } from '../../../src/core/experience.js';
 import { resolveMediaRuntime } from '../tools/lib/ffmpeg.mjs';
 import { readInstallationIdentity } from '../../../src/install-identity.js';
 import { createTokenBudgetService } from './token-budget.js';
@@ -101,11 +95,6 @@ import { createUpdatesService, resumePendingApply } from './updates.js';
 import {
   adminFromSources, adminSummary, normalizeAdmin, projectAdminSave,
 } from '../../../src/admin-identity.js';
-// V1 记忆卡（2026-11-12 退役）：生产只保留只读查看，不再启动定时维护、不再写卡。
-// 旧的写入口统一由 handleMemoryCard 返回结构化退役错误；历史档案原地只读保留。
-import {
-  fullMemoryCardSnapshot, memoryCardSnapshot, memoryCardStatusNow,
-} from './memory-card.js';
 import { readWatchHistory } from '../tools/lib/watch-history.mjs';
 import { enrichWatchHistory } from '../tools/lib/watch-actions.mjs';
 import { scanPreferences } from '../tools/lib/pref-scan.mjs';
@@ -218,11 +207,10 @@ export function apply(ctx) {
 
   const platforms = new PlatformRegistry();
   platforms.setStatus('qq', () => bridgeStatus());
-  platforms.setStatus('bili', () => biliToQqStatus());
+  const biliAccountStatus = () => ({ available: readFishAccount().configured === true });
+  platforms.setStatus('bili', biliAccountStatus);
   const extensionHost = new ExtensionHost({
     platforms,
-    // F06：扩展宿主只暴露只读记忆状态；旧写者不再进入生产装配。
-    memory: { memoryStatus, previewQqForBili, biliToQqStatus, auditTail },
     align: { listLinks, listCandidates, addLink, updateLink, removeLink, approveCandidate, rejectCandidate, stats: alignStats },
     bridge: {
       status: bridgeStatus,
@@ -238,7 +226,6 @@ export function apply(ctx) {
   let schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
   // 关闭温柔模式并丢弃上下文时递增：给 B站 一个全新 DSH sessionId，旧历史不再带入。
   let biliSessionEpoch = 0;
-  let syncTimer = null;
   let characterTimer = null;
 
   // ── 每日 token 额度 / 用量采集（2026-10-23 用户要求）────────────────────
@@ -633,7 +620,7 @@ export function apply(ctx) {
     }
   }
 
-  /** 先让桥接停掉全部旧会话（v1 + v2），再停进程；否则旧 DSH 回合可能带着旧人格继续发消息。 */
+  /** 先让桥接停掉全部上一角色的会话，再停进程；否则旧 DSH 回合可能带着旧人格继续发消息。 */
   async function stopAllBridgeSessions() {
     try {
       const listed = await callBridge('/api/sessions', { timeoutMs: 8000 });
@@ -740,7 +727,6 @@ export function apply(ctx) {
 
 
   // V1 记忆卡定时维护已退役（2026-11-12）：V2-only 后旧卡不再被摄取/衰减/重写。
-  // 旧 memory-card.json / 全量 JSONL / prompt 文件保持原样，只读查看走 /memory-card。
 
   const perceptionConfig = () => readUnified().config?.perception ?? {};
   const perceptionOptions = (config = perceptionConfig()) => {
@@ -754,16 +740,6 @@ export function apply(ctx) {
   const douyin = createDouyinService({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter });
   douyinMemoryService = douyin;
   const companionModel = createCompanionModel({ ctx, tokenBudget, getCharacter: readCurrentCharacter });
-  // 旧卡维护是 V1 写入链：V2 路由下 recordMemory 在任何写卡之前就会返回 MEMORY_PREPARATION_REQUIRED。
-  // 这里仍然给一个明确的结构化退役错误，保证任何遗留调用都不会悄悄写旧档案。
-  const retiredMemoryCardWrite = () => ({
-    ok: false, code: 'MEMORY_CARD_WRITE_RETIRED',
-    error: 'V1 记忆卡写入已退役。',
-    hint: '当前只用 V2 记忆；在记忆页核对角色与授权，旧档案保持只读。',
-  });
-  const companionMemory = createCompanionMemory({ getCharacter: readCurrentCharacter,
-    maintainMemory: retiredMemoryCardWrite,
-  });
   const douyinPerception = createDouyinPerception({ stateDir: STATE_DIR, asrService: transcription,
     getCharacter: readCurrentCharacter, ...perceptionOptions(),
   });
@@ -774,7 +750,6 @@ export function apply(ctx) {
     return companionModel.readiness();
   };
   const companionSharing = createCompanionSharing({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
-    buildContext: context => companionMemory.buildContext(context),
     modelReply: options => companionModel.reply(options), readiness: companionReadiness,
     memoryV2: memoryV2.channelMemory('local'), getModelRequest: metadata => memoryV2.modelRequest(metadata),
   });
@@ -782,8 +757,6 @@ export function apply(ctx) {
     readFeed: (context, options) => douyin.openCompanionFeed(context, options),
     perceive: (item, context, options) => douyinPerception.perceive(item, context, options),
     modelCall: options => companionModel.call(options),
-    buildContext: context => companionMemory.buildContext(context),
-    recordMemory: (context, value, options) => companionMemory.recordMemory(context, value, options),
     recordSharing: (context, value, options) => companionSharing.record(context, value, options),
     memoryV2: memoryV2.channelMemory('douyin'), getModelRequest: metadata => memoryV2.modelRequest(metadata),
     readiness: companionReadiness,
@@ -811,21 +784,7 @@ export function apply(ctx) {
     cancelCompanion: context => douyinCompanion.configure(context, { enabled: false }),
     observeFeed: context => platforms.observe('douyin', { operation: 'homepage-feed' }, { ...context, activityId: `douyin-${randomUUID()}` }),
   });
-  const perception = createBiliPerceptionService({ asrService: transcription, stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
-    onExperience: async (event) => {
-      const role = readCurrentCharacter();
-      if (!role || role.id !== event.characterId || role.epoch !== event.characterEpoch) {
-        return { ok: false, code: 'CHARACTER_STALE', error: '角色已切换，经历未投影', hint: '保留原作业证据，以当前角色发起新活动' };
-      }
-      // V1 记忆卡维护已退役：经历事件仍然追加到原只读档案（不改写旧卡），
-      // 但不再触发旧卡摄取/衰减/重写。V2 记忆由 bili-v2-host 单独写入。
-      const appended = appendExperienceEvent(characterPaths(role.id), event);
-      if (!appended.ok) return appended;
-      const after = readCurrentCharacter();
-      if (!after || after.id !== role.id || after.epoch !== role.epoch) return { ok: false, code: 'CHARACTER_STALE', error: '角色已切换，原经历保留在原角色队列', hint: '以当前角色重新发起活动；旧证据不会进入新角色' };
-      return { ok: true, eventId: appended.eventId };
-    },
-  });
+  const perception = createBiliPerceptionService({ asrService: transcription, stateDir: STATE_DIR, getCharacter: readCurrentCharacter });
   // F05：完整受控单轮的评分/点评/经历写回正式 V2。operationId 由 jobId 派生，
   // 提交点前后的中断都查同一原回执；不新建 ID 重放 ingest、不重跑整轮或重复评分。
   let biliRoundScopeCache = null;
@@ -950,12 +909,6 @@ export function apply(ctx) {
   characterTimer = setInterval(runCharacterAutoSave, 6 * 60 * 60 * 1000);
   characterTimer.unref?.();
 
-  // F06：旧 QQ→B站摘要定时同步已退役。旧 enabled=true 也不再启动写者，
-  // 原 qq-for-bili.md / sync-state.json / memory-card 全部只读保留。
-  const startSyncTimer = () => {
-    if (syncTimer) { clearInterval(syncTimer); syncTimer = null; }
-  };
-
   // 扩展：只加载显式启用的；默认示例全部 disabled。
   const activateExtensions = async () => {
     if (readUnified().config.extensions?.enabled === false) return;
@@ -1067,11 +1020,7 @@ export function apply(ctx) {
   async function overview() {
     const all = readAll();
     const snow = readQqConfig().config?.snowluma ?? {};
-    const [bridge, bili, memory] = await Promise.all([
-      bridgeStatus().catch((error) => ({ ok: false, error: String(error?.message ?? error) })),
-      Promise.resolve(biliToQqStatus()),
-      Promise.resolve(memoryStatus()),
-    ]);
+    const bridge = await bridgeStatus().catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
     // SnowLuma 只报「未连接」没用：这里给出可执行的诊断（没启动 / 在登录页 / token 不对）。
     const snowDiag = await diagnoseSnowLuma(bridge?.snowluma ?? {}, { bridge }).catch(() => ({ state: 'unknown', hint: '' }));
     // F01：概览暴露桥接权威模式诊断（requested/effective/blocked），供 UI 显示恢复步骤。
@@ -1108,9 +1057,8 @@ export function apply(ctx) {
       privacyPolicyVersion: PRIVACY_POLICY_VERSION,
       bridge,
       bridgeMode,
-      bili,
-      memory,
-      memoryCard: memoryCardStatusNow(),
+      bili: biliAccountStatus(),
+      memoryV2: memoryV2.routing(),
       admin: adminSummary(all.unified?.admin),
       adminProjectionFailure,
       alignment: alignStats(),
@@ -1149,13 +1097,12 @@ export function apply(ctx) {
         const cur = readCurrentCharacter();
         return cur ? { id: cur.id, name: cur.name, epoch: cur.epoch, switchedAt: cur.switchedAt } : null;
       })(),
-      paths: { ...pathSummary(), ...memory.paths, backupDir: BACKUP_DIR },
+      paths: { ...pathSummary(), backupDir: BACKUP_DIR },
       files: {
         pluginLog: fileInfo(PLUGIN_LOG),
         qqConfig: fileInfo(QQ_CONFIG),
         biliConfig: fileInfo(BILI_CONFIG),
         alignment: fileInfo(ALIGN_FILE),
-        qqForBili: fileInfo(activeMemoryPaths().qqForBili),
       },
     };
   }
@@ -1301,7 +1248,7 @@ export function apply(ctx) {
       } catch {}
       try { writeAlignmentBriefs(); } catch (error) { result.warnings.push(`对齐简报重建失败：${error?.message ?? error}`); }
       try { scheduler?.invalidate?.(); } catch {}
-      startSyncTimer();
+
     }
     // 平台启动开关的副作用：保存即生效（不是等下次重启）。
     // 用户关掉哪一边，就把正在跑的那一边停掉；重新打开则拉起来。
@@ -1497,7 +1444,10 @@ export function apply(ctx) {
       }
       json(res, 400, { ok: false, error: `未知 action：${action}` });
     } catch (error) {
-      json(res, 400, { ok: false, error: String(error?.message ?? error) });
+      json(res, 400, {
+        ok: false, code: error?.code ?? 'CHARACTER_ACTION_FAILED',
+        error: String(error?.message ?? error), hint: error?.hint ?? '检查当前角色及其配置后重试。',
+      });
     }
   }
 
@@ -1726,58 +1676,6 @@ ${body}`;
     }
   }
 
-  // ── 记忆 ────────────────────────────────────────────────────────────────
-  async function handleMemory(req, res, url) {
-    if (req.method === 'GET') {
-      const previewChars = Math.max(200, Math.min(20_000, Number(url.searchParams.get('chars')) || 4000));
-      json(res, 200, {
-        ok: true,
-        status: memoryStatus(),
-        qqPreview: previewQqForBili({ maxChars: previewChars }),
-        biliPreview: biliToQqStatus().briefPreview,
-        audit: auditTail(40),
-        policyVersion: PRIVACY_POLICY_VERSION,
-      });
-      return;
-    }
-    // F06：所有旧跨渠道摘要/对齐写入口退役。GET 只读查看保留；写动作统一
-    // 返回 410 + code/error/hint，不改用户 enabled、不删文件、不重建旧摘要。
-    const retired = {
-      ok: false,
-      code: 'QQ_BILI_SUMMARY_WRITE_RETIRED',
-      error: 'QQ→B站旧摘要写入与重建动作已退役。',
-      hint: '旧摘要、状态与人格文件保持只读；需要跨渠道记忆请用 V2 记忆页按精确会话和模型正式授权，不会自动迁移或删除旧资料。',
-    };
-    json(res, 410, retired);
-  }
-
-  // ── 记忆卡（V1 档案：只读）──────────────────────────────────────────────
-  // V1 记忆卡已退役（2026-11-12）：旧的摄取/衰减/压缩/恢复/修改动作全部停止，
-  // 旧档案原地只读保留。任何写动作返回结构化退役错误（code + error + hint），
-  // 不静默成功、不删除文件、不把旧卡当 V2 fallback。
-  async function handleMemoryCard(req, res) {
-    const config = readUnified().config.memoryCard;
-    if (req.method === 'GET') {
-      json(res, 200, memoryCardSnapshot(config));
-      return;
-    }
-    const retired = {
-      ok: false,
-      code: 'MEMORY_CARD_WRITE_RETIRED',
-      error: 'V1 记忆卡的写入动作已退役。',
-      hint: '现在只用 V2 记忆：在「记忆」页核对当前角色与授权。旧卡与全量档案保持只读，不会被清空或改写。',
-    };
-    json(res, 410, retired);
-  }
-
-  // ── 全量记忆卡（只存档；不参与日常提示词）───────────────────────────────
-  async function handleMemoryCardFull(req, res, url) {
-    if (req.method !== 'GET') { json(res, 405, { ok: false, error: '只读接口' }); return; }
-    const q = String(url.searchParams.get('q') ?? '');
-    const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 40));
-    json(res, 200, fullMemoryCardSnapshot({ q, limit, config: readUnified().config.memoryCard }));
-  }
-
   // ── 身份对齐 ────────────────────────────────────────────────────────────
   async function handleAlign(req, res) {
     if (req.method === 'GET') {
@@ -1803,9 +1701,8 @@ ${body}`;
     if (action === 'approve') { json(res, 200, { ok: true, link: approveCandidate(String(body.id), body.overrides ?? {}) }); return; }
     if (action === 'reject') { json(res, 200, { ok: true, ...rejectCandidate(String(body.id)) }); return; }
     if (action === 'scan') {
-      const qq = scanQqFeedForCandidates({ maxMessages: 1200 });
       const bili = await scanBiliFeedForCandidates({ maxPages: 2 });
-      json(res, 200, { ok: true, qq, bili, candidates: listCandidates() });
+      json(res, bili.ok ? 200 : 409, bili.ok ? { ok: true, bili, candidates: listCandidates() } : bili);
       return;
     }
     if (action === 'import') { json(res, 200, { ok: true, state: importAlignments(body.payload ?? body.data, { merge: body.merge !== false }) }); return; }
@@ -2124,10 +2021,6 @@ ${body}`;
       add('B站 cookie', fs.existsSync(BILI_CRED), fs.existsSync(BILI_CRED) ? '已写入（不回显内容）' : '未写入');
       add('人设卡', fs.existsSync(resolvePersonaFile()), maskPath(resolvePersonaFile()));
       add('身份对齐表', fs.existsSync(ALIGN_FILE), maskPath(ALIGN_FILE));
-      const qqMemoryOn = readAll().unified.memory?.qqToBili?.enabled === true;
-      add('QQ→B站记忆', qqMemoryOn ? fs.existsSync(activeMemoryPaths().qqForBili) : true,
-        qqMemoryOn ? maskPath(activeMemoryPaths().qqForBili) : '未开启（正常）');
-      add('B站→QQ简报', fs.existsSync(path.join(activePlatformStateDir(QQ_STATE_DIR()), 'bili-memory-brief.md')), '当前角色 bili/bili-memory-brief.md');
       let ffmpeg = false;
       try {
         const result = await new Promise((resolve) => execFile('ffmpeg', ['-version'], { timeout: 5000, windowsHide: true }, (error) => resolve(!error)));
@@ -2279,7 +2172,7 @@ ${body}`;
       for (const [label, file] of [
         ['qq-config', QQ_CONFIG], ['bili-config', BILI_CONFIG], ['unified-config', path.join(STATE_DIR, 'config.json')],
         ['persona', resolvePersonaFile()], ['alignments', ALIGN_FILE],
-        ['qq-memory', activeMemoryPaths().qqForBili], ['qq-alignment', QQ_ALIGNMENT_BRIEF], ['bili-alignment', BILI_ALIGNMENT_FILE],
+        ['qq-alignment', QQ_ALIGNMENT_BRIEF], ['bili-alignment', BILI_ALIGNMENT_FILE],
       ]) {
         const out = backupFile(file, label);
         if (out) created.push({ label, file: maskPath(out) });
@@ -3281,10 +3174,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
       return;
     }
-    if (action === 'refresh-bili') {
-      json(res, 410, { ok: false, code: 'QQ_BILI_SUMMARY_WRITE_RETIRED', error: 'QQ→B站旧摘要写入与重建动作已退役。', hint: '旧摘要与状态保持只读；跨渠道记忆请在 V2 记忆页按精确会话和模型正式授权。' });
-      return;
-    }
     json(res, 400, { ok: false, error: '未知 action' });
   }
 
@@ -3456,26 +3345,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (req.method === 'GET' && pathname.endsWith('/notify-config')) {
       const cfg = readBiliConfig().config;
       json(res, 200, { ok: true, notify: cfg.notify, listen: cfg.listen, share: cfg.share, quota: cfg.quota });
-      return;
-    }
-    // 「立即分享一次」：转发到桥接控制台的 /api/bili/share-now。
-    // 这是**真的会发到群**的操作，UI 侧必须二次确认；这里只做代理，不自己挑素材。
-    if (req.method === 'POST' && pathname.endsWith('/share-now')) {
-      const result = await callBridge('/api/bili/share-now', { method: 'POST', body: {}, timeoutMs: 120_000 });
-      const payload = result.data ?? {};
-      // 桥接返回 { ok, result: { ok, sent, card, why } }；这里摊平成 UI 好用的形状。
-      const inner = payload.result ?? payload;
-      // 留一行日志：点「立即分享一次」后出问题时，能直接看到是桥接没响应还是桥接拒绝。
-      pluginLog(`「立即分享一次」bridge=${result.status} ok=${result.ok} sent=${inner.sent ?? 0}`
-        + `${inner.card?.bvid ? ` bvid=${inner.card.bvid}` : ''}`
-        + `${result.ok ? '' : ` error=${result.error || payload.error || 'unknown'}`}`);
-      json(res, result.ok ? 200 : 502, {
-        ok: result.ok && payload.ok !== false && inner.ok !== false,
-        sent: Number(inner.sent ?? 0),
-        card: inner.card ?? null,
-        ...(inner.why ? { why: inner.why } : {}),
-        ...(result.ok ? {} : { error: result.error || payload.error || '桥接没有响应' }),
-      });
       return;
     }
     if (req.method === 'GET' && pathname.endsWith('/accounts')) {
@@ -4024,7 +3893,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/limit-mute`) { await handleLimitMute(req, res); return; }
     if (pathname === `${API_PREFIX}/persona/classify`) { await handlePersonaClassify(req, res); return; }
     if (pathname === `${API_PREFIX}/group-policy`) { await handleGroupPolicy(req, res); return; }
-    if (pathname === `${API_PREFIX}/memory`) { await handleMemory(req, res, url); return; }
     if (pathname === `${API_PREFIX}/watch-history`) { handleWatchHistory(res, url); return; }
     if (pathname === `${API_PREFIX}/preferences/scan`) {
       if (req.method !== 'GET') { json(res, 405, { ok: false, error: '只支持 GET' }); return; }
@@ -4032,8 +3900,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       return;
     }
     if (pathname === `${API_PREFIX}/fish-guard/qq`) { handleQqFishGuard(res); return; }
-    if (pathname === `${API_PREFIX}/memory-card/full`) { await handleMemoryCardFull(req, res, url); return; }
-    if (pathname === `${API_PREFIX}/memory-card`) { await handleMemoryCard(req, res); return; }
     if (pathname === `${API_PREFIX}/align`) { await handleAlign(req, res); return; }
     if (pathname === `${API_PREFIX}/mode`) { await handleMode(req, res); return; }
     if (pathname === `${API_PREFIX}/extensions`) { await handleExtensions(req, res); return; }
@@ -4181,7 +4047,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   // 端口漂移自愈：每 2 分钟检查一次（内部会判断 autoStart 是否开启、是否有并发）。
   bridgeRepairTimer = setInterval(() => { void maybeAutoStartBridge(); }, 120_000);
   bridgeRepairTimer.unref?.();
-  startSyncTimer();
+
 
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
@@ -4217,7 +4083,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { closeAllQrLogins(); } catch {}
     clearTimeout(characterInitial);
     if (characterTimer) clearInterval(characterTimer);
-    if (syncTimer) clearInterval(syncTimer);
     if (bridgeRepairTimer) clearInterval(bridgeRepairTimer);
     void extensionHost.deactivateAll().finally(() => platforms.dispose());
     for (const dispose of disposers) { try { dispose(); } catch {} }

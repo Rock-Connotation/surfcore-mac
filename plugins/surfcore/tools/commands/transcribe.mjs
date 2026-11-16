@@ -43,7 +43,6 @@ function writeOutput(value, json) {
     else if (value.action === 'status') {
       process.stdout.write(`转写作业 ${value.jobId}：${value.job?.state ?? '状态未知'}${part}\n`)
       if (value.job?.error?.code) process.stdout.write(`${value.job.error.code}: ${value.job.error.error} 建议：${value.job.error.hint}\n`)
-      if (value.job?.memoryError?.code) process.stdout.write(`经历保存 ${value.job.memoryState}: ${value.job.memoryError.error} 建议：${value.job.memoryError.hint}\n`)
       if (value.job?.frames?.stripError) process.stdout.write(`字幕条: ${value.job.frames.stripError.error} 建议：${value.job.frames.stripError.hint}\n`)
       if (value.job?.frames?.sheet) process.stdout.write(`SHEET: ${value.job.frames.sheet}\n${value.job.frames.subtitleStrip ? `SUBS: ${value.job.frames.subtitleStrip}\n` : ''}`)
       if (value.job?.coverage) process.stdout.write(`覆盖：${value.job.coverage.complete ? '完整' : '部分'}，处理 ${value.job.coverage.processedRanges?.length ?? 0} 个区间\n`)
@@ -84,7 +83,6 @@ async function main() {
     const history = raw.history ?? { status: 'pending' }
     if (raw.frames) job.frames = raw.frames
     if (raw.error) job.error = raw.error
-    if (raw.memoryState) job.memoryState = raw.memoryState
     if (raw.memoryError) job.memoryError = raw.memoryError
     writeOutput({ ok: true, action: 'status', jobId: options.status, part: { cid: raw.provenance?.partId ?? raw.result?.provenance?.partId ?? raw.part?.cid ?? '', page: Number(raw.part?.page) || Number(String(raw.result?.assetId ?? '').match(/:p(\d+):/)?.[1]) || null, pageCount: null }, job, history }, json)
     return
@@ -98,7 +96,7 @@ async function main() {
   const character = { id: String(current.id), epoch: Number(current.epoch) || 1 }
   const activityId = crypto.randomUUID()
   const parsed = parseBiliReference(reference, { page: options.page })
-  const { jobId } = await client.submitBili({ bvid: parsed.bvid, page: parsed.page, cid: options.cid ?? '', characterId: character.id, characterEpoch: character.epoch, activityId, asr: true, frames: false, recordHistory: !options['no-history'], recordExperience: !options['no-history'], languageHint: options.lang ?? 'auto' })
+  const { jobId } = await client.submitBili({ bvid: parsed.bvid, page: parsed.page, cid: options.cid ?? '', characterId: character.id, characterEpoch: character.epoch, activityId, asr: true, frames: false, recordHistory: !options['no-history'], languageHint: options.lang ?? 'auto' })
   writeOutput({ ok: true, action: 'submit', bvid: parsed.bvid, part: { page: parsed.page, pageCount: null, cid: options.cid ?? '' }, jobId, job: { state: 'queued' }, history: { status: options['no-history'] ? 'skipped' : 'pending' } }, json)
 
 }

@@ -1,24 +1,7 @@
 // 全项目体检后的「已确认缺陷」回归：每条都钉住一个真实故障形态，
 // 防止以后有人在不知情的情况下改回去。
 //
-// 覆盖（对应体检报告里的编号）：
-//   R1  无令牌智能体调用：closed-agent 的发送/状态探测必须可用；v2 面必须仍然拒绝
-//   R2  分条发送失败时 st/now 越界（ReferenceError）→ 额度不回滚 / 报错不可读
-//   R3  唤醒限频命中时不得直接丢弃（timeout 会留下无定时器的静默态）
-//   R4  繁忙期间暂存的 timeout/replyCheck 不得因「未读被标读」被丢弃
-//   R5  turn/end 没有对应 turn/start 时不得留下永久 collector（会话永久繁忙）
-//   R6  DSH 设置里的空 ownerQQ 不得覆盖 config.json
-//   R7  预设名必须先校验再拼路径（DSH 未连接时 resolvePresetName 会原样放行）
-//   R8  wake-config 的 triggers 只允许已知字段（防状态文件/提示词被垃圾键撑大）
-//   R9  memory-update 不得凭空建条目、不得写穿原型链
-//   R10 wait 的租约按归一化 key 记账（group:0456 与 group:456 是同一个会话）
-//   R11 mdToPlain：`*` 列表/乘法不被当成斜体；超长畸形输入不再 O(n²)
-//   R12 黑话提取的候选扫描次数有上限（大量 `[` 不得卡住事件循环）
-//   R13 表情备注截断不切开代理对
-//   R14 token 账本：被淘汰采样被新基线覆盖后不得重复计费
-//   R15 /api/send/* 失败路径的 st/now 越界（与 R2 同型，残留在这条旧发送工具真正走的端点）
-//   R16 reserved2 消息落库不得丢 kind/emojiId/summary/subType（表情 CDN 兜底与标签全靠它）
-//   R17 wait 先看积压：已到达消息立即返回；群聊按条数/字符有界批量并折叠
+// 使用隔离夹具检查已退役端点与仍然在用的 Native、额度、权限和共享组件。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -67,58 +50,25 @@ async function withServer(h, run) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ── R1. 无令牌智能体调用（closed-agent 的发送面） ────────────────────────────
-await test('R1 无令牌智能体调用：closed-agent 可发送/探测，v2 面仍拒绝', async () => {
+await test('retired QQ agent tools cannot bypass V2 or use the operator voice route', async () => {
   const h = await bridgeHarness();
   try {
-    h.setMode('closed-agent');
-    await withServer(h, async (port) => {
-      // 状态探测（legacyReadToolAllowed 走这条），必须回最小对象且不含管理字段
-      const status = await call(port, '/api/status', { headers: { 'x-agent-call': '1' } });
-      assert.equal(status.status, 200, '不带会话令牌的状态探测必须放行');
-      assert.equal(status.json.ownerQQ, undefined, '智能体视图不得暴露 ownerQQ');
-      assert.equal(status.json.allowGroups, undefined, '智能体视图不得暴露白名单');
-      assert.equal(status.json.mode, 'closed-agent');
-
-      // closed-agent 的私聊发送（管理员私聊）必须可用
-      const sent = await call(port, '/api/send/private', {
-        method: 'POST', headers: { 'x-agent-call': '1' }, body: { userId: '123', message: '你好' }
+    await withServer(h, async port => {
+      const headers = { 'x-agent-call': '1' };
+      const status = await call(port, '/api/status', { headers });
+      assert.equal(status.status, 200);
+      assert.equal(status.json.ownerQQ, undefined);
+      assert.equal(status.json.allowGroups, undefined);
+      const raw = await call(port, '/api/socialV2/prompt?key=group%3A456', { headers });
+      assert.equal(raw.status, 403);
+      const voice = await call(port, '/api/send/voice', {
+        method: 'POST', headers, body: { key: 'private:123', file: 'fixture.wav' },
       });
-      assert.equal(sent.status, 200, `closed-agent 无令牌发送应放行，实际 ${sent.status} ${sent.body}`);
-      assert.equal(sent.json?.sent, 1, '应当真的发出一条');
-      assert.ok(h.calls.http.some((c) => String(c.url).endsWith('/send_private_msg')), '发送应走 OneBot send_private_msg');
-
-      // v2 会话面绝不能因为「无令牌」退化成管理端
-      const v2 = await call(port, '/api/socialV2/prompt?key=group%3A456', { headers: { 'x-agent-call': '1' } });
-      assert.equal(v2.status, 403, '无令牌智能体调用不得进入 /api/socialV2/*');
-      const v2send = await call(port, '/api/socialV2/send-message', {
-        method: 'POST', headers: { 'x-agent-call': '1' }, body: { key: 'group:456', messages: ['hi'] }
-      });
-      assert.equal(v2send.status, 403, '无令牌智能体调用不得走 v2 发送');
+      assert.equal(voice.status, 403);
+      assert.equal(voice.json.code, 'VOICE_OPERATOR_ONLY');
+      assert.ok(voice.json.hint);
+      assert.equal(h.calls.http.length, 0);
     });
-  } finally { await h.close(); }
-});
-
-// ── R2. 分条发送失败：错误必须可读，且预占额度要回滚 ─────────────────────────
-await test('R2 send-burst 失败路径不再抛 ReferenceError，并回滚发送额度', async () => {
-  const h = await bridgeHarness({
-    globals: {
-      fetch: async () => ({ ok: false, status: 500, json: async () => ({ status: 'failed', retcode: 100, wording: 'gateway down' }) })
-    }
-  });
-  try {
-    h.setMode('reserved2');
-    const st = h.getSocialV2State('group:456');
-    const before = st.sendTimes.length;
-    await withServer(h, async (port) => {
-      const res = await call(port, '/api/socialV2/send-burst', {
-        method: 'POST', token: st.agentToken, body: { key: 'group:456', messages: ['a', 'b'] }
-      });
-      assert.equal(res.status, 500, '发送失败应回 500');
-      assert.match(String(res.json?.error ?? ''), /gateway down|OneBot/i, `错误信息应可读，实际：${res.body}`);
-      assert.ok(!/st is not defined/.test(String(res.json?.error ?? '')), '不得泄露作用域错误');
-    });
-    assert.equal(st.sendTimes.length, before, '失败后预占的发送额度必须回滚（否则接下来一分钟被假 429）');
   } finally { await h.close(); }
 });
 
@@ -153,11 +103,9 @@ await test('R4 timeout/replyCheck 类暂存唤醒按定时器语义补发', asyn
 
     const result = h.replayPendingWakeReasonsV2('group:456');
     assert.equal(result?.action, 'timer', 'timeout 必须走定时器补偿，而不是按未读判断');
-    // 到期定时器被补偿后应立即补一次 timeout 唤醒
-    for (let i = 0; i < 40 && !h.calls.prompts.length; i += 1) await sleep(25);
-    assert.equal(h.calls.prompts.length, 1, '到期的有限潜水必须补发一次 timeout 唤醒');
-    const text = h.calls.prompts[0].content.map((c) => String(c?.text ?? '')).join('\n');
-    assert.match(text, /有限潜水时间已到|睡眠时间已到/);
+    for (let i = 0; i < 40 && !h.calls.nativeReplies.length; i += 1) await sleep(25);
+    assert.equal(h.calls.nativeReplies.length, 1, '到期的唤醒应提交 Native 作业');
+    assert.equal(h.calls.prompts.length, 0);
 
     // 第二条 @ 与未读无关但对应消息已被处理 → 仍然按消息语义跳过
     const second = h.replayPendingWakeReasonsV2('group:456');
@@ -230,130 +178,26 @@ await test('R7 未知 preset 名直接被拒（含路径穿越形态）', async 
   } finally { await h.close(); }
 });
 
-// ── R8. wake-config 只接受已知 triggers 字段 ────────────────────────────────
-await test('R8 wake-config 丢弃未知 triggers 键（不落盘、不回传模型）', async () => {
+await test('retired history and memory mutation endpoints refuse even a recognized agent token', async () => {
   const h = await bridgeHarness();
   try {
     h.setMode('reserved2');
-    const st = h.getSocialV2State('group:456');
-    // 让沉睡前观察放行：10 分钟前来过消息
-    st.lastIncomingAt = Date.now() - 10 * 60 * 1000;
-    await withServer(h, async (port) => {
-      const res = await call(port, '/api/socialV2/wake-config', {
-        method: 'POST', token: st.agentToken, body: {
-          key: 'group:456',
-          config: { mode: 'diving', infinite: true, triggers: { atMention: true, junkKey: 'x'.repeat(100), another: { nested: true } } }
-        }
-      });
-      assert.equal(res.status, 200, res.body);
-      assert.equal('junkKey' in res.json.wakeConfig.triggers, false, '响应里不得回传垃圾键');
-      assert.equal('another' in res.json.wakeConfig.triggers, false);
-      assert.equal(st.wakeConfig.triggers.junkKey, undefined, '内存态不得被污染');
-      assert.equal(st.wakeConfig.triggers.atMention, true, '已知字段仍需生效');
-      const file = JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'social-v2.json'), 'utf8'));
-      assert.equal(file.conversations['group:456'].wakeConfig.triggers.junkKey, undefined, '落盘文件不得含垃圾键');
-    });
-  } finally { await h.close(); }
-});
-
-// ── R9. memory-update 不得凭空建条目 / 写穿原型链 ────────────────────────────
-await test('R9 memory-update 只编辑已有条目，不写穿 Object.prototype', async () => {
-  const h = await bridgeHarness();
-  try {
-    h.setMode('reserved2');
-    const st = h.getSocialV2State('group:456');
-    st.memberImpressions['群友A'] = { traits: ['友善'], interactionCount: 1, lastSeenAt: Date.now() };
-    await withServer(h, async (port) => {
-      const inherited = await call(port, '/api/socialV2/memory-update', {
-        method: 'POST', token: st.agentToken, body: { key: 'group:456', category: 'memberImpression', target: 'toString', newContent: 'hacked' }
-      });
-      assert.equal(inherited.status, 404, '继承来的属性名不得被当成已有条目');
-      assert.equal(Object.prototype.hasOwnProperty.call(st.memberImpressions, 'toString'), false);
-      assert.equal(Object.prototype.toString.traits, undefined, '不得往内置函数对象上写属性');
-
-      const unknown = await call(port, '/api/socialV2/memory-update', {
-        method: 'POST', token: st.agentToken, body: { key: 'group:456', category: 'memberImpression', target: '不存在的群友', newContent: 'x' }
-      });
-      assert.equal(unknown.status, 404, '不存在的条目不凭空创建（防止无限塞名字）');
-
-      const ok = await call(port, '/api/socialV2/memory-update', {
-        method: 'POST', token: st.agentToken, body: { key: 'group:456', category: 'memberImpression', target: '群友A', newContent: '幽默，爱接梗' }
-      });
-      assert.equal(ok.status, 200, ok.body);
-      // 跨 vm realm 的数组原型不同，deepEqual 会误判；逐元素断言。
-      const traits = st.memberImpressions['群友A'].traits;
-      assert.equal(traits.length, 2);
-      assert.equal(traits[0], '幽默');
-      assert.equal(traits[1], '爱接梗');
-    });
-  } finally { await h.close(); }
-});
-
-// ── R10. wait 租约按归一化 key 记账 ─────────────────────────────────────────
-await test('R10 group:0456 与 group:456 共用同一份 wait 租约', async () => {
-  const h = await bridgeHarness({ config: { socialV2: { wait: { minMs: 300, maxMs: 800, defaultQuietMs: 0, minQuietAfterNewMs: 0 } } } });
-  try {
-    h.setMode('reserved2');
-    const token = h.getSocialV2State('group:456').agentToken;
-    await withServer(h, async (port) => {
-      const firstPending = call(port, '/api/socialV2/wait', {
-        method: 'POST', token, body: { key: 'group:0456', purpose: 'messages', timeoutMs: 300 }
-      });
-      await sleep(60);
-      const second = await call(port, '/api/socialV2/wait', {
-        method: 'POST', token, body: { key: 'group:456', purpose: 'messages', timeoutMs: 300 }
-      });
-      assert.equal(second.status, 429, '同一会话的第二个并发等待必须被租约挡住');
-      const first = await firstPending;
-      assert.equal(first.status, 200, first.body);
-      // 第一个结束后租约释放，可再次等待
-      const third = await call(port, '/api/socialV2/wait', {
-        method: 'POST', token, body: { key: 'group:456', purpose: 'messages', timeoutMs: 300 }
-      });
-      assert.equal(third.status, 200, '前一个等待结束后必须能重新占用租约');
-    });
-  } finally { await h.close(); }
-});
-
-// ── R17. wait 先看积压：已经到达的消息立即返回，不能从 wait 时刻重新计时 ───
-await test('R17 wait 积压立即返回，且有界批量/折叠', async () => {
-  const h = await bridgeHarness({
-    config: { socialV2: { wait: {
-      defaultMs: 1000, minMs: 100, maxMs: 2000,
-      defaultQuietMs: 0, minQuietAfterNewMs: 0,
-      maxBatchMessages: 5, maxBatchChars: 2000,
-    } } },
-  });
-  try {
-    h.setMode('reserved2');
-    const key = 'group:456';
-    const st = h.getSocialV2State(key);
-    const token = st.agentToken;
-    const now = Date.now();
-    const make = (seq) => ({
-      seq, messageId: String(seq), sender: '群友', userId: '10001',
-      text: `消息${seq}`, plain: `消息${seq}`, tail: `消息${seq}`,
-      isSelf: false, isOwner: false, media: [], hasMedia: false,
-      forwardIds: [], hasForward: false, time: now - 5000,
-    });
-    st.lastUnreadSeq = 40;
-    st.lastReadThroughSeq = 0;
-    st.modelSeenSeqs = new Set();
-    st.lastIncomingAt = now - 5000;
-    st.unread = Array.from({ length: 40 }, (_, i) => make(i + 1));
-    st.recentMessages = [...st.unread];
-    await withServer(h, async (port) => {
-      const started = Date.now();
-      const res = await call(port, '/api/socialV2/wait', {
-        method: 'POST', token, body: { key, purpose: 'messages', timeoutMs: 1000, quietMs: 0 },
-      });
-      const elapsed = Date.now() - started;
-      assert.equal(res.status, 200, res.body);
-      assert.equal(res.json.arrived, true);
-      assert.ok(res.json.newMessages.length <= 5, `批量上限必须生效（${res.json.newMessages.length}）`);
-      assert.equal(res.json.foldedCount, 40 - res.json.newMessages.length);
-      assert.equal(res.json.batchTruncated, true);
-      assert.ok(elapsed < 500, `积压必须立即返回（实际 ${elapsed}ms）`);
+    const state = h.getSocialV2State('group:456');
+    await withServer(h, async port => {
+      const opts = { method: 'POST', token: state.agentToken };
+      for (const [route, body] of [
+        ['wake-config', { mode: 'diving', triggers: { randomGarbage: true } }],
+        ['memory-update', { category: 'memberImpression', target: 'toString', newContent: 'untrusted' }],
+        ['wait', { timeoutMs: 600, purpose: 'reply' }],
+      ]) {
+        const denied = await call(port, `/api/socialV2/${route}`, { ...opts, body: { key: 'group:0456', ...body } });
+        assert.equal(denied.status, 403, denied.body);
+        assert.equal(denied.json.code, 'MEMORY_HISTORY_UNAVAILABLE');
+        assert.ok(denied.json.hint);
+      }
+      assert.equal(Object.prototype.toString.traits, undefined);
+      assert.equal(Object.hasOwn(state.memberImpressions, 'toString'), false);
+      assert.equal(state.wakeConfig.triggers.randomGarbage, undefined);
     });
   } finally { await h.close(); }
 });
@@ -417,27 +261,16 @@ await test('R14 淘汰桶被新基线覆盖后不再重复累加', async () => {
 // `const st/now` 写在 try 内、catch 里使用 ⇒ 任何发送失败都抛 ReferenceError，
 // 于是 ① 模型看到的错误是「st is not defined」而不是网关原因；
 // ② 预占的发送额度不回滚 ⇒ 接下来一分钟全是假 429；③ 部分成功的已发消息不入账。
-await test('R15 /api/send/* 失败路径不抛作用域错误，并回滚发送额度', async () => {
-  const h = await bridgeHarness({
-    globals: {
-      fetch: async () => ({ ok: false, status: 500, json: async () => ({ status: 'failed', retcode: 100, wording: 'gateway down' }) })
-    }
-  });
+await test('Native QQ transport presents a structured failure for an unconfirmed ACK', async () => {
+  const h = await bridgeHarness({ globals: { fetch: async () => ({
+    ok: false, status: 500, json: async () => ({ status: 'failed', retcode: 100 }),
+  }) } });
   try {
-    // closed-agent = 管理员私聊通道：这条路径不需要会话令牌（正是旧工具的使用方式）。
-    h.setMode('closed-agent');
-    const st = h.getSocialV2State('private:123');
-    const before = st.sendTimes.length;
-    await withServer(h, async (port) => {
-      const res = await call(port, '/api/send/private', {
-        method: 'POST', headers: { 'x-agent-call': '1' }, body: { userId: '123', message: '你好' }
-      });
-      assert.equal(res.status, 500, `发送失败应回 500，实际 ${res.status} ${res.body}`);
-      const err = String(res.json?.error ?? '');
-      assert.match(err, /gateway down|OneBot/i, `错误信息应是网关原因，实际：${res.body}`);
-      assert.ok(!/is not defined/.test(err), '不得把作用域错误当成给模型的错误信息');
-    });
-    assert.equal(st.sendTimes.length, before, '失败后预占的发送额度必须回滚（否则接下来一分钟被假 429）');
+    const result = await h.sendNativeQQReply('private:123', 'fixture reply');
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'MEMORY_QQ_DELIVERY_UNKNOWN');
+    assert.ok(result.error && result.hint);
+    assert.equal(h.getSocialV2State('private:123').recentMessages.length, 0);
   } finally { await h.close(); }
 });
 

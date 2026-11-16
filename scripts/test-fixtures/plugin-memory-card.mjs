@@ -13,22 +13,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { createBiliMemory } from '../../../src/bili-memory.js';
-import { appendExperienceEvent, readExperienceInbox } from '../../../src/core/experience.js';
-import { coordinateCharacterLife } from '../../../src/core/life.js';
-import { readCurrentCharacter, characterPaths } from '../../../src/character-persona.js';
-import { BACKUP_DIR, BILI_CONFIG, QQ_STATE_DIR, maskPath } from './paths.js';
+import { createBiliMemory } from './bili-memory.mjs';
+import { appendExperienceEvent, readExperienceInbox } from './experience.mjs';
+import { coordinateCharacterLife } from '../../src/core/life.js';
+import { readCurrentCharacter, characterPaths } from '../../src/character-persona.js';
+import { BACKUP_DIR, BILI_CONFIG, QQ_STATE_DIR, maskPath } from '../../plugins/surfcore/lib/paths.js';
 import {
   activeMemoryPaths, activePlatformStateDir,
-} from '../../../src/character-persona.js';
-import { backupFile, listBackups, readUnified, writeJsonAtomic, writeTextAtomic } from './store.js';
+} from '../../src/character-persona.js';
+import { backupFile, listBackups, readUnified, writeJsonAtomic, writeTextAtomic } from '../../plugins/surfcore/lib/store.js';
 import {
   DEFAULT_MEMORY_CARD_CONFIG, addManualMemory, archiveDecayedToFull, clearFirstMeeting,
   compactMemoryCard, createEmptyCard, designateFirstMeeting, fullMemoryCardStatus, loadFullStats, loadMemoryCard,
   maintainMemoryCard, markOwnerNotified, memoryCardStatus, mergeMemories, normalizeMemoryCardConfig,
   readAllFullRecords, recallFullMemory, refreshInitialState, renderFullMemoryCard, renderMemoryCard,
   saveFullMemoryCard, saveMemoryCardOutputs, shouldNotifyOwner, syncDurableDirectory,
-} from '../../../src/memory-card.js?rev=20261025-pet-memory2';
+} from './memory-card.mjs';
 
 const EMPTY_CONFIG = normalizeMemoryCardConfig({});
 const TICK_MS = 10 * 60 * 1000;

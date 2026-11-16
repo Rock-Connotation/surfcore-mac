@@ -150,6 +150,7 @@ function readTail(file, maxBytes = MAX_BYTES) {
 }
 
 function readJson(file, fallback = null) {
+  if (!file) return fallback
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return fallback }
 }
 

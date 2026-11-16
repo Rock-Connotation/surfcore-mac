@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { filterVisibleRecords, visibleFor } from '../src/memory-card.js';
+import { filterVisibleRecords, visibleFor } from './test-fixtures/memory-card.mjs';
 import {
   collectMaterials,
   buildPurposePrompt,

@@ -10,14 +10,22 @@ const asr = { ready: Promise.resolve(), async submit(request) { submitted++; ass
 const partView = { bvid: 'BV1234567890', aid: 1, owner: {}, pages: [{ page: 1, cid: 1, duration: 3 }, { page: 2, cid: 2, duration: 3 }] }
 const createApi = () => ({ async fetchView() { return partView }, async fetchPlayurl() {} })
 const prepareMedia = async ({ dataRoot, signal }) => { assert.equal(signal.aborted, false); fs.mkdirSync(dataRoot, { recursive: true }); const file = path.join(dataRoot, `test-${Date.now()}`); fs.writeFileSync(file, 'abc'); return { audio: { path: file, status: 'completed', contentSha256: 'a'.repeat(64), durationMs: 3000, acquiredRanges: [{ startMs: 0, endMs: 3000 }], timelineMap: [{ localStartMs: 0, localEndMs: 3000, sourceStartMs: 0, sourceEndMs: 3000 }] } } }
-let eventCalls = [], failMemory = true
-const service = createBiliPerceptionService({ asrService: asr, stateDir: root, getCharacter: () => role, createApi, prepareMedia, onExperience: async event => { eventCalls.push(event); return failMemory ? { ok: false, code: 'MEMORY_FAILED', error: '投影失败', hint: '重试' } : { ok: true } } })
+const historyPath = path.join(root, 'characters', 'one', 'bili', 'watch-history.jsonl')
+fs.mkdirSync(historyPath, { recursive: true })
+const service = createBiliPerceptionService({ asrService: asr, stateDir: root, getCharacter: () => role, createApi, prepareMedia })
 const request = { bvid: partView.bvid, page: 2, cid: '2', characterId: 'one', characterEpoch: 2, activityId: 'activity', asr: true, frames: false }
 const { jobId } = await service.submitBili(request)
 for (let i = 0; i < 30 && !['completed','failed'].includes((await service.getJob(jobId)).state); i++) await new Promise(r => setTimeout(r, 10))
 const job = await service.getJob(jobId)
 assert.equal(job.state, 'completed'); assert.equal(job.part.cid, '2'); assert.equal(submitted, 1)
-assert.equal(job.memoryState, 'failed'); assert.equal(job.memoryError.code, 'MEMORY_FAILED'); assert.equal(eventCalls[0].attribution.subject, 'external'); assert.equal(eventCalls[0].visibility.classification, 'restricted'); assert.deepEqual(eventCalls[0].visibility.allowedContexts, ['bili']); failMemory = false; await service.resume(jobId); assert.equal((await service.getJob(jobId)).memoryState, 'completed'); assert.equal(eventCalls[1].eventId, eventCalls[0].eventId); assert.equal(submitted, 1)
+assert.equal(job.history.status, 'failed')
+assert.equal(job.history.code, 'bili.history.failed')
+assert.ok(job.history.hint)
+fs.rmdirSync(historyPath)
+await service.resume(jobId)
+assert.equal((await service.getJob(jobId)).history.status, 'recorded')
+assert.equal(submitted, 1)
+assert.ok(!fs.existsSync(path.join(root, 'characters', 'one', 'memory', 'experience-inbox.jsonl')))
 assert.ok(!JSON.stringify(job).includes(root), 'public job 不包含资产本地路径')
 role = { id: 'two', epoch: 3 }
 await assert.rejects(service.submitBili(request), e => e.code === 'STALE_CHARACTER' && !!e.hint)

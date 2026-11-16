@@ -8,16 +8,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createBiliMemory, isBlockedContent } from '../src/bili-memory.js';
-import { buildSharePrompt } from '../src/bili-share-scheduler.js';
+import { createBiliMemory, isBlockedContent } from './test-fixtures/bili-memory.mjs';
+import { buildSharePrompt } from './test-fixtures/bili-share-scheduler.mjs';
 import { formatDynamicMessage } from '../src/bili-dynamics.js';
 
-// Default is hermetic: no user home, active role, network or repository state.
-const live = process.env.SURFCORE_BILI_MEMORY_LIVE_TEST === '1';
-const fixtureHome = live ? os.homedir() : fs.mkdtempSync(path.join(os.tmpdir(), 'bili-memory-fixture-'));
-const STATE = live ? path.resolve('state') : path.join(fixtureHome, 'state');
+// The retired reference runs only against synthetic files.
+const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bili-memory-fixture-'));
+const STATE = path.join(fixtureHome, 'state');
 const fixtureBili = path.join(fixtureHome, '.dsh', 'surfcore', 'bili');
-if (!live) {
+{
   fs.mkdirSync(fixtureBili, { recursive: true }); fs.mkdirSync(STATE, { recursive: true });
   const now = new Date().toISOString(); const day = now.slice(0, 10);
   fs.writeFileSync(path.join(fixtureHome, '.dsh', 'surfcore', 'bili.config.json'), JSON.stringify({ self: { name: '模拟角色', mid: '123456' }, persona: { name: '模拟角色' }, preferences: { like: ['海洋'] } }));
@@ -31,7 +30,7 @@ if (!live) {
   fs.writeFileSync(path.join(STATE, 'bili-video-titles.json'), JSON.stringify({ items: titles }));
   fs.writeFileSync(path.join(fixtureBili, 'whale-diary.md'), '# 日记\n\n私信里有人说我是谁！这段必须被过滤。\n');
 }
-const memory = createBiliMemory({ stateDir: STATE, home: fixtureHome, characterId: '', allowNetwork: live, log: () => {} });
+const memory = createBiliMemory({ stateDir: STATE, home: fixtureHome, characterId: '', allowNetwork: false, log: () => {} });
 const stats = await memory.refresh({ force: true });
 assert.equal(stats.ok, true, `记忆生成失败：${stats.error ?? ''}`);
 
@@ -78,7 +77,7 @@ for (const e of shareable) {
 // 用临时 state 模拟“一天 8 个时间点依次分享”：每次记录已用，下一次必须拿不同的。
 const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'bili-share-pick-'));
 fs.copyFileSync(path.join(STATE, 'bili-memory.json'), path.join(tmpState, 'bili-memory.json'));
-const pickMemory = createBiliMemory({ stateDir: tmpState, home: fixtureHome, characterId: '', allowNetwork: live, log: () => {} });
+const pickMemory = createBiliMemory({ stateDir: tmpState, home: fixtureHome, characterId: '', allowNetwork: false, log: () => {} });
 const picks = [];
 for (let i = 0; i < 8; i += 1) {
   const card = pickMemory.pickShareCard({ slotIndex: i, dateKey: '2026-10-22' });

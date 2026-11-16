@@ -24,23 +24,14 @@ const JOB_STATES = new Set(['queued', 'running', 'completed', 'partial', 'failed
 const JOB_PHASES = new Set(['queued', 'readiness', 'feed', 'context', 'perceive', 'model', 'memory', 'finished', 'failed', 'cancelled', 'interrupted']);
 const ITEM_STATES = new Set(['skipped', 'partial', 'completed']);
 
-function contextSection(built, kind) {
-  const sections = built?.sections;
-  const value = isRecord(sections) ? sections[kind] : Array.isArray(sections) ? sections.find(section => section?.kind === kind) : null;
-  if (typeof value === 'string') return value;
-  if (isRecord(value)) {
-    for (const key of ['text', 'content', 'value']) if (typeof value[key] === 'string') return value[key];
-  }
-  return null;
-}
 export function createDouyinCompanion({
-  stateDir, getCharacter, readFeed, perceive, modelCall, buildContext, recordMemory, recordSharing = null, readiness,
+  stateDir, getCharacter, readFeed, perceive, modelCall, recordSharing = null, readiness,
   memoryV2, getModelRequest, now = () => new Date(), callbackTimeoutMs = 180_000,
 } = {}) {
   const v2 = createCompanionMemory({ stateDir, getCharacter, memoryV2 });
   if (!path.isAbsolute(String(stateDir ?? '')) || typeof getCharacter !== 'function' || typeof readFeed !== 'function' ||
-      typeof perceive !== 'function' || typeof modelCall !== 'function' || typeof buildContext !== 'function' ||
-      typeof recordMemory !== 'function' || (recordSharing !== null && typeof recordSharing !== 'function') || typeof readiness !== 'function') {
+      typeof perceive !== 'function' || typeof modelCall !== 'function' ||
+      (recordSharing !== null && typeof recordSharing !== 'function') || typeof readiness !== 'function') {
     throw problem('DOUYIN_CONFIG_INVALID', '抖音陪伴服务配置不完整。', '检查本地 Host 回调接线后再试。');
   }
   const store = createDouyinCompanionStore(stateDir, () => nowIso());
@@ -373,7 +364,7 @@ export function createDouyinCompanion({
       target.memoryV2Receipt = source.memoryV2Receipt;
     }
   }
-  async function processOne(job, context, entry, index, sharedContext, trustedPersona = '') {
+  async function processOne(job, context, entry, index) {
     const activityId = `${job.jobId}-${index + 1}`;
     const runtime = runtimes.get(job.jobId);
     const item = {
@@ -420,12 +411,12 @@ export function createDouyinCompanion({
       const partial = !coverage.complete || coverage.missingRanges.length > 0 || visualCoverage !== 'complete';
       item.coverage = { status: 'partial', transcriptComplete: coverage.complete, missingRanges: coverage.missingRanges.length, visualCoverage, frameSamples: images.length, warningCount: Math.min(100, warnings), acceptanceQualified: false };
       saveJob(localLedger, job);
-      if (session) {
-        const saved = await v2.observe(session, { jobId: job.jobId, activityId, entry, perceived, images });
-        retainProvenance(job, item, saved, 'source'); saveJob(localLedger, job);
-        const built = await v2.prepareStep(session, JSON.stringify({ objectId: entry.id, transcript: transcriptText }));
-        sharedContext = built.memoryText; trustedPersona = built.personaText;
-      }
+      const saved = await v2.observe(session, { jobId: job.jobId, activityId, entry, perceived, images });
+      retainProvenance(job, item, saved, 'source');
+      saveJob(localLedger, job);
+      const built = await v2.prepareStep(session, JSON.stringify({ objectId: entry.id, transcript: transcriptText }));
+      const sharedContext = built.memoryText;
+      const trustedPersona = built.personaText;
       check(transcriptText.length <= 50_000, 'DOUYIN_TRANSCRIPT_TOO_LARGE', '转写内容超过本地单条输入上限，未提交模型。', '选择更短的推荐视频或调整本地转写长度限制。');
       check(images.length > 0, 'DOUYIN_FRAMES_UNAVAILABLE', '没有可用的稀疏画面采样，未调用模型。', '补齐本机画面采样后再手动验收；音频单独不足以完成本轮。');
       check(transcriptText.length > 0 && coverage.speechState === 'speech', 'DOUYIN_TRANSCRIPT_EMPTY', '没有可确认的语音转写用于解释这条推荐。', '选择含可辨语音的推荐视频后再手动验收。');
@@ -442,22 +433,16 @@ export function createDouyinCompanion({
       if (trustedPersona.trim()) inputPayload.persona = scrubPromptText(trustedPersona, 4_000);
       const system = buildDouyinReflectionSystem({ sharingEnabled: typeof recordSharing === 'function', trustedPersonaIncluded: Boolean(trustedPersona.trim()) });
       const prompt = JSON.stringify(inputPayload);
-      let requestMetadata;
-      if (session) {
-        const bound = await v2.bindStep(session, { system, prompt, images });
-        retainProvenance(job, item, bound, 'model-input');
-        check(typeof getModelRequest === 'function', 'DOUYIN_MODEL_METADATA_REQUIRED', 'V2缺少可信逐步预算请求元数据。', '接入Host稳定请求编号、真实路由与估计量；不会猜测价格或编号。');
-      }
-      if (typeof getModelRequest === 'function') {
-        requestMetadata = getModelRequest({ jobId: job.jobId, activityId, step: index + 1, characterId: context.characterId, characterEpoch: context.characterEpoch,
-          providerRouteId: deriveMemoryProviderRouteId(COMPANION_ROUTE).providerRouteId, model: COMPANION_ROUTE.model, system, prompt, images });
-        check(requestMetadata && typeof requestMetadata.then !== 'function', 'DOUYIN_MODEL_METADATA_REQUIRED', '预算请求元数据必须由可信同步回调提供。', '按实际步骤提供稳定请求编号与路由。');
-      }
-      if (session) check(requestMetadata.providerRouteId === session.sourceStamp.providerRouteId && requestMetadata.model === COMPANION_ROUTE.model && requestMetadata.role === context.characterId && requestMetadata.epoch === context.characterEpoch, 'COMPANION_ROUTE_MISMATCH', '逐步模型元数据与原始上下文授权不一致。', '核对固定provider/model与旧句柄授权后重新开始，不会改写旧grant。');
+      const bound = await v2.bindStep(session, { system, prompt, images });
+      retainProvenance(job, item, bound, 'model-input');
+      check(typeof getModelRequest === 'function', 'DOUYIN_MODEL_METADATA_REQUIRED', 'V2缺少可信逐步预算请求元数据。', '接入Host稳定请求编号、真实路由与估计量；不会猜测价格或编号。');
+      const requestMetadata = getModelRequest({ jobId: job.jobId, activityId, step: index + 1, characterId: context.characterId, characterEpoch: context.characterEpoch,
+        providerRouteId: deriveMemoryProviderRouteId(COMPANION_ROUTE).providerRouteId, model: COMPANION_ROUTE.model, system, prompt, images });
+      check(requestMetadata && typeof requestMetadata.then !== 'function', 'DOUYIN_MODEL_METADATA_REQUIRED', '预算请求元数据必须由可信同步回调提供。', '按实际步骤提供稳定请求编号与路由。');
+      check(requestMetadata.providerRouteId === session.sourceStamp.providerRouteId && requestMetadata.model === COMPANION_ROUTE.model && requestMetadata.role === context.characterId && requestMetadata.epoch === context.characterEpoch, 'COMPANION_ROUTE_MISMATCH', '逐步模型元数据与原始上下文授权不一致。', '核对固定provider/model与旧句柄授权后重新开始，不会改写旧grant。');
       const beforeSend = async ({ phase } = {}) => {
         assertRole(job, context);
-        if (session) await v2.validate(session, phase !== 'completion');
-        else { const route = v2.routing(); check(route.ok, route.code || 'MEMORY_ROUTING_CHANGED', route.error || '活动期间记忆路由已变化。', route.hint || '以当前可信路由重新开始。'); }
+        await v2.validate(session, phase !== 'completion');
         return { ok: true };
       };
       await beforeSend();
@@ -466,7 +451,7 @@ export function createDouyinCompanion({
       let result;
       try {
         result = await guarded(job, context, () => modelCall({
-          system, prompt, images, requestMetadata, beforeSend, ...(session ? { admitNetwork: (dispatch, options) => v2.admitNetwork(session, dispatch, options) } : {}), signal: runtime.controller.signal, maxTokens: MODEL_MAX_TOKENS, timeoutMs: MODEL_TIMEOUT_MS,
+          system, prompt, images, requestMetadata, beforeSend, admitNetwork: (dispatch, options) => v2.admitNetwork(session, dispatch, options), signal: runtime.controller.signal, maxTokens: MODEL_MAX_TOKENS, timeoutMs: MODEL_TIMEOUT_MS,
         }), MODEL_TIMEOUT_MS, problem('DOUYIN_MODEL_TIMEOUT', '模型调用超过180秒上限，活动已取消。', '检查模型连接与已用请求数；失败请求仍计入额度，不会自动重试。'));
       } catch (error) {
         if (runtime.controller.signal.aborted) throw error;
@@ -500,7 +485,7 @@ export function createDouyinCompanion({
       }
       try {
         assertRole(job, context);
-        memory = await guarded(job, context, () => session ? v2.reflect(session, memoryPayload) : recordMemory(context, memoryPayload, { signal: runtime.controller.signal }), operationTimeout,
+        memory = await guarded(job, context, () => v2.reflect(session, memoryPayload), operationTimeout,
           problem('DOUYIN_MEMORY_TIMEOUT', '记忆写入等待超时，活动已停止。', '检查Host记忆服务与请求状态；不会自动重复写入。'));
       } catch (error) {
         if (runtime.controller.signal.aborted) throw error;
@@ -527,7 +512,7 @@ export function createDouyinCompanion({
             share: review.share,
             question: review.question,
             coverage: item.coverage,
-            ...(session ? { memoryV2Refs: job.memoryV2Refs, memoryV2Receipts: job.memoryV2Receipts, memoryV2Receipt: job.memoryV2Receipt } : {}),
+            memoryV2Refs: job.memoryV2Refs, memoryV2Receipts: job.memoryV2Receipts, memoryV2Receipt: job.memoryV2Receipt,
           }, { signal: runtime.controller.signal }), operationTimeout,
           problem('DOUYIN_SHARING_SAVE_FAILED', '自然开场没有保存到本机日记。', '观看记忆已保存；检查本地分享记录服务后手动恢复，不会自动重试。'));
           check(saved?.ok === true, 'DOUYIN_SHARING_SAVE_FAILED', '自然开场没有保存到本机日记。', '观看记忆已保存；检查本地分享记录服务后手动恢复，不会自动重试。');
@@ -600,15 +585,9 @@ export function createDouyinCompanion({
       job.phase = 'context'; saveJob(localLedger, job);
       const route = v2.routing();
       check(route.ok, route.code, route.error, route.hint);
-      let built;
-      try { built = { ok: true, text: '', memoryText: '', personaText: '' }; }
-      catch (error) { if (runtimes.get(job.jobId).controller.signal.aborted) throw error; throw problem('DOUYIN_CONTEXT_FAILED', '无法读取当前角色的记忆上下文。', '检查当前角色和Host记忆服务后重新手动验收。'); }
-      check(built?.ok === true && typeof built.text === 'string', safeCode(built?.code, 'DOUYIN_CONTEXT_FAILED'), safeDisplayText(built?.error, 240) || '无法读取当前角色的记忆上下文。', safeDisplayText(built?.hint, 300) || '检查当前角色和Host记忆服务后重新手动验收。');
-      const trustedPersona = contextSection(built, 'persona') ?? (typeof built.personaText === 'string' ? built.personaText : '');
-      const memoryContext = contextSection(built, 'memory') ?? (typeof built.memoryText === 'string' ? built.memoryText : built.text);
       for (let index = 0; index < candidates.length; index++) {
         assertRole(job, context);
-        await processOne(job, context, candidates[index], index, memoryContext, trustedPersona);
+        await processOne(job, context, candidates[index], index);
       }
       await closeFeed();
       assertRole(job, context);

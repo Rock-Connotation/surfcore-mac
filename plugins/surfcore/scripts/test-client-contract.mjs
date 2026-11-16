@@ -44,7 +44,7 @@ globalThis.window = {
 await import('../lib/client.js');
 assert.ok(client, 'client.js 没有被 ModuleLoader 加载');
 assert.ok(Array.isArray(client.BILI_FIELDS), 'BILI_FIELDS 没有导出');
-assert.ok(Array.isArray(client.QQ_BILI_SHARE_FIELDS), 'QQ_BILI_SHARE_FIELDS 没有导出');
+assert.ok(Array.isArray(client.QQ_BILI_DYNAMICS_FIELDS), 'QQ_BILI_DYNAMICS_FIELDS 没有导出');
 
 const biliPaths = client.BILI_FIELDS.flatMap((group) => group.fields.map((field) => field.path.join('.')));
 for (const wanted of [
@@ -69,14 +69,9 @@ for (const wanted of [
   assert.ok(biliPaths.includes(wanted), `B站页缺少可编辑字段：${wanted}`);
 }
 
-const sharePaths = client.QQ_BILI_SHARE_FIELDS.map((field) => field.path.join('.'));
+const sharePaths = client.QQ_BILI_DYNAMICS_FIELDS.map((field) => field.path.join('.'));
 for (const wanted of [
   'biliBridge.enabled',
-  'biliBridge.share.enabled',
-  'biliBridge.share.times',
-  'biliBridge.share.groups',
-  'biliBridge.share.gapMs',
-  'biliBridge.share.cardMode',
   'biliBridge.dynamics.enabled',
   'biliBridge.dynamics.pollIntervalMs',
   'biliBridge.dynamics.groups',
@@ -89,14 +84,9 @@ assert.ok(client.QQ_FIELDS.some(group => group.fields.some(field => field.path.j
   'QQ 页必须提供提问/审批编号开关，不能只能手工改配置');
 assert.ok(source.includes('"/bili/automation"'), '设置页没有调用 /bili/automation');
 assert.ok(source.includes('AutomationCard'), '设置页没有今天用量卡片');
-assert.ok(source.includes('QqShareSection'), '设置页没有 QQ 分享段');
-// PITFALLS #21：QQ 分享段以前藏在 B站 页最底部、还是折叠的，用户找不到。
-assert.ok(source.includes('定时分享视频到群'), 'QQ 分享段标题必须写人话（含「定时分享视频到群」）');
-assert.ok(source.includes('"/bili/share-now"'), '缺少「立即分享一次」接口调用');
+assert.ok(source.includes('B 站公开动态同步到 QQ'));
+assert.ok(!source.includes('"/bili/share-now"'), '旧定时分享入口已退役');
 assert.ok(source.includes('goTab'), 'QQ 页缺少跳转到 B站 页的入口');
-const cardModeField = client.QQ_BILI_SHARE_FIELDS.find((f) => f.path.join('.') === 'biliBridge.share.cardMode');
-assert.equal(cardModeField?.kind, 'select', '分享形式必须是下拉，不是布尔开关');
-assert.deepEqual((cardModeField.options ?? []).map(([v]) => v), ['text', 'miniapp', 'off']);
 
 // QQ 白名单必须在设置页有一张常驻卡片（PITFALLS #27：以前只藏在折叠的「白名单与权限」组里）。
 assert.ok(source.includes('WhitelistCard'), 'QQ 页缺少白名单卡片');
@@ -151,7 +141,7 @@ assert.ok(source.includes('function PetTab'), '设置页缺少桌宠页');
 assert.ok(source.includes('专注模式（不主动打扰）'), '桌宠页/菜单缺少专注模式');
 assert.ok(source.includes('"/pet/focus"'), '设置页没有调用 /pet/focus');
 assert.ok(source.includes('启用桌宠对话'), '桌宠页缺少「启用桌宠对话」');
-assert.ok(source.includes('把桌宠对话写进记忆卡'), '桌宠页缺少「写进记忆卡」开关');
+assert.ok(!source.includes('把桌宠对话写进记忆卡'));
 assert.ok(source.includes('文本回复上限') && source.includes('语音回复上限'), '桌宠页缺少回复字数控');
 assert.ok(source.includes('思考强度'), '桌宠页缺少思考强度设置');
 const pluginIndexSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'lib', 'index.js'), 'utf8');
@@ -206,15 +196,14 @@ assert.ok(!source.includes('goTab?.("persona")'), '还有按钮跳去已删除�
 for (const [marker, page] of [
   ['h(QqFishGuardStatusCard, { busy })', 'QQ'],
   ['h(FishGuardStatusCard, { busy, toast })', 'B站'],
-  ['h(MemoryCardPanel, { view: "summary"', '记忆'],
   ['h(Section, { title: `候选人', '对齐'],
   ['h(Section, { title: "配置 JSON（高级）"', '扩展'],
   ['h(Section, { title: `备份', '诊断'],
 ]) {
   assert.ok(source.includes(marker), `${page}页的关键/高级组件缺失：${marker}`);
 }
-assert.ok(source.includes('view = "all"') && source.includes('view === "summary"') && source.includes('view === "details"'), '记忆卡没有拆成摘要/详情两态');
-assert.ok(source.includes('h(MemoryCardPanel, { view: "details"'), '记忆页高级设置没有渲染记忆卡详情');
+assert.match(source, /h\(MemoryV2Panel/);
+assert.doesNotMatch(source, /MemoryCardPanel/);
 assert.ok(source.includes('collapsible: false'), '高级设置里的分组没有用 collapsible:false');
 
 // 角色人格：设置页必须有「角色」页，能创建/加载/存档/回档。
@@ -251,12 +240,7 @@ const qqFishPaths = client.QQ_FIELDS.filter((g) => g.group.includes('鱼群')).f
 for (const wanted of ['fishGuard.namePrefixes', 'fishGuard.nameContains', 'fishGuard.nameSuffixes', 'fishGuard.groupNameSuffixes']) {
   assert.ok(qqFishPaths.includes(wanted), `QQ鱼群保护缺少字段：${wanted}`);
 }
-// 上线补历史消息（2026-10-24 用户要求：设置里可关，默认勾选打开）。
-const qqHistoryPaths = client.QQ_FIELDS.filter((g) => g.group.includes('上线补历史')).flatMap((g) => g.fields.map((f) => f.path.join('.')));
-for (const wanted of ['socialV2.history.enabled', 'socialV2.history.limit', 'socialV2.history.maxAgeMinutes', 'socialV2.history.wake', 'socialV2.history.includePrivate']) {
-  assert.ok(qqHistoryPaths.includes(wanted), `QQ 上线补历史缺少字段：${wanted}`);
-}
-assert.ok(client.QQ_FIELDS.find((g) => g.group.includes('上线补历史'))?.note.includes('默认开'), '上线补历史必须标明默认开启');
+assert.ok(qqPaths.every(field => !field.startsWith('socialV2.history.')));
 // 对话收尾判断（2026-10-24 用户要求：发完最后一句可判断这段是否结束，不必每句都回）。
 const qqClosurePaths = client.QQ_FIELDS.filter((g) => g.group.includes('对话收尾')).flatMap((g) => g.fields.map((f) => f.path.join('.')));
 for (const wanted of [
@@ -305,7 +289,7 @@ assert.equal(shareViaField.kind, 'select');
 assert.equal(shareViaField.options?.[0]?.[0], 'dynamic', 'share.via 默认项必须是 dynamic');
 assert.ok(source.includes('night.minGapMin'), '作息页缺少 night.minGapMin');
 assert.ok(source.includes('每窗至少 1'), '作息页提示没有写清 C 的每窗至少 1');
-assert.ok(source.includes('容量警告字数') && source.includes('warnChars'), '记忆卡缺少无上限的警告字数设置');
+assert.ok(!source.includes('容量警告字数'));
 assert.ok(source.includes('被 @/叫到时越过间隔'), 'Token 防爆破缺少 @ 越过间隔开关');
 assert.ok(source.includes('chat.presence.onlineShare'), '设置页缺少 chat 在线占比');
 
@@ -327,14 +311,9 @@ const tasteGroup = client.BILI_FIELDS.find((g) => g.group.includes('口味'));
 assert.ok(tasteGroup, 'B站参数里缺少口味分组');
 assert.ok(tasteGroup.fields.some((f) => f.path.join('.') === 'preferences.like'), '口味分组缺少 preferences.like');
 
-// ── 跨平台互认 + 微博下线（2026-10-23）────────────────────────────────────────
-// B站 侧唤醒必须先注入「自己是谁」：QQ 昵称/号（桥接落盘）+ B站 昵称/UID。
-// 没有它，别人递来她的 QQ 主页截图，她只会当陌生人（PITFALLS #40）。
 const schedulerSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'lib', 'scheduler.js'), 'utf8');
-assert.ok(schedulerSource.includes("from '../../../src/self-identity.js'"), 'B站 侧没有引用统一自我卡模块');
-assert.ok(schedulerSource.includes('selfIdentityBlockForBili'), 'B站 唤醒缺少自我锚点块');
-assert.ok(schedulerSource.includes('readQqSelfIdentity'), 'B站 侧没有读桥接落的 QQ 自我身份');
-assert.ok(/identityContextLines[\s\S]{0,400}selfIdentityBlockForBili/.test(schedulerSource), '自我锚点没有接进每轮唤醒的上下文');
+assert.match(schedulerSource, /biliV2Agent\.enqueue\(/);
+assert.doesNotMatch(schedulerSource, /identityContextLines\(/);
 // 微博明确不做：注册表里不能再有占位，设置页也不能再提。
 const platformsSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'lib', 'platforms.js'), 'utf8');
 assert.ok(!/weibo/.test(platformsSource), 'platforms.js 里还留着 weibo 占位');
@@ -367,16 +346,16 @@ assert.ok(!source.includes('set("night.windows"'), '作息窗口还在传字符�
 assert.ok(source.includes('onAllowAllChange: (value) => set(["allowAllWhenEmpty"], value)'), '「白名单为空时全部放行」没有用数组路径绑定');
 assert.ok(!source.includes('set("allowAllWhenEmpty"'), '「白名单为空时全部放行」还在传字符串路径');
 // F06：旧跨渠道摘要写者已退役，记忆页不能留可点的旧写动作/可保存的旧开关。
-assert.ok(source.includes('QQ_BILI_SUMMARY_WRITE_RETIRED'), '记忆页没有显示旧摘要写者退役码');
+assert.ok(!source.includes('QQ_BILI_SUMMARY_WRITE_RETIRED'));
 for (const dead of ['action: "sync"', 'action: "refresh-bili"', 'action: "scan-align"', 'action: "purge"', 'checked: biliToQqDraft', 'const biliToQqDraft =', '只同步这些群', 'setQqToBili']) {
   assert.ok(!source.includes(dead), `记忆页仍残留已退役的旧摘要写 UI：${dead}`);
 }
-assert.ok(source.includes('旧跨渠道摘要（只读）'), '记忆页没有把旧摘要区标为只读');
+assert.ok(!source.includes('旧跨渠道摘要（只读）'));
 
 // ── 通知函数接线（2026-10-30 用户反馈：语音页保存后红字 "toast is not a function"）──
 // 根因：Settings 里 toast 是"浮层文案字符串"，真正的函数叫 notify；
 // VoiceTab 那一处只传了 { toast }，字符串被当函数调用 → 保存成功却显示失败。
-assert.ok(source.includes('h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, onVoiceConfigSaved, busy })'), 'VoiceTab 必须收到 notify 函数和配置/保存接线');
+assert.ok(source.includes('h(VoiceTab, { toast: notify, qq: qq, setQq: setQqPath, onSave: save, onVoiceConfigSaved, busy })'), 'VoiceTab 必须收到 notify 函数和配置/保存接线');
 assert.ok(!/h\(VoiceTab, \{ toast \}\)/.test(source), 'VoiceTab 不能收裸 toast（字符串）');
 {
   // 通用：所有 Tab 的 props 里出现 toast 的，都必须是 toast: notify
@@ -385,7 +364,7 @@ assert.ok(!/h\(VoiceTab, \{ toast \}\)/.test(source), 'VoiceTab 不能收裸 toa
   assert.equal(bad.length, 0, `有 Tab 把字符串 toast 当函数传：${bad.map((m) => m[1]).join(', ')}`);
 }
 assert.ok(source.includes('const [toastText, setToastText]'), '浮层文案状态应叫 toastText（避免与 notify 混淆）');
-assert.ok(source.includes('if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, onVoiceConfigSaved, busy });'), '语音页接线固定为 notify + 配置/保存');
+assert.ok(source.includes('if (tab === "voice") return h(VoiceTab, { toast: notify, qq: qq, setQq: setQqPath, onSave: save, onVoiceConfigSaved, busy });'), '语音页接线固定为 notify + 配置/保存');
 
 // ── 语音页网盘离线包入口（2026-10-30 用户要求：网络不稳时可走网盘）──
 assert.ok(source.includes('https://pan.quark.cn/s/ec6cf2b123de?pwd=sxUZ'), '语音页必须包含网盘链接');
@@ -510,10 +489,10 @@ for (const state of ['failed', 'interrupted', 'cancelled']) {
 const staleDetail = renderTree(card({ job: { jobId: 'stale', state: 'completed' }, selectedJob: { jobId: 'stale', state: 'partial', warnings: [{ code: 'REDECODE_FALLBACK', message: '回退完成' }] }, pending: false, inspect: () => {}, act: action => actions.push(action) }));
 assert.ok(textOf(staleDetail).includes('REDECODE_FALLBACK'));
 assert.ok(!buttons(staleDetail).some(button => button.props.children.flat(Infinity).includes('恢复')), 'stale selected detail cannot re-enable resume');
-const cancelledMemory = cardTree({ jobId: 'cancelled-memory', state: 'cancelled', memoryState: 'failed' });
-assert.ok(!buttons(cancelledMemory).some(button => button.props.children.flat(Infinity).includes('重试经历入库')), 'cancelled cannot be resumed');
-const memory = cardTree({ jobId: 'memory', state: 'completed', memoryState: 'failed', memoryError: { code: 'MEMORY_FAILED', error: '写入失败', hint: '点击重试' } });
-const memoryButton = buttons(memory).find(button => button.props.children.flat(Infinity).includes('重试经历入库'));
+const cancelledMemory = cardTree({ jobId: 'cancelled-memory', state: 'cancelled', history: { status: 'failed' } });
+assert.ok(!buttons(cancelledMemory).some(button => button.props.children.flat(Infinity).includes('重试保存观看历史')), 'cancelled cannot be resumed');
+const memory = cardTree({ jobId: 'memory', state: 'completed', history: { status: 'failed', code: 'bili.history.failed', error: '写入失败', hint: '点击重试' } });
+const memoryButton = buttons(memory).find(button => button.props.children.flat(Infinity).includes('重试保存观看历史'));
 assert.ok(memoryButton); memoryButton.props.onClick(); assert.deepEqual(actions.pop(), { action: 'resume', jobId: 'memory' });
 // Render the real PersonaEditor with a minimal stateful hook harness.
 const persona = client.__test.PersonaEditor;

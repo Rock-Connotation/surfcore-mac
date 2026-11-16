@@ -11,11 +11,11 @@ fs.writeFileSync(path.join(fixtureRepo, 'config.json'), '{}');
 fs.writeFileSync(path.join(fixtureRepo, 'src', 'bridge.js'), '');
 process.env.SURFCORE_ROOT = fixtureRepo;
 const chars = await import('../src/character-persona.js');
-const exp = await import('../src/core/experience.js');
+const exp = await import('./test-fixtures/experience.mjs');
 const context = await import('../src/core/context.js');
 const { buildCharacterContext } = context;
 const life = await import('../src/core/life.js');
-const host = await import('../plugins/surfcore/lib/memory-card.js');
+const host = await import('./test-fixtures/plugin-memory-card.mjs');
 const { cardText, preparedMemoryView } = await import('./test-v2-context-fixture.mjs');
 // V2-only（2026-11-12）：context.js 的 V1 记忆卡/生活/目的注入已删除，
 // 只接受 Host 签发的准备包。旧「账本→卡→上下文」用例仍要断言卡片内容与作用域，
@@ -362,7 +362,7 @@ test('journal directory fsync failure happens before archive append and is recov
 });
 
 test('directory fsync only tolerates explicit unsupported codes, not I/O failure', async () => {
- const { syncDurableDirectory } = await import('../src/memory-card.js');
+ const { syncDurableDirectory } = await import('./test-fixtures/memory-card.mjs');
  const originalSync = fs.fsyncSync;
  try {
    fs.fsyncSync = () => { const error = new Error('fixture unsupported'); error.code = 'EINVAL'; throw error; };
@@ -405,7 +405,7 @@ test('archive append fsync failure must be synced again before recovery clears j
 });
 
 test('Windows keeps file-sync/rename compatibility without opening a directory read handle for FlushFileBuffers', async () => {
- const memoryCore = await import('../src/memory-card.js'); const original = fs.openSync;
+ const memoryCore = await import('./test-fixtures/memory-card.mjs'); const original = fs.openSync;
  fs.openSync = () => { assert.fail('Windows directory barrier must not use a POSIX read-only directory handle'); };
  try { assert.equal(memoryCore.syncDurableDirectory(root, { platform: 'win32' }), false); }
  finally { fs.openSync = original; }
