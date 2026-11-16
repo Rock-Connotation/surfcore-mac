@@ -60,7 +60,9 @@ export function createMemoryV2Panel(React, { api, Btn, fmtTime }) {
       feedbackRef.current?.focus?.({ preventScroll: true });
     }, [error, notice, uncertain]);
     const request = async (path, options) => {
-      const result = await api(path, { ...options, signal: AbortSignal.timeout(12000) });
+      // Identity comes from official account checks. A general listing can include a fresh browser navigation.
+      const timeout = path === '/memory-v2/status' || path === '/memory-v2/manage' && options?.body?.action === 'configure_policy' ? 60_000 : 12_000;
+      const result = await api(path, { ...options, signal: AbortSignal.timeout(timeout) });
       if (result?.ok !== true) throw Object.assign(new Error(result?.error || '记忆请求未完成'), fail(result), { data: result });
       return result;
     };
@@ -273,7 +275,7 @@ export function createMemoryV2Panel(React, { api, Btn, fmtTime }) {
         sourceSetView(selectedConversation?.sourceSetPreview, '选择的确切公开来源集合'),
         missingSetPreview ? h('p', { role: 'alert' }, 'MEMORY_POLICY_REQUIRED：完整来源集合预览不可用。刷新官方来源，核对账号和模型后重试。') : null,
         button('预览共享范围', 'configure_policy', { conversationId, processorScope }, !conversationId || !processorScope || missingSetPreview),
-        list(current.policies).map(p => h('div', { className: 'qbw-rec', key: p.id }, h('span', null, p.label || p.id), button('预览撤回共享', 'revoke_policy', { policyId: p.id }))),
+        list(current.policies).map(p => h('div', { className: 'qbw-rec', key: p.id }, h('span', null, p.label ? `${p.label} · ${p.id}` : p.id), button('预览撤回共享', 'revoke_policy', { policyId: p.id }))),
         section('人物账号关联', h('div', null, h('p', null, current.capabilities?.identity === true ? '明确填写平台稳定账号与已有的人物编号。关联不会扩大记忆权限。' : '人物关联能力尚未就绪；等待 Host 提供能力后再操作。'),
           h('label', null, '平台 ', h('select', { className: 'qbw-select', value: account.platform, onChange: e => setAccount({ ...account, platform: e.target.value }) }, ['qq', 'bili', 'douyin'].map(p => h('option', { key: p, value: p }, { qq: 'QQ', bili: 'B站', douyin: '抖音' }[p])))),
           h('label', null, '平台稳定账号 ', h('input', { className: 'qbw-input', value: account.accountId, onChange: e => setAccount({ ...account, accountId: e.target.value }), placeholder: '填写账号编号，不能填昵称' })),

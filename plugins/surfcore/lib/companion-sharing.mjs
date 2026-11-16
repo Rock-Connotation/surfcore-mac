@@ -11,6 +11,11 @@ import { whaleCompanionTone } from './whale-companion-persona.mjs';
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const stale = () => problem('DOUYIN_STALE_CHARACTER', '角色或世代已变化，本次对话已停止。', '刷新当前伙伴后再说；不会将旧回复写给新角色。');
 const cancelled = () => problem('DOUYIN_CHAT_CANCELLED', '这次回复已停止。', '查看已经保存的对话和用量；不会自动重发。');
+const historyRestricted = () => problem('DOUYIN_CHAT_HISTORY_RESTRICTED', '部分历史分享在当前许可下不可用。', '可以继续查看和回复当前有权访问的分享。');
+const legacyHistory = () => problem('DOUYIN_CHAT_MIGRATION_REQUIRED', '旧对话缺少可验证的 V2 来源。', '通过显式迁移确认旧来源权限后再查看。');
+const conversationRow = row => ['opening', 'request', 'answer'].includes(row.kind);
+const messageRow = row => row.kind === 'request' || row.kind === 'answer';
+const terminalRow = row => row.kind === 'answer' || row.kind === 'failure';
 function failure(error) {
   if (/^(?:DOUYIN_|MEMORY_|MODEL_|CHARACTER_|COMPANION_)[A-Z0-9_]{1,72}$/.test(error?.code || '') && safeDisplayText(error.message, 240) && safeDisplayText(error.hint, 300)) {
     return { ok: false, code: error.code, error: error.message, hint: error.hint };
@@ -48,7 +53,7 @@ export function createCompanionSharing({ stateDir, getCharacter, buildContext, m
   }
   async function capture(context) {
     guard(context);
-    check(adapter && ['capture', 'ingest', 'receipt', 'prepare', 'validate', 'bindActualInput', 'verifyPrepared', 'release'].every(key => typeof adapter[key] === 'function'), 'DOUYIN_CHAT_MEMORY_REQUIRED', '本机V2记忆接口未就绪。', '检查Host接线后刷新，不会回退旧记录。');
+    check(adapter && ['capture', 'ingest', 'receipt', 'prepare', 'validate', 'checkInputEvidence', 'bindActualInput', 'verifyPrepared', 'release'].every(key => typeof adapter[key] === 'function'), 'DOUYIN_CHAT_MEMORY_REQUIRED', '本机V2记忆接口未就绪。', '检查Host接线后刷新，不会回退旧记录。');
     const captured = checked(await adapter.capture({ conversationKey: `local:companion-sharing:${context.characterId}` }));
     try { guard(context); const expected = deriveMemoryProviderRouteId(COMPANION_ROUTE); check(expected.ok && captured.sourceStamp?.providerRouteId === expected.providerRouteId, 'COMPANION_ROUTE_MISMATCH', '本机原始上下文授权与固定provider/model不一致。', '以正确的固定路由重新捕获上下文，不会修改旧授权。'); return captured; } catch (error) { adapter.release(captured.handle); throw error; }
   }
@@ -59,6 +64,37 @@ export function createCompanionSharing({ stateDir, getCharacter, buildContext, m
       row.memoryV2Refs.some(ref => ref?.type === 'event' && row.memoryV2Receipts.some(receipt => receipt.eventRefs.some(item => item.id === ref.id && item.payloadDigest === ref.payloadDigest && item.revision === ref.revision)));
   }
   const refsOf = rows => [...new Map(rows.flatMap(row => row.memoryV2Refs || []).map(ref => [JSON.stringify(ref), ref])).values()];
+  async function checkEvidence(context, captured, refs, signal) {
+    guard(context, signal);
+    const result = await adapter.checkInputEvidence(captured.handle, refs);
+    guard(context, signal);
+    if (['MEMORY_EVIDENCE_DENIED', 'MEMORY_SOURCE_STALE'].includes(result?.code)) return false;
+    return checked(result).ok;
+  }
+  async function readableHistory(context, captured, rows, signal) {
+    const candidates = rows.filter(conversationRow), proven = candidates.filter(provenance);
+    const allRefs = refsOf(proven);
+    const allowed = new Set();
+    if (allRefs.length <= 100 && await checkEvidence(context, captured, allRefs, signal)) {
+      for (const row of proven) allowed.add(row);
+    } else {
+      const decisions = new Map();
+      for (const row of proven) {
+        const refs = refsOf([row]), key = JSON.stringify(refs);
+        if (!decisions.has(key)) decisions.set(key, await checkEvidence(context, captured, refs, signal));
+        if (decisions.get(key)) allowed.add(row);
+      }
+    }
+    // A message also depends on its opening, even when its own receipt is local and still valid.
+    const openings = new Map(proven.filter(row => row.kind === 'opening' && allowed.has(row)).map(row => [row.id, row]));
+    const messages = proven.filter(row => messageRow(row) && allowed.has(row) && openings.has(row.openingId));
+    const notice = openings.size + messages.length < proven.length ? historyRestricted() : candidates.length > proven.length ? legacyHistory() : null;
+    return { openings, messages, notice };
+  }
+  async function requireOpening(context, captured, opening, signal) {
+    if (!provenance(opening)) throw legacyHistory();
+    if (!await checkEvidence(context, captured, refsOf([opening]), signal)) throw historyRestricted();
+  }
   async function validate(context, captured, signal, preparedHandle) {
     guard(context, signal);
     check(routing() === 'v2', 'DOUYIN_CHAT_MEMORY_CHANGED', '本机记忆后端已变化，这次对话已停止。', '清退旧会话后重新打开伙伴。');
@@ -146,34 +182,39 @@ export function createCompanionSharing({ stateDir, getCharacter, buildContext, m
     } catch (error) { if (/^(?:MEMORY_|CHARACTER_)/.test(error?.code || '')) await block(error); return failure(error); }
   }
   async function status(context) {
+    let captured;
     try {
       const role = guard(context), allRows = events(role);
       routing();
-      let rows = allRows, captured;
-      {
-        captured = await capture(context);
-        try {
-          rows = allRows.filter(row => !['opening', 'request', 'answer'].includes(row.kind) || provenance(row));
-          await bind(context, captured, rows.filter(row => ['opening', 'request', 'answer'].includes(row.kind)));
-        } catch (error) { adapter.release(captured.handle); await block(error); throw error; }
-      }
-      const acks = new Set(rows.filter(r => r.kind === 'ack').map(r => r.openingId));
-      const openings = rows.filter(r => r.kind === 'opening').reverse().slice(0, 8).map(r => ({ ...r, unread: !acks.has(r.id) }));
-      const messages = rows.filter(r => r.kind === 'request' || r.kind === 'answer').slice(-24).map(r => ({ id: r.id,
+      captured = await capture(context);
+      const readable = await readableHistory(context, captured, allRows);
+      const acks = new Set(allRows.filter(row => row.kind === 'ack').map(row => row.openingId));
+      const visibleOpenings = [...readable.openings.values()].reverse().slice(0, 8);
+      const visibleMessages = readable.messages.slice(-24);
+      const openings = visibleOpenings.map(r => ({ ...r, unread: !acks.has(r.id) }));
+      const messages = visibleMessages.map(r => ({ id: r.id,
         requestId: r.requestId, openingId: r.openingId, role: r.kind === 'request' ? 'user' : 'assistant', text: r.text, at: r.at }));
-      const latest = rows.filter(r => r.kind === 'request').at(-1);
-      const terminal = latest && rows.findLast(r => ['answer', 'failure'].includes(r.kind) && r.requestId === latest.requestId);
+      const latest = readable.messages.findLast(row => row.kind === 'request');
+      const terminal = latest && allRows.findLast(row => terminalRow(row) && row.requestId === latest.requestId);
       let lastError = terminal?.kind === 'failure' ? { code: terminal.code, error: terminal.error, hint: terminal.hint, requestId: terminal.requestId, openingId: terminal.openingId } : null;
       const foreignPending = latest && !terminal && requestRunning(latest);
       if (latest && !terminal && active?.requestId !== latest.requestId && !foreignPending) lastError = { code: 'DOUYIN_CHAT_INTERRUPTED', error: '进程重启打断了上次回复。', hint: '已预留请求不会返还；查看记录后再决定是否发送新消息。', requestId: latest.requestId, openingId: latest.openingId };
-      const pending = active && active.role.id === role.id && active.role.epoch === role.epoch &&
-        !rows.some(r => ['answer', 'failure'].includes(r.kind) && r.requestId === active.requestId);
+      const pending = active && active.role.id === role.id && active.role.epoch === role.epoch && readable.openings.has(active.openingId) &&
+        !allRows.some(row => terminalRow(row) && row.requestId === active.requestId) ? active : null;
+      const actual = [...visibleOpenings, ...visibleMessages, ...visibleMessages.map(row => readable.openings.get(row.openingId))];
+      if (latest) actual.push(latest, readable.openings.get(latest.openingId));
+      if (pending) actual.push(readable.openings.get(pending.openingId));
+      await bind(context, captured, actual);
       const value = { ok: true, revision: allRows.length, openings, messages, unread: openings.filter(r => r.unread).length,
-        active: pending ? { requestId: active.requestId, openingId: active.openingId } : foreignPending ? { requestId: latest.requestId, openingId: latest.openingId } : null, lastError };
-      if (allRows.some(row => ['opening', 'request', 'answer'].includes(row.kind) && !provenance(row))) value.lastError ||= { code: 'DOUYIN_CHAT_MIGRATION_REQUIRED', error: '旧对话缺少V2来源，已隔离显示。', hint: '通过显式迁移确认旧来源权限后再查看。' };
+        active: pending ? { requestId: pending.requestId, openingId: pending.openingId } : foreignPending ? { requestId: latest.requestId, openingId: latest.openingId } : null,
+        lastError, ...(readable.notice ? { historyNotice: { code: readable.notice.code, error: readable.notice.message, hint: readable.notice.hint } } : {}) };
       retained.set(value, captured);
       return value;
-    } catch (error) { if (/^(?:MEMORY_|CHARACTER_)/.test(error?.code || '')) await block(error); return failure(error); }
+    } catch (error) {
+      if (captured) adapter.release(captured.handle);
+      if (/^(?:MEMORY_|CHARACTER_)/.test(error?.code || '')) await block(error);
+      return failure(error);
+    }
   }
   async function ack(context, { openingId }) {
     try {
@@ -256,15 +297,18 @@ export function createCompanionSharing({ stateDir, getCharacter, buildContext, m
     watch.unref?.();
     try {
       captured = await capture(context);
+      await requireOpening(context, captured, opening, signal);
+      const readable = await readableHistory(context, captured, events(role), signal);
+      const recent = readable.messages.slice(-10);
+      const inputs = [opening, ...recent, ...recent.map(row => readable.openings.get(row.openingId))];
+      await bind(context, captured, inputs, signal);
       sourceProof = await ingest(context, captured, requestId, 'user', text, signal);
       operation.sourceState = 'committed';
       const ready = await readiness(context, { signal });
       await validate(context, captured, signal);
       check(ready?.ok, 'DOUYIN_CHAT_NOT_READY', '伙伴对话的固定模型路由尚未就绪。', '检查本机HY3路由和当前抖音开关后刷新；不会换模型或自动重试。');
-      const rows = events(role), recent = rows.filter(row => ['request', 'answer'].includes(row.kind) && provenance(row)).slice(-10);
-      await bind(context, captured, [opening, ...recent], signal);
       const built = checked(await prepareCharacterContext({ ...context, scene: 'local', audience: { channel: 'local', conversationKey: captured.sourceStamp.conversationKey } }, { adapter, handle: captured.handle, query: text }));
-      const actualRefs = refsOf([sourceProof, opening, ...recent, { memoryV2Refs: built.inputManifest }]);
+      const actualRefs = refsOf([sourceProof, ...inputs, { memoryV2Refs: built.inputManifest }]);
       checked(await adapter.bindActualInput(captured.handle, actualRefs));
       await validate(context, captured, signal, built.preparedHandle);
       const persona = built.personaText || whaleCompanionTone;
@@ -296,7 +340,7 @@ export function createCompanionSharing({ stateDir, getCharacter, buildContext, m
       check(response && ['stop', 'end_turn', 'completed'].includes(response.finishReason), 'DOUYIN_CHAT_INCOMPLETE', '这次回复没有正常完成。', '核对模型状态与已用额度；不会自动重发。');
       const answer = safeModelText(response.text, 600);
       const replyProof = await ingest(context, captured, requestId, 'assistant', answer, signal);
-      const proof = { memoryV2Refs: refsOf([{ memoryV2Refs: actualRefs }, replyProof]), memoryV2Receipts: [...new Map([sourceProof, opening, ...recent, replyProof].flatMap(row => row.memoryV2Receipts || []).map(receipt => [receipt.operationId, receipt])).values()], sourceState: 'committed', modelState: 'completed' };
+      const proof = { memoryV2Refs: refsOf([{ memoryV2Refs: actualRefs }, replyProof]), memoryV2Receipts: [...new Map([sourceProof, ...inputs, replyProof].flatMap(row => row.memoryV2Receipts || []).map(receipt => [receipt.operationId, receipt])).values()], sourceState: 'committed', modelState: 'completed' };
       await validate(context, captured, signal);
       history.append(role.id, event(role, 'answer', `answer:${requestId}`, { requestId, openingId: opening.id, text: answer, ...proof }), () => guard(context, signal));
       const value = await status(context);

@@ -100,6 +100,55 @@ async function fixture({ model, patchAdapter = value => value, metadata = true, 
 
 const checks = [];
 {
+  const f = await fixture({ sourceFromDouyin: true, model: async ({ prompt }) => {
+    if (JSON.parse(prompt).user === '聊仍有权限的分享。') assert.doesNotMatch(prompt, /revokedrequestcanary|unreadableopeningcanary/);
+    return { text: '这条分享可以接着聊。', finishReason: 'stop' };
+  } });
+  try {
+    good((await f.reply('revokedrequestcanary')).body);
+    const archive = f.sharingStore.read('alpha').map(row => row.id);
+    await f.action({ type: 'revoke_policy', policyId: 'sharing-policy' });
+    await f.action({ type: 'configure_policy', policy: { policyId: 'restored-local-policy', approved: true,
+      audiences: [['local', conversationKey, 'local:owner']], processingGrants: [{ grantId: 'local-grant', providerRouteId: routeId }] } });
+
+    const after = good((await f.http()).body).value;
+    assert.deepEqual(after.openings, []);
+    assert.deepEqual(after.messages, []);
+    assert.equal(after.lastError, null);
+    assert.equal(after.historyNotice.code, 'DOUYIN_CHAT_HISTORY_RESTRICTED');
+    assert.equal(f.blocked.length, 0);
+    const deniedId = crypto.randomUUID();
+    const refused = bad((await f.reply('尝试回复已撤权的分享。', deniedId)).body);
+    assert.equal(refused.code, 'DOUYIN_CHAT_HISTORY_RESTRICTED');
+    assert.equal(refused.sourceState, 'pending'); assert.equal(refused.modelState, 'not_started');
+    assert.equal(f.calls, 1); assert.equal(f.ledger.readLedger().acceptanceCalls, 1);
+    assert.deepEqual(f.sharingStore.read('alpha').map(row => row.id), archive);
+
+    const fresh = good(await f.originalAdapter.capture({ conversationKey }));
+    try {
+      assert.equal(good(await f.originalAdapter.receipt(fresh.handle, `sharing:${deniedId}:user`)).operationState, 'not_found');
+      const activeReceipt = good(await f.originalAdapter.ingest(fresh.handle, [{ eventId: 'fixture:authorized-opening', operationId: 'fixture:authorized-source',
+        sourceKey: 'fixture:authorized-opening', producerId: 'sharing-fixture', segmentId: 'fixture:authorized-segment', producerSeq: 1,
+        content: '仍有权限的来源。', certainty: 'observed', attribution: 'action' }], 'fixture:authorized-ingest'));
+      const openingId = `${jobId}:654321`;
+      const sibling = { ...f.opening, id: openingId, sourceId: '654321', text: '仍有权限的分享。', memoryV2Refs: activeReceipt.eventRefs, memoryV2Receipts: [activeReceipt] };
+      const ledger = f.ledger.readLedger(); ledger.jobs[jobId].items.push({ ...item, id: '654321', url: 'https://www.douyin.com/video/654321' }); f.ledger.writeLedger(ledger);
+      f.sharingStore.append('alpha', sibling);
+      const linkedId = crypto.randomUUID();
+      f.sharingStore.append('alpha', { version: 1, kind: 'request', id: `request:${linkedId}`, requestId: linkedId, openingId: f.openingId, epoch: 1,
+        at: now().toISOString(), text: 'unreadableopeningcanary', memoryV2Refs: activeReceipt.eventRefs, memoryV2Receipts: [activeReceipt] });
+      const mixed = good((await f.http()).body).value;
+      assert.deepEqual(mixed.openings.map(row => row.id), [openingId]);
+      assert.deepEqual(mixed.messages, []);
+      const reply = good((await f.http({ action: 'reply', openingId, requestId: crypto.randomUUID(), text: '聊仍有权限的分享。' })).body);
+      assert.equal(reply.value.messages.length, 2); assert.equal(f.calls, 2);
+      assert.equal(f.blocked.length, 0);
+      assert.deepEqual(f.sharingStore.read('alpha').slice(0, archive.length).map(row => row.id), archive);
+    } finally { f.originalAdapter.release(fresh.handle); }
+    checks.push('revoked-trial-and-restored-local-policy-keep-status-and-valid-reply-available');
+  } finally { await f.close(); }
+}
+{
   const f = await fixture({ seedOpening: false });
   let old, late, fresh, beta;
   try {
@@ -200,7 +249,10 @@ const checks = [];
     let transitioned = false; const barrier = await f.sharing.withTransition(() => { transitioned = true; return { ok: true }; });
     assert.equal(barrier.retirementRequired, true); assert.equal(transitioned, false); assert.ok(f.blocked.length);
     good(await f.sharing.withTransition(() => ({ ok: true }), { retirementAcknowledged: true }));
-    await f.restart(); bad((await f.http()).body);
+    await f.restart();
+    const filtered = good((await f.http()).body).value;
+    assert.equal(filtered.openings.length, 1); assert.deepEqual(filtered.messages, []);
+    assert.equal(filtered.historyNotice.code, 'DOUYIN_CHAT_HISTORY_RESTRICTED');
     checks.push('full-redacted-input-output-capture', 'duplicate-one-call', 'history-full-manifest', 'private-root-revocation-no-laundering', 'retained-send-and-restart-barrier');
   } finally { await f.close(); }
 }
@@ -209,7 +261,7 @@ const checks = [];
   try {
     const legacy = { ...f.opening, id: `${jobId}:654321`, sourceId: '654321', text: 'LEGACY_UNKNOWN_PRIVATE_CANARY' }; delete legacy.memoryV2Refs; delete legacy.memoryV2Receipts;
     f.sharingStore.append('alpha', legacy);
-    const response = await f.http(); good(response.body); assert.equal(response.body.value.openings.length, 1); assert.equal(response.body.value.lastError.code, 'DOUYIN_CHAT_MIGRATION_REQUIRED');
+    const response = await f.http(); good(response.body); assert.equal(response.body.value.openings.length, 1); assert.equal(response.body.value.lastError, null); assert.equal(response.body.value.historyNotice.code, 'DOUYIN_CHAT_MIGRATION_REQUIRED');
     assert.doesNotMatch(JSON.stringify(response.body), /LEGACY_UNKNOWN_PRIVATE_CANARY/);
     const unknown = await f.http({ action: 'reply', openingId: legacy.id, requestId: crypto.randomUUID(), text: '聊旧分享。' });
     assert.equal(bad(unknown.body).code, 'DOUYIN_CHAT_MIGRATION_REQUIRED'); assert.equal(f.calls, 0);
@@ -254,6 +306,15 @@ for (const phase of ['capture', 'prepare', 'validate', 'ingest']) {
   const f = await fixture({ patchAdapter: original => ({ ...original, [phase]: async (...args) => armed ? { ok: false, code: 'MEMORY_WORKER_UNAVAILABLE', error: 'Fixture worker unavailable.', hint: 'Retire original session and inspect worker.' } : original[phase](...args) }) });
   try { armed = true; bad((await f.reply()).body); assert.equal(f.calls, 0); assert.ok(f.blocked.length); checks.push(`worker-failure-${phase}`); }
   finally { await f.close(); }
+}
+{
+  const f = await fixture({ patchAdapter: original => ({ ...original, checkInputEvidence: async () => ({ ok: false, code: 'MEMORY_WORKER_UNAVAILABLE', error: 'Fixture worker unavailable.', hint: 'Retry after the worker returns.' }) }) });
+  try {
+    const unavailable = bad((await f.http()).body);
+    assert.equal(unavailable.code, 'MEMORY_WORKER_UNAVAILABLE'); assert.equal(f.blocked.length, 1);
+    assert.doesNotMatch(JSON.stringify(unavailable), /猫把纸箱当成了家/);
+    checks.push('candidate-worker-failure-remains-visible');
+  } finally { await f.close(); }
 }
 {
   const f = await fixture();
@@ -352,7 +413,14 @@ for (const phase of ['capture', 'prepare', 'validate', 'ingest']) {
 }
 {
   const f = await fixture({ sourceFromDouyin: true, allowLocal: false });
-  try { bad((await f.http()).body); bad((await f.reply()).body); assert.equal(f.calls, 0); assert.ok(f.blocked.length); checks.push('cross-channel-source-without-local-grant-never-renders'); }
+  try {
+    const value = good((await f.http()).body).value;
+    assert.deepEqual(value.openings, []); assert.deepEqual(value.messages, []);
+    assert.equal(value.historyNotice.code, 'DOUYIN_CHAT_HISTORY_RESTRICTED');
+    assert.equal(bad((await f.reply()).body).code, 'DOUYIN_CHAT_HISTORY_RESTRICTED');
+    assert.equal(f.calls, 0); assert.equal(f.blocked.length, 0);
+    checks.push('cross-channel-source-without-local-grant-never-renders');
+  }
   finally { await f.close(); }
 }
 {
