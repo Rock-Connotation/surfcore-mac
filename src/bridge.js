@@ -1873,10 +1873,15 @@ async function main() {
     log
   });
 
-  async function handleOwnerReadOnlyTask(key, event, { target, command }, admissionSnapshot, role) {
-    const reading = command === '读取文件';
-    const label = reading ? '文件读取' : '目录清单';
-    const example = reading ? '任务：读取文件 <文件名.txt>' : '任务：列出文件 <绝对路径>';
+  const macFileCommands = {
+    列出文件: { action: 'directory_list', prefix: 'mac-list', label: '目录清单', example: '任务：列出文件 <绝对路径>' },
+    读取文件: { action: 'file_read', prefix: 'mac-read', label: '文件读取', example: '任务：读取文件 <文件名.txt>' },
+    新建文件: { action: 'file_create', prefix: 'mac-create', label: '新建文件', example: '任务：新建文件 文件名.txt 写入 正文' },
+  };
+  const macFileCommandPattern = /^(?:任务|[/#]task)[：:\s]+(列出文件|读取文件|新建文件)(?:[：:\s]+([\s\S]*))?$/u;
+
+  async function handleOwnerMacFileTask(key, event, { args, command }, admissionSnapshot, role) {
+    const { action, prefix, label, example } = macFileCommands[command];
     const userId = String(event.user_id ?? '');
     const accountId = String(event.self_id ?? '');
     const requestor = { platform: 'qq', userId, conversationKey: key, isOwner: userId === String(cfg.ownerQQ ?? '') };
@@ -1898,21 +1903,32 @@ async function main() {
         text: `${label}未完成（${result.code}）\n${result.error}\n${result.hint}` });
     };
     const messageId = canonicalOneBotMessageId(event.message_id);
-    if (!messageId || !Array.isArray(event.message) || !event.message.every(segment => segment?.type === 'text')) {
-      await replyFailure({ code: 'TASK_READ_ONLY_INPUT_INVALID', error: '请发送一条新的纯文字指令。', hint: `直接在私聊发送「${example}」。` });
+    if (!messageId || !Array.isArray(event.message) || !event.message.every(segment => segment?.type === 'text' && typeof segment.data?.text === 'string')) {
+      await replyFailure({ code: 'TASK_FILE_INPUT_INVALID', error: '请发送一条新的纯文字指令。', hint: `直接在私聊发送「${example}」。` });
       return;
     }
     const identity = await readOfficialMemoryQQIdentity();
     if (!identity.ok || identity.accountId !== accountId || !identity.allowedPrivates.includes(userId) || !checkContext()) {
-      await replyFailure({ code: 'TASK_READ_ONLY_IDENTITY_REQUIRED', error: '未确认当前 OneBot 登录和主人的私聊权限。', hint: '在本机确认 QQ 登录和私聊白名单后再发一条新指令。' });
+      await replyFailure({ code: 'TASK_FILE_IDENTITY_REQUIRED', error: '未确认当前 OneBot 登录和主人的私聊权限。', hint: '在本机确认 QQ 登录和私聊白名单后再发一条新指令。' });
       return;
     }
-    const prefix = reading ? 'mac-read' : 'mac-list';
     const taskId = `${prefix}-${crypto.createHash('sha256').update(JSON.stringify([accountId, key, String(messageId)])).digest('hex').slice(0, 16)}`;
     try {
-      const action = reading ? 'file_read' : 'directory_list';
-      const result = await taskHarness.runReadOnlyTask({ requestor, action, taskId, target, validate: checkContext });
-      if (!result.ok && reading && result.code === 'OWNER_REPLY_CONTEXT_CHANGED') {
+      let target = args.trim();
+      let body;
+      if (action === 'file_create') {
+        const original = event.message.map(segment => segment.data.text).join('').trimStart();
+        const writeSpec = macFileCommandPattern.exec(original)?.[2]?.match(/^(\S+)[ \t]+写入[ \t]([\s\S]*)$/u);
+        if (!writeSpec) {
+          await replyFailure({ code: 'TASK_CREATE_INPUT_INVALID', error: '未读到文件名或写入格式。', hint: `直接在私聊发送「${example}」。` });
+          return;
+        }
+        [, target, body] = writeSpec;
+      } else if (target.startsWith('"') && target.endsWith('"')) {
+        target = target.slice(1, -1);
+      }
+      const result = await taskHarness.runMacFileTask({ requestor, action, taskId, target, body, validate: checkContext });
+      if (!result.ok && action === 'file_read' && result.code === 'OWNER_REPLY_CONTEXT_CHANGED') {
         await replyFailure({ code: 'TASK_FILE_SEND_SCOPE_CHANGED', error: '回传前文件读取授权已变化。', hint: '在本机确认指定目录授权后重新发送指令。' });
         return;
       }
@@ -15235,11 +15251,9 @@ async function main() {
       }
       return;
     }
-    const readOnlyCommand = plainContent.match(/^(?:任务|[/#]task)[：:\s]+(列出文件|读取文件)(?:[：:\s]+([\s\S]*))?$/u);
-    if (readOnlyCommand) {
-      const raw = readOnlyCommand[2]?.trim() ?? '';
-      const target = raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
-      await handleOwnerReadOnlyTask(key, event, { target, command: readOnlyCommand[1] }, ingressAdmission, ingressCharacter);
+    const macFileCommand = plainContent.match(macFileCommandPattern);
+    if (macFileCommand) {
+      await handleOwnerMacFileTask(key, event, { args: macFileCommand[2] ?? '', command: macFileCommand[1] }, ingressAdmission, ingressCharacter);
       return;
     }
     // 任何入站消息（含纯图片/表情/引用）都先记「谁在说话」，且必须在下面的空文本过滤之前：
@@ -15357,6 +15371,9 @@ async function main() {
             `【任务详情】${t.taskId}`,
             `- 目标：${t.goal}`,
             `- 状态：${t.status}`,
+            t.type === 'file_create' && t.intent?.effect === 'created'
+              ? `- 文件已新建：${t.intent.name}（${t.intent.bytes} 字节）`
+              : t.type === 'file_create' && t.intent?.effect === 'unconfirmed' ? '- 创建结果待确认，请先检查本机文件。' : '',
             `- 创建时间：${new Date(t.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
             t.artifact ? `- 产物：${t.artifact.fileName} (${t.artifact.sizeBytes} 字节, 哈希: ${t.artifact.sha256.slice(0, 8)}…)` : '- 产物：无',
             t.delivery ? `- 交付：${t.delivery.status}` : '- 交付：未开始',

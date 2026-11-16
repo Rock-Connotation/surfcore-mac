@@ -102,13 +102,15 @@ function readRegularFile(file, limit, privateFile = false) {
   }
 }
 
-function readFileScope(root) {
+function readFileScope(root, grantName = 'text-directory') {
   if (typeof process.getuid !== 'function' || !fs.constants.O_NOFOLLOW || !fs.constants.O_NONBLOCK) return null;
   try {
-    const grant = readRegularFile(`${root}.text-directory`, 255, true);
+    const grant = readRegularFile(`${root}.${grantName}`, 255, true);
     const name = grant.buffer?.toString('utf8').trim();
     if (!name || !/^[\p{L}\p{N}_-][\p{L}\p{N}_ .-]*$/u.test(name)) return null;
-    const isTrustedDirectory = info => info.isDirectory() && info.uid === process.getuid() && !(info.mode & 0o022);
+    const isTrustedDirectory = info => info.isDirectory() && info.uid === process.getuid() &&
+      !(info.mode & (grantName === 'create-directory' ? 0o077 : 0o022));
+    if (grantName === 'create-directory' && !isTrustedDirectory(fs.lstatSync(path.dirname(root)))) return null;
     if (!isTrustedDirectory(fs.lstatSync(root))) return null;
     const directory = path.join(fs.realpathSync(root), name);
     const info = fs.lstatSync(directory);
@@ -119,6 +121,12 @@ function readFileScope(root) {
   }
 }
 
+function sameFileScope(root, grantName, scope) {
+  const current = readFileScope(root, grantName);
+  return current?.directory === scope.directory && current.dev === scope.dev && current.ino === scope.ino &&
+    sameFile(current.grant, scope.grant);
+}
+
 export function readTaskText({ root, target }) {
   const scope = readFileScope(root);
   if (!scope) return fail('TASK_FILE_SCOPE_REQUIRED', '本机未启用文件正文读取目录。', '在 Mac 上确认指定目录的只读授权。');
@@ -126,11 +134,7 @@ export function readTaskText({ root, target }) {
   if (!fileNamePattern.test(name) || (target !== name && target !== path.join(root, scope.name, name))) {
     return fail('TASK_FILE_NOT_ALLOWED', '只允许读取指定目录当前层的 .txt 文件。', '发送「任务：读取文件 <文件名.txt>」。');
   }
-  const verifyScope = () => {
-    const current = readFileScope(root);
-    return current?.directory === scope.directory && current.dev === scope.dev && current.ino === scope.ino &&
-      sameFile(current.grant, scope.grant);
-  };
+  const verifyScope = () => sameFileScope(root, 'text-directory', scope);
   let result;
   try {
     result = readRegularFile(path.join(scope.directory, name), FILE_BYTE_LIMIT);
@@ -150,4 +154,83 @@ export function readTaskText({ root, target }) {
     // A malformed UTF-8 file cannot be returned faithfully as QQ text.
   }
   return fail('TASK_FILE_TEXT_INVALID', '该文件无法作为 UTF-8 纯文本回传。', '在本机选一个 UTF-8 .txt 文件后重试。');
+}
+
+export function createTaskText({ root, target, text, validate }) {
+  const grantName = 'create-directory';
+  const scope = readFileScope(root, grantName);
+  if (!scope) return fail('TASK_CREATE_SCOPE_REQUIRED', '本机未启用文件新建权限。', '在 Mac 上确认指定测试目录的新建授权。');
+  if (typeof target !== 'string' || target.length > 120 || Buffer.byteLength(target) > 240 ||
+      !/^[\p{L}\p{N}_-][\p{L}\p{N}_.-]*\.txt$/iu.test(target)) {
+    return fail('TASK_CREATE_NAME_INVALID', '请提供指定目录当前层的 .txt 文件名。', '发送「任务：新建文件 文件名.txt 写入 正文」，文件名用字母、数字、下划线、点或连字符。');
+  }
+  if (typeof text !== 'string' || !text.trim() || /\p{Cc}/u.test(text.replace(/[\t\r\n]/g, ''))) {
+    return fail('TASK_CREATE_TEXT_INVALID', '请提供要写入的纯文本正文。', '在「写入」后加一个空格，再输入正文。');
+  }
+  if (Buffer.byteLength(text) > FILE_BYTE_LIMIT) {
+    return fail('TASK_CREATE_TEXT_TOO_LARGE', `正文超过 ${FILE_BYTE_LIMIT} 字节。`, '缩短正文后重新发送指令。');
+  }
+  const bytes = Buffer.from(text, 'utf8');
+  if (bytes.toString('utf8') !== text) return fail('TASK_CREATE_TEXT_INVALID', '正文包含无效字符。', '复制有效的 UTF-8 正文后重试。');
+
+  const destination = path.join(scope.directory, target);
+  const allowedNow = () => validate() && sameFileScope(root, grantName, scope);
+  const changed = () => fail('TASK_CREATE_SCOPE_CHANGED', '创建前授权或目录已变化。', '在 Mac 上核对目录授权，再发送一条新指令。');
+  const unknown = () => ({ ...fail('TASK_CREATE_UNCONFIRMED', '文件已提交创建，但无法确认最终状态。', '先在 Mac 上检查文件，再查询任务状态。'), effect: 'unconfirmed' });
+  if (!allowedNow()) return changed();
+
+  let stageDir;
+  let staged;
+  let published;
+  let cleanupFailed = false;
+  try {
+    stageDir = fs.mkdtempSync(path.join(path.dirname(root), '.task-create-'));
+    staged = path.join(stageDir, 'content');
+    const fd = fs.openSync(staged, 'wx', 0o600);
+    try {
+      fs.writeFileSync(fd, bytes);
+      fs.fsyncSync(fd);
+      published = fs.fstatSync(fd, { bigint: true });
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    if (!allowedNow()) return changed();
+    try {
+      fs.linkSync(staged, destination);
+    } catch (error) {
+      if (error?.code === 'EEXIST') return fail('TASK_CREATE_EXISTS', '同名文件或链接已存在，原样保留。', '若需创建另一份，使用不同文件名。');
+      throw error;
+    }
+  } catch {
+    return fail('TASK_CREATE_IO_FAILED', 'Mac 无法创建文件。', '检查指定目录的权限、磁盘空间和文件系统后重试。');
+  } finally {
+    if (stageDir) {
+      try {
+        if (staged) {
+          try { fs.unlinkSync(staged); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+        }
+        fs.rmdirSync(stageDir);
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+  }
+
+  try {
+    if (cleanupFailed || !sameFileScope(root, grantName, scope)) return unknown();
+    const actual = readRegularFile(destination, FILE_BYTE_LIMIT, true);
+    if (!actual.buffer?.equals(bytes) || actual.identity.ino !== published.ino || actual.identity.dev !== published.dev) return unknown();
+    const dirFd = fs.openSync(scope.directory, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+    try {
+      const info = fs.fstatSync(dirFd);
+      if (info.dev !== scope.dev || info.ino !== scope.ino) return unknown();
+      fs.fsyncSync(dirFd);
+    } finally {
+      fs.closeSync(dirFd);
+    }
+    return { ok: true, name: target, bytes: bytes.length };
+  } catch {
+    return unknown();
+  }
 }

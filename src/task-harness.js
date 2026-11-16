@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { listTaskDirectory, readTaskText } from './task-directory.js';
+import { createTaskText, listTaskDirectory, readTaskText } from './task-directory.js';
 
 const SYSTEM_RESTRICTED_ROOTS = [
   '/System',
@@ -352,19 +352,35 @@ export function createTaskHarness({
     }
   }
 
-  async function runReadOnlyTask({ requestor, action, target, taskId, validate }) {
+  async function runMacFileTask({ requestor, action, target, body, taskId, validate }) {
     const reading = action === 'file_read';
-    if (!reading && action !== 'directory_list') throw new TypeError('Unsupported read-only task action.');
+    const creating = action === 'file_create';
+    if (!creating && !reading && action !== 'directory_list') throw new TypeError('Unsupported Mac file task action.');
     const admission = checkAdmission({ requestor });
     if (!admission.ok) return admission;
     if (requestor.platform !== 'qq' || requestor.conversationKey !== `private:${requestor.userId}` ||
         !readOnlyRoot || !taskId || typeof validate !== 'function' || !validate()) {
-      return { ok: false, code: 'TASK_READ_ONLY_IDENTITY_REQUIRED', error: '未确认主人私聊或本机只读工作区。', hint: '由主人在已允许的 QQ 私聊发起，并检查本机工作区。' };
+      return { ok: false, code: 'TASK_FILE_IDENTITY_REQUIRED', error: '未确认主人私聊或本机工作区。', hint: '由主人在已允许的 QQ 私聊发起，并检查本机工作区。' };
     }
     if (ledger.getTask(taskId)) return { ok: true, idempotent: true };
-    const task = ledger.createTask({ taskId, requestor, type: action,
+    const task = ledger.createTask(creating
+      ? { taskId, requestor, type: action, goal: '新建本机文件', steps: ['create', 'delivery'] }
+      : { taskId, requestor, type: action,
       goal: reading ? '读取本机文件' : '列出本机文件', steps: [reading ? 'read' : 'list', 'delivery'] });
     const source = { root: readOnlyRoot, target };
+
+    if (creating) {
+      ledger.updateTask(taskId, { status: 'executing', intent: { effect: 'unconfirmed' } });
+      const created = createTaskText({ ...source, text: body, validate });
+      if (!created.ok) {
+        const effect = created.effect ?? 'not_created';
+        ledger.updateTask(taskId, { status: effect === 'unconfirmed' ? 'unknown' : 'failed', intent: { effect }, error: `${created.code} ${created.error}` });
+        return created;
+      }
+      ledger.updateTask(taskId, { status: 'running', intent: { effect: 'created', name: created.name, bytes: created.bytes } });
+      return executeDeliveryStep(task, { text: `Mac 文件已新建\n任务编号 ${taskId}\n文件 ${created.name}\n已写入 ${created.bytes} 字节。`, validate });
+    }
+
     const result = reading ? readTaskText(source) : listTaskDirectory(source);
     const failTask = failure => {
       ledger.updateTask(taskId, { status: 'failed', error: `${failure.code} ${failure.error}` });
@@ -812,7 +828,7 @@ export function createTaskHarness({
     executeCommandStep,
     executeMacAppStep,
     runAutonomousIdleActivity,
-    runReadOnlyTask,
+    runMacFileTask,
     runTaskPipeline,
     resolvedReportsDir
   };
