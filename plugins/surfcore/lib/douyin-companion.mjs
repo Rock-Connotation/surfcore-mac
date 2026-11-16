@@ -556,6 +556,14 @@ export function createDouyinCompanion({
   }
   async function runJob(job, context) {
     startRoleWatch(job, context);
+    let releaseFeed;
+    async function closeFeed() {
+      const release = releaseFeed;
+      releaseFeed = null;
+      if (!release) return;
+      const closed = await release();
+      check(closed?.ok === true, closed?.code || 'DOUYIN_CLOSE_FAILED', closed?.error || '本轮浏览器未确认关闭。', closed?.hint || '检查独立浏览器是否已经退出，再继续下一轮。');
+    }
     try {
       assertRole(job, context);
       job.state = 'running'; job.phase = 'readiness'; saveJob(localLedger, job);
@@ -563,7 +571,17 @@ export function createDouyinCompanion({
       ensureReadiness(ready);
       job.phase = 'feed'; saveJob(localLedger, job);
       let feed;
-      try { feed = await guarded(job, context, () => readFeed(context)); }
+      try {
+        const signal = runtimes.get(job.jobId).controller.signal;
+        feed = await guarded(job, context, async () => {
+          const result = await readFeed(context, { signal });
+          if (typeof result?.release === 'function') {
+            if (signal.aborted) await result.release();
+            else releaseFeed = result.release;
+          }
+          return result;
+        });
+      }
       catch (error) { if (runtimes.get(job.jobId).controller.signal.aborted) throw error; throw problem('DOUYIN_FEED_FAILED', '读取抖音首页推荐失败。', '检查登录账号和推荐页状态后重新手动验收。'); }
       check(feed?.ok === true && Array.isArray(feed.items), safeCode(feed?.code, 'DOUYIN_FEED_FAILED'), safeDisplayText(feed?.error, 240) || '读取抖音首页推荐失败。', safeDisplayText(feed?.hint, 300) || '检查登录账号和推荐页状态后重新手动验收。');
       const candidates = [];
@@ -592,6 +610,8 @@ export function createDouyinCompanion({
         assertRole(job, context);
         await processOne(job, context, candidates[index], index, memoryContext, trustedPersona);
       }
+      await closeFeed();
+      assertRole(job, context);
       check(job.items.some(item => item.state === 'partial' || item.state === 'completed'), 'DOUYIN_NO_QUALIFIED_MATERIAL', '没有足够完整的音轨与画面采样可供解释。', '补齐素材后重新手动验收；未合格素材不记为观看。');
       job.state = job.items.some(item => item.state === 'skipped' || item.partial) ? 'partial' : 'completed';
       job.phase = 'finished'; job.code = null; job.error = null; job.hint = null;
@@ -626,6 +646,11 @@ export function createDouyinCompanion({
         day.windows[job.scheduleWindow] = { state: 'failed', jobId: job.jobId, startedAt: day.windows[job.scheduleWindow]?.startedAt ?? job.createdAt, error: publicError(failure) };
       }
     } finally {
+      try { await closeFeed(); }
+      catch (error) {
+        const closeFailure = failObject(error);
+        job.hint = closeFailure.hint || job.hint;
+      }
       clearRoleWatch(job);
       job.completedAt = nowIso();
       try { saveJob(localLedger, job); terminalFailures.delete(job.jobId); }

@@ -252,6 +252,7 @@ export function startScheduler(ctx, opts) {
     memoryV2 = null,
     biliV2Agent = null,
     onMemoryBlocked = () => {},
+    commentsOnly = false,
     tokenBudget = null, // 每日 token 额度服务（插件注入；单测可不传）
     log = () => {},
   } = opts
@@ -670,7 +671,7 @@ export function startScheduler(ctx, opts) {
     if (Date.now() - lastListenAt < interval) return
     lastListenAt = Date.now()
     // 「全天」关掉时：只在她醒着的窗口里听（省 token / 更自然 ✓）
-    if (!listenerCfg.allDay && !inWindow(cfg)) return
+    if (!commentsOnly && !listenerCfg.allDay && !inWindow(cfg)) return
     listening = true
     try {
       const cred = JSON.parse(fs.readFileSync(CRED_REF, 'utf8'))
@@ -968,28 +969,29 @@ export function startScheduler(ctx, opts) {
     try { return await promise } finally { inflight.delete(promise) }
   }
 
-  const timer = setInterval(() => { void tracked(() => tick()).catch(() => {}) }, TICK_MS)
-  // 一次性启动定时器单独收好：stop() 必须把它们也清掉，否则测试/卸载后进程
-  // 仍被 8~25 秒后的回调吊着（Node 24 下强制 exit 还会撞 libuv 断言）。
-  const startupTimers = [
-    setTimeout(() => { void tracked(() => tick()).catch(() => {}) }, 8000),          // 启动 8 秒后先跑一次
-    setTimeout(() => { void tracked(() => dynTick()).catch(() => {}) }, 12_000),
-    setTimeout(() => { void tracked(() => listenTick()).catch(() => {}) }, 15_000),
-    setTimeout(() => { void tracked(() => dmTick()).catch(() => {}) }, 25_000),
-    setTimeout(() => { void tracked(() => liveTick()).catch(() => {}) }, 20_000),
-  ]
-  // 2026-10-21（用户定）：四类动态各有固定发布点 —— 到点叫她一次（08/12/16/20）
-  const timerDyn = setInterval(() => { void tracked(() => dynTick()).catch(() => {}) }, 60_000)
-  // 30 秒看一眼"到点没"（2026-10-18 测试期曾改 2.5 秒 ✓ 已还原 ✓），真正间隔由配置定 ✓
-  const timer2 = setInterval(() => { void tracked(() => listenTick()).catch(() => {}) }, 30_000)
-  const timerDm = setInterval(() => { void tracked(() => dmTick()).catch(() => {}) }, 20_000)   // 2026-10-19: 60s -> 20s, 私信要像聊天; 每次只是一个 get_sessions 请求 很轻
-  const timer3 = setInterval(() => { void tracked(() => liveTick()).catch(() => {}) }, 60_000)     // 直播间：挂了就一直跑，断了自动重挂 ✓
-  log(`[bili-whale] 自主生物钟已启动（每 ${TICK_MS / 1000}s tick · 会话 ${sessionId}）；监听 + 直播间监看都挂上了 ✓`)
+  const runTimer = (task) => { void tracked(task).catch(() => {}) }
+  // 受控评论监听只注册评论收件任务。私信、直播、自动巡航与动态提醒不进入队列。
+  const intervalJobs = [[listenTick, 30_000]]
+  const startupJobs = [[listenTick, 15_000]]
+  if (!commentsOnly) {
+    intervalJobs.push([tick, TICK_MS], [dynTick, 60_000], [dmTick, 20_000], [liveTick, 60_000])
+    startupJobs.push([tick, 8000], [dynTick, 12_000], [dmTick, 25_000], [liveTick, 20_000])
+  }
+  const timers = intervalJobs.map(([task, delay]) => setInterval(() => runTimer(task), delay))
+  const startupTimers = startupJobs.map(([task, delay]) => setTimeout(() => runTimer(task), delay))
+  log(commentsOnly ? '[bili-whale] 受控评论监听已启动' : `[bili-whale] 自主生物钟已启动（每 ${TICK_MS / 1000}s tick · 会话 ${sessionId}）`)
+  const runBackground = (task) => tracked(() => {
+    if (commentsOnly) throw Object.assign(new Error('当前仅启用了受控评论监听。'), {
+      code: 'BILI_SCHEDULER_COMMENTS_ONLY', hint: '如需自动巡航、私信或直播监听，请在 B站 设置中切换对应模式。'
+    })
+    return task()
+  })
 
   return {
     /** 设置页一保存就调它：清掉旧计划，下一次 tick 按新配置重算 ✓ */
     invalidate() {
       admit()
+      if (commentsOnly) { runTimer(listenTick); return }
       // ⚠️ 2026-10-18 修：以前直接删状态文件 → 把「今天已醒几次」也抹了 ✗
       //   现在只清**计划**，保留 `{ date, wakes }` ✓（tick 里 `!st.action` 会触发重算 ✓）
       try {
@@ -1006,7 +1008,7 @@ export function startScheduler(ctx, opts) {
       void tracked(() => liveTick()).catch(() => {})
     },
     /** 只停定时器与自有子进程；**不**声称实例已退役（不再准入请用 retire）。 */
-    stop() { clearInterval(timer); clearInterval(timer2); clearInterval(timer3); clearInterval(timerDyn); clearInterval(timerDm); for (const t of startupTimers) clearTimeout(t); try { liveProc?.kill() } catch {} try { permissionListenerOff?.() } catch {} },
+    stop() { for (const timer of timers) clearInterval(timer); for (const t of startupTimers) clearTimeout(t); try { liveProc?.kill() } catch {} try { permissionListenerOff?.() } catch {} },
     /**
      * 退役屏障（R05）：禁入 → 取消 → 等在途任务退出 → 等 Host 退役 ACK。
      * 任一步失败或超时都返回结构化失败并保持 blocked，绝不报告「已停止」。
@@ -1085,11 +1087,11 @@ export function startScheduler(ctx, opts) {
     /** 测试/诊断用：当前是否有在途任务、是否已禁入。 */
     status() { return { closed, generation, inflight: inflight.size, retired: Boolean(retiredAck), lastFailure: lastRetireFailure } },
     // 公开入口也必须经过 tracked()：否则手动 tick 不在在途集合里，退役就等不到它。
-    tick: () => tracked(() => tick()),
+    tick: () => runBackground(tick),
     listenTick: () => tracked(() => listenTick()),
-    dynTick: () => tracked(() => dynTick()),
-    liveTick: () => tracked(() => liveTick()),
+    dynTick: () => runBackground(dynTick),
+    liveTick: () => runBackground(liveTick),
     // 显式驱动一轮私信轮询（离线回归用；force 跳过 5 秒节流，生产定时器仍走节流）。
-    dmTick: () => tracked(() => dmTick({ force: true })),
+    dmTick: () => runBackground(() => dmTick({ force: true })),
   }
 }

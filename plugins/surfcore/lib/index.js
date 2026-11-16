@@ -487,7 +487,10 @@ export function apply(ctx) {
   // 失败后也能手动拉起。
   function startSchedulerNow() {
     if (scheduler && schedulerStatus.running) return schedulerStatus;
-    if (readBiliConfig().config.night?.controlledOnly === true) {
+    const config = readBiliConfig().config;
+    const controlled = config.night?.controlledOnly === true;
+    const commentsOnly = controlled && config.listen?.commentsInControlledMode === true && config.listen?.comment !== false;
+    if (controlled && !commentsOnly) {
       schedulerStatus = idleSchedulerStatus('controlled-only');
       return schedulerStatus;
     }
@@ -510,12 +513,13 @@ export function apply(ctx) {
       scheduler = startScheduler(ctx, {
         dshHome: DSH_HOME,
         biliMjs: BILI_MJS,
+        commentsOnly,
         sessionId,
         tokenBudget,
         memoryV2: memoryV2.channelMemory('bili'), biliV2Agent: biliMemoryHost, onMemoryBlocked: result => reportMemoryBlocked({ ...result, channel: 'bili' }),
         log: (message) => pluginLog(message),
       });
-      schedulerStatus = { running: true, disabled: false, reason: '', startedAt: new Date().toISOString(), lastError: null, lastTickAt: null, sessionId };
+      schedulerStatus = { running: true, disabled: false, reason: commentsOnly ? 'comments-only' : '', startedAt: new Date().toISOString(), lastError: null, lastTickAt: null, sessionId };
       pluginLog(`生物钟已启动（会话 ${sessionId}）`);
     } catch (error) {
       schedulerStatus.lastError = String(error?.message ?? error);
@@ -775,7 +779,7 @@ export function apply(ctx) {
     memoryV2: memoryV2.channelMemory('local'), getModelRequest: metadata => memoryV2.modelRequest(metadata),
   });
   const douyinCompanion = createDouyinCompanion({ stateDir: STATE_DIR, getCharacter: readCurrentCharacter,
-    readFeed: context => douyin.readFeedForCompanion(context),
+    readFeed: (context, options) => douyin.openCompanionFeed(context, options),
     perceive: (item, context, options) => douyinPerception.perceive(item, context, options),
     modelCall: options => companionModel.call(options),
     buildContext: context => companionMemory.buildContext(context),
@@ -1256,7 +1260,17 @@ export function apply(ctx) {
       result.biliBackup = saved.backup;
       if (Array.isArray(saved.warnings) && saved.warnings.length) result.warnings.push(...saved.warnings);
       result.notes.push('B站配置已保存；生物钟每轮重读配置，下一轮即生效。');
-      if (saved.config.night?.controlledOnly === true && scheduler) await biliRoundController.pause();
+      if (saved.config.night?.controlledOnly === true) {
+        const comments = saved.config.listen?.commentsInControlledMode === true && saved.config.listen?.comment !== false;
+        if (scheduler && (!comments || schedulerStatus.reason !== 'comments-only')) {
+          const stopped = await stopSchedulerNow();
+          if (!stopped.ok) { json(res, 409, stopped); return; }
+        }
+        if (comments && !scheduler) {
+          const state = startSchedulerNow();
+          if (!state.running) result.warnings.push('受控评论监听未启动。请检查 B站 启动开关与登录状态后重试。');
+        }
+      }
     }
     // 角色名校验：tts.character 必须是 [voice.characters] 里的名字，不能填音色 id。
     const incomingCharacter = body?.unified?.socialV2?.voice?.tts?.character;

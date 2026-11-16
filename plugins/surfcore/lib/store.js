@@ -541,6 +541,7 @@ export function normalizeBiliConfig(input) {
   cfg.share.silentAfterDays = finiteNumber(cfg.share.silentAfterDays, 3, 0, 60, { integer: true });
   cfg.share.decayPerDay = finiteNumber(cfg.share.decayPerDay, 1, 0, 10, { integer: true });
   cfg.listen = isPlainObject(cfg.listen) ? cfg.listen : {};
+  cfg.listen.commentsInControlledMode = cfg.listen.commentsInControlledMode === true;
   cfg.listen.commentIntervalSec = finiteNumber(cfg.listen.commentIntervalSec, 300, 60, 86_400, { integer: true });
   cfg.listen.dmScope = cfg.listen.dmScope === 'all' ? 'all' : 'owner';
   cfg.listen.liveScope = cfg.listen.liveScope === 'mention' ? 'mention' : 'owner';

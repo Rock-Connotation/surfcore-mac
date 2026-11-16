@@ -47,11 +47,11 @@ function gateBudget() {
   let calls = 0;
   return { gate, calls: () => calls, tokenBudget: { block: async () => { calls += 1; await gate.promise; return { blocked: false }; } } };
 }
-function fixture({ hostRetire, waitHost, tokenBudget } = {}) {
+function fixture({ hostRetire, waitHost, tokenBudget, commentsOnly = false } = {}) {
   let hostCalls = 0;
   const ctx = { get: () => null, sessionController: { cancel: async () => ({ ok: true }) } };
   const scheduler = startScheduler(ctx, {
-    dshHome: testHome, biliMjs: BILI_MJS, cwd: testHome,
+    dshHome: testHome, biliMjs: BILI_MJS, cwd: testHome, commentsOnly,
     sessionId: 'bili-whale', memoryV2: { getRouting: () => ({ ok: true, backend: 'v2' }) },
     biliV2Agent: {
       enqueue: async () => ({ ok: true }),
@@ -171,6 +171,32 @@ try {
     }
     const after = fs.existsSync(stateFile) ? fs.readFileSync(stateFile, 'utf8') : null;
     assert.equal(after, before, '成功退役后不得有迟到写入');
+  });
+
+  await test('受控模式仅开放评论轮询并保留原收件游标', async () => {
+    const originalConfig = fs.readFileSync(cfgPath, 'utf8');
+    const originalFetch = globalThis.fetch;
+    const config = JSON.parse(originalConfig);
+    config.listen = { ...config.listen, comment: true, scope: 'reply' };
+    fs.writeFileSync(cfgPath, JSON.stringify(config));
+    const paths = [];
+    globalThis.fetch = async url => {
+      paths.push(new URL(url).pathname);
+      return Response.json({ code: 0, data: { items: [] } });
+    };
+    const { scheduler } = fixture({ commentsOnly: true });
+    try {
+      for (const call of [scheduler.tick(), scheduler.dynTick(), scheduler.dmTick(), scheduler.liveTick()]) {
+        await assert.rejects(call, error => error.code === 'BILI_SCHEDULER_COMMENTS_ONLY' && !!error.hint);
+      }
+      await scheduler.listenTick();
+      assert.deepEqual(paths, ['/x/msgfeed/reply'], '仅有评论收件请求，受作息限制时也能查询');
+      assert.equal((await scheduler.retire({ timeoutMs: 500 })).ok, true);
+    } finally {
+      scheduler.stop();
+      globalThis.fetch = originalFetch;
+      fs.writeFileSync(cfgPath, originalConfig);
+    }
   });
 
   const failed = results.filter((r) => !r.ok);

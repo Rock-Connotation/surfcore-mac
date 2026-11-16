@@ -26,6 +26,7 @@ button{font:inherit;cursor:pointer;border:1px solid var(--line);background:Canva
 <section id="conversation" class="conversation" aria-label="看完后的聊天">
 <div class="conversation-head"><div><span class="pill">看完后 · 留在本机</span><h2 id="conversation-title">和小白鲸聊聊</h2><p class="muted">只围绕刚刚的新发现说一句，不会替你向平台发送消息。</p></div></div>
 <p id="conversation-status" role="status" aria-live="polite">正在读取新的小发现…</p>
+<p id="conversation-history-notice" class="muted" hidden></p>
 <p id="sharing-error" class="error" role="alert" aria-live="polite" hidden></p>
 <div id="conversation-openings" aria-label="新的观看分享"></div>
 <ol id="conversation-message-list" class="conversation-messages" aria-label="聊天记录" aria-live="polite"></ol>
@@ -37,7 +38,7 @@ button{font:inherit;cursor:pointer;border:1px solid var(--line);background:Canva
 <details><summary>活动与额度详情</summary><pre id="details"></pre></details>
 <script>
 const endpoint='/dsh-surfcore/api/douyin/companion',portraitEndpoint='/dsh-surfcore/api/douyin/companion-portrait',sharingEndpoint='/dsh-surfcore/api/douyin/companion-sharing',$=id=>document.getElementById(id);
-let context=null,stamp='',portraitStamp='',portraitRequest=0,portraitObjectUrl='',portraitController=null,portraitTimer=null,busy=false,refreshing=false,portraitRetryPending=false,seq=0,active=false,actionFailure=null,retired=false;
+let context=null,stamp='',portraitStamp='',portraitRequest=0,portraitObjectUrl='',portraitController=null,portraitTimer=null,busy=false,refreshing=false,portraitRetryPending=false,seq=0,active=false,diaryAuthorizationBlocked=false,actionFailure=null,retired=false;
 let sharingSeq=0,sharingPollTimer=null,sharingRefreshing=false,sharingRevision=-1,sharingValue=null,sharingStamp='',sharingPending=null,sharingCancelBusy=false,sharingControllers=new Set(),sharingAcking=new Set(),sharingActionFailure=null,preserveSharingErrorOnRoleChange=false,selectedOpeningId='',startReady=false;
 let conversationAnchorPending=globalThis.location?.hash==='#conversation';
 const sayError=e=>{$('error').textContent=[e.code,e.error||e.message,e.hint].filter(Boolean).join(' · ')};
@@ -109,9 +110,11 @@ function renderSharing(data){
  const openings=Array.isArray(sharingValue.openings)?sharingValue.openings:[];if(!openings.some(item=>item.id===selectedOpeningId))selectedOpeningId=openings[0]?.id||'';
  $('conversation-title').textContent='和'+(data.character.name||'伙伴')+'聊聊';renderSharingOpenings();renderSharingMessages();
  $('conversation-status').textContent=sharingPending?'正在整理这条回复…':sharingValue.active?'这条对话正在继续，可以取消等待。':openings.length?'我看完啦，想听听你的想法。':'还没有新的小发现，等下一次发现日记再聊。';
+ const notice=$('conversation-history-notice');notice.hidden=!sharingValue.historyNotice;notice.textContent=sharingValue.historyNotice?[sharingValue.historyNotice.error,sharingValue.historyNotice.hint].filter(Boolean).join(' '):'';
  const failure=sharingActionFailure||sharingValue.lastError;if(failure)showSharingError(failure);else clearSharingError();renderSharingControls();focusConversationOnce();return true;
 }
 function resetSharing(message){
+ $('conversation-history-notice').hidden=true;$('conversation-history-notice').textContent='';
  sharingSeq++;if(sharingPollTimer){clearTimeout(sharingPollTimer);sharingPollTimer=null}for(const controller of sharingControllers)controller.abort();sharingControllers.clear();sharingRevision=-1;sharingValue=null;sharingStamp='';sharingPending=null;sharingCancelBusy=false;sharingAcking.clear();if(preserveSharingErrorOnRoleChange)preserveSharingErrorOnRoleChange=false;else sharingActionFailure=null;selectedOpeningId='';$('conversation-input').value='';$('conversation-openings').replaceChildren();$('conversation-message-list').replaceChildren();if(!sharingActionFailure)clearSharingError();$('conversation-status').textContent=message||'先在角色页载入伙伴。';renderSharingControls();
 }
 function scheduleSharingPoll(delay=5000){if(retired||!context||sharingPollTimer)return;sharingPollTimer=setTimeout(()=>{sharingPollTimer=null;void refreshSharing()},delay)}
@@ -162,11 +165,16 @@ async function cancelSharingReply(){
  if(sharingActionFailure===priorError)sharingActionFailure=null;if(renderSharing(result.data))$('conversation-status').textContent='这次回复已取消，原输入仍保留。';renderSharingControls();
 }
 function clearRole(message,sharingFailure=null){const priorFailure=!context?sharingActionFailure:null;stamp='';portraitStamp='';context=null;active=false;actionFailure=null;resetSharing('先在角色页载入伙伴。');const visibleFailure=sharingFailure||priorFailure;if(visibleFailure){sharingActionFailure=sharingError(visibleFailure);showSharingError(sharingActionFailure)}clearPortrait(message||'当前没有已载入角色，未显示旧立绘。');$('role').textContent='当前没有已载入角色';$('title').textContent='小白鲸的发现日记';$('diary').replaceChildren();$('details').textContent='';$('notice').textContent='先在角色页载入伙伴。';}
+function renderRole(role,retryPortrait=false){
+ if(retired)return;
+ const next=role.id+':'+role.epoch;
+ const roleChanged=stamp!==next;if(stamp&&roleChanged){$('diary').replaceChildren();$('error').textContent='';actionFailure=null;}if(roleChanged){clearPortrait('正在读取本机伙伴立绘…');portraitStamp='';resetSharing('角色已变化，正在读取新伙伴的分享…');}else if(preserveSharingErrorOnRoleChange)preserveSharingErrorOnRoleChange=false;stamp=next;context={characterId:role.id,characterEpoch:role.epoch};if(roleChanged)scheduleSharingPoll(0);if(roleChanged||retryPortrait||portraitStamp!==next){portraitStamp=next;void loadPortrait({...context},next)}
+ $('role').textContent='当前伙伴：'+(role.name||role.id);$('title').textContent=(role.name||'伙伴')+'的发现日记';
+}
 function render(data,retryPortrait=false){
  if(retired)return;
- const role=data.character,next=role.id+':'+role.epoch;
- const roleChanged=stamp!==next;if(stamp&&roleChanged){$('diary').replaceChildren();$('error').textContent='';actionFailure=null;}if(roleChanged){clearPortrait('正在读取本机伙伴立绘…');portraitStamp='';resetSharing('角色已变化，正在读取新伙伴的分享…');}else if(preserveSharingErrorOnRoleChange)preserveSharingErrorOnRoleChange=false;stamp=next;context={characterId:role.id,characterEpoch:role.epoch};if(roleChanged)scheduleSharingPoll(0);if(roleChanged||retryPortrait||portraitStamp!==next){portraitStamp=next;void loadPortrait({...context},next)}
- $('role').textContent='当前伙伴：'+(role.name||role.id);$('title').textContent=(role.name||'伙伴')+'的发现日记';const value=data.value;const daily=value.daily||{},accept=value.acceptance||{};
+ renderRole(data.character,retryPortrait);
+ const value=data.value;const daily=value.daily||{},accept=value.acceptance||{};
  $('acceptance').textContent=(accept.callsUsed??accept.calls??0)+' / 12';$('daily').textContent=(daily.rounds??daily.roundsUsed??0)+' / 2 轮';$('calls').textContent=(daily.calls??daily.callsUsed??0)+' / 8';
  const job=value.activeJob||(value.recentJobs||[])[0];active=!!value.activeJob&&['queued','running'].includes(value.activeJob.state);
  const paused=daily.paused===true,savedItems=(job?.items||[]).filter(item=>item.memorySaved===true),finishedWithoutFailure=job&&!job.code&&!job.error&&!['failed','cancelled','interrupted'].includes(job.state),finishedWithMemory=finishedWithoutFailure&&(['completed'].includes(job.state)||(job.state==='partial'&&savedItems.length>0));
@@ -195,9 +203,32 @@ function render(data,retryPortrait=false){
  }
  $('details').textContent=JSON.stringify(value,null,2);renderSharingControls();
 }
-async function refresh(retryPortrait=false){if(retired)return;if(busy||refreshing){if(retryPortrait)portraitRetryPending=true;return}refreshing=true;const token=++seq;try{const data=await request();if(!retired&&token===seq)render(data,retryPortrait)}catch(e){if(!retired&&token===seq){if(['COMPANION_CHARACTER_REQUIRED','COMPANION_CHARACTER_STALE'].includes(e.code)){clearRole('当前角色已清除，未显示旧立绘。');}sayError(e);$('start').disabled=true;$('enable').disabled=true}}finally{refreshing=false;if(retired){portraitRetryPending=false;return}if(portraitRetryPending&&!busy){portraitRetryPending=false;void refresh(true)}}}
+async function refresh(retryPortrait=false){
+ if(retired)return;if(busy||refreshing){if(retryPortrait)portraitRetryPending=true;return}
+ refreshing=true;const token=++seq;
+ try{const data=await request();if(!retired&&token===seq){diaryAuthorizationBlocked=false;render(data,retryPortrait)}}
+ catch(e){
+  if(!retired&&token===seq){
+   if(['COMPANION_CHARACTER_REQUIRED','COMPANION_CHARACTER_STALE'].includes(e.code)){
+    clearRole('当前角色已清除，未显示旧立绘。');
+   }else if(e.character?.id&&Number.isInteger(e.character.epoch)){
+    renderRole(e.character,retryPortrait);
+   }
+   diaryAuthorizationBlocked=['MEMORY_POLICY_DENIED','MEMORY_IDENTITY_REQUIRED'].includes(e.code);
+   startReady=false;active=false;
+   $('diary').replaceChildren();$('details').textContent='';
+   $('acceptance').textContent='— / 12';$('daily').textContent='— / 2 轮';$('calls').textContent='— / 8';
+   $('notice').textContent='暂时无法读取发现日记。';
+   sayError(e);$('start').disabled=true;$('enable').disabled=true;$('cancel').disabled=true;
+  }
+ }finally{
+  refreshing=false;
+  if(retired){portraitRetryPending=false;return}
+  if(portraitRetryPending&&!busy){portraitRetryPending=false;void refresh(true)}
+ }
+}
 async function action(body){if(retired||busy||!context)return;busy=true;seq++;actionFailure=null;for(const id of ['start','cancel','enable','pause'])$(id).disabled=true;$('error').textContent='';try{await request(body)}catch(e){if(!retired)actionFailure=e}finally{busy=false;if(retired)return;await refresh();if(!retired&&actionFailure)sayError(actionFailure)}}
 $('start').onclick=()=>action({action:'start'});$('cancel').onclick=()=>action({action:'cancel'});$('enable').onclick=()=>action({action:'configure',enabled:true});$('pause').onclick=()=>action({action:'configure',enabled:false});$('refresh').onclick=()=>{void refresh(true);void refreshSharing()};
 $('conversation-form').addEventListener('submit',event=>{event.preventDefault();void sendSharingReply()});$('conversation-cancel').onclick=()=>void cancelSharingReply();
-const timer=setInterval(refresh,2000);addEventListener('pagehide',()=>{if(retired)return;retired=true;portraitRetryPending=false;seq++;clearInterval(timer);if(sharingPollTimer){clearTimeout(sharingPollTimer);sharingPollTimer=null}sharingSeq++;for(const controller of sharingControllers)controller.abort();sharingControllers.clear();sharingAcking.clear();sharingPending=null;$('conversation-status').textContent='日记页已关闭。';$('conversation-input').disabled=true;$('conversation-send').disabled=true;$('conversation-cancel').hidden=true;clearPortrait('日记页已关闭。')});refresh();
+const timer=setInterval(()=>{if(!diaryAuthorizationBlocked) void refresh()},2000);addEventListener('pagehide',()=>{if(retired)return;retired=true;portraitRetryPending=false;seq++;clearInterval(timer);if(sharingPollTimer){clearTimeout(sharingPollTimer);sharingPollTimer=null}sharingSeq++;for(const controller of sharingControllers)controller.abort();sharingControllers.clear();sharingAcking.clear();sharingPending=null;$('conversation-status').textContent='日记页已关闭。';$('conversation-input').disabled=true;$('conversation-send').disabled=true;$('conversation-cancel').hidden=true;clearPortrait('日记页已关闭。')});refresh();
 </script></body></html>`;

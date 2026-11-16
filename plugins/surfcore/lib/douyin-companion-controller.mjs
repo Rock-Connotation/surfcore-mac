@@ -45,12 +45,19 @@ export function createCompanionController({ engine, getCharacter, readiness }) {
     let held;
     try {
       if (req.method === 'GET') {
-        const value = held = await engine.status(context); const ready = await readiness(context);
+        const value = held = await engine.status(context);
         if (!matches(context)) { json(res, 409, stale()); return true; }
-        if (!value.ok) { json(res, 409, value); return true; }
+        const statusFailure = failure => {
+          const role = getCharacter();
+          json(res, 409, { ok: false, code: failure.code, error: failure.error, hint: failure.hint,
+            character: { id: role.id, epoch: role.epoch, name: role.name } });
+        };
+        if (!value.ok) { statusFailure(value); return true; }
+        const ready = await readiness(context);
+        if (!matches(context)) { json(res, 409, stale()); return true; }
         const checked = engine.validateResponse ? await engine.validateResponse(context, value) : { ok: true };
         if (!matches(context)) { json(res, 409, stale()); return true; }
-        if (!checked?.ok) { json(res, 409, checked); return true; }
+        if (!checked?.ok) { statusFailure(checked); return true; }
         const role = getCharacter();
         json(res, 200, { ok: true, character: { id: role.id, epoch: role.epoch, name: role.name }, value, readiness: ready }); return true;
       }
