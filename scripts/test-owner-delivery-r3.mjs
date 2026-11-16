@@ -1,4 +1,4 @@
-import { newCaseRoot, createRealV2Factory, inbound, assert, fs, path, testHome, OWNER, KEY, GROUP_KEY, LOGIN } from './r2-v2-fixture.mjs';
+import { newCaseRoot, createRealV2Factory, inbound, assert, fs, path, crypto, testHome, OWNER, KEY, GROUP_KEY, LOGIN } from './r2-v2-fixture.mjs';
 const { root, stateDir } = newCaseRoot('owner-delivery');
 process.env.DSH_HOME = root;
 process.env.R2_CASE_ROOT = root;
@@ -252,6 +252,94 @@ try {
     await send(packet(directory, 812005, { self_id: 123456 }));
     assert.equal(f.platformSends.length, beforeDenied, 'group or wrong account must not deliver a directory result');
     assert.equal(f.nativeSubmissions.length, nativeBefore, 'directory instructions must not enter a Native chat job');
+  });
+  if (process.platform !== 'win32') await test('owner QQ file read delivers exact text within the granted directory only', async () => {
+    const readRoot = path.join(h.temp, 'state', 'task-files');
+    const scopeName = '文件正文测试';
+    const directory = path.join(readRoot, scopeName);
+    const another = path.join(readRoot, '另一个目录');
+    fs.mkdirSync(path.join(directory, 'nested'), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(another, { mode: 0o700 });
+    const grant = `${readRoot}.text-directory`;
+    const file = path.join(directory, 'alpha-notes.txt');
+    const body = '  正文保留 🐾\n第二行\n';
+    fs.writeFileSync(file, body, { mode: 0o600 });
+    fs.writeFileSync(path.join(another, 'alpha-notes.txt'), 'OUTSIDE_SCOPE');
+    fs.writeFileSync(path.join(directory, 'nested', 'nested.txt'), 'OUTSIDE_SCOPE');
+    fs.writeFileSync(path.join(directory, 'large.txt'), '猫'.repeat(801));
+    fs.writeFileSync(path.join(directory, 'binary.txt'), Buffer.from([0xff]));
+    fs.writeFileSync(path.join(directory, 'control.txt'), '[CQ:at,qq=42]');
+    fs.symlinkSync(path.join(another, 'alpha-notes.txt'), path.join(directory, 'link.txt'));
+    fs.linkSync(path.join(another, 'alpha-notes.txt'), path.join(directory, 'hard.txt'));
+    const packet = (target, messageId, extra = {}) => {
+      const text = `任务：读取文件 "${target}"`;
+      return inbound({ message_id: messageId, raw_message: text, message: [{ type: 'text', data: { text } }], ...extra });
+    };
+    const send = args => h.handleIncoming('private', Number(OWNER), args, h.cfg);
+    const response = () => JSON.stringify(f.platformSends.at(-1).text);
+    const checkFailure = async (target, messageId, code) => {
+      const count = f.platformSends.length;
+      await send(packet(target, messageId));
+      assert.equal(f.platformSends.length, count + 1);
+      assert.ok(response().includes(code) && response().includes('。'));
+      assert.doesNotMatch(response(), /OUTSIDE_SCOPE|正文保留|\[CQ:at/);
+    };
+    reply = { status: 'ok', retcode: 0, data: { message_id: -9003 } };
+    await checkFailure('alpha-notes.txt', 813001, 'TASK_FILE_SCOPE_REQUIRED');
+    fs.writeFileSync(grant, `${scopeName}\n`, { mode: 0o600, flag: 'wx' });
+    const initial = f.platformSends.length;
+    const nativeBefore = f.nativeSubmissions.length;
+    const first = packet('alpha-notes.txt', 813002);
+    await Promise.all([send(first), send(first)]);
+    assert.equal(f.platformSends.length, initial + 1);
+    assert.ok(response().includes(JSON.stringify(`【正文开始】\n${body}\n【正文结束】`).slice(1, -1)));
+    const tasks = h.taskLedger.listTasks({ conversationKey: KEY, limit: 30 }).filter(task => task.type === 'file_read');
+    const done = tasks.find(task => task.status === 'completed');
+    assert.equal(done.delivery.messageId, -9003);
+    assert.deepEqual(done.intent, { bytes: Buffer.byteLength(body) });
+    assert.doesNotMatch(JSON.stringify(tasks), /正文保留|alpha-notes\.txt|文件正文测试/);
+    await send(packet(file, 813003));
+    assert.ok(response().includes('正文保留'));
+    for (const [index, [target, code]] of [
+      [path.join(another, 'alpha-notes.txt'), 'TASK_FILE_NOT_ALLOWED'],
+      ['nested/nested.txt', 'TASK_FILE_NOT_ALLOWED'],
+      ['link.txt', 'TASK_FILE_NOT_ALLOWED'],
+      ['hard.txt', 'TASK_FILE_NOT_ALLOWED'],
+      ['large.txt', 'TASK_FILE_TOO_LARGE'],
+      ['binary.txt', 'TASK_FILE_TEXT_INVALID'],
+      ['control.txt', 'TASK_FILE_TEXT_BLOCKED'],
+      ['missing.txt', 'TASK_FILE_NOT_FOUND'],
+    ].entries()) await checkFailure(target, 813010 + index, code);
+    const beforeDenied = f.platformSends.length;
+    await h.handleIncoming('group', 90001, packet('alpha-notes.txt', 813020, { group_id: 90001 }), h.cfg);
+    await h.handleIncoming('private', 42, packet('alpha-notes.txt', 813021, { user_id: 42 }), h.cfg);
+    await send(packet('alpha-notes.txt', 813022, { self_id: 123456 }));
+    assert.equal(f.platformSends.length, beforeDenied);
+
+    let entered, unblock;
+    const blockerEntered = new Promise(resolve => { entered = resolve; });
+    const blockerReply = new Promise(resolve => { unblock = resolve; });
+    reply = () => { entered(); return blockerReply; };
+    const blocker = h.sendOwnerManagementReply({ conversationKey: KEY, text: '队列占位', phase: 'status' });
+    await blockerEntered;
+    const queued = send(packet('alpha-notes.txt', 813023));
+    try {
+      const taskId = `mac-read-${crypto.createHash('sha256').update(JSON.stringify([LOGIN, KEY, '813023'])).digest('hex').slice(0, 16)}`;
+      for (let attempt = 0; attempt < 200 && h.taskLedger.getTask(taskId)?.delivery?.status !== 'delivering'; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      assert.equal(h.taskLedger.getTask(taskId)?.delivery?.status, 'delivering');
+      fs.renameSync(grant, `${grant}.revoked`);
+    } finally {
+      reply = { status: 'ok', retcode: 0, data: { message_id: -9003 } };
+      unblock(reply);
+      await Promise.all([blocker, queued]);
+    }
+    assert.equal(f.platformSends.length, beforeDenied + 2);
+    assert.match(response(), /TASK_FILE_SEND_SCOPE_CHANGED/);
+    assert.doesNotMatch(response(), /正文保留/);
+    assert.equal(f.nativeSubmissions.length, nativeBefore);
+    assert.equal(fs.readFileSync(file, 'utf8'), body);
   });
 } finally {
   await f.close();

@@ -18,7 +18,8 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
-| **QQ 只读 Mac 验收** | surfcore-live-channels/surfcore-mac | feat/live-channels-acceptance | QQ 主人私聊目录任务 | 隔离回归，本机真机证据见案例 |
+| **QQ 只读 Mac 验收** | surfcore-live-channels/surfcore-mac | feat/live-channels-acceptance | QQ 主人私聊目录任务 | 本机已安装，隔离回归和真实 QQ 收发通过，见案例 |
+| **QQ 只读 Mac 文件正文** | surfcore-live-channels/surfcore-mac | feat/live-channels-acceptance | 主人私聊、已批准目录的短文本 | 本机验收中，见案例 |
 | **红豆渠道实机验收 2026-11-16** | `~/.codex/worktrees/surfcore-live-channels/surfcore-mac` | `feat/live-channels-acceptance` @ `d46612a` | QQ 原 NapCat 会话恢复、B站评论链路、DSH 伙伴入口 | 抖音→DSH 本机分享及回话已实机通过；收回临时许可导致的侧栏报红已实装修复，原本机许可有效。QQ 已实测三种消息并补验 NapCat 重启后自动快速登录同一账号、OneBot 重连。B站账号核验通过，评论收发待实机。 |
 | **V1 运行时退役收口 2026-11-16** | ~/.codex/worktrees/surfcore-live-channels/surfcore-mac | feat/live-channels-acceptance | QQ、通用记忆和共用桥接管理 | 本机已装 a86cdbe，QQ 原账号与 V2 Host 已复核。审计 207/207，B 站和抖音实机待后续。见 docs/cases/2026-11-16-v1-runtime-retirement.md。 |
 | **dev 修复：`publish-dev` 同步文档版本字 2026-11-15** | `/Users/shizihan/Daily/Github/surfcore-dev-build` | `dev` @ 本批 HEAD（以 `git log --oneline -6` 现读为准） | 根治「发一次 dev 构建，仓库 HEAD 的 `doc-facts` 必红」：发布脚本只改 package.json/README/CHANGELOG，漏改被 `doc-facts` 逐字校验的 `docs/ROADMAP.md` 与 `docs/guides/DSH_SETUP.md` 版本字；抽出 `scripts/publish-dev-doc-sync.mjs` 的 `syncDocVersions()`，发布时自动同步并 git add | ✅ 已提交入库 `dev`（修复 + 文档/清单）：`node scripts/test-dev-publish.mjs` → `TEST_EXIT=0`（临时目录红→绿功能自证）、`npm run doc-facts` → `EXIT=0`；随 dev 推送（快进）；随下一次 dev 构建带上 |

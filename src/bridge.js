@@ -1865,6 +1865,7 @@ async function main() {
     ledger: taskLedger,
     reportsDir: path.join(STATE_DIR, 'reports'),
     readOnlyRoot: path.join(STATE_DIR, 'task-files'),
+    canSendLiteralText: message => redactKnownTokensOnly(message) === message && escapeCqText(message) === message,
     sendCallback: async ({ conversationKey, text, taskId, phase, validate }) => {
       const result = await sendOwnerManagementReply({ conversationKey, text, taskId, phase, validate });
       return result;
@@ -1872,13 +1873,16 @@ async function main() {
     log
   });
 
-  async function handleOwnerDirectoryList(key, event, target, admissionSnapshot, role) {
+  async function handleOwnerReadOnlyTask(key, event, { target, command }, admissionSnapshot, role) {
+    const reading = command === '读取文件';
+    const label = reading ? '文件读取' : '目录清单';
+    const example = reading ? '任务：读取文件 <文件名.txt>' : '任务：列出文件 <绝对路径>';
     const userId = String(event.user_id ?? '');
     const accountId = String(event.self_id ?? '');
     const requestor = { platform: 'qq', userId, conversationKey: key, isOwner: userId === String(cfg.ownerQQ ?? '') };
     const admission = taskHarness.checkAdmission({ requestor });
     if (!admission.ok || key !== `private:${userId}`) {
-      appendActivity(`[Mac 目录清单] ${admission.code === 'ADMISSION_GRANTED' ? 'ADMISSION_OWNER_REQUIRED' : admission.code}`);
+      appendActivity(`[Mac ${label}] ${admission.code === 'ADMISSION_GRANTED' ? 'ADMISSION_OWNER_REQUIRED' : admission.code}`);
       return;
     }
     const checkContext = () => {
@@ -1889,25 +1893,31 @@ async function main() {
         isSessionAllowedInCurrentMode(key) && !senderBlocked(userId, cfg.deny?.users));
     };
     const replyFailure = async result => {
-      appendActivity(`[Mac 目录清单] ${result.code}`);
+      appendActivity(`[Mac ${label}] ${result.code}`);
       if (checkContext()) await sendOwnerManagementReply({ conversationKey: key, phase: 'management', validate: checkContext,
-        text: `目录清单未完成（${result.code}）\n${result.error}\n${result.hint}` });
+        text: `${label}未完成（${result.code}）\n${result.error}\n${result.hint}` });
     };
     const messageId = canonicalOneBotMessageId(event.message_id);
     if (!messageId || !Array.isArray(event.message) || !event.message.every(segment => segment?.type === 'text')) {
-      await replyFailure({ code: 'TASK_DIRECTORY_INPUT_INVALID', error: '请发送一条新的纯文字目录指令。', hint: '直接在私聊发送「任务：列出文件 <绝对路径>」。' });
+      await replyFailure({ code: 'TASK_READ_ONLY_INPUT_INVALID', error: '请发送一条新的纯文字指令。', hint: `直接在私聊发送「${example}」。` });
       return;
     }
     const identity = await readOfficialMemoryQQIdentity();
     if (!identity.ok || identity.accountId !== accountId || !identity.allowedPrivates.includes(userId) || !checkContext()) {
-      await replyFailure({ code: 'TASK_DIRECTORY_IDENTITY_REQUIRED', error: '未确认当前 OneBot 登录和主人的私聊权限。', hint: '在本机确认 QQ 登录和私聊白名单后再发一条新指令。' });
+      await replyFailure({ code: 'TASK_READ_ONLY_IDENTITY_REQUIRED', error: '未确认当前 OneBot 登录和主人的私聊权限。', hint: '在本机确认 QQ 登录和私聊白名单后再发一条新指令。' });
       return;
     }
-    const taskId = `mac-list-${crypto.createHash('sha256').update(JSON.stringify([accountId, key, String(messageId)])).digest('hex').slice(0, 16)}`;
+    const prefix = reading ? 'mac-read' : 'mac-list';
+    const taskId = `${prefix}-${crypto.createHash('sha256').update(JSON.stringify([accountId, key, String(messageId)])).digest('hex').slice(0, 16)}`;
     try {
-      const result = await taskHarness.runDirectoryList({ requestor, taskId, target, validate: checkContext });
+      const action = reading ? 'file_read' : 'directory_list';
+      const result = await taskHarness.runReadOnlyTask({ requestor, action, taskId, target, validate: checkContext });
+      if (!result.ok && reading && result.code === 'OWNER_REPLY_CONTEXT_CHANGED') {
+        await replyFailure({ code: 'TASK_FILE_SEND_SCOPE_CHANGED', error: '回传前文件读取授权已变化。', hint: '在本机确认指定目录授权后重新发送指令。' });
+        return;
+      }
       if (!result.ok && (result.status === 'delivery_unknown' || result.status === 'rejected' || result.status === 'cancelled')) {
-        appendActivity(`[Mac 目录清单] ${taskId} ${result.code}`);
+        appendActivity(`[Mac ${label}] ${taskId} ${result.code}`);
       } else if (!result.ok) {
         await replyFailure(result);
       }
@@ -15225,11 +15235,11 @@ async function main() {
       }
       return;
     }
-    const directoryCommand = plainContent.match(/^(?:任务|[/#]task)[：:\s]+列出文件(?:[：:\s]+([\s\S]*))?$/u);
-    if (directoryCommand) {
-      const raw = directoryCommand[1]?.trim() ?? '';
+    const readOnlyCommand = plainContent.match(/^(?:任务|[/#]task)[：:\s]+(列出文件|读取文件)(?:[：:\s]+([\s\S]*))?$/u);
+    if (readOnlyCommand) {
+      const raw = readOnlyCommand[2]?.trim() ?? '';
       const target = raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
-      await handleOwnerDirectoryList(key, event, target, ingressAdmission, ingressCharacter);
+      await handleOwnerReadOnlyTask(key, event, { target, command: readOnlyCommand[1] }, ingressAdmission, ingressCharacter);
       return;
     }
     // 任何入站消息（含纯图片/表情/引用）都先记「谁在说话」，且必须在下面的空文本过滤之前：

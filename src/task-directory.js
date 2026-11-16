@@ -3,6 +3,8 @@ import path from 'node:path';
 
 const ENTRY_LIMIT = 512;
 const TEXT_LIMIT = 2600;
+const FILE_BYTE_LIMIT = 2400;
+const fileNamePattern = /^(?!\.)[^/\\\p{C}\p{Zl}\p{Zp}]+\.txt$/iu;
 const fail = (code, error, hint) => ({ ok: false, code, error, hint });
 
 function outside(relative) {
@@ -64,4 +66,88 @@ export function listTaskDirectory({ root, target }) {
       ? fail('TASK_DIRECTORY_NOT_FOUND', '目录不存在。', '检查本机文件夹路径。')
       : fail('TASK_DIRECTORY_READ_FAILED', 'Mac 无法读取该目录。', '在本机检查目录读取权限后重新发起任务。');
   }
+}
+
+function sameFile(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size &&
+    left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
+function readRegularFile(file, limit, privateFile = false) {
+  const statOptions = { bigint: true };
+  const safe = info => info.isFile() && info.nlink === 1n && info.uid === BigInt(process.getuid()) &&
+    !(info.mode & (privateFile ? 0o077n : 0o022n));
+  const before = fs.lstatSync(file, statOptions);
+  if (!safe(before)) return { code: 'TASK_FILE_NOT_ALLOWED' };
+  if (before.size > BigInt(limit)) return { code: 'TASK_FILE_TOO_LARGE' };
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const opened = fs.fstatSync(fd, statOptions);
+    if (!safe(opened) || !sameFile(before, opened)) return { code: 'TASK_FILE_CHANGED' };
+    const buffer = Buffer.alloc(limit + 1);
+    let count = 0;
+    while (count < buffer.length) {
+      const n = fs.readSync(fd, buffer, count, buffer.length - count, count);
+      if (!n) break;
+      count += n;
+    }
+    if (count > limit) return { code: 'TASK_FILE_TOO_LARGE' };
+    const current = fs.lstatSync(file, statOptions);
+    if (BigInt(count) !== opened.size || !safe(current) || !sameFile(opened, current) || !sameFile(opened, fs.fstatSync(fd, statOptions))) {
+      return { code: 'TASK_FILE_CHANGED' };
+    }
+    return { buffer: buffer.subarray(0, count), identity: opened };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function readFileScope(root) {
+  if (typeof process.getuid !== 'function' || !fs.constants.O_NOFOLLOW || !fs.constants.O_NONBLOCK) return null;
+  try {
+    const grant = readRegularFile(`${root}.text-directory`, 255, true);
+    const name = grant.buffer?.toString('utf8').trim();
+    if (!name || !/^[\p{L}\p{N}_-][\p{L}\p{N}_ .-]*$/u.test(name)) return null;
+    const isTrustedDirectory = info => info.isDirectory() && info.uid === process.getuid() && !(info.mode & 0o022);
+    if (!isTrustedDirectory(fs.lstatSync(root))) return null;
+    const directory = path.join(fs.realpathSync(root), name);
+    const info = fs.lstatSync(directory);
+    if (!isTrustedDirectory(info) || fs.realpathSync(directory) !== directory) return null;
+    return { name, directory, dev: info.dev, ino: info.ino, grant: grant.identity };
+  } catch {
+    return null;
+  }
+}
+
+export function readTaskText({ root, target }) {
+  const scope = readFileScope(root);
+  if (!scope) return fail('TASK_FILE_SCOPE_REQUIRED', '本机未启用文件正文读取目录。', '在 Mac 上确认指定目录的只读授权。');
+  const name = typeof target === 'string' ? path.basename(target) : '';
+  if (!fileNamePattern.test(name) || (target !== name && target !== path.join(root, scope.name, name))) {
+    return fail('TASK_FILE_NOT_ALLOWED', '只允许读取指定目录当前层的 .txt 文件。', '发送「任务：读取文件 <文件名.txt>」。');
+  }
+  const verifyScope = () => {
+    const current = readFileScope(root);
+    return current?.directory === scope.directory && current.dev === scope.dev && current.ino === scope.ino &&
+      sameFile(current.grant, scope.grant);
+  };
+  let result;
+  try {
+    result = readRegularFile(path.join(scope.directory, name), FILE_BYTE_LIMIT);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return fail('TASK_FILE_NOT_FOUND', '该文件不存在。', '核对指定目录里的文件名后重试。');
+    result = { code: error?.code === 'ELOOP' ? 'TASK_FILE_NOT_ALLOWED' : 'TASK_FILE_READ_FAILED' };
+  }
+  if (result.code === 'TASK_FILE_NOT_ALLOWED') return fail(result.code, '目标不是可读取的本机普通文件。', '在指定目录内使用本人拥有且无链接的 .txt 文件。');
+  if (result.code === 'TASK_FILE_TOO_LARGE') return fail(result.code, `文件超过 ${FILE_BYTE_LIMIT} 字节。`, '请在本机选一个更短的文本文件。');
+  if (result.code === 'TASK_FILE_CHANGED' || !verifyScope()) return fail('TASK_FILE_CHANGED', '读取时文件或目录授权已变化。', '在本机确认文件和授权后重新发送指令。');
+  if (!result.buffer) return fail(result.code, 'Mac 无法读取该文件。', '在本机确认文件读取权限后重试。');
+
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(result.buffer);
+    if (!/\p{Cc}/u.test(text.replace(/[\t\r\n]/g, ''))) return { ok: true, text, bytes: result.buffer.length, verifyScope };
+  } catch {
+    // A malformed UTF-8 file cannot be returned faithfully as QQ text.
+  }
+  return fail('TASK_FILE_TEXT_INVALID', '该文件无法作为 UTF-8 纯文本回传。', '在本机选一个 UTF-8 .txt 文件后重试。');
 }

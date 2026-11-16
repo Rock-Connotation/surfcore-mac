@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { listTaskDirectory } from './task-directory.js';
+import { listTaskDirectory, readTaskText } from './task-directory.js';
 
 const SYSTEM_RESTRICTED_ROOTS = [
   '/System',
@@ -45,6 +45,7 @@ export function createTaskHarness({
   ledger,
   reportsDir,
   readOnlyRoot,
+  canSendLiteralText = () => false,
   safeFetchImpl = fetch,
   sendCallback = async () => ({ ok: true }),
   now = Date.now,
@@ -351,23 +352,40 @@ export function createTaskHarness({
     }
   }
 
-  async function runDirectoryList({ requestor, target, taskId, validate }) {
+  async function runReadOnlyTask({ requestor, action, target, taskId, validate }) {
+    const reading = action === 'file_read';
+    if (!reading && action !== 'directory_list') throw new TypeError('Unsupported read-only task action.');
     const admission = checkAdmission({ requestor });
     if (!admission.ok) return admission;
     if (requestor.platform !== 'qq' || requestor.conversationKey !== `private:${requestor.userId}` ||
         !readOnlyRoot || !taskId || typeof validate !== 'function' || !validate()) {
-      return { ok: false, code: 'TASK_DIRECTORY_IDENTITY_REQUIRED', error: '未确认主人私聊或本机只读工作区。', hint: '由主人在已允许的 QQ 私聊发起，并检查本机工作区。' };
+      return { ok: false, code: 'TASK_READ_ONLY_IDENTITY_REQUIRED', error: '未确认主人私聊或本机只读工作区。', hint: '由主人在已允许的 QQ 私聊发起，并检查本机工作区。' };
     }
     if (ledger.getTask(taskId)) return { ok: true, idempotent: true };
-    const task = ledger.createTask({ taskId, requestor, type: 'directory_list', goal: '列出本机文件', steps: ['list', 'delivery'] });
-    const listing = listTaskDirectory({ root: readOnlyRoot, target });
-    if (!listing.ok) {
-      ledger.updateTask(taskId, { status: 'failed', error: `${listing.code} ${listing.error}` });
-      return listing;
+    const task = ledger.createTask({ taskId, requestor, type: action,
+      goal: reading ? '读取本机文件' : '列出本机文件', steps: [reading ? 'read' : 'list', 'delivery'] });
+    const source = { root: readOnlyRoot, target };
+    const result = reading ? readTaskText(source) : listTaskDirectory(source);
+    const failTask = failure => {
+      ledger.updateTask(taskId, { status: 'failed', error: `${failure.code} ${failure.error}` });
+      return failure;
+    };
+    if (!result.ok) return failTask(result);
+
+    if (reading) {
+      const messageText = `Mac 文件内容（只读）\n任务编号 ${taskId}\n正文 ${result.bytes} 字节\n【正文开始】\n${result.text}\n【正文结束】`;
+      if (!canSendLiteralText(messageText)) {
+        return failTask({ ok: false, code: 'TASK_FILE_TEXT_BLOCKED', error: '正文含有无法安全原样回传的文本。', hint: '在本机选一个不含凭据或 QQ 控制码的文本文件。' });
+      }
+      ledger.updateTask(taskId, { status: 'running', intent: { bytes: result.bytes } });
+      const receipt = await executeDeliveryStep(task, { text: messageText,
+        validate: () => validate() && result.verifyScope() && canSendLiteralText(messageText) });
+      if (receipt.ok) return { ok: true, status: receipt.status };
+      return receipt;
     }
-    ledger.updateTask(taskId, { status: 'running', intent: { displayed: listing.displayed, truncated: listing.truncated } });
-    const scope = listing.truncated ? `清单达到上限，已显示 ${listing.displayed} 个文件。` : `共 ${listing.displayed} 个文件。`;
-    const messageText = `Mac 目录清单（只读）\n任务编号 ${taskId}\n${scope}\n${listing.text}`;
+    ledger.updateTask(taskId, { status: 'running', intent: { displayed: result.displayed, truncated: result.truncated } });
+    const scope = result.truncated ? `清单达到上限，已显示 ${result.displayed} 个文件。` : `共 ${result.displayed} 个文件。`;
+    const messageText = `Mac 目录清单（只读）\n任务编号 ${taskId}\n${scope}\n${result.text}`;
     return executeDeliveryStep(task, { text: messageText, validate });
   }
 
@@ -794,7 +812,7 @@ export function createTaskHarness({
     executeCommandStep,
     executeMacAppStep,
     runAutonomousIdleActivity,
-    runDirectoryList,
+    runReadOnlyTask,
     runTaskPipeline,
     resolvedReportsDir
   };
