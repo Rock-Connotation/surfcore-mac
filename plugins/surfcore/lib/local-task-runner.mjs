@@ -4,6 +4,7 @@
 // 造执行器、不直接跑 agent loop：契约明确"不复用就不算完成"。所有调用都是
 // "接受"语义（`accepted:true` = 消息已入队），完成与否只由会话事件判定。
 import { taskGateIsLive, TASK_ALLOWED_TOOLS } from './local-task-gate.mjs'
+import { createTaskBudget } from './local-task-budget.mjs'
 
 export const TASK_PRESET_ID = 'local-task'
 
@@ -46,13 +47,14 @@ export function createLocalTaskRunner({ onFinished = () => {},
   presetId = TASK_PRESET_ID,
   workspaceRoot,
   newRequestId,
+  budget = createTaskBudget(),
 }) {
   if (!service || !sessionController) throw new TypeError('local-task-runner: service 与 sessionController 必填')
   if (typeof workspaceRoot !== 'string' || !workspaceRoot) throw new TypeError('local-task-runner: workspaceRoot 必填')
   if (typeof newRequestId !== 'function') throw new TypeError('local-task-runner: newRequestId 必填')
   let dispose = null
 
-  function observe(session, event) {
+  async function observe(session, event) {
     const sessionId = session?.id
     if (typeof sessionId !== 'string' || !sessionId) return
     const found = service.queryTask({}).tasks.find((task) => task.dshSessionId === sessionId)
@@ -60,6 +62,16 @@ export function createLocalTaskRunner({ onFinished = () => {},
     if (typeof event?.seq === 'number') {
       const noted = service.noteEvent({ taskId: found.taskId, seq: event.seq })
       if (noted.ignored === 'stale') return
+    }
+    // 额度：模型请求与工具调用各计一次；一旦越界就当场停会话，不指望模型自己收手。
+    const counted = event?.type === 'assistant/attempt'
+      ? budget.noteModelRequest(found.taskId)
+      : event?.type === 'tool/result'
+        ? budget.noteToolCall(found.taskId)
+        : null
+    if (counted && counted.ok === false) {
+      await stopForBudget(found, counted)
+      return counted
     }
     if (event?.type !== 'turn/end') return
     const reason = event?.data?.reason
@@ -77,6 +89,22 @@ export function createLocalTaskRunner({ onFinished = () => {},
     if (result?.ok && !result.ignored) {
       try { onFinished(result.task ?? found, status) } catch {}
     }
+    return result
+  }
+
+  /** 额度用尽：任务记为失败（不是 cancelled——预算耗尽不是用户要停），然后撤掉会话。 */
+  async function stopForBudget(task, hit) {
+    const result = service.finish({
+      taskId: task.taskId,
+      status: "failed",
+      resultRefs: task.dshSessionId ? [`dsh-session:${task.dshSessionId}`] : [],
+      error: { code: hit.code, error: hit.error, hint: hit.hint },
+    })
+    if (task.dshSessionId) {
+      try { await sessionController.cancel({ sessionId: task.dshSessionId }) } catch {}
+    }
+    budget.forget(task.taskId)
+    if (result?.ok && !result.ignored) { try { onFinished(result.task ?? task, "failed") } catch {} }
     return result
   }
 

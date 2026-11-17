@@ -67,6 +67,13 @@
   `delivery.state = delivered | uncertain`，**绝不改写执行状态**。
 - `plugins/surfcore/lib/index.js`：用 `ctx.webServer.register({ kind:'exact', path })` 挂通道。
 
+## 额度（契约默认值，已实现）
+
+`plugins/surfcore/lib/local-task-budget.mjs`：活跃 30 分钟 / 30 次模型请求 / 120 次工具调用。
+计数发生在 `runner.observe`（`assistant/attempt` 与 `tool/result`），越界立刻：
+任务记 `failed` + `TASK_BUDGET_EXCEEDED`（带 hint：先看工作区再决定要不要重发）→
+撤掉该会话 → 不再接受这个任务的后续派发。计数只在内存里，重启窗口自然重置（重启已把在途任务标成 `needs_reconciliation`）。
+
 ## 设置页「本机任务」
 
 `DSH 设置 → SurfCore → 本机任务`（`plugins/surfcore/lib/client.js` 的 `TABS` + `LocalTasksTab`）：

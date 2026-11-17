@@ -340,4 +340,37 @@ function pass(name) { checks++; console.log(`PASS ${name}`) }
   pass('取不到 agent 时拒绝派发')
 }
 
+// 21. 模型请求额度用尽：当场停会话、任务判失败、错误码可读
+{
+  const h = harness()
+  const { task } = h.submit()
+  await h.runner.dispatch(task.taskId)
+  for (let i = 0; i < 31; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await h.runner.observe({ id: `s1` }, { type: "assistant/attempt", seq: 100 + i, data: {} })
+  }
+  const after = h.service.queryTask({ taskId: task.taskId }).task
+  assert.equal(after.executionStatus, "failed")
+  assert.equal(after.error?.code, "TASK_BUDGET_EXCEEDED")
+  assert.ok(after.error?.hint, "额度过限必须给下一步")
+  assert.equal(h.cancelled.length, 1, "额度用尽要撤会话，不能让它继续烧")
+  pass("模型请求超额时停会话并判失败")
+}
+
+// 22. 工具调用额度：120 次以内照常，第 121 次收口
+{
+  const h = harness()
+  const { task } = h.submit()
+  await h.runner.dispatch(task.taskId)
+  for (let i = 0; i < 120; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await h.runner.observe({ id: "s1" }, { type: "tool/result", seq: i + 1, data: {} })
+    if (i < 119) assert.notEqual(r?.code, "TASK_BUDGET_EXCEEDED")
+  }
+  assert.equal(h.service.queryTask({ taskId: task.taskId }).task.executionStatus, "running")
+  const over = await h.runner.observe({ id: "s1" }, { type: "tool/result", seq: 500, data: {} })
+  assert.equal(over.code, "TASK_BUDGET_EXCEEDED")
+  assert.equal(h.service.queryTask({ taskId: task.taskId }).task.executionStatus, "failed")
+  pass("工具调用超额时停会话并判失败")
+}
 console.log(`${checks} checks passed`)

@@ -62,8 +62,8 @@ export function mountLocalTasks(ctx, { workspaceRoot, stateDir, currentDshUrl, c
         scoped.effect(() => () => runner.detach())
         // 会话事件在这里统一投影；别的会话 id 由 observe 自己过滤。
         const off = scoped.on('session/event', (session, event) => {
-          try { runner.observe(session, event) }
-          catch (error) { log('本机任务事件投影失败：', error?.message ?? error) }
+          // observe 现在是 async（额度越界要 await 停会话），同步 try/catch 抓不到 reject。
+          void Promise.resolve(runner.observe(session, event)).catch((error) => log('本机任务事件投影失败：', error?.message ?? error))
         })
         scoped.effect(() => () => off?.())
         const api = stateDir && currentDshUrl ? createLocalTaskApi({ stateDir, currentDshUrl, getRuntime: getLocalTasks }) : null
