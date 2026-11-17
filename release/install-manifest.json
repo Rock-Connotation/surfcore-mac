@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.9.0-dev.2",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-17T05:49:14.828Z",
+  "generatedAt": "2026-11-17T05:49:24.877Z",
   "files": {
     ".gitattributes": "65b1023623fb87849b0d7e7a39141bd9d2662d98dcd55fefc9e8bf1683d2d934",
     ".gitignore": "a151d62896bdc35fb95370916bb857c33fe3ef675d96e05d9b9ea256e9dde41d",
@@ -20,7 +20,7 @@
     "docs/COORDINATION.md": "422143c23994594f221e69333b64027d29f338063323f193a882cd03087d4888",
     "docs/FOLDER_MAP.md": "a659e8edee0c51f60ec335f901e840c2d02d6a7c40edcfd65a6054c712122efd",
     "docs/HANDOFF.md": "f4bd12256ad04086a9de4f50adc951294a427db4ae259bcf55265c1a3a1a6fd2",
-    "docs/PITFALLS.md": "3461fb8df9f5615922589824534f90e29ebe8728667e6e1a3c7ed8aaca3a8a9f",
+    "docs/PITFALLS.md": "7796ca51d5785c9fb6b07af88a234127484cdab3dde065b9c3c5b0aa731f08d2",
     "docs/README.md": "e93e9b0b0153e6e22d63c9dfda17908fe884f750eb74b11ff5ea2ad66eccc280",
     "docs/RELEASE-QUEUE.md": "f9854eb9763acbbc5c11f4bb8342cc73a47f775667434e82c4f8a70f95f59315",
     "docs/RELEASE.md": "4e51614f574f34a27c17a28ae45ae05cd2b686ea7dd0ac033903c47331380fab",

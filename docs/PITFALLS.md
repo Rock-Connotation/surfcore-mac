@@ -5,6 +5,29 @@
 
 ---
 
+## #246（2026-11-17，P1）新入口词撞上旧入口：`任务：` 有三个主人
+
+**现象**
+- 给「本机任务」加了 QQ 入口，用 `任务：…` 做触发词后，`npm run test:audit` 里 `test-owner-delivery-r3.mjs` 四条用例红：
+  发送条数多一条（`1 !== 2`）、旧的三条文件指令不再生成文件、日志里 `Cannot read properties of undefined (reading 'includes')`。
+
+**根因**
+- `src/bridge.js:220` 早就写明：`任务：` / `任务状态` / `取消任务` 由 task-harness（远程研究任务）承接；
+  我在 `handleIncoming` 的 `plainContent` 之后插了更靠前的分流，把这三句话全部抢走，
+  于是 task-harness 与「固定三条文件指令」两条老链路同时断掉——测试只是替真机暴露问题。
+
+**处置**
+- 换词而不是加例外：新入口必须带「本机」二字（`本机任务：` / `本机任务列表` / `取消本机任务`），
+  意图解析里把原因写进注释，避免下次有人"顺手简化"。
+
+**怎么验证**
+- `node scripts/test-owner-delivery-r3.mjs`（旧三条必须仍绿）、`node scripts/test-local-task-intent.mjs`（新词命中、旧词不命中）、
+  最后 `npm run test:audit` 208/208。
+
+**怎么预防**
+- 新增任何"从聊天里截话"的入口前：先 `grep` 这句触发词，确认没有第二个消费者；
+  触发词宁可长、宁可带限定词，也不要和既有说法重名。
+
 ## #1（2026-10-22，P0）一个坏会话日志让整个 workspace 服务起不来
 
 **现象**
