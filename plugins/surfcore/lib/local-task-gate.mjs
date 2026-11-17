@@ -37,6 +37,8 @@ export function taskGateDenyReason(exec, { root, healthy = true, exists = (p) =>
   if (!TASK_ALLOWED_TOOLS.includes(tool)) {
     return `工具 "${tool}" 不在本机任务白名单内（只允许 ${TASK_ALLOWED_TOOLS.join('/')}）`
   }
+  // 没有工作区根 = 无法判围栏，一律拒绝（fail-closed）。
+  if (typeof root !== 'string' || !root) return '本机任务会话没有工作区根，无法判定路径围栏，已拒绝'
   const args = exec.arguments ?? {}
   // 模型不得自行升权：守卫直接拒绝带 sandbox_permissions 的调用。
   if (args.sandbox_permissions !== undefined) return '本机任务不允许自行提升文件权限（sandbox_permissions）'
@@ -100,12 +102,45 @@ export function resolveInsideRoot(root, candidate) {
  * @param isHealthy    闸门健康位：策略不在册/自检失败时必须返回 false
  * @param exists       注入给测试
  */
-export function createLocalTaskGate({ root, isHealthy = () => true, exists } = {}) {
-  return {
-    name,
-    inject,
-    apply(ctx) {
-      ctx.tools.guard((exec) => taskGateDenyReason(exec, { root, healthy: isHealthy(), exists }))
-    },
-  }
+/** 会话自己的工作区（preset 行没有 root 参数时用它）。 */
+function sessionRoot(exec) {
+  const cwd = exec?.agent?.session?.header?.cwd
+  return typeof cwd === "string" && cwd ? cwd : undefined
+}
+
+function mount(ctx, { root, presetId, isHealthy, exists }) {
+  liveGates.set(presetId, (liveGates.get(presetId) ?? 0) + 1)
+  // 卸载/热重载时递减：计数归零后派发前检查就会拒绝。
+  ctx.effect?.(() => () => {
+    const left = (liveGates.get(presetId) ?? 1) - 1
+    if (left > 0) liveGates.set(presetId, left)
+    else liveGates.delete(presetId)
+  })
+  ctx.tools.guard((exec) => {
+    // 根取会话 cwd：preset 行是静态装配，拿不到每个任务各自的工作区。
+    const base = root ?? sessionRoot(exec)
+    return taskGateDenyReason(exec, { root: base, healthy: isHealthy(), exists })
+  })
+}
+
+/** preset 行入口：root 按会话 cwd 解析。 */
+export function apply(ctx) {
+  mount(ctx, { presetId: "local-task", isHealthy: () => true })
+}
+
+export function createLocalTaskGate({ root, presetId = "local-task", isHealthy = () => true, exists } = {}) {
+  return { name, inject, apply: (ctx) => mount(ctx, { root, presetId, isHealthy, exists }) }
+}
+
+// 闸门存活登记：任务派发前必须确认「这个 preset 的闸门还在册」。
+// 契约要求策略插件被卸载/热重载后**拒绝继续派发**，而 `restrict` 的掩码会随
+// 装配一起消失——只靠"装配时校验过一次"会在热重载后变成放行全部工具。
+const liveGates = new Map()
+
+export function taskGateIsLive(presetId) {
+  return (liveGates.get(presetId) ?? 0) > 0
+}
+
+export function _gateLivenessCount(presetId) {
+  return liveGates.get(presetId) ?? 0
 }

@@ -1,0 +1,43 @@
+# The `local-task` agent preset: 一个 QQ 任务一个专用会话，工具面只有文件类。
+#
+# 三根柱子（缺一个都不算受控）：
+#   1. 装配层给能力天花板——没有 bash/pwsh/subagent/MCP/tool-web/str_replace_editor，
+#      不是靠提示词劝住模型，是这些工具根本不注册。
+#   2. fs-sandbox 把写入锁进会话工作区（读取不设防，所以还要第 3 根）。
+#   3. local-task-gate 在执行期做白名单 + 路径围栏 + 只新建；它的拒绝是单调的。
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: >-
+      You are a local file-task executor powered by the {{model}} model.
+
+      【本机任务规则（最高优先级，不可违反）】
+      1. 你只能读、列、新建文件，且全部在本次会话的工作区内。
+      2. 只能新建文件，不能覆盖或修改已存在的文件；要改内容就换一个文件名。
+      3. 你没有命令执行、联网、派生 agent 的能力；工具不存在就是不存在，不要假装有。
+      4. 完成后用一句话说明新建了哪些文件（相对路径）。
+    suffix: This conversation runs a single task dispatched from QQ.
+
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+
+- id: fs-sandbox
+  name: '@deepseek-ai/dsh-fs-sandbox'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+  config:
+    read: true
+    write: true
+    # 覆盖/打补丁在本阶段一律不做：write 已由闸门限制为"只新建"。
+    edit: false
+    applyPatch: false
+    readImage: false
+
+# ── 本机任务安全硬边界 ──────────────────────────────────────────────────────
+# 执行期白名单 + 路径围栏 + 只新建；卸载或热重载后派发层会拒绝继续送 prompt。
+
+- id: local-task-gate
+  name: ./local-task-gate.mjs
+  config: {}

@@ -221,6 +221,17 @@ export function createLocalTaskService({ domain, now = () => new Date().toISOStr
     return written.ok ? { ok: true, task: next } : written
   }
 
+  /** 记录已投影到的事件位置（只前进不后退），用于重启后不重放同一批事件。 */
+  function noteEvent({ taskId, seq }) {
+    const task = tasks.get(taskId)
+    if (!task) return fail("TASK_NOT_FOUND", `任务 ${taskId} 不存在`, "用「任务列表」确认任务号")
+    if (typeof seq !== "number" || !Number.isFinite(seq)) return fail("TASK_EVENT_INVALID", "事件位置不是数字", "检查 session/event 的 seq 字段")
+    if (task.lastEventPosition !== null && seq <= task.lastEventPosition) return { ok: true, task, ignored: "stale" }
+    const next = { ...task, lastEventPosition: seq, updatedAt: now() }
+    const written = persist(next)
+    return written.ok ? { ok: true, task: next } : written
+  }
+
   function recordDelivery({ taskId, delivery }) {
     const task = tasks.get(taskId)
     if (!task) return fail('TASK_NOT_FOUND', `任务 ${taskId} 不存在`, '用「任务列表」确认任务号')
@@ -251,6 +262,7 @@ export function createLocalTaskService({ domain, now = () => new Date().toISOStr
     cancelTask,
     attachSession,
     recordDelivery,
+    noteEvent,
     finish,
     requireRunning,
     // 仅供测试/调试观察，不对外暴露写入口

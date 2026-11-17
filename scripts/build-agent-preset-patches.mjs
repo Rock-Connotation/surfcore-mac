@@ -24,7 +24,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, '..');
 
 /** 由桥接托管的 preset（V1 退役后只剩二代 qq-chat-v2；顺序即 patch 层顺序）。 */
-export const PRESETS = ['qq-chat-v2'];
+const REQUIRED_ROWS = { 'qq-chat-v2': ['persona', 'qq-tool-restrict'], 'local-task': ['persona', 'local-task-gate'] };
+
+export const PRESETS = ['qq-chat-v2', 'local-task'];
 
 /** preset 行 id：与 config.id（桥接解析的 preset 名）区分开，方便在 profile patch 里按行定位。 */
 export function presetRowId(name) {
@@ -43,8 +45,9 @@ export function presetRowId(name) {
 export const GUARD_SPECIFIER = 'surfcore/qq-tool-restrict.mjs';
 
 /** 源里允许出现的相对行名 → 新机制下的等价引用。其它相对名一律报错（避免静默装不上）。 */
-const RELATIVE_ROW_REWRITES = new Map([
+export const RELATIVE_ROW_REWRITES = new Map([
   ['./qq-tool-restrict.mjs', GUARD_SPECIFIER],
+  ['./local-task-gate.mjs', 'surfcore/local-task-gate.mjs'],
 ]);
 
 export const BUNDLE_DIR = path.join(REPO_ROOT, 'plugins', 'surfcore');
@@ -103,7 +106,8 @@ function normalizeRows(rows, preset) {
     return next;
   });
   const normalized = walk(rows, 'plugins');
-  for (const required of ['persona', 'qq-tool-restrict']) {
+  // 每个 preset 必须带的硬边界行：人格 + 执行期闸门。
+  for (const required of REQUIRED_ROWS[preset] ?? ["persona"]) {
     if (!seen.has(required)) throw new Error(`${preset}: 行列表缺少 ${required} 行（安全/人格边界不允许缺失）`);
   }
   return normalized;

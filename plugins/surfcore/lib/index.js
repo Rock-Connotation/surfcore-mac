@@ -109,6 +109,7 @@ import { withVolcBudgetLock } from '../../../src/voice-volc-budget.js';
 import { createContextTelemetry } from '../../../src/context-telemetry.js';
 import { createBillingService } from './billing.js';
 import { createPersonaClassifier } from './persona-classify.js';
+import { mountLocalTasks } from './local-task-host.mjs'
 
 // 版本号只有一个来源：仓库根 package.json（与 plugins/surfcore/package.json 必须一致，
 // 由 scripts/version.mjs check 与 test-version.mjs 把关）。
@@ -190,6 +191,14 @@ function QQ_STATE_DIR() {
 
 export const name = 'surfcore';
 export const inject = ['webServer', 'connection', 'sessionController'];
+
+/** 本机任务的工作区根：环境变量可覆盖，默认在 SurfCore 状态目录下（不进用户项目目录）。 */
+function localTaskWorkspaceRoot() {
+  const override = process.env.SURFCORE_LOCAL_TASK_ROOT;
+  const root = override && path.isAbsolute(override) ? override : path.join(STATE_DIR, 'local-task', 'workspace');
+  fs.mkdirSync(root, { recursive: true });
+  return root;
+}
 
 export function apply(ctx) {
   ensureDirs();
@@ -4103,6 +4112,10 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       else if (v.route === 'local' && !gsv) pluginLog(`[语音] 8765 在跑但 9880（GPT-SoVITS）没起：角色 ${v.character ?? '(空)'} 走本地音色会 503，先跑 voice-local\gsv.bat 等约 40 秒（也可切到 Piper/云端）`);
     } catch {}
   })();
+
+  // 本机任务：装配失败只记日志，不影响 QQ/B站 等既有能力。
+  try { mountLocalTasks(ctx, { workspaceRoot: localTaskWorkspaceRoot(), log: pluginLog }) }
+  catch (error) { pluginLog('本机任务装配失败：', error?.message ?? error) }
 }
 
 export default { name, inject, apply };
