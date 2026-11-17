@@ -14,6 +14,7 @@
 | 2026-11-17 | [本机任务存储层（T02）](2026-11-17-local-task-storage.md) | Task 单一写者、来源去重、停止屏障与持久失败不外报 | 单测通过，未接 Host |
 | 2026-11-17 | [本机任务闸门（T03）](2026-11-17-local-task-gate.md) | 工具白名单、realpath 路径围栏、只新建与禁止自行升权，闸门不健康即 fail-closed | 单测通过，未接任务会话 |
 | 2026-11-17 | [本机任务会话编排（T04）](2026-11-17-local-task-session.md) | 一 Task 一专用 Session、装配取证后才送 prompt、事件投影与停止屏障、local-task preset 只有 read/write | 单测通过，真实进程端到端待 T07 |
+| 2026-11-17 | [本机任务查询与取消（T05）](2026-11-17-local-task-recovery.md) | 查询只读不开回合、停止意图先落盘再撤回会话、重启只对账不复算并让出并发席位 | 单测通过，真实重启验收待 T07 |
 | 2026-11-15 | [V1 退役四轮（接管重驱动合同 + 取消后回执可查）](2026-11-15-v1-retirement-r4-resume-and-receipt.md) | 生产 scheduler 用原 requestId 重驱动 `pre_dispatch` 接管任务的离线合同（51→52 场景，含反向重放）、抖音取消后按原操作编号查真实 Host 回执、越界帧数经核实无需再修（附证据） | 已合入 dev |
 | 2026-11-15 | [V1 退役三轮复审离线修复（F01–F05/N01/P2）](2026-11-15-v1-retirement-r3-offline-fixes.md) | 准入代数与 lease 撤销、管理回执按真实 ACK 入账、B站诚实降级不再假称 durable、退役等真实退出、单轮来源集合、抖音/预检错误分类，另加 9 条常驻合同测试 | 已合入 dev |
 | 2026-11-12 | [A6 失败可见性：ok:false 三件套静态检查](2026-11-12-a6-failure-visibility.md) | lint-failures 棘轮基线（669 处债务入册只许降不许升），B站扫码/更新/TTS/语音包 P0 链路补齐 code+hint 并加失败分支断言 | 本地验收，未发布 |

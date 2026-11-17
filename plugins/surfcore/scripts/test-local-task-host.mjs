@@ -5,7 +5,7 @@ import { mountLocalTasks, getLocalTasks } from '../lib/local-task-host.mjs'
 let checks = 0
 function pass(name) { checks++; console.log(`PASS ${name}`) }
 
-function fakeCtx({ withDomain = true } = {}) {
+function fakeCtx({ withDomain = true, seed = [] } = {}) {
   const effects = []
   const listeners = []
   const opened = []
@@ -13,6 +13,7 @@ function fakeCtx({ withDomain = true } = {}) {
     storageDomain: withDomain ? {
       async open(spec) {
         const store = new Map()
+        for (const record of seed) store.set(record.taskId, record)
         opened.push(spec)
         return {
           spec,
@@ -109,6 +110,30 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   await tick()
   assert.equal(getLocalTasks().ok, false)
   pass('缺 storageDomain 时保持未就绪')
+}
+
+// 5. 装配即对账：上一进程崩溃时还在跑的任务被标 needs_reconciliation，且不重发 prompt
+{
+  const seed = [{
+    taskId: 'task-crashed', trustedActor: { platform: 'qq', botId: 'b', channel: 'private', conversationId: 'c', userId: 'u' },
+    source: { botId: 'b', channel: 'private', conversationId: 'c', messageId: 'm1', key: 'b|private|c|m1', textHash: 'h' },
+    goal: '整理周报', workspaceId: 'w1', grantId: null, grantVersion: 0, dshSessionId: 's-crashed',
+    executionStatus: 'running', stopRequest: null, controlEpoch: 1, lastEventPosition: 3,
+    commands: [], deliveries: [], resultRefs: [], createdAt: '2026-11-17T00:00:00.000Z', updatedAt: '2026-11-17T00:00:00.000Z',
+  }]
+  const h = fakeCtx({ seed })
+  let prompted = 0
+  h.ctx.get('sessionController').prompt = async () => { prompted++; return { accepted: true } }
+  mountLocalTasks(h.ctx, { workspaceRoot: '/tmp/w', log: () => {} })
+  await tick()
+  const runtime = getLocalTasks()
+  assert.equal(runtime.ok, true)
+  const stored = runtime.service.queryTask({ taskId: 'task-crashed' }).task
+  assert.equal(stored.executionStatus, 'needs_reconciliation')
+  assert.equal(stored.reconcileReason, 'host-started')
+  assert.equal(prompted, 0, '对账不得重放 prompt')
+  for (const dispose of h.effects) dispose()
+  pass('装配即对账且不重放')
 }
 
 console.log(`${checks} checks passed`)

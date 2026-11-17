@@ -25,6 +25,8 @@ export const EXECUTION_STATES = Object.freeze([
   'queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled', 'needs_reconciliation',
 ])
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled'])
+// 进程崩溃时「还在跑」的状态集合：重启后只能标 needs_reconciliation。
+const IN_FLIGHT = new Set(['queued', 'running', 'waiting'])
 const DELIVERY_STATES = new Set(['pending', 'sending', 'delivered', 'uncertain', 'failed', 'suppressed'])
 
 export const CONCURRENCY = 1
@@ -182,6 +184,38 @@ export function createLocalTaskService({ domain, now = () => new Date().toISOStr
     }
   }
 
+  /**
+   * 重启对账：把「进程崩溃时还在跑」的任务标成 needs_reconciliation，**不重放**任何写入。
+   * 契约要求：重启后既不能假装它还在跑，也不能自动重发 prompt（会重复落文件）。
+   */
+  function reconcileOnBoot({ reason = 'host-restarted', at = now() } = {}) {
+    const touched = []
+    for (const task of [...tasks.values()]) {
+      if (!IN_FLIGHT.has(task.executionStatus)) continue
+      const next = { ...task, executionStatus: 'needs_reconciliation', reconciledAt: at, reconcileReason: reason, updatedAt: at }
+      if (!persist(next).ok) continue
+      // 席位要立刻让出来：复核不等于在跑，否则一条崩溃任务会永久占住并发 1。
+      if (activeTaskId === task.taskId) activeTaskId = null
+      touched.push({ taskId: task.taskId, from: task.executionStatus })
+    }
+    return { ok: true, reconciled: touched }
+  }
+
+  /** 用户可读的一行状态（QQ 回执与设置页共用，避免两处措辞漂移）。 */
+  function describeTask(task) {
+    if (!task) return null
+    const label = {
+      queued: '排队中', running: '执行中', waiting: '等待确认', succeeded: '已完成',
+      failed: '失败', cancelled: '已取消', needs_reconciliation: '需要复核',
+    }[task.executionStatus] ?? task.executionStatus
+    const lines = [`任务 ${task.taskId}：${label}`]
+    if (task.goal) lines.push(`目标：${task.goal}`)
+    if (task.executionStatus === 'needs_reconciliation') lines.push('DSH 在任务执行中重启过，不知道文件写没写：先看工作区，再决定重发')
+    if (task.executionStatus === 'failed' && task.error?.error) lines.push(`原因：${task.error.error}`)
+    if (task.resultRefs?.length) lines.push(`产物：${task.resultRefs.join(', ')}`)
+    return lines.join('\n')
+  }
+
   function cancelTask({ actor, taskId, reason = 'owner' }) {
     const task = tasks.get(taskId)
     if (!task) return fail('TASK_NOT_FOUND', `任务 ${taskId} 不存在`, '用「任务列表」确认任务号')
@@ -263,6 +297,8 @@ export function createLocalTaskService({ domain, now = () => new Date().toISOStr
     attachSession,
     recordDelivery,
     noteEvent,
+    reconcileOnBoot,
+    describeTask,
     finish,
     requireRunning,
     // 仅供测试/调试观察，不对外暴露写入口

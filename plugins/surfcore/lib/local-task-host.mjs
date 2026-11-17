@@ -42,6 +42,8 @@ export function mountLocalTasks(ctx, { workspaceRoot, log = () => {} } = {}) {
           workspaceRoot,
           newRequestId: () => `lt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
         })
+        // 重启对账：上一进程崩溃时还在跑的任务只能标 needs_reconciliation，绝不重放写入。
+        service.reconcileOnBoot({ reason: 'host-started' })
         runner.attach()
         scoped.effect(() => () => runner.detach())
         // 会话事件在这里统一投影；别的会话 id 由 observe 自己过滤。
