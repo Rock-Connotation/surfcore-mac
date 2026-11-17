@@ -64,6 +64,8 @@ const tests = [
   'test-qq-tool-restrict-events.mjs',
   // DSH Desktop 安装目录里的 node 解析；bridge/scheduler/setup 共用同一个入口。
   'test-node-path.mjs',
+  // 本机任务：QQ 自然语言入口的意图解析（错一次就是把主人聊天当任务吃掉）。
+  'test-local-task-intent.mjs',
   // DSH 会话队列（inbox 投影）解析：0.2.0 把队列从 control baseline 的
   // `value.queues[<id>]` 挪进了 `value.projections[<id>].values.inbox`。
   // 认错形状的后果不是"少清几条"，而是**每一次退役会话都抛错**、旧任务继续跑，

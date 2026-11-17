@@ -109,7 +109,8 @@ import { withVolcBudgetLock } from '../../../src/voice-volc-budget.js';
 import { createContextTelemetry } from '../../../src/context-telemetry.js';
 import { createBillingService } from './billing.js';
 import { createPersonaClassifier } from './persona-classify.js';
-import { mountLocalTasks } from './local-task-host.mjs'
+import { mountLocalTasks, getLocalTasks } from './local-task-host.mjs'
+import { LOCAL_TASK_API_PREFIX } from './local-task-api.mjs'
 
 // 版本号只有一个来源：仓库根 package.json（与 plugins/surfcore/package.json 必须一致，
 // 由 scripts/version.mjs check 与 test-version.mjs 把关）。
@@ -4114,7 +4115,15 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   })();
 
   // 本机任务：装配失败只记日志，不影响 QQ/B站 等既有能力。
-  try { mountLocalTasks(ctx, { workspaceRoot: localTaskWorkspaceRoot(), log: pluginLog }) }
+  disposers.push(ctx.webServer.register({ kind: 'exact', path: LOCAL_TASK_API_PREFIX,
+    handler: async (req, res) => {
+      const runtime = getLocalTasks()
+      if (!runtime.ok) { json(res, 503, runtime); return }
+      if (!runtime.api) { json(res, 503, { ok: false, code: 'LOCAL_TASK_TRANSPORT_MISSING', error: '本机任务通道没建起来', hint: '重启 DSH 后重试' }); return }
+      try { await runtime.api.handle(req, res, new URL(req.url, 'http://127.0.0.1')) }
+      catch (error) { pluginLog('[本机任务通道] 请求失败：', String(error?.message ?? error)); try { json(res, 500, { ok: false, code: 'LOCAL_TASK_HANDLER_FAILED', error: String(error?.message ?? error), hint: '重启 DSH 后重试' }) } catch {} }
+    } }));
+  try { mountLocalTasks(ctx, { workspaceRoot: localTaskWorkspaceRoot(), stateDir: STATE_DIR, currentDshUrl, callBridge, log: pluginLog }) }
   catch (error) { pluginLog('本机任务装配失败：', error?.message ?? error) }
 }
 

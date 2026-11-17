@@ -7,6 +7,8 @@ import {
 } from './interaction-lifecycle.js';
 import { createTaskLedger } from './task-ledger.js';
 import { createTaskHarness } from './task-harness.js';
+import { parseLocalTaskIntent } from './core/local-task-intent.js';
+import { createLocalTaskClient } from './core/local-task-client.js';
 // QQ ↔ DeepSeek Harness 桥接主程序。
 //
 // 链路：
@@ -1796,6 +1798,8 @@ async function main() {
   loadState();
   const qqMemory = createQQMemoryBridge({ stateDir: SURFCORE_DIR, getCharacter: readCurrentCharacter });
   const nativeMemoryClient = createMemoryClient({ stateDir: SURFCORE_DIR, scope: 'qq', getCharacter: readCurrentCharacter });
+  // 本机任务通道：只把文本交给 Host，账本与会话都在 Host 里，桥接不写任何任务状态。
+  const localTaskClient = createLocalTaskClient({ stateDir: SURFCORE_DIR });
   const nativeQQ = createNativeQQChannel({ memory: qqMemory, getCharacter: readCurrentCharacter,
     getIdentity: readOfficialMemoryQQIdentity,
     isAllowed: key => !modeBlocked && isSessionAllowedInCurrentMode(key) && !shouldBlockSilentReply(key),
@@ -15181,6 +15185,37 @@ async function main() {
     return String(groupMetaCache.get(m[1])?.name || fishGroupNames.get(m[1]) || '').trim();
   }
 
+  const messageRefOf = (event) => String(event?.message_id ?? event?.msg_id ?? event?.message_seq ?? '');
+
+  // 主人私聊 → 本机任务。命中返回 true（这条消息到此为止），没命中返回 false 继续走聊天。
+  async function handleOwnerLocalTask(kind, id, event, messageId, text) {
+    if (kind !== 'private') return false;
+    const owner = String(cfg.ownerQQ ?? '').trim();
+    if (!owner || String(id) !== owner || String(event?.user_id ?? '') !== owner) return false;
+    const intent = parseLocalTaskIntent(text, { owner });
+    if (!intent) return false;
+    const reply = (body) => transferApi('send_private_msg', { user_id: Number(owner), message: [{ type: 'text', data: { text: truncateText(body, 900) } }] }).catch((error) => log(`[本机任务] 回执发送失败：${error?.message ?? error}`));
+    if (intent.kind === 'submit') {
+      if (!messageId) { await reply('这条消息没有平台消息号，不能安全去重；请在 QQ 里重新发一次。'); return true; }
+      const result = await localTaskClient.submit({
+        source: { botId: String(event?.self_id ?? selfUserId ?? ''), channel: 'private', conversationId: owner, userId: owner, messageId },
+        text: intent.goal,
+        workspaceId: 'owner',
+      });
+      await reply(result.ok ? result.text : `没接住（${result.code}）：${result.error}\n下一步：${result.hint ?? '重发一次'}`);
+      return true;
+    }
+    if (intent.kind === 'query') {
+      const result = await localTaskClient.query(intent.taskId ?? undefined);
+      await reply(result.ok ? result.text : `查不到（${result.code}）：${result.error}\n下一步：${result.hint ?? '重启 DSH 后重试'}`);
+      return true;
+    }
+    if (!intent.taskId) { await reply('取消哪个任务？回「本机任务列表」拿任务号。'); return true; }
+    const stopped = await localTaskClient.cancel(intent.taskId);
+    await reply(stopped.ok ? stopped.text + (stopped.uncertain ? '（Host 没确认撤回，先在原生会话里核对）' : '') : `取消失败（${stopped.code}）：${stopped.error}\n下一步：${stopped.hint ?? '先在原生会话里核对'}`);
+    return true;
+  }
+
   async function handleIncoming(kind, id, event, cfg) {
     const ingressCharacter = readCurrentCharacter();
     const ingressAdmission = modeAdmissionSnapshot();
@@ -15216,6 +15251,8 @@ async function main() {
     // plainContent 只保留当前消息自己的文字，用于命令/指向性判断，避免被引用原文干扰。
     const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
     const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
+    // 本机任务优先：主人私聊里的显式任务说法先交给 Host，命中就不进聊天/记忆链路。
+    if (await handleOwnerLocalTask(kind, id, event, messageRefOf(event), plainContent)) return;
     const mediaList = extractMediaFromSegments(event.message ?? []);
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
     const seqRef = event.message_seq != null ? String(event.message_seq) : '';

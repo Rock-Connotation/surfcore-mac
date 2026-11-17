@@ -34,7 +34,7 @@ export function taskPromptText({ goal, workspaceRoot }) {
  * @param workspaceRoot    任务工作区（canonicalRoot）
  * @param newRequestId     requestId 生成器（持久化后重发同一 requestId 才算幂等）
  */
-export function createLocalTaskRunner({
+export function createLocalTaskRunner({ onFinished = () => {},
   service,
   sessionController,
   agents,
@@ -73,6 +73,10 @@ export function createLocalTaskRunner({
       resultRefs: [`dsh-session:${sessionId}`],
       error: status === 'failed' ? { code: 'TASK_TURN_FAILED', error: `会话回合失败（${reason}）`, hint: '打开原生会话看工具调用，或重发任务' } : null,
     })
+    // 执行状态收敛后立刻交给投递层：状态和投递是两件事，投递失败不能改回执行结果。
+    if (result?.ok && !result.ignored) {
+      try { onFinished(result.task ?? found, status) } catch {}
+    }
     return result
   }
 
