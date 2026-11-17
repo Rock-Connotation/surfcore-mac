@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.9.0-dev.2",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-17T05:55:28.838Z",
+  "generatedAt": "2026-11-17T06:00:35.131Z",
   "files": {
     ".gitattributes": "65b1023623fb87849b0d7e7a39141bd9d2662d98dcd55fefc9e8bf1683d2d934",
     ".gitignore": "a151d62896bdc35fb95370916bb857c33fe3ef675d96e05d9b9ea256e9dde41d",
@@ -357,6 +357,7 @@
     "docs/product/IMPROVEMENTS.md": "451145aac6d04b8a7986a2e312cdc51f87715c9e3bae820e738b09c3393f7443",
     "docs/product/PRD.md": "2045e60ff5a3ef1514a6e49b16b94da09fc12a8cacfc60e5c18d7badf456da56",
     "docs/product/V1-INVENTORY.md": "5561a25e16f77230c560dffdb31940cf5f7a5496a4efa0ec8a6753deb184ab9e",
+    "docs/reviews/2026-11-17-local-task-review-prompt.md": "2794be72ae3138ecd48b8f34ec54406e4e3a19c7c87e35df70a3409937563aa9",
     "dsh/agent-presets/local-task/agent.cordis.yml": "6163a3abdf115a08630c5008bc00b7219230553f2d3126ec27877401de8e50a7",
     "dsh/agent-presets/local-task/preset.yml": "9a741641ce4de97ddae525ca40395c329fdfff22b03aa97797baadca07d8cae3",
     "dsh/agent-presets/qq-chat-v2/agent.cordis.yml": "78c35f954b235397ca4bc5df5de8f90fc3300b644a10dd0f36f5dcaf88004690",
