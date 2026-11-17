@@ -221,6 +221,11 @@ assert.ok(source.includes('["watch", "观看历史"]'), '缺少「观看历史�
 assert.ok(source.includes('"/watch-history'), '观看历史页没有调用 /watch-history');
 assert.ok(source.includes('"操作"'), '观看历史缺少「操作」列');
 assert.ok(source.includes('仅看了'), '观看历史缺少「仅看了」状态');
+// 本机任务：设置里要能看到任务、停掉它、跳到原生会话（发起入口仍然只有 QQ）。
+assert.ok(source.includes('function LocalTasksTab'), '设置页缺少本机任务页');
+assert.ok(source.includes('["tasks", "本机任务"]'), '缺少「本机任务」标签');
+assert.ok(source.includes('"/local-tasks"'), '本机任务页没有调用 /local-tasks');
+assert.ok(source.includes('发起入口在 QQ 私聊'), '本机任务页没有说明发起入口在 QQ');
 const watchActionsSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'lib', 'watch-actions.mjs'), 'utf8');
 assert.ok(watchActionsSource.includes('鱼群保护·聚拢回复'), '观看历史缺少鱼群聚拢标记');
 assert.ok(source.includes('function FishGuardStatusCard'), 'B站页缺少鱼群保护运行状态卡');

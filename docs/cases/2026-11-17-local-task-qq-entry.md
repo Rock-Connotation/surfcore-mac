@@ -67,6 +67,20 @@
   `delivery.state = delivered | uncertain`，**绝不改写执行状态**。
 - `plugins/surfcore/lib/index.js`：用 `ctx.webServer.register({ kind:'exact', path })` 挂通道。
 
+## 设置页「本机任务」
+
+`DSH 设置 → SurfCore → 本机任务`（`plugins/surfcore/lib/client.js` 的 `TABS` + `LocalTasksTab`）：
+
+- 只读列表：任务号 / 内容 / 状态 / 回传状态（已回传、回传未知、未回传）；
+- 两个动作：执行中任务可「停止」；已绑定会话的任务可「原生会话」（显示真实 `dshSessionId`）；
+- **刻意没有发起入口**：派发只发生在 QQ，设置页不提供第二个执行入口。
+
+Host 侧接口是 `API_PREFIX/local-tasks`：GET 列表、POST `{action:'cancel'|'open', taskId}`，
+未就绪回 503，没绑定会话回 409 `LOCAL_TASK_SESSION_MISSING`。
+
+**未验证**：这个接口没有单测（只在 `test-client-contract.mjs` 里断言了页面存在与调用路径），
+也没有真机截图——要重载 DSH 插件才能在界面上看到。
+
 ## 验证
 
 | 检查 | 命令 | 结果 |

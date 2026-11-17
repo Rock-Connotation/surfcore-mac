@@ -3236,6 +3236,56 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // ── 观看历史（设置页「观看历史」）───────────────────────────────────────
   // 数据来自当前角色 bili/watch-history.jsonl；旧数据从 bili-memory.json 补。
+
+  /**
+   * 设置页「本机任务」：只读列表 + 两个动作（取消 / 拿原生会话号）。
+   * 设置页不派发任务：派发只发生在 QQ 入口，这里最多“停”和“去看”，避免多出第二个执行入口。
+   */
+  async function handleLocalTasks(req, res) {
+    const runtime = getLocalTasks();
+    if (!runtime.ok) { json(res, 503, runtime); return; }
+    const { service, runner } = runtime;
+    try {
+      if (req.method === "GET") {
+        const { tasks, activeTaskId } = service.queryTask();
+        json(res, 200, {
+          ok: true,
+          activeTaskId,
+          presetId: runner.presetId,
+          items: tasks.map((task) => ({
+            taskId: task.taskId,
+            goal: task.goal,
+            status: task.executionStatus,
+            describe: service.describeTask(task),
+            sessionId: task.dshSessionId,
+            deliveries: task.deliveries.map((d) => ({ state: d.state ?? d.status ?? "unknown", at: d.at })),
+            createdAt: task.createdAt,
+            updatedAt: task.updatedAt,
+          })),
+        });
+        return;
+      }
+      if (req.method !== "POST") { json(res, 405, { ok: false, code: "LOCAL_TASKS_METHOD_INVALID", error: "设置页只支持 GET 与 POST", hint: "刷新页面后重试" }); return; }
+      const body = JSON.parse((await readBody(req, 16 * 1024)) || "{}");
+      const taskId = String(body?.taskId ?? "");
+      const found = service.queryTask({ taskId });
+      if (!found.ok) { json(res, 404, found); return; }
+      if (body?.action === "cancel") {
+        // 设置页是主人本人在 DSH 里点的，可信主体沿用任务的登记主体，不新造一个身份。
+        const result = await runner.cancel(taskId, found.task.trustedActor);
+        json(res, result.ok ? 200 : 400, { ...result, describe: result.ok && result.task ? service.describeTask(result.task) : undefined });
+        return;
+      }
+      if (body?.action === "open") {
+        if (!found.task.dshSessionId) { json(res, 409, { ok: false, code: "LOCAL_TASK_SESSION_MISSING", error: "这个任务还没有绑定 DSH 会话", hint: "等它开始执行后再打开；未派发的任务只有账本，没有会话" }); return; }
+        json(res, 200, { ok: true, sessionId: found.task.dshSessionId, presetId: runner.presetId });
+        return;
+      }
+      json(res, 400, { ok: false, code: "LOCAL_TASKS_ACTION_INVALID", error: "设置页只支持 cancel 与 open", hint: "刷新页面后重试" });
+    } catch (error) {
+      json(res, 500, { ok: false, code: "LOCAL_TASKS_FAILED", error: "本机任务设置页读取失败", hint: "重载插件后再试；账本不会被修改", detail: String(error?.message ?? error) });
+    }
+  }
   function handleWatchHistory(res, url) {
     try {
       const current = readCurrentCharacter();
@@ -3904,6 +3954,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/persona/classify`) { await handlePersonaClassify(req, res); return; }
     if (pathname === `${API_PREFIX}/group-policy`) { await handleGroupPolicy(req, res); return; }
     if (pathname === `${API_PREFIX}/watch-history`) { handleWatchHistory(res, url); return; }
+    if (pathname === `${API_PREFIX}/local-tasks`) { await handleLocalTasks(req, res); return; }
     if (pathname === `${API_PREFIX}/preferences/scan`) {
       if (req.method !== 'GET') { json(res, 405, { ok: false, error: '只支持 GET' }); return; }
       await handlePreferenceScan(res, url);

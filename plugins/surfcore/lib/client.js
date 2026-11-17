@@ -5567,6 +5567,70 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     }
 
     // ── 诊断 ────────────────────────────────────────────────────────────────
+    /**
+     * 本机任务：只读列表 + 停止 + 打开原生会话。
+     * 派发入口只有 QQ（`本机任务：…`），设置页刻意不做第二个发起入口。
+     */
+    function LocalTasksTab({ busy, setBusy, toast }) {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState("");
+      const load = useCallback(async () => {
+        setBusy("tasks-load");
+        try { setData(await api("/local-tasks")); setErr(""); }
+        catch (e) { setErr([e.code, e.message, e.hint].filter(Boolean).join(" · ")); }
+        finally { setBusy(""); }
+      }, [setBusy]);
+      useEffect(() => { load(); }, [load]);
+      const act = async (taskId, action) => {
+        setBusy(`tasks-${action}`);
+        try {
+          const r = await api("/local-tasks", { method: "POST", body: { action, taskId } });
+          if (action === "cancel") toast("已请求停止");
+          else toast(`原生会话：${r.sessionId}`);
+          await load();
+        } catch (e) { toast(`失败：${[e.code, e.message, e.hint].filter(Boolean).join(" · ")}`); }
+        finally { setBusy(""); }
+      };
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const statusText = {
+        queued: "排队中", running: "执行中", waiting: "等待确认", succeeded: "已完成",
+        failed: "失败", cancelled: "已取消", needs_reconciliation: "需要复核",
+      };
+      const deliveryText = (list) => {
+        const last = (list ?? []).slice(-1)[0];
+        if (!last) return "未回传";
+        return last.state === "delivered" ? "已回传" : last.state === "uncertain" ? "回传未知" : last.state;
+      };
+      const active = (status) => ["queued", "running", "waiting"].includes(status);
+      return h("div", { className: "qbw-panel" },
+        h("div", { className: "qbw-row" },
+          h("div", null,
+            h("div", { className: "qbw-title" }, "本机任务"),
+            h("div", { className: "qbw-hint" }, "发起入口在 QQ 私聊：发「本机任务：<要它做什么>」；这里只能看、停止、打开原生会话。"),
+          ),
+          h("button", { className: "qbw-btn", onClick: load, disabled: Boolean(busy) }, "刷新"),
+        ),
+        err ? h("div", { className: "qbw-err" }, err) : null,
+        !data && !err ? h("div", { className: "qbw-hint" }, "读取中…") : null,
+        data && items.length === 0 ? h("div", { className: "qbw-hint" }, "还没有任务。在 QQ 里发一条「本机任务：…」就会出现。") : null,
+        items.length ? h("table", { className: "qbw-table" },
+          h("thead", null, h("tr", null,
+            h("th", null, "任务号"), h("th", null, "内容"), h("th", null, "状态"), h("th", null, "回传"), h("th", null, "操作"),
+          )),
+          h("tbody", null, items.map((item) => h("tr", { key: item.taskId },
+            h("td", { className: "qbw-mono" }, item.taskId),
+            h("td", null, item.goal),
+            h("td", null, statusText[item.status] ?? item.status),
+            h("td", null, deliveryText(item.deliveries)),
+            h("td", null,
+              active(item.status) ? h("button", { className: "qbw-btn", onClick: () => act(item.taskId, "cancel"), disabled: Boolean(busy) }, "停止") : null,
+              item.sessionId ? h("button", { className: "qbw-btn", onClick: () => act(item.taskId, "open"), disabled: Boolean(busy) }, "原生会话") : null,
+            ),
+          ))),
+        ) : null,
+        data?.activeTaskId ? h("div", { className: "qbw-hint" }, `当前占用并发席位：${data.activeTaskId}（并发 1）`) : null,
+      );
+    }
     function DiagnosticsTab({ busy, setBusy, toast, reload }) {
       const [diag, setDiag] = useState(null);
       const [logs, setLogs] = useState(null);
@@ -6361,6 +6425,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       ["douyin", "抖音"],
       ["tokens", "Token 额度"],
       ["watch", "观看历史"],
+      ["tasks", "本机任务"],
       ["memory", "记忆"],
       ["align", "对齐"],
       ["extensions", "扩展"],
@@ -6548,6 +6613,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
       if (tab === "extensions") return h(ExtensionsTab, { busy, setBusy, toast: notify, reload });
         if (tab === "advanced") return h(AdvancedTab, { qq: qq, bili, unified: unified, setQqPath, setBiliPath, setUnifiedPath, busy });
+        if (tab === "tasks") return h(LocalTasksTab, { busy, setBusy, toast: notify });
         if (tab === "diag") return h(DiagnosticsTab, { busy, setBusy, toast: notify, reload });
         return null;
       };
