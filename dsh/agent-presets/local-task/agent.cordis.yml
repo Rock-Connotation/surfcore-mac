@@ -3,8 +3,9 @@
 # 三根柱子（缺一个都不算受控）：
 #   1. 装配层给能力天花板——没有 bash/pwsh/subagent/MCP/tool-web/str_replace_editor，
 #      不是靠提示词劝住模型，是这些工具根本不注册。
-#   2. fs-sandbox 把写入锁进会话工作区（读取不设防，所以还要第 3 根）。
-#   3. local-task-gate 在执行期做白名单 + 路径围栏 + 只新建；它的拒绝是单调的。
+#   2. 宿主层（dsh-base）的 fs-sandbox 把写入锁进会话工作区（读取不设防，所以还要第 3 根）；
+#      sandbox-policy/fs-sandbox 属于宿主服务，不得重复放在 preset 内（否则触发 leakedServices 拒绝装配）。
+#   3. local-task-gate 在执行期做白名单 + 路径围栏 + 原生 createIfAbsent；它的拒绝是单调的。
 
 - id: persona
   name: '@deepseek-ai/dsh-persona'
@@ -18,12 +19,6 @@
       3. 你没有命令执行、联网、派生 agent 的能力；工具不存在就是不存在，不要假装有。
       4. 完成后用一句话说明新建了哪些文件（相对路径）。
     suffix: This conversation runs a single task dispatched from QQ.
-
-- id: sandbox-policy
-  name: '@deepseek-ai/dsh-sandbox-policy'
-
-- id: fs-sandbox
-  name: '@deepseek-ai/dsh-fs-sandbox'
 
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'

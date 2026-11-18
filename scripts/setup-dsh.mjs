@@ -5,8 +5,8 @@
 //   1. 安装 agent preset：qq-chat-v2（一代 qq-chat 已随 V1 退役删除，2026-11-12）
 //      （DSH 0.1.7 机制：作为 surfcore bundle 的 patch 层插入
 //        @deepseek-ai/dsh-agent-preset 行；~/.dsh/.agent-presets/ 目录已不再被读取）
-//   2. 在 DSH profile 的 cordis.patch.yml 中挂载三个 MCP server：
-//      mcp-snowluma / mcp-snowluma-host / mcp-web-search-safe
+//   2. 在 DSH profile 的 cordis.patch.yml 中挂载四个 MCP server：
+//      mcp-snowluma / mcp-snowluma-host / mcp-web-search-safe / mcp-chrome-devtools
 //   3. 在 profile package.json 中只注册一个 bundle：surfcore
 //      （surfcore = QQ 设置 + B站养鱼 + chat preset，全部在一个 bundle 里）
 //
@@ -251,8 +251,8 @@ function yamlSingleQuote(s) {
   return `'${String(s).replace(/'/g, "''")}'`;
 }
 
-// 由桥接托管的 MCP 条目 id：脚本对这三个 id 拥有所有权，可安全地按 id 增删。
-const MANAGED_MCP_IDS = ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe'];
+// 由桥接托管的 MCP 条目 id：脚本对这些 id 拥有所有权，可安全地按 id 增删。
+const MANAGED_MCP_IDS = ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe', 'mcp-chrome-devtools'];
 
 function mcpEntries() {
   const node = NODE_EXE;
@@ -260,6 +260,7 @@ function mcpEntries() {
     'mcp-snowluma': { serverName: 'snowluma', script: path.join(REPO_ROOT, 'src', 'mcp-snowluma-safe.js'), toolCallTimeoutMs: 725000 },
     'mcp-snowluma-host': { serverName: 'snowluma-host', script: path.join(REPO_ROOT, 'src', 'mcp-host-server.js') },
     'mcp-web-search-safe': { serverName: 'web-search-safe', script: path.join(REPO_ROOT, 'src', 'mcp-web-search-safe.js') },
+    'mcp-chrome-devtools': { serverName: 'surfcore-chrome', script: path.join(REPO_ROOT, 'src', 'mcp-chrome-devtools.js'), toolCallTimeoutMs: 120000 },
   };
   let out = '# === qq-bridge MCP BEGIN ===\n';
   out += '# 由 scripts/setup-dsh.mjs 维护；这段区块会被整体替换，请勿手工编辑内部条目。\n';
@@ -443,6 +444,12 @@ function patchProfilePackage(links) {
       log(`package.json bundle added: ${name}`);
     }
   }
+  if (process.platform === 'darwin' && PROFILE === 'desktop' && process.env.QQ_BRIDGE_SKIP_CUA_BUNDLE !== '1') {
+    if (!pkg.dsh.profile.bundles.includes('@deepseek-ai/dsh-cua-bundle')) {
+      pkg.dsh.profile.bundles.push('@deepseek-ai/dsh-cua-bundle');
+      log('package.json bundle added: @deepseek-ai/dsh-cua-bundle');
+    }
+  }
   for (const stale of STALE_BUNDLES) {
     if (pkg.dependencies[stale]) { delete pkg.dependencies[stale]; log(`package.json removed legacy dependency: ${stale}`); }
     if (pkg.dsh.profile.bundles.includes(stale)) {
@@ -511,6 +518,11 @@ function autoInstallProfileBundles() {
     log(`dsh plugin --profile ${PROFILE} install: OK`);
     return { attempted: true, ok: true };
   }
+  const combinedOutput = `${r.stdout || ''}\n${r.stderr || ''}`;
+  if (/managed exclusively by the Electron application/i.test(combinedOutput)) {
+    log(`dsh plugin --profile ${PROFILE} install: skipped (${PROFILE} profile is managed by DSH Desktop Electron app)`);
+    return { attempted: true, ok: true };
+  }
   log(`dsh plugin --profile ${PROFILE} install 返回退出码 ${r.status}。`);
   return { attempted: true, ok: false, reason: `dsh plugin install 返回退出码 ${r.status}` };
 }
@@ -554,7 +566,7 @@ function repairPackagedProfile() {
     const expected = fs.realpathSync(REPO_ROOT);
     const same = process.platform === 'win32' ? installed.toLowerCase() === expected.toLowerCase() : installed === expected;
     if (!same) throw new Error('installed package mismatch');
-    for (const name of ['mcp-snowluma-safe.js', 'mcp-host-server.js', 'mcp-web-search-safe.js']) if (!fs.statSync(path.join(REPO_ROOT, 'src', name)).isFile()) throw new Error('missing MCP script');
+    for (const name of ['mcp-snowluma-safe.js', 'mcp-host-server.js', 'mcp-web-search-safe.js', 'mcp-chrome-devtools.js']) if (!fs.statSync(path.join(REPO_ROOT, 'src', name)).isFile()) throw new Error('missing MCP script');
     if (fs.existsSync(patchFile) && !fs.lstatSync(patchFile).isFile()) throw new Error('patch is not regular file');
   } catch {
     fail('DSH_REPAIR_PACKAGE_BINDING', '目标 profile 未绑定当前安装包，或安装不完整。', '确认 DSH_HOME、profile 与已安装 SurfCore 后重试；保留现有文件。');
