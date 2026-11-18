@@ -31,7 +31,7 @@
 - 运行时：记忆库文件 0600、专属目录 0700；macOS 中文路径桥接识别；控制台测试 21/21。
 - case：`docs/cases/2026-11-19-surfcore-review-a-d.md`。
 
-**覆盖提交**（分支 `fix/review-2026-11-19`，以 `git log --oneline -8` 现读为准）：`be91df8`（01）、`f88397d`（03/04）、`548ef19`（02/07/11）、`6b01e73`（05/06）、`5c0ce72`（08/09/10/12）、`17c732c`（清单重生成）。
+**覆盖提交**（已合入 `dev`，以 `git log --oneline -8` 现读为准）：分支 `fix/review-2026-11-19` 的 `be91df8`（01）、`f88397d`（03/04）、`548ef19`（02/07/11）、`6b01e73`（05/06）、`5c0ce72`（08/09/10/12）、`17c732c`（清单重生成）；合并提交 `d5378b8`，合并后清单 `25851b2`。
 
 **验证**：`test:audit` 208/208；`test:regressions` 17/17；插件 37 scripts；`test:memory-v2` 51 scripts；`test:console-ui` 21/21；`lint:failures` 0；`doc-facts` 0；`release-manifest --verify-ref HEAD` 问题 0；`git archive` 解包 `--verify` 1121/不符 0/缺失 0。
 

@@ -1,4 +1,4 @@
-## 2026-11-19 SurfCore 审核修复 A–D（01–12，未合并 dev、未发布）
+## 2026-11-19 SurfCore 审核修复 A–D（01–12，已合入 dev、未发布）
 
 工作树 `../surfcore-review-fix`，分支 `fix/review-2026-11-19`，基线 `dev@d46612a`，最终提交见 `git log --oneline`（A 两批 `be91df8`/`f88397d`、B `548ef19`、C `6b01e73`、D `5c0ce72`、清单 `17c732c`）。
 
@@ -6,7 +6,9 @@
 
 **门禁**（本分支 HEAD 实测）：`test:audit` 208/208、`test:regressions` 17/17、插件 37 scripts、`test:memory-v2` 51 scripts、`test:console-ui` 21/21、`lint:failures` 0、`doc-facts` 0、`release-manifest --verify-ref HEAD` 问题 0、`git archive` 解包 `--verify` 1121/不符 0/缺失 0。
 
-**未验证**：真实 B 站账号历史分页语义、真实网络抓取、Windows 真机 ACL/启停脚本、已发布 tag 下载包（未发版）。**未做**：合并 `dev`（主树 / dev 工作树有其它会话在写，按 §1.9 留给协调/发布会话 `--no-ff` 合并后重生成清单）、bump/tag/Release/推送。
+**合并**：已按仓库规则合入 `dev`（`git merge --no-ff fix/review-2026-11-19`，合并提交 `d5378b8`；合并后重生成清单 `25851b2`）。合并后 `test:audit` 208/208、`test:regressions` 17/17、`release-manifest --verify-ref HEAD` 1122/1122 问题 0。
+
+**未验证**：真实 B 站账号历史分页语义、真实网络抓取、Windows 真机 ACL/启停脚本、已发布 tag 下载包（未发版）。**未做**：bump/tag/Release/推送。
 
 **回滚**：`git revert` 本批提交；B 站状态新增字段需先停旧消费者。细节与七步逻辑见 [case](cases/2026-11-19-surfcore-review-a-d.md)。
 
