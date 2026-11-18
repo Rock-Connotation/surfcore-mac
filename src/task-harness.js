@@ -51,6 +51,17 @@ export function createTaskHarness({
   if (!ledger) throw new TypeError('ledger is required.');
   const resolvedReportsDir = path.resolve(reportsDir || './state/reports');
 
+  // 账本读写失败必须变成结构化失败交给入口展示；绝不吞成空账本继续执行任务。
+  function ledgerFailure(error, extra = {}) {
+    return {
+      ok: false,
+      code: 'TASK_LEDGER_UNAVAILABLE',
+      error: error?.error || error?.message || '本机任务账本不可读。',
+      hint: error?.hint || '保留任务账本文件，检查文件和读写权限后重试。',
+      ...extra
+    };
+  }
+
   // 1. 独立执行准入检查
   function checkAdmission({ requestor, action = 'research', targetPath = '', allowedRoots = [] } = {}) {
     if (!requestor || typeof requestor !== 'object') {
@@ -356,14 +367,20 @@ export function createTaskHarness({
       return admission;
     }
 
-    // 创建或复用任务
-    const task = ledger.createTask({
-      ...(taskId ? { taskId } : {}),
-      goal,
-      type: 'research',
-      requestor,
-      steps: ['admission', 'research', 'synthesis', 'delivery']
-    });
+    // 创建或复用任务。账本不可读时这里必须停住：不能执行研究，也不能投递报告。
+    let task;
+    try {
+      task = ledger.createTask({
+        ...(taskId ? { taskId } : {}),
+        goal,
+        type: 'research',
+        requestor,
+        steps: ['admission', 'research', 'synthesis', 'delivery']
+      });
+    } catch (error) {
+      log(`[Harness] 任务账本创建失败，已停止执行: ${error.message}`);
+      return ledgerFailure(error, { taskId: taskId || null, status: 'failed' });
+    }
 
     if (task.requestor?.conversationKey !== requestor.conversationKey || String(task.requestor?.userId) !== String(requestor.userId) || task.goal !== goal) {
       return { ok: false, status: 'rejected', code: 'TASK_OWNER_MISMATCH', error: '任务归属或目标不匹配。', hint: '查询原任务后使用正确的请求身份。' };
@@ -398,19 +415,29 @@ export function createTaskHarness({
         delivery
       };
     } catch (error) {
-      if (ledger.getTask(task.taskId)?.status === 'cancelled') {
+      let current = null;
+      try { current = ledger.getTask(task.taskId); } catch {}
+      if (current?.status === 'cancelled') {
         return { ok: false, taskId: task.taskId, status: 'cancelled', code: 'TASK_CANCELLED', error: '任务已取消。', hint: '查询任务状态；如需执行请新建任务。' };
       }
       log(`[Harness] Pipeline failure: ${error.message}`);
-      ledger.updateTask(task.taskId, {
-        status: 'failed',
-        error: error.message
-      });
+      try {
+        ledger.updateTask(task.taskId, {
+          status: 'failed',
+          error: error.message
+        });
+      } catch (ledgerError) {
+        // 账本在流水线中途损坏/不可写：不再读写账本，直接向入口返回可展示的失败。
+        log(`[Harness] 任务账本不可用，无法记录失败状态: ${ledgerError.message}`);
+        return ledgerFailure(ledgerError, { taskId: task.taskId, status: 'failed' });
+      }
       return {
         ok: false,
         taskId: task.taskId,
         status: 'failed',
-        error: error.message
+        code: 'TASK_PIPELINE_FAILED',
+        error: error.message,
+        hint: '检查来源网址、报告目录写入权限和本机任务账本后重试。'
       };
     }
   }

@@ -30,13 +30,20 @@ export function createTaskLedger({
 
   function loadRaw() {
     try {
-      if (!fs.existsSync(filePath)) return { version: 1, tasks: [] };
       const content = fs.readFileSync(filePath, 'utf8');
       const parsed = JSON.parse(content);
-      if (!Array.isArray(parsed?.tasks)) return { version: 1, tasks: [] };
+      if (!Array.isArray(parsed?.tasks)) throw new Error('Invalid task ledger.');
       return parsed;
-    } catch {
-      return { version: 1, tasks: [] };
+    } catch (error) {
+      // 只有“文件确实不存在”才能初始化空账本；截断 JSON、结构错误、权限或 IO
+      // 错误一律 fail-closed，避免下一次保存把原账本覆盖成只剩新任务的文件。
+      if (error?.code === 'ENOENT') return { version: 1, tasks: [] };
+      throw Object.assign(new Error('本机任务账本不可读。'), {
+        code: 'TASK_LEDGER_UNAVAILABLE',
+        error: '本机任务账本不可读。',
+        hint: '保留原任务账本并在本机检查文件和读取权限后重试。',
+        cause: error
+      });
     }
   }
 
