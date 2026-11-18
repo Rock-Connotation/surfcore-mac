@@ -4660,3 +4660,21 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 
 **怎么验证**：`node scripts/test-dev-publish.mjs`（含同步红→绿断言）→ `TEST_EXIT=0`；`npm run doc-facts > /tmp/x.log 2>&1; echo EXIT=$?` → `EXIT=0`。
 
+
+## #162（2026-11-19，P1）读取失败不能等于“没有数据”；校验器必须证明被校验物本身
+
+**现象**（2026-11-18–19 审查，详见 [case](cases/2026-11-19-surfcore-review-a-d.md)）：任务账本 JSON 截断后仍能创建任务，下一次保存把原文件覆盖成只剩新任务；B 站同秒第二条私信直接消失；QQ 研究唯一来源 HTTP 503 仍发“任务完成”；5 个 Windows 脚本的 blob 与归档字节不同；删掉包内 `install-manifest.json` 目录校验仍 100% 通过。
+
+**根因（同一个坏习惯的四种形态）**：
+- `catch { return 空账本 }`：把“读不到”解释成“没有”，随后写回覆盖原始证据。
+- 用时间戳/末条代替平台消息身份：同秒、跨页、重叠都天然丢失；远端失败时又提前 return，本地 pending 没机会重放。
+- 把“抓取失败”只写进摘要字符串：合成步骤没有失败分支，空来源也能生成占位报告并投递。
+- 校验器读工作区清单、清单读 blob、用户拿归档：三者不同源；校验不先证明“清单本身”就能被整份删掉绕过。
+
+**处置 / 预防**：
+- 读取错误分类：只有 `ENOENT` 允许初始化；其余 fail-closed，错误必须带 `code/error/hint` 并在用户入口可见。
+- 平台身份用官方不透明编号（`msg_key`），顺序用平台序号；采集边界（已完整落盘）与 ACK 进度（连续已处理前缀）分开记。
+- “无有效来源”必须是失败，不是摘要；成功报告只能引用本次抓取到的片段。
+- 校验链先证明包内清单字节 = 固定 ref 的 blob，再证明文件；发布物永远用 `git archive`/下载包复核，不能只看工作区。
+
+**怎么验证**：`node scripts/test-task-ledger-guard.mjs`、`node scripts/test-qq-research-evidence.mjs`、`node plugins/surfcore/scripts/test-bili-dm-r2.mjs`、`node scripts/test-release-manifest-guard.mjs`；以及 `git archive HEAD | tar -x -C <tmp> && node scripts/release-manifest.mjs --verify <tmp> --ref HEAD`。
