@@ -1,3 +1,15 @@
+## 2026-11-19 SurfCore 审核修复 A–D（01–12，未合并 dev、未发布）
+
+工作树 `../surfcore-review-fix`，分支 `fix/review-2026-11-19`，基线 `dev@d46612a`，最终提交见 `git log --oneline`（A 两批 `be91df8`/`f88397d`、B `548ef19`、C `6b01e73`、D `5c0ce72`、清单 `17c732c`）。
+
+**已完成**：审查 01–12 全部处置——01 账本 fail-closed 与 QQ 入口可见失败；02/07/11 B 站历史收件、离线 pending 重放、连续 ACK 与 scope 隔离；03/04 QQ 研究接 `safe-fetch`、结论带来源摘录、全失败不发成功报告；05 归档行尾与 Git blob 一致；06 目录校验先证明包内清单；08 记忆库 0600/0700；09 macOS UTF-8 查询；10 控制台 17/21→21/21；12 既有模式回执已核对。
+
+**门禁**（本分支 HEAD 实测）：`test:audit` 208/208、`test:regressions` 17/17、插件 37 scripts、`test:memory-v2` 51 scripts、`test:console-ui` 21/21、`lint:failures` 0、`doc-facts` 0、`release-manifest --verify-ref HEAD` 问题 0、`git archive` 解包 `--verify` 1121/不符 0/缺失 0。
+
+**未验证**：真实 B 站账号历史分页语义、真实网络抓取、Windows 真机 ACL/启停脚本、已发布 tag 下载包（未发版）。**未做**：合并 `dev`（主树 / dev 工作树有其它会话在写，按 §1.9 留给协调/发布会话 `--no-ff` 合并后重生成清单）、bump/tag/Release/推送。
+
+**回滚**：`git revert` 本批提交；B 站状态新增字段需先停旧消费者。细节与七步逻辑见 [case](cases/2026-11-19-surfcore-review-a-d.md)。
+
 ## 2026-11-15 根治：`publish-dev` 同步文档版本字（发 dev 构建不再把 `doc-facts` 弄红）
 
 **现象**：`scripts/publish-dev.mjs` 只改 `package.json` / `README.md` / `CHANGELOG.md`，漏改 `docs/ROADMAP.md` 的 `当前版本：\`x\`` 与 `docs/guides/DSH_SETUP.md` 的 `当前 \`x\``；而 `doc-facts` 对这两处做逐字等值校验，于是**每发一次 dev 构建，仓库 HEAD 的 `doc-facts`（及整条 `test:audit`）就红一次**（`v0.9.0-dev.2` 发布后即红，本次发布前已手工补过一次）。

@@ -19,6 +19,37 @@
 > **2026-11-15 补充**：远端 `dev` **分支**已同步（含 setup-dsh 基座 bundle 修复、抖音共享记录零帧边界修复、存量红复核文档），并且这两批已随 `v0.9.0-dev.2` 发成 Pre-release——测试机通过「检查更新」即可收到。
 > **本次未交付的已知残余**（详见 `docs/HANDOFF.md` 顶部）：AC4/AC5 需在真桌面外壳内才能取产品级证据；Electron/Chromium 与非 Node 子进程的出站未做系统级审计。（`scripts/setup-dsh.mjs` 的基座 bundle 缺口已在 2026-11-15 第二批修复，见下；`plugins/surfcore/lib/memory-v2-host.mjs` 不感知 `frameSamples` 属**设计分工**（通用适配器不做领域校验），非缺陷，见第三批。）
 
+### 2026-11-19 审核修复 A–D（编号 01–12）
+
+**建议**：随下一次发布带上；同时修复「用户数据被覆盖」「漏私信」「假完成」「更新校验可被绕过」四类高风险，建议 patch 或 minor 由发布会话判断（无接口层破坏，但 B 站状态新增键、报告格式变化）。
+
+**改了什么**：
+- 任务账本：仅文件不存在时初始化，损坏/不可读 fail-closed；QQ 入口失败可见且零执行零投递。
+- B 站私信：按会话历史分页收件（同秒/跨页/重叠/正倒序均收齐），采集边界完整才前移；远端失败仍重放本地 pending；ACK 只沿连续已处理前缀推进，`--scope` 隔离 owner/all。
+- QQ 研究：生产链路接 `src/safe-fetch.js`（SSRF/逐跳重定向/正文上限），结论必须带来源摘录；全失败不发成功报告；仅关键词提示补充网址。
+- 发布制品：7 个 Windows 启停脚本仓库直存 CRLF；`--verify <dir>` 先校验包内清单字节再校验文件；缺/坏/删条目非零退出。
+- 运行时：记忆库文件 0600、专属目录 0700；macOS 中文路径桥接识别；控制台测试 21/21。
+- case：`docs/cases/2026-11-19-surfcore-review-a-d.md`。
+
+**覆盖提交**（分支 `fix/review-2026-11-19`，以 `git log --oneline -8` 现读为准）：`be91df8`（01）、`f88397d`（03/04）、`548ef19`（02/07/11）、`6b01e73`（05/06）、`5c0ce72`（08/09/10/12）、`17c732c`（清单重生成）。
+
+**验证**：`test:audit` 208/208；`test:regressions` 17/17；插件 37 scripts；`test:memory-v2` 51 scripts；`test:console-ui` 21/21；`lint:failures` 0；`doc-facts` 0；`release-manifest --verify-ref HEAD` 问题 0；`git archive` 解包 `--verify` 1121/不符 0/缺失 0。
+
+**交接块（可直接转发）**：
+```
+【发布批次：2026-11-19 · 审核修复 A–D（编号 01–12）】
+- 目的：修复审查报告的四类高风险——任务账本损坏后被覆盖、B站同秒/跨页漏私信与离线不重放、
+  QQ 研究无来源仍交付成功报告、发布归档字节与清单不一致且缺包内清单仍能过校验。
+- 改动层级：实现层；无公开接口删除。B站状态新增 collect/ackThrough/historyIncomplete 键，
+  旧程序会按其 schema 校验拒绝读取；研究报告新增来源摘录/状态列。
+- 验证：test:audit 208/208、regressions 17/17、插件 37、Memory V2 51、console-ui 21/21、
+  lint-failures 0、doc-facts 0、清单 --verify-ref HEAD 问题 0、git archive --verify 1121/0/0。
+- 未验证：真实 B站账号分页/删除语义、真实网络抓取、Windows 真机 ACL 与启停脚本、线上 tag 下载包。
+- 回滚：git revert 本批提交；回退 B站消费者前先停进程并保留状态文件与回执。
+- 生效：src/* 需重启 QQ 桥接；插件改动随下次 tick/热载；发布脚本即时生效。
+- case：docs/cases/2026-11-19-surfcore-review-a-d.md
+```
+
 ### 2026-11-15 第四批：`publish-dev` 同步文档版本字（根治 dev 构建后 `doc-facts` 必红）
 
 **建议**：随下一次 dev 构建一起带上即可（**纯发布链路修复，无用户可见行为变化**，不需要单独发稳定版；稳定版下次发布时带上）。

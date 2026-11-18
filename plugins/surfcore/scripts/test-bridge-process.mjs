@@ -37,11 +37,13 @@ try {
  child=spawn(runtime.executable,[...runtime.argvPrefix,'--no-warnings',script],{env:{...process.env,...runtime.envPatch,FIXTURE_ROOT:root},stdio:'ignore'}); await once(child,'spawn');
  fs.writeFileSync(path.join(root,'state','bridge.lock'),String(child.pid));
  for(let i=0;i<100 && !(await bridge.portOpen(port));i++) await new Promise(r=>setTimeout(r,25));
+ assert.equal(inspectBridgeProcess({pid:child.pid,port,runtime,script,platform:'darwin'}),false,'wrong argv must not be recognized as our bridge');
  stopped=await bridge.stop(); assert.equal(stopped.ok,false,'authenticated listener with wrong argv must not be killed'); assert.ok(stopped.code && stopped.hint); assert.ok(!dead(child)); await cleanup();
  child=spawn(runtime.executable,[...runtime.argvPrefix,script],{env:{...process.env,...runtime.envPatch,FIXTURE_ROOT:root},stdio:'ignore'}); await once(child,'spawn');
  fs.writeFileSync(path.join(root,'state','bridge.lock'),String(child.pid));
  for(let i=0;i<100 && !(await bridge.portOpen(port));i++) await new Promise(r=>setTimeout(r,25));
  assert.equal(await bridge.portOpen(port),true,'fixture server started');
+ assert.equal(inspectBridgeProcess({pid:child.pid,port,runtime,script,platform:'darwin'}),true,'own bridge in a Chinese/space path must be recognized');
  const started=await bridge.start(); assert.equal(started.ok,true,JSON.stringify(started)); assert.equal(started.already,true);
  assert.equal(inspectBridgeProcess({pid:child.pid,port,runtime,script,platform:'darwin',execFile:()=>{throw Error('inspection unavailable')}}),false);
  fs.writeFileSync(path.join(root,'swap-lock'),''); stopped=await bridge.stop(); assert.equal(stopped.ok,false,'changed lock must invalidate ownership'); assert.ok(stopped.code && stopped.hint); assert.ok(!dead(child)); fs.unlinkSync(path.join(root,'swap-lock')); fs.writeFileSync(path.join(root,'state','bridge.lock'),String(child.pid));

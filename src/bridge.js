@@ -35,7 +35,7 @@ import {
   historyWatermark, normalizeHistoryConfig,
   selectMissedHistory, summarizeHistoryCatchup,
 } from './history-catchup.js';
-import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
+import { safeFetch, safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { SOURCE_DSH_DEFAULT, defaultSelectionOf, effectiveChatModel, writesGlobalDefault } from './dsh-model-follow.js';
 import { isSpamCommandText } from './command-spam.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
@@ -1897,7 +1897,15 @@ async function main() {
     const owner = String(cfg.ownerQQ ?? ''), account = String(selfUserId ?? ''), role = readCurrentCharacter();
     const mode = currentMode;
     const requiresTask = ['delivery', 'start', 'failure', 'cancel'].includes(phase) || (phase === 'status' && Boolean(taskId));
-    const task = requiresTask ? taskLedger.getTask(taskId) : null;
+    let task = null;
+    if (requiresTask) {
+      try {
+        task = taskLedger.getTask(taskId);
+      } catch (error) {
+        // 账本不可读时不能抛给调用方（会变成静默失败）；用结构化回执让入口展示。
+        return fail(error?.code || 'TASK_LEDGER_UNAVAILABLE', error?.error || '本机任务账本不可读。', error?.hint || '保留任务账本文件，检查文件和读写权限后重试。');
+      }
+    }
     if (requiresTask && (!task || task.requestor?.conversationKey !== conversationKey || String(task.requestor?.userId) !== owner || !task.requestor?.isOwner || (['start', 'delivery'].includes(phase) && task.status === 'cancelled'))) {
       return fail('OWNER_REPLY_TASK_INVALID', '任务不存在、归属不符或已取消。', '查询任务状态后重新操作。');
     }
@@ -1907,7 +1915,15 @@ async function main() {
       let outcome;
       sendChain = sendChain.then(async () => {
         const currentRole = readCurrentCharacter();
-        const currentTask = requiresTask ? taskLedger.getTask(taskId) : null;
+        let currentTask = null;
+        if (requiresTask) {
+          try {
+            currentTask = taskLedger.getTask(taskId);
+          } catch (error) {
+            outcome = fail(error?.code || 'TASK_LEDGER_UNAVAILABLE', error?.error || '本机任务账本不可读。', error?.hint || '保留任务账本文件，检查文件和读写权限后重试。');
+            return;
+          }
+        }
         if (owner !== String(cfg.ownerQQ ?? '') || account !== String(selfUserId ?? '') || mode !== currentMode || role?.id !== currentRole?.id || role?.epoch !== currentRole?.epoch || !allowed(match[1], match[2], cfg) || (requiresTask && (!currentTask || (['start', 'delivery'].includes(phase) && currentTask.status === 'cancelled') || currentTask.requestor?.conversationKey !== conversationKey || String(currentTask.requestor?.userId) !== owner || !currentTask.requestor?.isOwner))) {
           outcome = fail('OWNER_REPLY_CONTEXT_CHANGED', '管理回执的授权上下文已变化。', '检查账号、角色和任务状态后重新操作。'); return;
         }
@@ -1933,12 +1949,27 @@ async function main() {
   const taskHarness = createTaskHarness({
     ledger: taskLedger,
     reportsDir: path.join(STATE_DIR, 'reports'),
+    // 生产研究抓取统一走 src/safe-fetch.js：目标地址检查、逐跳重定向复核、正文上限。
+    safeFetchImpl: safeFetch,
     sendCallback: async ({ conversationKey, text, taskId, phase }) => {
       const result = await sendOwnerManagementReply({ conversationKey, text, taskId, phase });
       return result;
     },
     log
   });
+  /**
+   * 任务账本不可用时，QQ 入口只能走不读账本的 management 回执：
+   * phase=start/failure/status 会再次读账本并二次失败，用户就看不到原因。
+   */
+  function taskLedgerFailureText(error) {
+    const reason = error?.error || error?.message || '本机任务账本不可读。';
+    const hint = error?.hint || '保留任务账本文件，检查文件和读写权限后重试。';
+    const code = error?.code || 'TASK_LEDGER_UNAVAILABLE';
+    return `[任务账本不可用] ${reason}\n原因编号：${code}\n下一步：${hint}\n本次未执行任务，也未投递报告。`;
+  }
+  async function sendTaskLedgerFailure(conversationKey, error) {
+    return sendOwnerManagementReply({ conversationKey, phase: 'management', text: taskLedgerFailureText(error) });
+  }
   const memoryV2Failures = new Map();
   const memoryV2Barriers = new Map();
   const memoryV2SelectedRoutes = new Map();
@@ -16477,8 +16508,16 @@ async function main() {
         return;
       }
       const targetTaskId = taskStatusMatch[1]?.trim();
+      let t = null;
+      let tasks = null;
+      try {
+        if (targetTaskId) t = taskLedger.getTask(targetTaskId);
+        else tasks = taskLedger.listTasks({ conversationKey: key, limit: 5 });
+      } catch (error) {
+        await sendTaskLedgerFailure(key, error);
+        return;
+      }
       if (targetTaskId) {
-        const t = taskLedger.getTask(targetTaskId);
         if (!ownsTask(t)) {
           await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: `未找到任务编号 [${targetTaskId}]。` });
         } else {
@@ -16494,7 +16533,6 @@ async function main() {
           await sendOwnerManagementReply({ conversationKey: key, taskId: targetTaskId, phase: 'status', text: info });
         }
       } else {
-        const tasks = taskLedger.listTasks({ conversationKey: key, limit: 5 });
         if (tasks.length === 0) {
           await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: '当前会话暂无任务记录。' });
         } else {
@@ -16522,15 +16560,21 @@ async function main() {
         return;
       }
       let taskId = taskCancelMatch[1]?.trim();
-      if (!taskId) {
-        const active = taskLedger.findActiveTask(key);
-        if (active) taskId = active.taskId;
+      let existing = null;
+      try {
+        if (!taskId) {
+          const active = taskLedger.findActiveTask(key);
+          if (active) taskId = active.taskId;
+        }
+        if (taskId) existing = taskLedger.getTask(taskId);
+      } catch (error) {
+        await sendTaskLedgerFailure(key, error);
+        return;
       }
       if (!taskId) {
         await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: '未找到可取消的活跃任务。请指定任务编号：取消任务 <任务编号>' });
         return;
       }
-      const existing = taskLedger.getTask(taskId);
       if (!ownsTask(existing)) {
         await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: `未找到任务 [${taskId}]。` });
         return;
@@ -16539,7 +16583,13 @@ async function main() {
         await sendOwnerManagementReply({ conversationKey: key, taskId, phase: 'status', text: `任务 [${taskId}] 已结束，当前状态：${existing.status}；无法取消。` });
         return;
       }
-      const res = taskLedger.cancelTask(taskId, '用户主动通过 QQ 取消');
+      let res = null;
+      try {
+        res = taskLedger.cancelTask(taskId, '用户主动通过 QQ 取消');
+      } catch (error) {
+        await sendTaskLedgerFailure(key, error);
+        return;
+      }
       if (!res) {
         await sendOwnerManagementReply({ conversationKey: key, phase: 'management', text: `未找到任务 [${taskId}]。` });
       } else {
@@ -16567,8 +16617,19 @@ async function main() {
         return;
       }
       const urlMatches = rawGoal.match(/https?:\/\/[^\s]+/g) || [];
-      const task = taskLedger.createTask({ goal: rawGoal, type: 'research', requestor, steps: ['admission', 'research', 'synthesis', 'delivery'] });
-      await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'start', text: `收到电脑研究任务，已创建工单并加入调度：\n「${rawGoal}」\n正在安全执行中…` });
+      let task;
+      try {
+        task = taskLedger.createTask({ goal: rawGoal, type: 'research', requestor, steps: ['admission', 'research', 'synthesis', 'delivery'] });
+      } catch (error) {
+        // 创建工单失败：不进入研究流水线，也不投递任何成功报告。
+        await sendTaskLedgerFailure(key, error);
+        return;
+      }
+      const startReply = await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'start', text: `收到电脑研究任务，已创建工单并加入调度：\n「${rawGoal}」\n正在安全执行中…` });
+      if (!startReply.ok && startReply.code === 'TASK_LEDGER_UNAVAILABLE') {
+        await sendTaskLedgerFailure(key, startReply);
+        return;
+      }
       try {
         const result = await taskHarness.runTaskPipeline({
           taskId: task.taskId, requestor,
@@ -16576,10 +16637,18 @@ async function main() {
           urls: urlMatches
         });
         if (!result.ok && result.status === 'failed') {
-          await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'failure', text: `[任务失败] ${result.error || '执行异常'}\n状态：${result.status}` });
+          if (result.code === 'TASK_LEDGER_UNAVAILABLE') {
+            await sendTaskLedgerFailure(key, result);
+          } else {
+            await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'failure', text: `[任务失败] ${result.error || '执行异常'}\n状态：${result.status}${result.hint ? `\n下一步：${result.hint}` : ''}` });
+          }
         }
       } catch (err) {
-        await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'failure', text: `[任务异常] ${err.message}` });
+        if (err?.code === 'TASK_LEDGER_UNAVAILABLE') {
+          await sendTaskLedgerFailure(key, err);
+        } else {
+          await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'failure', text: `[任务异常] ${err.message}${err?.hint ? `\n下一步：${err.hint}` : ''}` });
+        }
       }
       return;
     }

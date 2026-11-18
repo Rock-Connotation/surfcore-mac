@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { hardenDir, hardenFile } from '../state-acl.mjs';
 import { canonical, characterId, digest, fail, identifier, requireThat, SCHEMA_VERSION, terms, validateEvent } from './memory-v2-contract.js';
 
 const FORMAT = 1;
@@ -11,6 +12,18 @@ const ROLE_TABLES = ['metadata', 'events', 'memories', 'memory_versions', 'links
 const json = JSON.parse;
 const sha = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const uid = (value) => { requireThat(typeof value === 'string' && /^[a-z]+-[a-f0-9]{32}$/.test(value), 'MEMORY_LIFECYCLE_ID_INVALID', 'Use an issued managed lifecycle ID.'); return value; };
+// V2 生命周期的目录是专属目录：只建/收紧自己这一层，父目录沿用既有部署契约。
+function ensurePrivateDir(dir, label) {
+  fs.mkdirSync(dir, { recursive: true });
+  const result = hardenDir(dir);
+  requireThat(result.ok, 'MEMORY_PERMISSIONS_UNSAFE', `${label} cannot be restricted to the current user. (${result.detail})`, 'Fix the ownership or ACL of the memory folder, then reopen the memory service. Do not share the memory store between accounts.');
+  if (process.platform !== 'win32') requireThat((fs.statSync(dir).mode & 0o777) === 0o700, 'MEMORY_PERMISSIONS_UNSAFE', `${label} is still accessible to other accounts.`, 'Fix the folder permissions (chmod 700) and reopen the memory service.');
+}
+function secureFile(file, label) {
+  const result = hardenFile(file);
+  requireThat(result.ok, 'MEMORY_PERMISSIONS_UNSAFE', `${label} cannot be restricted to the current user. (${result.detail})`, 'Fix the ownership or ACL of the memory folder, then reopen the memory service. Do not share the memory store between accounts.');
+  if (process.platform !== 'win32') requireThat((fs.statSync(file).mode & 0o077) === 0, 'MEMORY_PERMISSIONS_UNSAFE', `${label} is still accessible to other accounts.`, 'Fix the file permissions (chmod 600) and reopen the memory service.');
+}
 function sync(file) { const fd = fs.openSync(file, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }
 function syncDir(dir) { const fd = fs.openSync(dir, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }
 function write(file, value) { fs.writeFileSync(file, canonical(value), { flag: 'wx', mode: 0o600 }); sync(file); syncDir(path.dirname(file)); }
@@ -26,8 +39,9 @@ function verifiedDb(file, role = false) {
     return { bytes: fs.statSync(file).size, sha256: sha(file), userVersion: Object.values(db.prepare('PRAGMA user_version').get())[0] };
   } finally { db.close(); }
 }
-function copy(file, destination) { regular(file); fs.copyFileSync(file, destination, fs.constants.COPYFILE_EXCL); sync(destination); requireThat(fs.statSync(destination).ino !== fs.statSync(file).ino || fs.statSync(destination).dev !== fs.statSync(file).dev, 'MEMORY_SNAPSHOT_INVALID', 'A backup must have independent storage, not a hard link.'); }
-function snapshot(db, target) { db.prepare('VACUUM INTO ?').run(target); sync(target); return verifiedDb(target); }
+function copy(file, destination) { regular(file); fs.copyFileSync(file, destination, fs.constants.COPYFILE_EXCL); secureFile(destination, 'Memory V2 backup copy'); sync(destination); requireThat(fs.statSync(destination).ino !== fs.statSync(file).ino || fs.statSync(destination).dev !== fs.statSync(file).dev, 'MEMORY_SNAPSHOT_INVALID', 'A backup must have independent storage, not a hard link.'); }
+// VACUUM INTO 要求目标不存在，因此只能在生成后立刻收紧；目标位于 0700 专属目录内。
+function snapshot(db, target) { db.prepare('VACUUM INTO ?').run(target); secureFile(target, 'Memory V2 backup database'); sync(target); return verifiedDb(target); }
 function replaceManaged(file, next, quarantine) {
   requireThat(!fs.existsSync(quarantine), 'MEMORY_LIFECYCLE_PATH_INVALID', 'A preserved source already exists.');
   fs.renameSync(file, quarantine);
@@ -52,7 +66,7 @@ export function checkLifecycleControl(stateDir, charactersDir) {
     characterId(id);
     const generations = path.join(charactersDir, id, 'memory', 'generations');
     if (!fs.existsSync(generations)) continue;
-    const quarantine = path.join(charactersDir, id, 'memory', 'quarantine'); fs.mkdirSync(quarantine, { recursive: true });
+    const quarantine = path.join(charactersDir, id, 'memory', 'quarantine'); ensurePrivateDir(quarantine, 'Memory V2 quarantine directory');
     fs.renameSync(generations, path.join(quarantine, `${fs.existsSync(controlFile)?'unknown':'missing'}-control-${randomUUID()}`));
   }
   requireThat(false, fs.existsSync(controlFile)?'MEMORY_CURRENT_CONTROL_UNKNOWN':'MEMORY_CURRENT_CONTROL_MISSING', 'Current installation controls are missing, invalid or behind the durable control high-water; candidates were quarantined.', 'Recover the latest installation controls. Do not restore old backup controls or enable automatic recall.');
@@ -60,7 +74,8 @@ export function checkLifecycleControl(stateDir, charactersDir) {
 
 export function createLifecycle({ stateDir, charactersDir, control, role, closeRole, transaction, state, generation, now, fault, materializeControls, applyRoleControls }) {
   const base = path.join(stateDir, 'memory-v2-lifecycle'), backups = path.join(base, 'backups');
-  fs.mkdirSync(backups, { recursive: true });
+  ensurePrivateDir(base, 'Memory V2 lifecycle directory');
+  ensurePrivateDir(backups, 'Memory V2 lifecycle backup directory');
   control.exec(`CREATE TABLE IF NOT EXISTS lifecycle_ops(operationId TEXT PRIMARY KEY,requestDigest TEXT NOT NULL,characterId TEXT NOT NULL,kind TEXT NOT NULL,phase TEXT NOT NULL,payload TEXT NOT NULL,result TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS role_generations(characterId TEXT PRIMARY KEY,relativeFile TEXT NOT NULL,minimumKernel INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS source_tombstones(characterId TEXT NOT NULL,keyType TEXT NOT NULL,keyId TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(characterId,keyType,keyId));
@@ -210,6 +225,9 @@ export function createLifecycle({ stateDir, charactersDir, control, role, closeR
       for (const [k, link] of rows.links) if (!rows.memory_versions.has(canonical([link.fromId, link.fromRevision])) || !rows.memory_versions.has(canonical([link.toId, link.toRevision]))) rows.links.delete(k);
       for (const [k, operation] of rows.operations) { const result = json(operation.result); if ((result.eventIds ?? []).some((event) => removedEvents.has(event)) || (result.memoryId && ![...rows.memories.values()].some((m) => m.memoryId === result.memoryId))) rows.operations.delete(k); }
       for (const [k, job] of rows.jobs) if (json(job.inputs).some((ref) => ref.type === 'event' ? removedEvents.has(ref.id) : removedVersions.has(canonical([ref.id, ref.revision])))) rows.jobs.delete(k);
+      const destinationExists = fs.existsSync(destination);
+      if (!destinationExists) fs.closeSync(fs.openSync(destination, 'wx', 0o600));
+      secureFile(destination, 'Memory V2 role database');
       const output = new DatabaseSync(destination);
       try {
         output.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA foreign_keys=OFF;');
@@ -288,7 +306,7 @@ export function createLifecycle({ stateDir, charactersDir, control, role, closeR
     const id = row.characterId, effective = row.payload.effectiveKind;
     if (effective !== 'requestDelete') {
       const safetyId = `safety-${row.operationId}`; makeBackup(ctx, {}, safetyId, row.payload.inventory, true);
-      const dir = path.join(charactersDir, id, 'memory', 'generations', row.payload.candidateId); fs.mkdirSync(dir, { recursive: true });
+      const dir = path.join(charactersDir, id, 'memory', 'generations', row.payload.candidateId); ensurePrivateDir(dir, 'Memory V2 generation directory');
       const file = path.join(dir, 'memory-v2.sqlite');
       if (fs.existsSync(file)) { const abandoned = path.join(dir, `abandoned-${randomUUID()}.sqlite`); fs.renameSync(file, abandoned); }
       const request = row.payload.originalRequest;
@@ -310,7 +328,7 @@ export function createLifecycle({ stateDir, charactersDir, control, role, closeR
     closeRole(row.characterId);
     if (row.payload.candidateFile) {
       const file = inside(path.join(charactersDir, row.characterId), path.join(charactersDir, row.characterId, row.payload.candidateFile)); verifiedDb(file, true);
-      const old = selectedFile(row.characterId,true), quarantine = path.join(charactersDir, row.characterId, 'memory', 'quarantine', row.payload.candidateId); fs.mkdirSync(quarantine, { recursive: true });
+      const old = selectedFile(row.characterId,true), quarantine = path.join(charactersDir, row.characterId, 'memory', 'quarantine', row.payload.candidateId); ensurePrivateDir(quarantine, 'Memory V2 quarantine directory');
       const preserved = path.join(quarantine, 'previous.sqlite');
       row.payload.previousFile = path.relative(path.join(charactersDir,row.characterId),old); row.payload.preservedFile = path.relative(path.join(charactersDir,row.characterId),preserved);
       const planned = transaction(control,operationId,()=>{ save(row,'publish_prepared',{...row.result,phase:'publish_prepared'}); return {ok:true}; },true); if(!planned.ok) return planned;
@@ -319,7 +337,7 @@ export function createLifecycle({ stateDir, charactersDir, control, role, closeR
       if (originalRole && !fs.existsSync(preserved)) { fs.renameSync(old, preserved); syncDir(path.dirname(old)); }
 
       const legacy = path.join(charactersDir, row.characterId, 'memory', 'memory-v2.sqlite');
-      if (!fs.existsSync(legacy)) { const guard = new DatabaseSync(legacy); try { guard.exec('CREATE TABLE metadata(lifecycle_guard INTEGER NOT NULL); INSERT INTO metadata VALUES(1); PRAGMA user_version=2147483646;'); } finally { guard.close(); } sync(legacy); }
+      if (!fs.existsSync(legacy)) { fs.closeSync(fs.openSync(legacy, 'wx', 0o600)); secureFile(legacy, 'Memory V2 lifecycle guard database'); const guard = new DatabaseSync(legacy); try { guard.exec('CREATE TABLE metadata(lifecycle_guard INTEGER NOT NULL); INSERT INTO metadata VALUES(1); PRAGMA user_version=2147483646;'); } finally { guard.close(); } sync(legacy); }
     }
     fault('lifecycleBeforePublish', operationId);
     const published = transaction(control, operationId, () => {

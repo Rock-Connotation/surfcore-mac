@@ -301,6 +301,8 @@ const tests = [
   'test-theme-tokens.mjs',
   'test-voice-diagnostics.mjs',
   'test-release-manifest.mjs',
+  // 审核 05/06：归档行尾字节一致 + 目录校验必须先证明包内清单。
+  'test-release-manifest-guard.mjs',
   'test-voice-gates.mjs',
   'test-update-apply-result.mjs',
   'test-update-version-fallback.mjs',
