@@ -110,19 +110,21 @@ try {
     for (const result of [bad, cancelled]) { assert.equal(result.ok, false); assert.equal(result.delivery, 'rejected'); assert.ok(result.code && result.error && result.hint); }
   });
   await test('unknown delivery does not send failure notice', async () => {
-    const reports = path.join(h.temp, 'state', 'reports');
-    assert.ok(fs.realpathSync(reports).startsWith(root + path.sep));
-    fs.renameSync(reports, path.join(h.temp, 'state', 'reports-blocker'));
-    let n = 0;
-    reply = () => ++n === 1 ? { status: 'ok', retcode: 0, data: { message_id: 9001 } } : { status: 'ok', retcode: 0, data: {} };
+    // 直接测投递步骤：未知回执只记 delivery_unknown，不得再额外发“任务失败”。
+    // 不再走无网址的研究路径（审查 03 后那条路径会按 RESEARCH_URLS_REQUIRED 失败）。
+    reply = { status: 'ok', retcode: 0, data: {} };
+    const task = h.taskLedger.createTask({ goal: 'unknown delivery notice', requestor });
+    h.taskLedger.updateTask(task.taskId, { artifact: { summary: 'fixture', path: '/tmp/fixture', sizeBytes: 10, sha256: '12345678' } });
     const before = f.platformSends.length;
-    const text = '任务：unknown pipeline';
-    await h.handleIncoming('private', Number(OWNER), inbound({ raw_message: text, message: [{ type: 'text', data: { text } }] }), h.cfg);
+    const result = await h.taskHarness.executeDeliveryStep(task);
     const sent = f.platformSends.slice(before);
-    const task = h.taskLedger.listTasks({ conversationKey: KEY, limit: 1 })[0];
-    console.log('unknown pipeline=' + JSON.stringify({ sends: sent, taskStatus: task.status, delivery: task.delivery }));
-    assert.equal(sent.length, 2); assert.ok(!sent.some(item => JSON.stringify(item.text).includes('任务失败')));
-    assert.equal(task.delivery.status, 'delivery_unknown'); assert.equal(task.delivery.messageId, null);
+    const saved = h.taskLedger.getTask(task.taskId);
+    console.log('unknown delivery notice=' + JSON.stringify({ sends: sent, result, delivery: saved.delivery }));
+    assert.equal(sent.length, 1, 'unknown receipt must produce exactly one platform send');
+    assert.ok(!sent.some(item => JSON.stringify(item.text).includes('任务失败')), 'unknown receipt must not emit a failure notice');
+    assert.equal(saved.delivery.status, 'delivery_unknown');
+    assert.equal(saved.delivery.messageId ?? null, null);
+    assert.ok(result.code && result.hint);
   });
   await test('cancellation during start keeps task cancelled', async () => {
     let enter, resolveReply;

@@ -35,7 +35,7 @@ import {
   historyWatermark, normalizeHistoryConfig,
   selectMissedHistory, summarizeHistoryCatchup,
 } from './history-catchup.js';
-import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
+import { safeFetch, safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { SOURCE_DSH_DEFAULT, defaultSelectionOf, effectiveChatModel, writesGlobalDefault } from './dsh-model-follow.js';
 import { isSpamCommandText } from './command-spam.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
@@ -1949,6 +1949,8 @@ async function main() {
   const taskHarness = createTaskHarness({
     ledger: taskLedger,
     reportsDir: path.join(STATE_DIR, 'reports'),
+    // 生产研究抓取统一走 src/safe-fetch.js：目标地址检查、逐跳重定向复核、正文上限。
+    safeFetchImpl: safeFetch,
     sendCallback: async ({ conversationKey, text, taskId, phase }) => {
       const result = await sendOwnerManagementReply({ conversationKey, text, taskId, phase });
       return result;
@@ -16638,14 +16640,14 @@ async function main() {
           if (result.code === 'TASK_LEDGER_UNAVAILABLE') {
             await sendTaskLedgerFailure(key, result);
           } else {
-            await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'failure', text: `[任务失败] ${result.error || '执行异常'}\n状态：${result.status}` });
+            await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'failure', text: `[任务失败] ${result.error || '执行异常'}\n状态：${result.status}${result.hint ? `\n下一步：${result.hint}` : ''}` });
           }
         }
       } catch (err) {
         if (err?.code === 'TASK_LEDGER_UNAVAILABLE') {
           await sendTaskLedgerFailure(key, err);
         } else {
-          await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'failure', text: `[任务异常] ${err.message}` });
+          await sendOwnerManagementReply({ conversationKey: key, taskId: task.taskId, phase: 'failure', text: `[任务异常] ${err.message}${err?.hint ? `\n下一步：${err.hint}` : ''}` });
         }
       }
       return;

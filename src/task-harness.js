@@ -9,6 +9,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { safeFetch } from './safe-fetch.js';
+
+// 研究来源的受控读取上限：safe-fetch 在读取阶段按字符截断，并保留 truncated 标记。
+const RESEARCH_MAX_CHARS = 50000;
+const RESEARCH_SNIPPET_CHARS = 600;
 
 const SYSTEM_RESTRICTED_ROOTS = [
   '/System',
@@ -40,10 +45,46 @@ export function isSystemRestrictedPath(targetPath) {
   return false;
 }
 
+function cleanHtmlToText(html) {
+  return String(html ?? '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractTitle(html, fallback) {
+  const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(String(html ?? ''));
+  return titleMatch ? titleMatch[1].trim() : fallback;
+}
+
+/**
+ * 统一受控抓取契约：生产实现返回 {url,statusCode,body,truncated}；
+ * 兼容旧测试替身/原生 Response 的 {text()} 形态，避免调用方各自判断。
+ */
+async function normalizeResearchResult(result, requestedUrl) {
+  if (!result || typeof result !== 'object') throw new Error('抓取结果无效');
+  if (result.body === undefined && typeof result.text === 'function') {
+    return {
+      url: String(result.url || requestedUrl),
+      statusCode: Number(result.status ?? result.statusCode ?? 200),
+      body: String(await result.text()),
+      truncated: false
+    };
+  }
+  return {
+    url: String(result.url || requestedUrl),
+    statusCode: Number(result.statusCode ?? result.status ?? 0),
+    body: typeof result.body === 'string' ? result.body : String(result.body ?? ''),
+    truncated: Boolean(result.truncated)
+  };
+}
+
 export function createTaskHarness({
   ledger,
   reportsDir,
-  safeFetchImpl = fetch,
+  safeFetchImpl = safeFetch,
   sendCallback = async () => ({ ok: true }),
   now = Date.now,
   log = () => {}
@@ -140,37 +181,45 @@ export function createTaskHarness({
 
     const sources = [...(activeTask.sources || [])];
     for (const targetUrl of urls) {
+      let normalized = null;
       try {
         log(`[Harness] 抓取研究资料来源: ${targetUrl}`);
-        const res = await safeFetchImpl(targetUrl, {
-          headers: { 'User-Agent': 'SurfCore-ResearchBot/1.0' },
-          signal: AbortSignal.timeout(10000)
-        });
-        const html = await res.text();
-        // 简易文本提取与摘要
-        const cleanText = html.replace(/<script[\s\S]*?<\/script>/gi, '')
-                              .replace(/<style[\s\S]*?<\/style>/gi, '')
-                              .replace(/<[^>]+>/g, ' ')
-                              .replace(/\s+/g, ' ')
-                              .trim();
-        const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(html);
-        const title = titleMatch ? titleMatch[1].trim() : targetUrl;
-        const snippet = cleanText.slice(0, 300);
-
+        // 生产默认走 src/safe-fetch.js：目标地址检查、逐跳重定向复核、正文上限都在那里。
+        normalized = await normalizeResearchResult(
+          await safeFetchImpl(targetUrl, RESEARCH_MAX_CHARS),
+          targetUrl
+        );
+        if (!(normalized.statusCode >= 200 && normalized.statusCode < 300)) {
+          throw Object.assign(new Error(`HTTP ${normalized.statusCode || '未知'}`), {
+            statusCode: normalized.statusCode
+          });
+        }
+        const html = normalized.body;
+        const cleanText = cleanHtmlToText(html);
+        if (!cleanText) {
+          throw Object.assign(new Error('来源正文为空，无法作为研究证据'), { code: 'SOURCE_EMPTY_BODY' });
+        }
         sources.push({
-          url: targetUrl,
-          title,
-          snippet,
+          url: normalized.url,
+          requestedUrl: targetUrl,
+          title: extractTitle(html, normalized.url),
+          snippet: cleanText.slice(0, RESEARCH_SNIPPET_CHARS),
           fetchedAt: now(),
-          byteLength: Buffer.byteLength(cleanText)
+          byteLength: Buffer.byteLength(cleanText),
+          statusCode: normalized.statusCode,
+          truncated: normalized.truncated,
+          ok: true
         });
       } catch (err) {
         log(`[Harness] 抓取来源失败 [${targetUrl}]: ${err.message}`);
         sources.push({
-          url: targetUrl,
+          url: normalized?.url || targetUrl,
+          requestedUrl: targetUrl,
           title: targetUrl,
-          snippet: `[抓取失败: ${err.message}]`,
+          snippet: '',
           fetchedAt: now(),
+          statusCode: normalized?.statusCode ?? err?.statusCode ?? null,
+          ok: false,
           error: err.message
         });
       }
@@ -191,8 +240,24 @@ export function createTaskHarness({
     const reportFileName = `report-${activeTask.taskId}.md`;
     const reportFilePath = path.join(resolvedReportsDir, reportFileName);
 
+    const allSources = Array.isArray(activeTask.sources) ? activeTask.sources : [];
+    const usableSources = allSources.filter(s => !s?.error && typeof s?.snippet === 'string' && s.snippet.trim());
+    const failedSources = allSources.filter(s => s?.error);
+
+    // 没有可用正文就没有“研究结论”。绝不能生成占位句后仍标记完成并投递。
+    if (usableSources.length === 0) {
+      const detail = failedSources.length
+        ? failedSources.map(s => `${s.url}${s.statusCode ? `（HTTP ${s.statusCode}）` : ''}：${s.error}`).join('；')
+        : '没有可读取的来源正文';
+      throw Object.assign(new Error(`本次来源均不可用：${detail}`), {
+        code: 'RESEARCH_NO_SOURCES',
+        hint: '确认网址可访问后重试，或补充新的来源网址；本次未生成成功报告。',
+        sources: allSources
+      });
+    }
+
     const reportTitle = title || `研究报告：${activeTask.goal}`;
-    const reportSummary = summary || `关于「${activeTask.goal}」的自动化调研与分析报告。`;
+    const reportSummary = summary || `本次研究成功读取 ${usableSources.length} 个来源${failedSources.length ? `，另有 ${failedSources.length} 个来源失败` : ''}；以下结论仅基于本次抓取到的可读片段。`;
 
     const lines = [
       `# ${reportTitle}`,
@@ -210,26 +275,32 @@ export function createTaskHarness({
       ''
     ];
 
-    if (findings.length > 0) {
-      for (const f of findings) {
-        lines.push(`### ${f.headline || '发现'}`);
-        lines.push('');
-        lines.push(f.content || '');
-        lines.push('');
-      }
-    } else {
-      lines.push('（从收集的原始来源材料中综合整理得出主要结论）');
+    // 每条结论都附「来源摘录」：摘录直接来自本次成功抓取的正文，并给出可复核链接。
+    const excerptFindings = usableSources.map((s, idx) => ({
+      headline: `来源摘录 ${idx + 1}：${s.title}`,
+      content: `「${s.snippet}」\n\n来源：${s.url}${s.truncated ? '（正文超过读取上限，仅摘录可见片段）' : ''}`
+    }));
+    const reportFindings = [...findings, ...excerptFindings];
+    for (const f of reportFindings) {
+      lines.push(`### ${f.headline || '发现'}`);
+      lines.push('');
+      lines.push(f.content || '');
       lines.push('');
     }
 
     lines.push('## 参考来源与证据清单 (Sources & Citations)');
     lines.push('');
-    if (activeTask.sources?.length > 0) {
-      lines.push('| # | 来源标题 | 链接 | 抓取时间 | 摘要 |');
-      lines.push('|---|---|---|---|---|');
-      activeTask.sources.forEach((s, idx) => {
+    if (allSources.length > 0) {
+      lines.push('| # | 来源标题 | 链接 | 抓取时间 | 状态 | 摘录 |');
+      lines.push('|---|---|---|---|---|---|');
+      allSources.forEach((s, idx) => {
         const fetchTime = s.fetchedAt ? new Date(s.fetchedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '-';
-        lines.push(`| ${idx + 1} | ${s.title.replace(/\|/g, '-')} | [查看链接](${s.url}) | ${fetchTime} | ${s.snippet.slice(0, 80).replace(/\|/g, '-')}… |`);
+        const status = s.error
+          ? `失败：${s.error}`
+          : `HTTP ${s.statusCode ?? 200}${s.truncated ? '（截断）' : ''}`;
+        const title = String(s.title || s.url || '').replace(/\|/g, '-');
+        const excerpt = String(s.snippet || '').slice(0, 120).replace(/\|/g, '-');
+        lines.push(`| ${idx + 1} | ${title} | ${s.url || '-'} | ${fetchTime} | ${status.replace(/\|/g, '-')} | ${excerpt} |`);
       });
     } else {
       lines.push('*（本次研究暂无外部网络引文来源）*');
@@ -259,7 +330,16 @@ export function createTaskHarness({
       fileName: reportFileName,
       sha256,
       sizeBytes: stat.size,
-      summary: reportSummary
+      summary: reportSummary,
+      sourceCount: usableSources.length,
+      failedSourceCount: failedSources.length,
+      evidence: usableSources.map(s => ({
+        url: s.url,
+        title: s.title,
+        snippet: s.snippet.slice(0, 300),
+        statusCode: s.statusCode ?? 200,
+        truncated: Boolean(s.truncated)
+      }))
     };
 
     ledger.updateTask(task.taskId, { artifact });
@@ -285,17 +365,24 @@ export function createTaskHarness({
     }
 
     const { platform, conversationKey } = activeTask.requestor;
-    const sourcesSummary = (activeTask.sources || [])
+    const allSources = activeTask.sources || [];
+    const usableSources = allSources.filter(s => !s?.error && typeof s?.snippet === 'string' && s.snippet.trim());
+    const failedSources = allSources.filter(s => s?.error);
+    const sourcesSummary = usableSources
       .slice(0, 3)
       .map((s, idx) => `  ${idx + 1}. ${s.title}: ${s.url}`)
       .join('\n');
+    const failedSummary = failedSources.length
+      ? `【失败来源】${failedSources.length} 个：${failedSources.slice(0, 3).map(s => `${s.url}${s.statusCode ? `（HTTP ${s.statusCode}）` : ''}`).join('，')}`
+      : '';
 
     const messageText = [
       `📋 任务完成：${activeTask.goal}`,
       `【任务编号】${activeTask.taskId}`,
       `【研究摘要】${activeTask.artifact.summary}`,
       `【产物文件】${activeTask.artifact.path} (${activeTask.artifact.sizeBytes} 字节，哈希 ${activeTask.artifact.sha256.slice(0, 8)}…)`,
-      sourcesSummary ? `【核心来源】\n${sourcesSummary}` : ''
+      sourcesSummary ? `【核心来源】\n${sourcesSummary}` : '',
+      failedSummary
     ].filter(Boolean).join('\n');
 
     ledger.updateTask(task.taskId, {
@@ -367,6 +454,25 @@ export function createTaskHarness({
       return admission;
     }
 
+    const urlList = (Array.isArray(urls) ? urls : [])
+      .filter(url => typeof url === 'string' && url.trim())
+      .map(url => url.trim());
+
+    // 无新网址且未指定任务号：若同会话已有同目标、已完成并送达的任务，按幂等返回；
+    // 否则仍创建工单再明确失败，保留“补网址后重试”的路径（不执行、不投递）。
+    if (!urlList.length && !taskId && requestor?.conversationKey) {
+      let existing = null;
+      try {
+        existing = ledger.listTasks({ conversationKey: requestor?.conversationKey, limit: 100 })
+          .find(t => t.goal === String(goal ?? '').trim() && t.status === 'completed' && t.artifact && t.delivery?.status === 'delivered');
+      } catch (error) {
+        return ledgerFailure(error, { status: 'failed' });
+      }
+      if (existing) {
+        return { ok: true, taskId: existing.taskId, status: 'completed', artifact: existing.artifact, idempotent: true };
+      }
+    }
+
     // 创建或复用任务。账本不可读时这里必须停住：不能执行研究，也不能投递报告。
     let task;
     try {
@@ -397,9 +503,23 @@ export function createTaskHarness({
       return { ok: true, taskId: task.taskId, status: 'completed', artifact: task.artifact, idempotent: true };
     }
 
+    // 只有研究目标/关键词、没有可核验网址：不拿空来源合成报告。
+    if (!urlList.length) {
+      const error = Object.assign(new Error('仅有研究目标，缺少可核验的来源网址。'), {
+        code: 'RESEARCH_URLS_REQUIRED',
+        hint: '请补充网址后重试，例如：任务：<研究目标> https://example.com'
+      });
+      try {
+        ledger.updateTask(task.taskId, { status: 'failed', error: error.message });
+      } catch (ledgerError) {
+        return ledgerFailure(ledgerError, { taskId: task.taskId, status: 'failed' });
+      }
+      return { ok: false, taskId: task.taskId, status: 'failed', code: error.code, error: error.message, hint: error.hint };
+    }
+
     try {
       // 步骤 1：网页研究
-      await executeResearchStep(task, { urls });
+      await executeResearchStep(task, { urls: urlList });
 
       // 步骤 2：报告生成
       const artifact = await executeSynthesisStep(task, { findings });
@@ -435,9 +555,9 @@ export function createTaskHarness({
         ok: false,
         taskId: task.taskId,
         status: 'failed',
-        code: 'TASK_PIPELINE_FAILED',
+        code: error?.code || 'TASK_PIPELINE_FAILED',
         error: error.message,
-        hint: '检查来源网址、报告目录写入权限和本机任务账本后重试。'
+        hint: error?.hint || '检查来源网址、报告目录写入权限和本机任务账本后重试。'
       };
     }
   }
