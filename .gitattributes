@@ -1,1 +1,13 @@
 *.bat text eol=crlf
+
+# 发布清单里的 Windows 启停脚本：Git 不做文本转换，仓库里直接存 CRLF 字节。
+# 原因：`*.bat text eol=crlf` 会把 blob 归一化成 LF，而 `git archive` 再转回 CRLF，
+# 导致“按 blob 生成的清单”和“用户下载的归档”字节不同（审核 05）。
+# 后面这些显式规则必须位于 `*.bat` 之后（后匹配者优先）；eol 属性保留，供发布检查读取。
+restart.bat -text eol=crlf
+start-with-dsh-port.bat -text eol=crlf
+start.bat -text eol=crlf
+停止QQ机器人-全部.bat -text eol=crlf
+停止QQ机器人.bat -text eol=crlf
+scripts/bootstrap.ps1 -text eol=crlf
+scripts/stop-qq-bot.ps1 -text eol=crlf
