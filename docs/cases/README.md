@@ -6,6 +6,8 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-18 | [桌面全能 + 隔离 Chrome + QQ 聊天委派](2026-11-18-local-task-desktop-cua-chrome.md) | 复用 DSH CUA/PTC、新增隔离 chrome-devtools MCP、桥接 CUA/沙箱确认至 QQ、主人私聊开放 qq_dispatch_local_task | 隔离真宿主/全套单测验证，真机重启/TCC 待验 |
+| 2026-11-17 | [本机任务 P0/P1 审核修复](2026-11-17-local-task-p0-p1-fixes.md) | 异步 storageDomain 隔离与回滚、在途卸载阻断与宿主演防、createIfAbsent 原子抢占、FIFO 队列与 DSH 全事件额度 | 离线+原生包验证通过，真机待验 |
 | 2026-11-16 | [QQ 主人私聊读取 Mac 目录](2026-11-16-qq-mac-readonly-directory.md) | 固定只读目录命令和同会话回执 | QQ 真机验收通过 |
 | 2026-11-16 | [QQ 主人私聊读取 Mac 文本文件](2026-11-16-qq-mac-readonly-file.md) | 指定目录的文件正文和同会话回执 | QQ 真机验收通过 |
 | 2026-11-16 | [QQ 主人私聊新建 Mac 文本文件](2026-11-16-qq-mac-create-file.md) | 指定目录内原子新建及同会话回执 | QQ 真机验收通过 |

@@ -4716,3 +4716,29 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 **怎么预防**
 - 新增任何"从聊天里截话"的入口前：先 `grep` 这句触发词，确认没有第二个消费者；
   触发词宁可长、宁可带限定词，也不要和既有说法重名。
+
+---
+
+## #247（2026-11-17，P0/真实宿主发现）Mock 单测全绿，一上真实 `dsh-desktop-host` 连踩三条实装契约差
+
+**现象**
+- 本机任务 P0/P1 单测与 `app.asar` 组件级测试全绿后，跑完整隔离 `dsh-desktop-host`（`ELECTRON_RUN_AS_NODE=1`）+ 真实 `src/bridge.js` 端到端测试连踩三个阻断：
+  1. `verifySurface` 拒绝建会话：`会话里出现了本任务不该有的工具：load_workspace_dependencies,list_mcp_resources,team_task_*,mcp__*`；改成 `tools.restrict({ allow: [] })` 后，`tools.schemas(agent)` 变成空数组 `[]`，把 `read`/`write` 也吞了；
+  2. `sessionController.prompt(request, { kind: 'user', rpcId })` 在真实 `dsh-api-session-controller` 中立刻抛出 `TypeError: signal.throwIfAborted is not a function`；
+  3. 真实 Host 调真实 `bridge.js` 的 `POST /api/notify/owner` 回传任务结果时，若管理员私聊当前无活跃 QQ 聊天会话，被 Memory V2 `bot.sendPrivateMessage` 拦截返回 `502`（`The QQ session changed during its native safety check.`）。
+
+**根因**
+1. DSH `dsh-tools` 的 `view(agent.ctx)` 只把 `agent.ctx` 自身层的工具当作 exempt；preset 内 `tool-fs` 注册在 `presetScope`（是 `agent.ctx` 的父域而非 `own`），`allow: []` 会把 `read`/`write` 连同全局工具一起屏蔽，必须用显式 `deny`（排除白名单并监听 `tools/change`），同时 `verifySurface` 不能只查 `foreign.length === 0`，还得校验必需工具 `read`/`write` 都在场。
+2. 真实 `dsh-api-session-controller.prompt(request, signal)` 第二参数是 `AbortSignal`，`source` 由宿主从 `request.requestId` 内部构造；之前测试桩 `(req, from) => {}` 没有校验 `signal.throwIfAborted()`。
+3. Memory V2 在 `bridge.js` 启动时用 `requireMemoryV2SessionSafety` 包装了 `bot.sendPrivateMessage`，只有带 `managementSendTickets` 才放行系统直发；`/api/notify/owner` 已校验 `x-console-token`、拒收 `x-agent-token` 且过 `SENSITIVE_RE`，却裸调 `bot.sendPrivateMessage`，一旦主人私聊尚无普通聊天会话（或桥接刚重启清空旧会话）必返回 `502`。
+
+**处置**
+1. `plugins/surfcore/lib/local-task-gate.mjs`：改用动态 `tools.restrict({ deny: [...] })`（只拒绝 `TASK_ALLOWED_TOOLS` 之外的全局工具并订阅 `tools/change`）；`local-task-runner.mjs` `verifySurface` 增加 `['read', 'write']` 缺漏检查（`TASK_TOOL_SURFACE_INCOMPLETE`）。
+2. `local-task-runner.mjs` 传 `new AbortController().signal` 给 `sessionController.prompt`；`test-local-task-runner.mjs` 桩同步改为调用 `signal.throwIfAborted()` 防止回退。
+3. `src/bridge.js` `/api/notify/owner` 经 `sendChain`（带 `pendingSend.catch(() => {})` 防断链）与一次性 `managementSendTickets` 放行控制台通知。
+
+**怎么验证**
+- `node scripts/test-local-task-isolated-host.mjs`（真实 `dsh-desktop-host` + 真实 `src/bridge.js`）全项通过；`npm --prefix plugins/surfcore test`（含 Playwright 浏览器 UI 测试 `test-local-task-ui.mjs`）。
+
+**怎么预防**
+- DSH/桥接边界单测的桩函数签名必须逐字对齐 `app.asar` 实装签名（含 `signal.throwIfAborted()` 等运行时前置校验）；新功能不能只过组件单测，必须跑隔离全宿主 `dsh-desktop-host` + 真实 `bridge.js` 集成验证。

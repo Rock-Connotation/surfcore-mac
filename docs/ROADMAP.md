@@ -22,6 +22,14 @@
 
 ## 1. 项目目标
 
+### 2026-11-18 用户拍板扩展：本机任务接入 DSH CUA、隔离 Chrome DevTools MCP 与主人私聊自然委派
+
+- 用户明确批准在严格限制「仅主人私聊 `private:<ownerQQ>`」与「隔离独立 Chrome Profile」边界的前提下，尽量复用 DSH 官方能力（`dsh-cua-bundle`、`ptc`、`user-questions`/`approval` 瀑布流与 `dsh-mcp-client`）：
+  1. `mcp-chrome-devtools` 严格使用 `<DSH_HOME>/surfcore/chrome-profile` 隔离目录并拒绝连接日常个人 Chrome，`qq-tool-restrict.mjs` 动态禁止非 QQ 白名单全局 MCP；
+  2. 新增 `desktop` 模式复用 `ptc` + `dsh-cua-bundle`，通过 `ownsSession` 隔离开发会话并把 CUA/沙箱确认转发给主人 QQ 与设置页，保留 `files-only` 模式及全部 P0/P1 不变量；
+  3. 仅在 `private:<ownerQQ>` 的红豆 NativeOwner 开放单个受控转交工具 `qq_dispatch_local_task`，群聊及非主人零暴露。
+- 实现与离线/隔离真宿主验收已合入工作分支 `feat/local-task-t01t08`（详见 [case](cases/2026-11-18-local-task-desktop-cua-chrome.md) 与 [HANDOFF](HANDOFF.md)），真机重启与 TCC 权限确认待用户操作。
+
 ### 2026-11-16 V1 运行时退役收口
 
 删除 QQ、B 站、抖音和桌宠的剩余 V1 运行时入口。用户资料留原位，离线比较和本机观看历史归档展示独立保留。B 站触发器、转写、官方传输与额度继续为 V2 服务。见 [本轮案例](cases/2026-11-16-v1-runtime-retirement.md)。
