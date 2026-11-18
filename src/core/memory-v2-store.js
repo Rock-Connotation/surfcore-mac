@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { isMainThread } from 'node:worker_threads';
+import { hardenDir, hardenFile } from '../state-acl.mjs';
 import { validateGrowthProposal } from './memory-v2-growth.js';
 import { createAdministration } from './memory-v2-admin.js';
 import { checkLifecycleControl, createLifecycle } from './memory-v2-lifecycle.js';
@@ -11,9 +12,50 @@ requireThat(!isMainThread, 'MEMORY_WORKER_REQUIRED', 'Only the memory worker may
 const parse = (value) => JSON.parse(value);
 const unique = (values) => [...new Set(values)].sort();
 const settings = (db) => Object.fromEntries(['journal_mode', 'synchronous', 'foreign_keys'].map((key) => [key, Object.values(db.prepare(`PRAGMA ${key}`).get())[0]]));
-function open(file) {
+// Memory V2 的数据库只属于本机当前账户。共享父目录（插件 state/、角色目录的上级）
+// 由既有部署契约管理，这里只收紧 V2 自己拥有的文件和专属子目录，绝不改动无关路径。
+const posix = process.platform !== 'win32';
+const permissions = (label) => ({
+  code: 'MEMORY_PERMISSIONS_UNSAFE',
+  error: `${label} cannot be restricted to the current user.`,
+  hint: 'Fix the ownership or ACL of the memory folder, then reopen the memory service. Do not share the memory store between accounts.'
+});
+function secureDirectory(dir, label) {
+  fs.mkdirSync(dir, { recursive: true });
+  const stat = fs.lstatSync(dir);
+  requireThat(stat.isDirectory() && !stat.isSymbolicLink(), permissions(label).code, `${permissions(label).error} (not a dedicated directory)`, permissions(label).hint);
+  if (posix && typeof process.getuid === 'function') requireThat(stat.uid === process.getuid(), permissions(label).code, `${permissions(label).error} (owned by another user)`, permissions(label).hint);
+  const result = hardenDir(dir);
+  requireThat(result.ok, permissions(label).code, `${permissions(label).error} (${result.detail})`, permissions(label).hint);
+  if (posix) requireThat((fs.statSync(dir).mode & 0o777) === 0o700, permissions(label).code, `${permissions(label).error} (mode is ${(fs.statSync(dir).mode & 0o777).toString(8)})`, permissions(label).hint);
+}
+function secureFile(file, label, { create = true } = {}) {
+  let stat;
+  try { stat = fs.lstatSync(file); }
+  catch (error) {
+    requireThat(error.code === 'ENOENT', permissions(label).code, `${permissions(label).error} (${error.message})`, permissions(label).hint);
+    if (!create) return;
+    try { fs.closeSync(fs.openSync(file, 'wx', 0o600)); }
+    catch (createError) { requireThat(createError.code === 'EEXIST', permissions(label).code, `${permissions(label).error} (${createError.message})`, permissions(label).hint); }
+    stat = fs.lstatSync(file);
+  }
+  requireThat(stat.isFile() && !stat.isSymbolicLink(), permissions(label).code, `${permissions(label).error} (not an ordinary file)`, permissions(label).hint);
+  if (posix && typeof process.getuid === 'function') requireThat(stat.uid === process.getuid(), permissions(label).code, `${permissions(label).error} (owned by another user)`, permissions(label).hint);
+  const result = hardenFile(file);
+  requireThat(result.ok, permissions(label).code, `${permissions(label).error} (${result.detail})`, permissions(label).hint);
+  if (posix) requireThat((fs.statSync(file).mode & 0o077) === 0, permissions(label).code, `${permissions(label).error} (mode is ${(fs.statSync(file).mode & 0o777).toString(8)})`, permissions(label).hint);
+}
+function secureCompanions(file, label) {
+  for (const suffix of ['-journal', '-wal', '-shm']) secureFile(`${file}${suffix}`, `${label} ${suffix}`, { create: false });
+}
+function open(file, label) {
+  secureFile(file, label);
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=150;');
+  try {
+    db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=150;');
+    // SQLite 用数据库文件的权限创建 journal/WAL/SHM；已有伴生文件也逐一只收紧。
+    secureCompanions(file, label);
+  } catch (error) { db.close(); throw error; }
   requireThat(canonical(settings(db)) === canonical({ journal_mode: 'delete', synchronous: 3, foreign_keys: 1 }), 'MEMORY_BACKEND_UNSUPPORTED', 'SQLite durability settings did not read back correctly.');
   return db;
 }
@@ -21,7 +63,7 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
   fs.mkdirSync(stateDir, { recursive: true });
   checkLifecycleControl(stateDir, charactersDir);
   const controlFile = path.join(stateDir, 'memory-control.sqlite');
-  let control = open(controlFile), retired = false;
+  let control = open(controlFile, 'Memory V2 control database'), retired = false;
   const roles = new Map();
   let lifecycle, administration;
   const faultCounts = new Map();
@@ -41,8 +83,8 @@ export function createStore({ stateDir, charactersDir, generation, now = Date.no
     characterId(id);
     if (roles.has(id)) return roles.get(id);
     const dir = path.join(charactersDir, id, 'memory');
-    fs.mkdirSync(dir, { recursive: true });
-    const db = open(lifecycle?.selectedFile(id) ?? path.join(dir, 'memory-v2.sqlite'));
+    secureDirectory(dir, 'Memory V2 role directory');
+    const db = open(lifecycle?.selectedFile(id) ?? path.join(dir, 'memory-v2.sqlite'), 'Memory V2 role database');
     try { db.exec(`CREATE TABLE IF NOT EXISTS metadata(id INTEGER PRIMARY KEY CHECK(id=1), appliedControlRevision INTEGER NOT NULL, commitSequence INTEGER NOT NULL); INSERT OR IGNORE INTO metadata VALUES(1,0,0);
       CREATE TABLE IF NOT EXISTS events(eventId TEXT PRIMARY KEY,sourceKey TEXT NOT NULL UNIQUE,operationId TEXT NOT NULL UNIQUE,payloadDigest TEXT NOT NULL,policyId TEXT NOT NULL,payload TEXT NOT NULL,roots TEXT NOT NULL,policies TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active');
       CREATE TABLE IF NOT EXISTS memories(memoryId TEXT PRIMARY KEY,propositionKey TEXT NOT NULL,lineageDomainId TEXT NOT NULL,currentRevision INTEGER NOT NULL,kind TEXT NOT NULL,status TEXT NOT NULL,UNIQUE(propositionKey,lineageDomainId));
