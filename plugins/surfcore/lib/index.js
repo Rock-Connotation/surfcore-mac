@@ -296,6 +296,15 @@ export function apply(ctx) {
   const memoryV2Ready = memoryV2.initialize().catch(error => ({ ok: false, code: error?.code || 'MEMORY_RUNTIME_FAILED', error: '记忆服务初始化失败。', hint: '检查记忆页和本机运行时后重试。' }));
   // 闸门事件中心：桥接负责写，插件负责展示/确认；同一份文件、同一套分级。
   gateEvents = createGateEventStore({ dir: STATE_DIR, log: (message) => pluginLog(message) });
+  function ackRecoveredMemoryWorker() {
+    try {
+      const pending = gateEvents?.list({ limit: 500, includeAcked: false }).events
+        .filter(ev => ev?.gate === 'memory-v2' && ev?.event === 'MEMORY_WORKER_UNAVAILABLE')
+        .map(ev => ev.id) ?? [];
+      if (pending.length) gateEvents.ack(pending);
+    } catch {}
+  }
+  void memoryV2Ready.then(result => { if (result?.ok !== false) ackRecoveredMemoryWorker(); });
   function reportMemoryBlocked(result) {
     const code = /^(BILI|QQ|VOICE|MEMORY|CHARACTER|BUDGET)_[A-Z0-9_]+$/.test(result?.code ?? '') ? result.code : 'MEMORY_RUNTIME_FAILED';
     const channel = ['qq', 'bili', 'douyin', 'local'].includes(result?.channel) ? result.channel : /^QQ_/.test(code) ? 'qq' : /^BILI_/.test(code) ? 'bili' : 'unknown';
@@ -316,7 +325,9 @@ export function apply(ctx) {
       subject: { channel, ...(key ? { conversationKey: key } : {}), characterId: role?.id || '', characterEpoch: role?.epoch || 0 },
       reason: { code, message: error }, impact: code === 'MEMORY_POLICY_DENIED' ? `${affected}保持阻断，未扩大权限。` : `${affected}当前轮次未通过检查。`, recommendation: hint,
       dedupeKey: `memory-v2:${channel}:${key}:${role?.id}:${role?.epoch}:${code}`, evidence: { code, channel } });
-    if (event && !event.deduplicated) pluginLog(`[记忆] ${code}：${error} ${hint}`);
+    const diag = typeof result?.diagnostic === 'string' && /^[A-Za-z0-9_.:-]+(?:\s*<-\s*[A-Za-z0-9_.:-]+){0,5}$/.test(result.diagnostic)
+      ? ` (${result.diagnostic})` : '';
+    if (event && !event.deduplicated) pluginLog(`[记忆] ${code}${diag}：${error} ${hint}`);
   }
   biliMemoryHost = createBiliV2Host({ ctx, stateDir: STATE_DIR, memoryV2: memoryV2.channelMemory('bili'),
     tokenBudget, getCharacter: readCurrentCharacter, getCredentials: () => readJson(BILI_CRED, {}),
@@ -346,6 +357,37 @@ export function apply(ctx) {
     getCharacter: readCurrentCharacter,
     getQQIdentity: async () => { const response = await callBridge('/api/memory-v2/identity', { timeoutMs: 8000 }); return response?.data ?? response; },
     callBridge,
+    dispatchLocalTask: async ({ key, requestId, accountId, goal, mode, origin }) => {
+      const runtime = getLocalTasks();
+      if (!runtime?.ok) return runtime;
+      const match = /^private:([1-9][0-9]{0,19})$/.exec(String(key ?? ''));
+      if (!match) {
+        return { ok: false, code: 'TASK_ACTOR_UNTRUSTED', error: '只允许在主人私聊派发本机任务', hint: '请回到主人 QQ 私聊对话再试' };
+      }
+      const ownerId = match[1];
+      const configuredMode = readUnified().config?.localTask?.mode === 'files-only' ? 'files-only' : 'desktop';
+      const selectedMode = mode === 'files-only' || mode === 'desktop' ? mode : configuredMode;
+      const botId = String(accountId || 'qq');
+      const created = await runtime.service.submitTask({
+        trustedActor: { platform: 'qq', botId, channel: 'private', conversationId: ownerId, userId: ownerId },
+        source: { botId, channel: 'private', conversationId: ownerId, messageId: `chat-${String(requestId || Date.now())}` },
+        text: String(goal ?? ''),
+        workspaceId: 'owner',
+        mode: selectedMode,
+        origin: origin === 'chat' ? 'chat' : 'command',
+      });
+      if (!created.ok) return created;
+      const taskId = created.task.taskId;
+      if (created.duplicate) {
+        return { ok: true, taskId, duplicate: true, queued: created.task.executionStatus === 'queued', text: `这条已经接过了，任务号 ${taskId}` };
+      }
+      if (created.task.executionStatus === 'queued' || created.queued) {
+        return { ok: true, taskId, queued: true, text: `已排队（前面还有任务在执行），任务号 ${taskId}` };
+      }
+      const started = await runtime.runner.dispatch(taskId, { background: true });
+      if (!started.ok) return { ...started, taskId };
+      return { ok: true, taskId, queued: false, text: `已受理本机任务 ${taskId}` };
+    },
     onBlocked: reportMemoryBlocked,
   });
   // A+B 账单：每 10 分钟刷新到 ~/.dsh/surfcore/billing；只读，不调用模型。
@@ -2274,6 +2316,20 @@ ${body}`;
     return { port, url: `http://127.0.0.1:${port}` };
   }
 
+  function snowLumaOneBotPorts(cfg = readQqConfig().config?.snowluma ?? {}) {
+    const ports = [];
+    for (const raw of [cfg.httpUrl, cfg.wsUrl]) {
+      try { const p = Number(new URL(String(raw)).port); if (p > 0 && p < 65536) ports.push(p); } catch {}
+    }
+    return ports.length ? [...new Set(ports)] : [3000, 3001];
+  }
+  async function oneBotPortOpen(cfg = readQqConfig().config?.snowluma ?? {}) {
+    for (const p of snowLumaOneBotPorts(cfg)) {
+      if (await portOpen(p)) return p;
+    }
+    return 0;
+  }
+
   // SnowLuma 连不上时到底卡在哪一步：进程没起 / 停在登录页 / token 或端口不对。
   // 桥接的 goodError 只有一句 fetch failed，光看它没法给用户任何可执行的信息。
   async function diagnoseSnowLuma(bridgeSnow = {}, { bridge = null } = {}) {
@@ -2301,7 +2357,7 @@ ${body}`;
       };
     }
     const webui = snowLumaWebui();
-    const onebot = (await portOpen(3000)) || (await portOpen(3001));
+    const onebot = Boolean(await oneBotPortOpen());
     const webuiUp = await portOpen(webui.port);
     if (onebot) {
       return {
@@ -2315,20 +2371,23 @@ ${body}`;
     return { state: 'not-running', hint: 'SnowLuma 没在运行：设置 → SurfCore → 概览 → 一键启动（会按需打开控制台）' };
   }
 
-  async function launchSnowLuma() {
+  async function launchSnowLuma({ bridge = null } = {}) {
     if (process.env.SURFCORE_SKIP_AUTOSTART === '1') {
       return { ok: true, skipped: true, message: '测试环境：跳过打开 SnowLuma' };
     }
     const cfg = readQqConfig().config?.snowluma ?? {};
+    // 外部运行（例如 Docker NapCat / 手动启动的 SnowLuma）已在线时，不能因为没开 allowLaunch 就误报失败。
+    if (bridge?.snowluma?.connected === true && bridge?.snowluma?.accountOnline === true) {
+      return { ok: true, already: true, opened: false, message: 'SnowLuma / OneBot 已在运行且已登录' };
+    }
+    const openPort = await oneBotPortOpen(cfg);
+    if (openPort) {
+      return { ok: true, already: true, opened: false, message: `SnowLuma / OneBot 已在运行（端口 ${openPort}）` };
+    }
     if (cfg.allowLaunch !== true) {
-      return { ok: false, error: '未开启「允许插件打开 SnowLuma」：设置 → SurfCore → QQ → SnowLuma' };
+      return { ok: false, error: '未开启「允许插件打开 SnowLuma」且 OneBot 未运行：设置 → SurfCore → QQ → SnowLuma，或先手动启动 SnowLuma / Docker NapCat' };
     }
     const webui = snowLumaWebui();
-
-    // 已登录（OneBot 3000/3001 在听）：什么都不用做，也别弹窗口。
-    if (await portOpen(3000) || await portOpen(3001)) {
-      return { ok: true, already: true, opened: false, message: 'SnowLuma 已在运行且已登录' };
-    }
 
     // 进程在、但 OneBot 没起 → 多半停在登录页：直接把 WebUI 打开让人扫码。
     if (await portOpen(webui.port)) {
@@ -2425,8 +2484,9 @@ ${body}`;
           return Boolean(bridge?.running && bridge?.ok !== false && bridge?.dshReady === true
             && snow.connected === true && snow.accountOnline === true);
         };
+        const biliReady = () => Boolean(schedulerStatus.running || (schedulerStatus.reason === 'controlled-only' && fs.existsSync(BILI_CRED)));
         const allReady = (bridge, schedulerRunning) => Boolean(
-          (!qq || qqReady(bridge)) && (!bili || schedulerRunning),
+          (!qq || qqReady(bridge)) && (!bili || schedulerRunning || (schedulerStatus.reason === 'controlled-only' && fs.existsSync(BILI_CRED))),
         );
         const successLines = (bridge) => {
           const snow = bridge?.snowluma ?? {};
@@ -2437,7 +2497,7 @@ ${body}`;
               `QQ 桥接：运行中（端口 ${bridge.port ?? 3100}，DSH 已连接）`,
               `SnowLuma：已连接，QQ ${snow.accountOnline ? '在线' : '离线'}`,
             ] : ['QQ：启动开关关闭（未启动）']),
-            ...(bili ? ['B站生物钟：运行中'] : ['B站：启动开关关闭（未启动）']),
+            ...(bili ? [biliReady() && !schedulerStatus.running ? 'B站：受控单轮模式就绪' : 'B站生物钟：运行中'] : ['B站：启动开关关闭（未启动）']),
           ];
         };
         let last = null;
@@ -2865,7 +2925,19 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     const data = result.data || {};
     const packs = Array.isArray(data.packs) ? data.packs : [];
     const running = packs.find(p => p.running);
-    return {...data, ok: data.ok === true, running:Boolean(running), id:running?.id || '', packs};
+    const volcRes = data.ok === true ? await voiceManagement.dispatch({ pathname: '/volc-config' }).catch(() => null) : null;
+    const volc = volcRes?.ok !== false && volcRes?.data?.ok ? volcRes.data : {};
+    const volcConfigured = Boolean(volc.selected && volc.hasKey && volc.route === 'cloud');
+    const volcCloudActive = Boolean(volcConfigured && volc.ttsEnabled);
+    return {
+      ...data,
+      ok: data.ok === true,
+      running: Boolean(running) || volcCloudActive,
+      id: running?.id || (volcCloudActive ? 'volc-cloud' : ''),
+      volcConfigured,
+      volcCloudActive,
+      packs,
+    };
   }
 
   async function launchStatus() {
@@ -2896,6 +2968,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         ok: voice.ok !== false,
         running: Boolean(voice.running),
         id: voice.id || '',
+        volcConfigured: Boolean(voice.volcConfigured),
+        volcCloudActive: Boolean(voice.volcCloudActive),
         installed: (voice.packs ?? []).filter((p) => p.installed).map((p) => p.id),
         packs: (voice.packs ?? []).map((p) => ({ id: p.id, installed: Boolean(p.installed), running: Boolean(p.running), name: p.name || p.id })),
         lastError: voice.error || null,
@@ -2907,6 +2981,15 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     return { id, label: LAUNCH_LABELS[id] || id, ok: ok !== false, ...extra };
   }
 
+  function biliLaunchOutcome(state) {
+    const controlled = state?.reason === 'controlled-only' && fs.existsSync(BILI_CRED);
+    const ok = state?.running === true || controlled;
+    const message = state?.running
+      ? (state.reason === 'comments-only' ? 'B站受控评论监听已启动' : 'B站生物钟已启动')
+      : (controlled ? 'B站已登录，处于受控单轮模式（未开启自主巡航）' : '');
+    return { controlled, ok, message };
+  }
+
   async function startComponent(id, opts = {}) {
     try {
       if (id === 'qq') {
@@ -2916,14 +2999,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         const status = await bridgeStatus();
         const stale = bridgeStaleReason(status);
         const bridge = stale ? await restartBridge({ dshWebUrl: currentDshUrl() }) : await startBridge({ dshWebUrl: currentDshUrl() });
-        const snowluma = await launchSnowLuma().catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
+        const snowluma = await launchSnowLuma({ bridge: status }).catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
         const bridgeOk = bridge?.ok !== false;
         const snowOk = snowluma?.ok !== false || snowluma?.skipped === true || snowluma?.already === true;
         return launchItem(id, bridgeOk && snowOk, {
           message: [bridge?.message, snowluma?.message || snowluma?.error].filter(Boolean).join('；'),
           code: bridgeOk && snowOk ? '' : 'QQ_START_PARTIAL',
           error: bridgeOk ? (snowOk ? '' : `QQ 桥接已启动，但 SnowLuma 未打开：${snowluma?.error || '未知原因'}`) : (bridge?.error || bridge?.message || 'QQ 桥接启动失败'),
-          hint: bridgeOk ? (snowOk ? '' : (snowluma?.hint || '启动 SnowLuma（launcher.bat）并确认端口 3000/3001')) : '检查桥接日志/端口；必要时重启 DSH',
+          hint: bridgeOk ? (snowOk ? '' : (snowluma?.hint || `启动 SnowLuma / NapCat 并确认 OneBot 端口 ${snowLumaOneBotPorts().join('/')}`)) : '检查桥接日志/端口；必要时重启 DSH',
           detail: { bridge, snowluma },
         });
       }
@@ -2932,10 +3015,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
           return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'B站 启动开关已关闭', hint: '去「B站」页打开「启动 B站」并保存' });
         }
         const state = startSchedulerNow();
-        return launchItem(id, state.running === true, {
-          code: state.running ? '' : 'BILI_START_FAILED',
-          error: state.running ? '' : `B站生物钟未启动：${state.reason || state.lastError || '未登录或配置缺失'}`,
-          hint: state.running ? '' : '先在「B站」页完成扫码登录；仍失败看插件日志',
+        const { ok, message } = biliLaunchOutcome(state);
+        return launchItem(id, ok, {
+          ...(message ? { message } : {}),
+          code: ok ? '' : 'BILI_START_FAILED',
+          error: ok ? '' : `B站生物钟未启动：${state.reason || state.lastError || '未登录或配置缺失'}`,
+          hint: ok ? '' : '先在「B站」页完成扫码登录；仍失败看插件日志',
           detail: state,
         });
       }
@@ -2951,10 +3036,29 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       if (id === 'voice') {
         const packs = await voicePacksSnapshot();
         if (!packs.ok) return launchItem(id, false, {code:packs.code || 'VOICE_STATUS_FAILED', error:packs.error || '无法读取语音包状态', hint:packs.hint || '先恢复语音管理状态再启动'});
+        const list = packs.packs ?? [];
         const wanted = String(opts.voicePack === 'voice-cloud' ? 'voice-cloud' : 'voice-local');
-        const pack = (packs.packs ?? []).find((p) => p.id === wanted);
+        const pack = list.find((p) => p.id === wanted);
         if (!pack) return launchItem(id, false, { code: 'VOICE_PACK_UNKNOWN', error: `未知语音包：${wanted}`, hint: '在「语音」页确认包 ID' });
-        if (!pack.installed) return launchItem(id, false, { code: 'VOICE_PACK_NOT_INSTALLED', error: `${pack.name || wanted} 还没安装`, hint: '先在「语音」页导入离线包或安装语音包' });
+        if (!pack.installed) {
+          if (wanted === 'voice-cloud' && packs.volcConfigured) {
+            const r = await voiceManagement.dispatch({ method: 'POST', pathname: '/volc-config', body: { provider: 'volc', activate: true } });
+            const data = r?.data ?? {};
+            return launchItem(id, r?.ok !== false && data.ok !== false, {
+              ...(r?.ok !== false && data.ok !== false ? { message: '已启用火山云端直连语音（无需本地进程）' } : {}),
+              code: data.ok === false ? (data.code || 'VOICE_START_FAILED') : '',
+              error: data.ok === false ? (data.error || '火山云端语音启用失败') : '',
+              hint: data.ok === false ? (data.hint || '在「语音」页核对火山 API Key 后重试') : '',
+              detail: { packId: wanted, provider: 'volc', ...data },
+            });
+          }
+          const anyInstalled = list.some((p) => p.installed) || packs.volcConfigured;
+          return launchItem(id, false, {
+            code: 'VOICE_PACK_NOT_INSTALLED',
+            error: anyInstalled ? `${pack.name || wanted} 还没安装` : '尚未安装本地或云端语音包',
+            hint: anyInstalled ? '在「语音」页安装该包或改选已安装分支' : '若暂不用语音请取消勾选「语音」；需要时先去「语音」页安装',
+          });
+        }
         const r = await voiceManagement.dispatch({method:'POST',pathname:'/packs/activate',body:{id:wanted}});
         const data = r?.data ?? {};
         return launchItem(id, r?.ok !== false && data.ok !== false, {
@@ -3005,7 +3109,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         const packs = await voicePacksSnapshot();
         if (!packs.ok) return launchItem(id, false, {code:packs.code || 'VOICE_STATUS_FAILED', error:packs.error || '无法读取语音包状态', hint:packs.hint || '先恢复语音管理状态再停止，不能确认引擎已经退出'});
         const running = (packs.packs ?? []).filter((p) => p.running);
-        if (!running.length) return launchItem(id, true, { message: '语音包本来就没在跑' });
+        if (!running.length) return launchItem(id, true, { message: packs.volcCloudActive ? '火山云端直连按需调用，无需停止本地后台进程' : '语音包本来就没在跑' });
         const results = [];
         for (const p of running) {
           const r = await voiceManagement.dispatch({method:'POST',pathname:'/packs/stop',body:{id:p.id}});
@@ -3085,9 +3189,10 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       }
       const running = Boolean(scheduler && schedulerStatus.running);
       const schedulerState = startSchedulerNow();
+      const biliOutcome = biliLaunchOutcome(schedulerState);
       json(res, 200, {
-        ok: schedulerState.running === true,
-        message: running ? 'B站生物钟本来就在跑' : (schedulerState.running ? 'B站生物钟已启动' : `B站生物钟未启动：${schedulerState.lastError ?? '看插件日志'}`),
+        ok: biliOutcome.ok,
+        message: running ? 'B站生物钟本来就在跑' : (biliOutcome.message || `B站生物钟未启动：${schedulerState.lastError ?? '看插件日志'}`),
         scheduler: schedulerState,
       });
       return;
@@ -3112,11 +3217,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       const schedulerState = starts.bili
         ? startSchedulerNow()
         : { ...idleSchedulerStatus('disabled'), message: 'B站 启动开关关闭，已跳过生物钟' };
-      const snowluma = starts.qq ? await launchSnowLuma() : { ok: true, skipped: true, message: 'QQ 启动开关关闭，已跳过 SnowLuma' };
-      const coreOk = (!starts.qq || bridge?.ok !== false) && (!starts.bili || schedulerState.running);
+      const snowluma = starts.qq ? await launchSnowLuma({ bridge: status }) : { ok: true, skipped: true, message: 'QQ 启动开关关闭，已跳过 SnowLuma' };
+      const biliOutcome = biliLaunchOutcome(schedulerState);
+      const coreOk = (!starts.qq || bridge?.ok !== false) && (!starts.bili || biliOutcome.ok);
       const message = [
         bridge?.message,
-        starts.bili ? (schedulerState.running ? 'B站生物钟在跑' : 'B站生物钟未启动') : '',
+        starts.bili ? (biliOutcome.message || 'B站生物钟未启动') : '',
         snowluma?.message || snowluma?.error,
         starts.qq || starts.bili ? '启动完成后会弹窗告诉你结果' : 'QQ 和 B站 的启动开关都关着，没有需要启动的平台',
       ].filter(Boolean).join('；');
@@ -3238,27 +3344,34 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   // 数据来自当前角色 bili/watch-history.jsonl；旧数据从 bili-memory.json 补。
 
   /**
-   * 设置页「本机任务」：只读列表 + 两个动作（取消 / 拿原生会话号）。
-   * 设置页不派发任务：派发只发生在 QQ 入口，这里最多“停”和“去看”，避免多出第二个执行入口。
+   * 设置页「本机任务」：只读列表 + 停止 / 打开原生会话 / 补发旧结果 / 域隔离恢复。
+   * 设置页不派发任务：派发只发生在 QQ 入口，这里最多“停”“看”“补发”，避免多出第二个执行入口。
    */
   async function handleLocalTasks(req, res) {
     const runtime = getLocalTasks();
     if (!runtime.ok) { json(res, 503, runtime); return; }
-    const { service, runner } = runtime;
+    const { service, runner, interactions, redeliver, recoverQuarantine } = runtime;
     try {
       if (req.method === "GET") {
-        const { tasks, activeTaskId } = service.queryTask();
+        const { tasks, activeTaskId, quarantined, quarantine } = service.queryTask();
+        const pendingInteractions = interactions?.listPending?.() ?? [];
         json(res, 200, {
           ok: true,
           activeTaskId,
+          quarantined: Boolean(quarantined),
+          quarantine: quarantine ?? null,
           presetId: runner.presetId,
+          pendingInteractions,
           items: tasks.map((task) => ({
             taskId: task.taskId,
             goal: task.goal,
+            mode: task.mode ?? "files-only",
+            origin: task.origin ?? "command",
+            resultSummary: task.resultSummary ?? null,
             status: task.executionStatus,
             describe: service.describeTask(task),
             sessionId: task.dshSessionId,
-            deliveries: task.deliveries.map((d) => ({ state: d.state ?? d.status ?? "unknown", at: d.at })),
+            deliveries: task.deliveries.map((d) => ({ state: d.state ?? d.status ?? "unknown", at: d.completedAt ?? d.attemptedAt ?? d.at })),
             createdAt: task.createdAt,
             updatedAt: task.updatedAt,
           })),
@@ -3267,13 +3380,44 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       }
       if (req.method !== "POST") { json(res, 405, { ok: false, code: "LOCAL_TASKS_METHOD_INVALID", error: "设置页只支持 GET 与 POST", hint: "刷新页面后重试" }); return; }
       const body = JSON.parse((await readBody(req, 16 * 1024)) || "{}");
+      if (body?.action === "recover-quarantine") {
+        if (typeof recoverQuarantine !== "function") {
+          json(res, 503, { ok: false, code: "LOCAL_TASK_RECOVER_UNSUPPORTED", error: "当前运行时未提供存储域恢复入口", hint: "重启 DSH 后重试" });
+          return;
+        }
+        const recovered = await recoverQuarantine();
+        json(res, recovered.ok ? 200 : 500, recovered);
+        return;
+      }
+      if (body?.action === "answer") {
+        if (typeof interactions?.answer !== "function") {
+          json(res, 503, { ok: false, code: "LOCAL_TASK_ANSWER_UNSUPPORTED", error: "当前运行时未装配交互确认能力", hint: "重启 DSH 后重试" });
+          return;
+        }
+        const answered = interactions.answer({
+          id: body.interactionId ?? body.id,
+          decision: body.decision,
+          answerText: body.answerText ?? body.text,
+        });
+        json(res, answered.ok ? 200 : 400, answered);
+        return;
+      }
       const taskId = String(body?.taskId ?? "");
       const found = service.queryTask({ taskId });
       if (!found.ok) { json(res, 404, found); return; }
       if (body?.action === "cancel") {
         // 设置页是主人本人在 DSH 里点的，可信主体沿用任务的登记主体，不新造一个身份。
         const result = await runner.cancel(taskId, found.task.trustedActor);
-        json(res, result.ok ? 200 : 400, { ...result, describe: result.ok && result.task ? service.describeTask(result.task) : undefined });
+        json(res, result.ok ? 200 : 400, { ...result, describe: result.task ? service.describeTask(result.task) : undefined });
+        return;
+      }
+      if (body?.action === "redeliver") {
+        if (typeof redeliver !== "function") {
+          json(res, 503, { ok: false, code: "LOCAL_TASK_REDELIVER_UNSUPPORTED", error: "当前运行时未装配结果补发能力", hint: "重启 DSH 后重试" });
+          return;
+        }
+        const result = await redeliver(taskId);
+        json(res, result.ok ? 200 : 400, result);
         return;
       }
       if (body?.action === "open") {
@@ -3281,7 +3425,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         json(res, 200, { ok: true, sessionId: found.task.dshSessionId, presetId: runner.presetId });
         return;
       }
-      json(res, 400, { ok: false, code: "LOCAL_TASKS_ACTION_INVALID", error: "设置页只支持 cancel 与 open", hint: "刷新页面后重试" });
+      json(res, 400, { ok: false, code: "LOCAL_TASKS_ACTION_INVALID", error: "设置页只支持 cancel / open / redeliver / recover-quarantine / answer", hint: "刷新页面后重试" });
     } catch (error) {
       json(res, 500, { ok: false, code: "LOCAL_TASKS_FAILED", error: "本机任务设置页读取失败", hint: "重载插件后再试；账本不会被修改", detail: String(error?.message ?? error) });
     }
@@ -4003,12 +4147,23 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
         const level = String(url.searchParams.get('level') ?? '').trim();
         const includeAcked = url.searchParams.get('includeAcked') !== '0';
-        json(res, 200, { ok: true, ...gateEvents.list({ limit, level, includeAcked }), gateEvents: true });
+        let listed = gateEvents.list({ limit, level, includeAcked });
+        if (listed.events.some(ev => !ev.ack && ev?.gate === 'memory-v2' && ev?.event === 'MEMORY_WORKER_UNAVAILABLE')) {
+          try {
+            const st = await memoryHost.status();
+            if (st?.readiness === 'ready') {
+              ackRecoveredMemoryWorker();
+              listed = gateEvents.list({ limit, level, includeAcked });
+            }
+          } catch {}
+        }
+        json(res, 200, { ok: true, ...listed, gateEvents: true });
         return;
       }
       if (req.method === 'POST') {
         const body = JSON.parse(await readBody(req) || '{}');
         const acked = gateEvents.ack(Array.isArray(body.ids) ? body.ids : [], body.action === 'ack-all' || body.all === true);
+        if (typeof body.dedupeKey === 'string' && body.dedupeKey) gateEvents.ackByDedupe(body.dedupeKey);
         json(res, 200, { ok: true, ...acked, ...gateEvents.list({ limit: 50, includeAcked: false }) });
         return;
       }
@@ -4174,7 +4329,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       try { await runtime.api.handle(req, res, new URL(req.url, 'http://127.0.0.1')) }
       catch (error) { pluginLog('[本机任务通道] 请求失败：', String(error?.message ?? error)); try { json(res, 500, { ok: false, code: 'LOCAL_TASK_HANDLER_FAILED', error: String(error?.message ?? error), hint: '重启 DSH 后重试' }) } catch {} }
     } }));
-  try { mountLocalTasks(ctx, { workspaceRoot: localTaskWorkspaceRoot(), stateDir: STATE_DIR, currentDshUrl, callBridge, log: pluginLog }) }
+  try { mountLocalTasks(ctx, { workspaceRoot: localTaskWorkspaceRoot(), stateDir: STATE_DIR, currentDshUrl, callBridge, getDefaultMode: () => (readUnified().config?.localTask?.mode === 'files-only' ? 'files-only' : 'desktop'), log: pluginLog }) }
   catch (error) { pluginLog('本机任务装配失败：', error?.message ?? error) }
 }
 

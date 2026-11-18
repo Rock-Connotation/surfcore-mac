@@ -7,6 +7,39 @@ import { spokenText } from '../../../src/voice-tts.js';
 
 const fail = (code, hint) => ({ ok: false, code, error: 'QQ Native 回复未完成。', hint });
 const checked = value => { if (!value?.ok) throw Object.assign(new Error(value?.error || 'QQ reply refused'), value || fail('MEMORY_QQ_REPLY_FAILED', '检查宿主与原操作回执。')); return value; };
+const SAFE_DIAG_TOKEN_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+function summarizeSafeCause(error) {
+  const parts = [];
+  const seen = new Set();
+  for (let cur = error, depth = 0; cur && typeof cur === 'object' && depth < 6 && !seen.has(cur); depth++, cur = cur.cause) {
+    seen.add(cur);
+    const tokens = [];
+    if (typeof cur.stage === 'string' && SAFE_DIAG_TOKEN_RE.test(cur.stage)) tokens.push(cur.stage);
+    if (typeof cur.code === 'string' && SAFE_DIAG_TOKEN_RE.test(cur.code)) tokens.push(cur.code);
+    if (typeof cur.operationFailure?.code === 'string' && SAFE_DIAG_TOKEN_RE.test(cur.operationFailure.code)) tokens.push(cur.operationFailure.code);
+    if (tokens.length) {
+      const item = tokens.join(':');
+      if (parts[parts.length - 1] !== item) parts.push(item);
+    }
+  }
+  return parts.join(' <- ');
+}
+function projectToolParameters(parameters) {
+  const properties = {}, required = [];
+  for (const [name, param] of Object.entries(parameters ?? {})) {
+    const projected = { type: param.type };
+    if (param.description !== undefined) projected.description = param.description;
+    if (param.enum !== undefined) projected.enum = structuredClone(param.enum);
+    if (param.items !== undefined) {
+      projected.items = { type: 'string' };
+      if (param.items.description !== undefined) projected.items.description = param.items.description;
+      if (param.items.enum !== undefined) projected.items.enum = structuredClone(param.items.enum);
+    }
+    properties[name] = projected;
+    if (param.required) required.push(name);
+  }
+  return { type: 'object', properties, ...(required.length ? { required } : {}) };
+}
 export async function resolveQQV2ModelRoute(ctx, state = {}) {
   const select = () => state?.route ?? ctx.get('agentDefaultModel')?.currentSelection?.();
   const selected = select(), derived = checked(deriveMemoryProviderRouteId(selected));
@@ -20,6 +53,7 @@ export async function resolveQQV2ModelRoute(ctx, state = {}) {
 
 /** One private Native Owner per reply; no general Host tools or old DSH history. */
 export function createQQV2ReplyHost({ ctx, memoryV2, tokenBudget, getCharacter, getQQIdentity, callBridge, onBlocked = () => {}, resourcesPath = process.resourcesPath,
+  dispatchLocalTask = null,
   loadEnvironment = loadMemoryV2NativeEnvironment, createOwner = createQQV2NativeOwner, createSource = createQQV2SourceRuntime,
   compilePersona = compileV2Persona, timeoutMs = 180000 } = {}) {
   if (!ctx || !memoryV2?.adapter || typeof getCharacter !== 'function' || typeof getQQIdentity !== 'function' || typeof callBridge !== 'function' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 180000) throw new TypeError('QQ reply Host dependencies are required.');
@@ -27,12 +61,14 @@ export function createQQV2ReplyHost({ ctx, memoryV2, tokenBudget, getCharacter, 
   let closed = false, transition = null, generation = 0;
   function report(error, request) {
     const result = { ...fail(/^[A-Z][A-Z0-9_]+$/.test(error?.code ?? '') ? error.code : 'MEMORY_QQ_REPLY_FAILED', error?.hint || '在概览检查当前连接、角色和记忆权限，再发送一条新消息。'), channel: 'qq', ...(request ? { conversationKey: request.key } : {}) };
+    const diagnostic = summarizeSafeCause(error);
+    if (diagnostic) Object.defineProperty(result, 'diagnostic', { value: diagnostic, configurable: true });
     try { onBlocked(result); } catch {}
     return result;
   }
   async function run(req, state) {
     const ticket = generation, role = { id: req.characterId, epoch: req.characterEpoch };
-    let owner, source, job, timer, agentError, toolFailure, voiceIntent, finished = false, completion = false, modelCalls = 0;
+    let owner, source, job, timer, agentError, toolFailure, voiceIntent, taskDispatched = false, finished = false, completion = false, modelCalls = 0;
     const expiresAt = Date.now() + timeoutMs;
     const blocks = new Map();
     const live = () => {
@@ -61,9 +97,28 @@ export function createQQV2ReplyHost({ ctx, memoryV2, tokenBudget, getCharacter, 
       if (typeof persona !== 'string' || !persona.trim()) throw Object.assign(new Error('Invalid persona'), fail('MEMORY_QQ_PERSONA_INVALID', '人格编译结果为空；恢复当前角色的人格卡后重试。'));
       const env = await loadEnvironment({ ctx, resourcesPath }); live();
       const capabilities = await rpc('capabilities'); live();
-      const toolSpecs = capabilities.voice?.enabled === true ? [{ name: 'qq_send_voice',
-        description: `为本会话提交一条语音回复。用户要求听你说话时使用；text为实际朗读内容，最多${Math.min(120, capabilities.voice.maxChars || 120)}字。本工具仅准备内容，完整回合结束后插件投递一次；不得声称已经发送。不接受目标、路径或服务参数。普通文字回复直接输出即可。`,
-        parameters: { text: { type: 'string', required: true } } }] : [];
+      const allowLocalTask = capabilities.localTask?.enabled === true
+        && /^private:[1-9][0-9]{0,19}$/.test(req.key)
+        && typeof dispatchLocalTask === 'function';
+      const toolSpecs = [];
+      if (allowLocalTask) {
+        toolSpecs.push({
+          name: 'qq_dispatch_local_task',
+          description: '当主人在私聊里让你帮忙操作 Mac 电脑、读写本地文件、执行命令、控制桌面应用或用 Chrome 浏览器访问/操作网页时，调用此工具将任务派发给后台隔离的本机任务执行器；普通聊天和记忆问答不要调用。注意：本工具只负责把任务排入后台执行并拿到任务号，不返回最终完成结果，绝对不要在回复里编造已完成或结果内容；任务过程中的确认和最终结果会自动私聊发给主人。',
+          parameters: {
+            goal: { type: 'string', required: true, description: '清晰具体的电脑或浏览器操作目标' },
+            mode: { type: 'string', enum: ['desktop', 'files-only'], description: '默认 desktop（电脑/浏览器/命令）；仅严格限工作区新建文件时用 files-only' },
+          },
+        });
+      }
+      if (capabilities.voice?.enabled === true) {
+        toolSpecs.push({
+          name: 'qq_send_voice',
+          description: `为本会话提交一条语音回复。用户要求听你说话时使用；text为实际朗读内容，最多${Math.min(120, capabilities.voice.maxChars || 120)}字。本工具仅准备内容，完整回合结束后插件投递一次；不得声称已经发送。不接受目标、路径或服务参数。普通文字回复直接输出即可。`,
+          parameters: { text: { type: 'string', required: true } },
+        });
+      }
+      toolSpecs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
       const bridge = {
         exportNativeSources: () => rpc('sources'),
         authorizeSend: input => rpc('authorize', { loginAccountId: input.loginAccountId }),
@@ -72,11 +127,56 @@ export function createQQV2ReplyHost({ ctx, memoryV2, tokenBudget, getCharacter, 
       };
       source = createSource({ bridge, adapter: memoryV2.adapter, getCharacter, getQQIdentity: identity, corePersona: persona, nativeCodec: env.nativeCodec, toolSpecs,
         validateOwnedToolContext: execution => owner?.validateOwnedToolContext(execution) ?? fail('MEMORY_NATIVE_TOOL_UNPROVEN', '等待 Native Owner 就绪。') });
-      const tools = toolSpecs.map(spec => ({ ...spec,
-        parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+      const tools = toolSpecs.map(spec => ({
+        ...spec,
+        parameters: projectToolParameters(spec.parameters),
         output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
         async execute(args, execution) {
           let result;
+          let isError = false;
+          if (spec.name === 'qq_dispatch_local_task') {
+            try {
+              live(); checked(owner.validateOwnedToolContext(execution));
+              if (taskDispatched || toolFailure || !args || typeof args !== 'object' || Array.isArray(args)
+                || Object.keys(args).some(key => key !== 'goal' && key !== 'mode')
+                || typeof args.goal !== 'string' || !args.goal.trim() || args.goal.length > 2000
+                || (args.mode !== undefined && args.mode !== 'desktop' && args.mode !== 'files-only')) {
+                throw fail('LOCAL_TASK_TOOL_INVALID', '每轮聊天最多受理一次本机任务；检查目标描述和参数后再试。');
+              }
+              const dispatched = await dispatchLocalTask({
+                key: req.key,
+                requestId: req.requestId,
+                accountId: account.accountId,
+                goal: args.goal.trim(),
+                mode: args.mode,
+                origin: 'chat',
+              });
+              if (!dispatched?.ok) {
+                isError = true;
+                result = JSON.stringify({
+                  ok: false,
+                  code: dispatched?.code || 'LOCAL_TASK_DISPATCH_FAILED',
+                  error: dispatched?.error || '本机任务未能受理',
+                  hint: dispatched?.hint || '先检查 SurfCore 本机任务设置与 DSH 状态',
+                });
+              } else {
+                taskDispatched = true;
+                result = JSON.stringify({
+                  ok: true,
+                  accepted: true,
+                  queued: Boolean(dispatched.queued),
+                  taskId: dispatched.taskId,
+                  message: dispatched.text || `已受理任务 ${dispatched.taskId}`,
+                });
+              }
+              checked(await source.captureToolResult({ job, execution, content: [{ type: 'text', text: result }], isError })); live();
+            } catch (error) {
+              toolFailure = fail(error?.code || 'LOCAL_TASK_TOOL_INVALID', error?.hint || '本机任务派发请求未通过校验，本次未派发。');
+              result = JSON.stringify(toolFailure);
+              checked(await source.captureToolResult({ job, execution, content: [{ type: 'text', text: result }], isError: true }));
+            }
+            return result;
+          }
           try {
             live(); checked(owner.validateOwnedToolContext(execution));
             if (voiceIntent || toolFailure || !args || Object.keys(args).some(key => key !== 'text') || typeof args.text !== 'string' || args.text.length > 1000 || !spokenText(args.text) || spokenText(args.text).length > Math.min(120, capabilities.voice.maxChars || 120)) throw fail('MEMORY_QQ_VOICE_INVALID', '每轮只能准备一条有界语音；检查语音文字和权限后再请求。');
@@ -116,7 +216,7 @@ export function createQQV2ReplyHost({ ctx, memoryV2, tokenBudget, getCharacter, 
       const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('QQ timeout'), fail('MEMORY_QQ_TIMEOUT', '本次回复超时；先检查宿主原回执，不自动重试。'))), Math.max(1, expiresAt - Date.now())); });
       owner.followup(env.nativeCodec.createUserMessage({ source: { kind: 'user-rpc', requestId: req.requestId }, content: prepared.content }));
       await Promise.race([owner.whenIdle(), deadline]); clearTimeout(timer); live();
-      if (agentError) throw Object.assign(new Error('QQ inference failed'), agentError);
+      if (agentError) throw Object.assign(new Error('QQ inference failed', agentError.cause ? { cause: agentError.cause } : undefined), agentError);
       if (toolFailure) throw toolFailure;
       const output = voiceIntent ?? [...blocks].sort(([a], [b]) => a - b).map(([, text]) => text).join('');
       if (!completion || !output.trim() || output.length > 12000) throw Object.assign(new Error('Incomplete QQ output'), fail('MEMORY_QQ_OUTPUT_UNPROVEN', '模型没有返回完整且有界的回复；本次没有发送。'));

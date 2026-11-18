@@ -6,7 +6,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { SENSITIVE_RE } from '../src/sensitive.js';
+import { SENSITIVE_RE, hasSensitiveTaskOutput, isUnsafeTaskFilePath } from '../src/sensitive.js';
 
 const lookupCalls = [];
 const originalLookup = dns.promises.lookup;
@@ -193,4 +193,29 @@ test('invalid resource limits are rejected before network access', async (t) => 
     await assert.rejects(safeFetch('http://93.184.216.34/', limit), /正整数/);
     await assert.rejects(safeFetchBuffer('http://93.184.216.34/', limit), /正整数/);
   }
+});
+
+test('task notification audit allows workspace and desktop screenshot paths while blocking secrets and unsafe paths', () => {
+  const safeReport = '任务 task-123：已完成\n结果：已截图保存至 /Users/alice/.dsh/surfcore/local-task/workspace/example_com.png 和 /Users/alice/Desktop/example-com.png';
+  assert.equal(SENSITIVE_RE.test(safeReport), true, '通用 SENSITIVE_RE 规则保持不变');
+  assert.equal(hasSensitiveTaskOutput(safeReport), false, '任务回执允许正常的工作区与桌面报告路径');
+
+  const blockedOutputs = [
+    'token=abc12345',
+    '密码：mysecretpass',
+    '完成 sk-1234567890abcdefghijklmnop',
+    '读取了 /etc/passwd',
+    '读取了 /Etc/passwd',
+    '备份 /var/log/system.log',
+    '导出了 /Users/alice/.ssh/id_rsa',
+    '读取 /Users/alice/Library/Application Support/Google/Chrome/Default/Cookies',
+    '查看 /Users/alice/.dsh/profiles/desktop/config.json',
+    '环境变量在 /Users/alice/app/.env',
+    '读取 C:\\Users\\alice\\.aws\\credentials',
+  ];
+  for (const text of blockedOutputs) {
+    assert.equal(hasSensitiveTaskOutput(text), true, `任务回执仍必须拦截敏感输出: ${text}`);
+  }
+  assert.equal(isUnsafeTaskFilePath('/Users/alice/.dsh/surfcore/local-task/workspace/shot.png'), false);
+  assert.equal(isUnsafeTaskFilePath('/Users/alice/../.ssh/id_rsa'), true);
 });

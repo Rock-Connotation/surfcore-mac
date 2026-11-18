@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
-import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
+import { SENSITIVE_RE, SECRET_TOKEN_RE, hasSensitiveTaskOutput, isUnsafeTaskFilePath } from './sensitive.js';
 import { looksLikeUnfinished, selectWaitBatch } from './v2-wait.js';
 import { compactModelMessage } from './qq-model-view.js';
 import { atInfo } from './qq-at.js';
@@ -4815,6 +4815,8 @@ async function main() {
     return { ok: false, code, error, hint: '请先确认 SnowLuma 在线和当前官方 QQ 账号；需授权记忆处理时，在 QQ 设置选择明确的 provider/model 后重试。' };
   }
 
+  let lastMemoryIdentityErrorLogAt = 0;
+
   async function readOfficialMemoryQQIdentity() {
     const snapshot = () => JSON.stringify({ httpUrl: cfg.snowluma?.httpUrl, accessToken: cfg.snowluma?.accessToken,
       allow: cfg.allow, provider: cfg.dsh?.provider, model: cfg.dsh?.model, followDefaultModel: cfg.dsh?.followDefaultModel });
@@ -4843,7 +4845,12 @@ async function main() {
       const result = { ok: true, verified: true, accountId, allowedGroups: [...new Set(groups)], allowedPrivates: [...new Set(privates)] };
       if (cfg.dsh?.followDefaultModel === false && deriveMemoryProviderRouteId({ provider: cfg.dsh.provider, model: cfg.dsh.model }).ok) result.route = { provider: cfg.dsh.provider, model: cfg.dsh.model };
       return result;
-    } catch {
+    } catch (error) {
+      const nowMs = Date.now();
+      if (nowMs - lastMemoryIdentityErrorLogAt >= 30_000) {
+        lastMemoryIdentityErrorLogAt = nowMs;
+        log(`[memory-v2] 官方 OneBot 身份查询失败: ${String(error?.message || error)}`);
+      }
       return memoryQQIdentityFailure('MEMORY_QQ_IDENTITY_UNAVAILABLE', '官方 OneBot 身份查询失败或超时，未确认当前 QQ 账号。');
     }
   }
@@ -9421,15 +9428,51 @@ async function main() {
             sendJson({ ok: false, code: 'NOTIFY_TOO_LONG', error: `通知正文过长（${message.length} 字，上限 4000）`, hint: '只推摘要，不要推整篇日记' }, 400);
             return;
           }
-          if (SENSITIVE_RE.test(message)) {
-            sendJson({ ok: false, code: 'NOTIFY_SENSITIVE', error: '通知正文疑似含敏感信息，已阻止发送', hint: '检查日记里是否带路径/令牌；去掉后再推' }, 403);
+          const taskResultId = typeof body.taskResult?.taskId === 'string' && /^task-[A-Za-z0-9-]+$/.test(body.taskResult.taskId)
+            ? body.taskResult.taskId
+            : '';
+          const sensitive = taskResultId ? hasSensitiveTaskOutput(message) : SENSITIVE_RE.test(message);
+          if (sensitive) {
+            sendJson({
+              ok: false,
+              code: 'NOTIFY_SENSITIVE',
+              error: '通知正文疑似含敏感信息，已阻止发送',
+              hint: taskResultId ? '任务结果含密钥、凭据或受限系统路径；去掉敏感内容后再补发' : '检查日记里是否带路径/令牌；去掉后再推',
+            }, 403);
+            return;
+          }
+          const imageAudit = collectTaskNotifyImages(taskResultId ? body.taskResult?.images : undefined);
+          if (!imageAudit.ok) {
+            sendJson({ ok: false, code: imageAudit.code, error: imageAudit.error, hint: imageAudit.hint }, imageAudit.status);
             return;
           }
           const fullText = title && title !== '通知' ? `【${title}】\n${message}` : message;
           try {
-            const sent = await withTimeout(bot.sendPrivateMessage(Number(owner), text(escapeCqText(fullText))), SEND_TIMEOUT_MS, 'QQ 管理员通知');
-            log(`控制台：管理员通知已私聊 ${owner}`);
-            sendJson({ ok: true, owner, messageId: sent?.message_id ?? null });
+            // 管理员控制台通知属于系统直发 owner，不绑定普通 QQ 聊天会话的 Memory V2 租约；
+            // 经由 sendChain 串行并凭一次性 managementSendTickets 放行，防止无聊天会话时被当成过期会话拦截。
+            const conv = `private:${owner}`;
+            const ticket = `notify-owner:${crypto.randomUUID()}`;
+            const payload = imageAudit.buffers.length
+              ? [
+                  { type: 'text', data: { text: escapeCqText(fullText) } },
+                  ...imageAudit.buffers.map((buf) => ({ type: 'image', data: { file: `base64://${buf.toString('base64')}` } })),
+                ]
+              : text(escapeCqText(fullText));
+            const pendingSend = sendChain.then(async () => {
+              managementSendTickets.set(conv, ticket);
+              try {
+                return await withTimeout(bot.sendPrivateMessage(Number(owner), payload), SEND_TIMEOUT_MS, 'QQ 管理员通知');
+              } finally {
+                managementSendTickets.delete(conv);
+              }
+            });
+            sendChain = pendingSend.catch(() => {});
+            const sent = await pendingSend;
+            if (taskResultId) {
+              try { recordSentMessagesV2(conv, [truncateText(fullText, 200)]); } catch {}
+            }
+            log(`控制台：管理员通知已私聊 ${owner}${imageAudit.buffers.length ? `（附 ${imageAudit.buffers.length} 张截图）` : ''}`);
+            sendJson({ ok: true, owner, messageId: sent?.message_id ?? null, imageCount: imageAudit.buffers.length });
           } catch (error) {
             const detail = String(error?.message ?? error);
             log(`控制台：管理员通知发送失败：${detail}`);
@@ -10271,6 +10314,66 @@ async function main() {
     return { buffer: buf, mimeType: mimeFromBuffer(buf) };
   }
 
+  /**
+   * 校验本机任务附图列表（最多 3 张）：
+   * 拦截符号链接越界、系统敏感文件、非图片格式与超大像素，返回可直接编码 base64:// 的 Buffer 列表。
+   */
+  function collectTaskNotifyImages(rawImages) {
+    if (rawImages === undefined || rawImages === null) return { ok: true, buffers: [] };
+    if (!Array.isArray(rawImages)) {
+      return { ok: false, status: 400, code: 'NOTIFY_IMAGE_INVALID', error: '通知附图列表格式无效', hint: '请传入最多 3 个本地图片路径组成的数组' };
+    }
+    if (!rawImages.length) return { ok: true, buffers: [] };
+    const allowedRoots = [os.homedir(), os.tmpdir(), '/tmp', '/private/tmp']
+      .filter(Boolean)
+      .map((dir) => { try { return fs.realpathSync(dir); } catch { return ''; } })
+      .filter(Boolean);
+    const seenHashes = new Set();
+    const buffers = [];
+    let totalBytes = 0;
+    for (const entry of rawImages.slice(0, 3)) {
+      const candidate = typeof entry === 'string' ? entry.trim() : '';
+      if (!candidate) {
+        return { ok: false, status: 400, code: 'NOTIFY_IMAGE_INVALID', error: '通知附图包含空路径', hint: '只传有效的本地截图文件路径' };
+      }
+      if (isUnsafeTaskFilePath(candidate, { allowTempDir: true })) {
+        return { ok: false, status: 403, code: 'NOTIFY_IMAGE_BLOCKED', error: '附图路径命中安全限制，已阻止发送', hint: '只附带工作区、桌面或临时目录下的普通图片文件' };
+      }
+      let real;
+      try {
+        real = fs.realpathSync(candidate);
+      } catch {
+        return { ok: false, status: 400, code: 'NOTIFY_IMAGE_INVALID', error: `找不到通知附图：${path.basename(candidate)}`, hint: '确认截图文件仍存在于磁盘后再补发' };
+      }
+      const inAllowedRoot = allowedRoots.some((root) => real === root || real.startsWith(root + path.sep));
+      if (!inAllowedRoot || isUnsafeTaskFilePath(real, { allowTempDir: true }) || !/\.(?:png|jpe?g|webp|gif)$/i.test(real)) {
+        return { ok: false, status: 403, code: 'NOTIFY_IMAGE_BLOCKED', error: '附图真实路径超出允许范围或非图片格式', hint: '不要把敏感目录或非图片文件附带到任务回执中' };
+      }
+      let stat;
+      try {
+        stat = fs.statSync(real);
+      } catch {
+        return { ok: false, status: 400, code: 'NOTIFY_IMAGE_INVALID', error: `无法读取通知附图：${path.basename(real)}`, hint: '确认截图文件权限正常后重试' };
+      }
+      if (!stat.isFile() || stat.size < 12) {
+        return { ok: false, status: 400, code: 'NOTIFY_IMAGE_INVALID', error: `通知附图无效或为空：${path.basename(real)}`, hint: '确认截图已完整写入磁盘后再补发' };
+      }
+      if (stat.size > MAX_MEDIA_BYTES || totalBytes + stat.size > MAX_MEDIA_BYTES) {
+        return { ok: false, status: 400, code: 'NOTIFY_IMAGE_INVALID', error: '通知附图总大小超过单条消息上限', hint: '压缩截图或减少单次发送张数后重试' };
+      }
+      const buf = fs.readFileSync(real);
+      if (!acceptImageBuffer(buf, `本机任务附图(${path.basename(real)})`)) {
+        return { ok: false, status: 400, code: 'NOTIFY_IMAGE_INVALID', error: `附图不是有效的 PNG/JPEG/GIF/WebP 或像素超限：${path.basename(real)}`, hint: '重新生成有效截图后再重试' };
+      }
+      const hash = crypto.createHash('sha256').update(buf).digest('hex');
+      if (seenHashes.has(hash)) continue;
+      seenHashes.add(hash);
+      totalBytes += buf.length;
+      buffers.push(buf);
+    }
+    return { ok: true, buffers };
+  }
+
   async function fetchOneBotImage(media) {
     // 表情包（市场/收藏表情）优先走 CDN：get_image 对市场表情必然失败
     // （SnowLuma 缓存里没有该文件），先试 URL 能省一次失败往返，也更可靠。
@@ -10749,16 +10852,47 @@ async function main() {
     return { ok: true, maxChars, voice };
   }
 
+  let localTaskCfgCache = { mtimeMs: -1, value: { mode: 'desktop', chatHandoff: true } };
+  function readLocalTaskConfig() {
+    try {
+      if (typeof SURFCORE_DIR !== 'string' || !SURFCORE_DIR) return { mode: 'desktop', chatHandoff: true };
+      const file = path.join(SURFCORE_DIR, 'config.json');
+      const mtimeMs = fs.statSync(file).mtimeMs;
+      if (localTaskCfgCache.mtimeMs !== mtimeMs) {
+        const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const raw = parsed?.localTask ?? {};
+        localTaskCfgCache = {
+          mtimeMs,
+          value: {
+            mode: raw.mode === 'files-only' ? 'files-only' : 'desktop',
+            chatHandoff: raw.chatHandoff !== false,
+          },
+        };
+      }
+      return localTaskCfgCache.value;
+    } catch {
+      return { mode: 'desktop', chatHandoff: true };
+    }
+  }
+
   function getNativeQQCapabilities(key) {
     let admission;
     try { admission = nativeVoiceAdmission(key); }
     catch { admission = { ok: false, code: 'VOICE_CAPABILITY_UNAVAILABLE', hint: '检查语音设置、触发权限和本机额度后重试。', maxChars: 120 }; }
+    const owner = String(cfg.ownerQQ ?? '').trim();
+    const isOwnerPrivate = Boolean(owner && String(key ?? '') === `private:${owner}`);
+    const lt = readLocalTaskConfig();
+    const hasLocalTaskClient = typeof localTaskClient === 'object' && localTaskClient !== null;
     return {
       ok: true,
       voice: {
         enabled: admission.ok,
         maxChars: admission.maxChars,
         ...(admission.ok ? {} : { code: admission.code, hint: admission.hint }),
+      },
+      localTask: {
+        enabled: isOwnerPrivate && hasLocalTaskClient && lt.chatHandoff === true && currentMode !== 'silent',
+        mode: lt.mode,
       },
     };
   }
@@ -12822,13 +12956,11 @@ async function main() {
     if (purposeTimer) return;
     ensurePurposeSchedule(purposeState, { now: Date.now(), config: cfg.purpose });
     savePurposeState();
-    purposeTimer = setInterval(() => { void purposeTick(); }, 60 * 1000);
+    // 目的自动投递在 V2 边界内已被阻断（legacy runPurposeOnce 恒返回 MEMORY_SOURCE_UNREFERENCED），
+    // 不再起 60s 后台轮询往 memoryV2Failures/activity 刷屏；手动调用 runPurpose() 仍保留结构化阻断。
+    purposeTimer = setTimeout(() => { void warmPurposeState().catch((error) => log(`[目的] 预热失败：${error?.message ?? error}`)); }, 1500);
     purposeTimer.unref?.();
-    log(`[目的] 已启动：每 60 秒检查一次；下次 ${purposeState.nextFireAt ? new Date(purposeState.nextFireAt).toLocaleString() : '未排定'}`);
-    // 先冷启动「想一遍」（不投递），再等 30 分钟后的第一枪。
-    setTimeout(() => { void warmPurposeState().catch((error) => log(`[目的] 预热失败：${error?.message ?? error}`)); }, 1500).unref?.();
-    // 启动时立刻看一次：停机期间错过的那一枪，只要不在安静时段 / 主人正在聊天就补上。
-    setTimeout(() => { void purposeTick(); }, 8000).unref?.();
+    log(`[目的] 已安排只读目标假设预热（后台自主投递已在 V2 边界暂停）`);
   }
 
   /** 她真的往主人私聊发了消息（所有发送端点最终都会记到这里）。 */
@@ -15201,13 +15333,31 @@ async function main() {
         source: { botId: String(event?.self_id ?? selfUserId ?? ''), channel: 'private', conversationId: owner, userId: owner, messageId },
         text: intent.goal,
         workspaceId: 'owner',
+        ...(intent.mode ? { mode: intent.mode } : {}),
+        origin: 'command',
       });
       await reply(result.ok ? result.text : `没接住（${result.code}）：${result.error}\n下一步：${result.hint ?? '重发一次'}`);
+      return true;
+    }
+    if (intent.kind === 'answer') {
+      const result = await localTaskClient.answer({
+        id: intent.id,
+        decision: intent.decision,
+        answerText: intent.answerText,
+        source: { botId: String(event?.self_id ?? selfUserId ?? ''), channel: 'private', conversationId: owner, userId: owner, messageId },
+      });
+      await reply(result.ok ? result.text : `确认没交上去（${result.code}）：${result.error}\n下一步：${result.hint ?? '发「本机任务列表」查看当前等待项'}`);
       return true;
     }
     if (intent.kind === 'query') {
       const result = await localTaskClient.query(intent.taskId ?? undefined);
       await reply(result.ok ? result.text : `查不到（${result.code}）：${result.error}\n下一步：${result.hint ?? '重启 DSH 后重试'}`);
+      return true;
+    }
+    if (intent.kind === 'redeliver') {
+      if (!intent.taskId) { await reply('补发哪个任务的结果？回「本机任务列表」拿任务号。'); return true; }
+      const redelivered = await localTaskClient.redeliver(intent.taskId);
+      await reply(redelivered.ok ? redelivered.text : `补发失败（${redelivered.code}）：${redelivered.error}\n下一步：${redelivered.hint ?? '先在设置页核对回传状态'}`);
       return true;
     }
     if (!intent.taskId) { await reply('取消哪个任务？回「本机任务列表」拿任务号。'); return true; }
