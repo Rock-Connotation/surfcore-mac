@@ -1,4 +1,4 @@
-// 本机任务通道的契约测试：令牌/来源校验、submit 去重、query 文案、cancel 语义。
+// 本机任务通道的契约测试：令牌/来源校验、submit 去重与 queued 禁直派、query 文案、cancel 语义、redeliver 补发。
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -19,8 +19,8 @@ function makeDomain() {
         keys: () => [...store.keys()],
         entries: () => [...store.entries()],
         get size() { return store.size },
-        put(key, value) { LOCAL_TASK_DOMAIN.tables.tasks.valueSchema.parse(value); store.set(key, value) },
-        delete: (key) => store.delete(key),
+        async put(key, value) { LOCAL_TASK_DOMAIN.tables.tasks.valueSchema.parse(value); store.set(key, value) },
+        async delete(key) { return store.delete(key) },
       }
     },
   }
@@ -43,16 +43,31 @@ function fakeRes() {
 }
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'local-task-api-'))
-let promptCount = 0
+let dispatchCalls = []
 let cancelCount = 0
+let redeliverCalls = []
 const service = createLocalTaskService({ domain: makeDomain(), newId: (() => { let n = 0; return () => `t${++n}` })() })
 const runtime = {
   ok: true,
   service,
   runner: {
     presetId: 'local-task',
-    dispatch: async (taskId) => { promptCount++; service.attachSession({ taskId, sessionId: `s-${taskId}` }); return { ok: true } },
-    cancel: async (taskId) => { cancelCount++; service.cancelTask({ actor: service.queryTask({ taskId }).task.trustedActor, taskId }); return { ok: true, cancelledTurn: true } },
+    dispatch: async (taskId) => {
+      dispatchCalls.push(taskId)
+      await service.attachSession({ taskId, sessionId: `s-${taskId}`, requestId: `req-${taskId}` })
+      return { ok: true }
+    },
+    cancel: async (taskId) => {
+      cancelCount++
+      await service.cancelTask({ actor: service.queryTask({ taskId }).task.trustedActor, taskId })
+      return { ok: true, cancelledTurn: true }
+    },
+  },
+  redeliver: async (taskId) => {
+    redeliverCalls.push(taskId)
+    const view = service.queryTask({ taskId })
+    if (!view.ok) return view
+    return { ok: true, taskId, text: `已补发任务 ${taskId} 的结果` }
   },
 }
 const api = createLocalTaskApi({ stateDir: root, currentDshUrl: () => 'http://127.0.0.1:5500', getRuntime: () => runtime })
@@ -72,7 +87,7 @@ async function call(body, options = {}) {
   const res = await call({ action: 'submit', text: 'x', source: { botId: 'b', channel: 'private', conversationId: 'o', userId: 'o', messageId: 'm1' } })
   assert.equal(res.status, 403)
   assert.equal(res.body.code, 'LOCAL_TASK_AUTH_REQUIRED')
-  assert.equal(promptCount, 0)
+  assert.equal(dispatchCalls.length, 0)
   pass('无令牌被拒')
 }
 
@@ -90,15 +105,28 @@ async function call(body, options = {}) {
   assert.equal(res.status, 200)
   assert.equal(res.body.ok, true)
   assert.match(res.body.text, /已接收/)
-  assert.equal(promptCount, 1)
+  assert.equal(res.body.queued, false)
+  assert.equal(dispatchCalls.length, 1)
   pass('提交受理并派发')
+}
+
+// 3b. P1-2 已有任务在跑时第二条 submit 进入 queued，绝不直接调用 runner.dispatch
+{
+  const res = await call({ action: 'submit', text: '第二条任务', source: { botId: 'b', channel: 'private', conversationId: 'owner', userId: 'owner', messageId: 'm2' } }, { token })
+  assert.equal(res.status, 200)
+  assert.equal(res.body.ok, true)
+  assert.equal(res.body.queued, true)
+  assert.match(res.body.text, /已排队/)
+  assert.equal(dispatchCalls.length, 1, 'queued 任务不得直接调用 runner.dispatch')
+  assert.equal(service.queryTask({ taskId: res.body.taskId }).task.executionStatus, 'queued')
+  pass('P1-2 queued 任务只入队不直接调用 runner.dispatch')
 }
 
 // 4. 同消息号重复 submit → duplicate，不重复派发
 {
   const res = await call({ action: 'submit', text: '整理周报', source: { botId: 'b', channel: 'private', conversationId: 'owner', userId: 'owner', messageId: 'm1' } }, { token })
   assert.equal(res.body.duplicate, true)
-  assert.equal(promptCount, 1)
+  assert.equal(dispatchCalls.length, 1)
   pass('重复消息不重复派发')
 }
 
@@ -134,6 +162,22 @@ async function call(body, options = {}) {
   assert.equal(cancelCount, 1)
   assert.equal(service.queryTask({ taskId: 't1' }).task.executionStatus, 'cancelled')
   pass('取消落到停止态')
+}
+
+// 8b. P1-8 redeliver 补发接口：调用 runtime.redeliver，不触发 runner.dispatch
+{
+  const bad = await call({ action: 'redeliver' }, { token })
+  assert.equal(bad.body.ok, false)
+  assert.equal(bad.body.code, 'TASK_ID_REQUIRED')
+  assert.ok(bad.body.hint)
+
+  const res = await call({ action: 'redeliver', taskId: 't1' }, { token })
+  assert.equal(res.status, 200)
+  assert.equal(res.body.ok, true)
+  assert.match(res.body.text, /已补发/)
+  assert.deepEqual(redeliverCalls, ['t1'])
+  assert.equal(dispatchCalls.length, 1, 'redeliver 不得触发 dispatch')
+  pass('P1-8 redeliver 通道接口直达补发且不触发执行')
 }
 
 // 9. 未知动作 → 明确拒绝

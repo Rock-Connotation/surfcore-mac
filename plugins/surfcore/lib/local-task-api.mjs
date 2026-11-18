@@ -23,7 +23,7 @@ function localOrigin(raw) {
   return value
 }
 
-export function createLocalTaskApi({ stateDir, currentDshUrl, getRuntime, maxBodyBytes = 64 * 1024 } = {}) {
+export function createLocalTaskApi({ stateDir, currentDshUrl, getRuntime, getDefaultMode = () => 'files-only', maxBodyBytes = 64 * 1024 } = {}) {
   if (!path.isAbsolute(stateDir ?? '') || typeof currentDshUrl !== 'function' || typeof getRuntime !== 'function') throw new TypeError('Invalid local task transport configuration.')
   const token = randomBytes(32).toString('hex')
   const root = path.join(stateDir, 'local-task')
@@ -55,7 +55,7 @@ export function createLocalTaskApi({ stateDir, currentDshUrl, getRuntime, maxBod
 
   async function dispatch(runtime, input) {
     const source = input?.source
-    const created = runtime.service.submitTask({
+    const created = await runtime.service.submitTask({
       trustedActor: {
         platform: 'qq',
         botId: String(source?.botId ?? ''),
@@ -63,28 +63,48 @@ export function createLocalTaskApi({ stateDir, currentDshUrl, getRuntime, maxBod
         conversationId: String(source?.conversationId ?? ''),
         userId: String(source?.userId ?? ''),
       },
-      source: { botId: String(source?.botId ?? ''), channel: String(source?.channel ?? ''), conversationId: String(source?.conversationId ?? ''), messageId: String(source?.messageId ?? '') },
+      source: {
+        botId: String(source?.botId ?? ''),
+        channel: String(source?.channel ?? ''),
+        conversationId: String(source?.conversationId ?? ''),
+        messageId: String(source?.messageId ?? ''),
+      },
       text: String(input?.text ?? ''),
       workspaceId: String(input?.workspaceId ?? 'default'),
+      mode: typeof input?.mode === 'string' && input.mode ? input.mode : (getDefaultMode?.() || 'files-only'),
+      origin: typeof input?.origin === 'string' && input.origin ? input.origin : 'command',
     })
     if (!created.ok) return created
     const taskId = created.task.taskId
-    if (created.duplicate) return reply(`这条已经接过了，任务号 ${taskId}`, { taskId, duplicate: true })
+    if (created.duplicate) return reply(`这条已经接过了，任务号 ${taskId}`, { taskId, duplicate: true, queued: created.task.executionStatus === 'queued' })
+    // P1-2：queued 任务绝不得直接调 runner.dispatch()；必须等当前任务结束由 FIFO 队列派发。
+    if (created.task.executionStatus === 'queued' || created.queued) {
+      return reply(`已排队（前面还有任务在执行），任务号 ${taskId}`, { taskId, queued: true })
+    }
     const started = await runtime.runner.dispatch(taskId)
     if (!started.ok) return { ...started, taskId }
-    return reply(`已接收，任务号 ${taskId}`, { taskId })
+    return reply(`已接收，任务号 ${taskId}`, { taskId, queued: false })
   }
 
   function describeAll(runtime, taskId) {
+    const pendingInteractions = runtime.interactions?.listPending?.(taskId ? { taskId } : {}) ?? []
     if (taskId) {
       const one = runtime.service.queryTask({ taskId })
-      return one.ok ? reply(runtime.service.describeTask(one.task), { taskId }) : one
+      if (!one.ok) return one
+      const extra = pendingInteractions.length
+        ? `\n等待确认：${pendingInteractions.map((i) => `${i.id} (${i.title})`).join('; ')}`
+        : ''
+      return reply(runtime.service.describeTask(one.task) + extra, { taskId, pendingInteractions })
     }
     const all = runtime.service.queryTask({})
+    const prefix = all.quarantined ? '⚠️ 存储域已隔离核对，当前暂停派发新任务。\n' : ''
     const tasks = all.tasks.slice(0, 10)
-    if (!tasks.length) return reply('还没有任务')
+    const pendingLine = pendingInteractions.length
+      ? `\n等待确认：${pendingInteractions.map((i) => `${i.id} [${i.taskId ?? '-'}] ${i.title}`).join('；')}`
+      : ''
+    if (!tasks.length && !pendingInteractions.length) return reply(prefix ? prefix.trim() : '还没有任务', { pendingInteractions })
     const lines = tasks.map((task) => runtime.service.describeTask(task).split('\n')[0])
-    return reply(lines.join('\n'))
+    return reply((prefix + lines.join('\n') + pendingLine).trim(), { pendingInteractions })
   }
 
   async function handle(req, res, url) {
@@ -103,11 +123,36 @@ export function createLocalTaskApi({ stateDir, currentDshUrl, getRuntime, maxBod
       if (body.action === 'submit') { json(res, 200, await dispatch(runtime, body)); return }
       if (body.action === 'query') { json(res, 200, describeAll(runtime, String(body.taskId ?? ''))); return }
       if (body.action === 'cancel') {
-        const stopped = await runtime.runner.cancel(String(body.taskId ?? ''), runtime.service.queryTask({ taskId: String(body.taskId ?? '') }).task?.trustedActor ?? null)
-        json(res, 200, stopped.ok ? reply(`已停止 ${body.taskId}`, { taskId: body.taskId, uncertain: stopped.uncertain === true }) : stopped)
+        const taskId = String(body.taskId ?? '')
+        const actor = runtime.service.queryTask({ taskId }).task?.trustedActor ?? null
+        const stopped = await runtime.runner.cancel(taskId, actor)
+        json(res, 200, stopped.ok ? reply(`已停止 ${taskId}`, { taskId, uncertain: stopped.uncertain === true }) : stopped)
         return
       }
-      json(res, 400, fail('LOCAL_TASK_ACTION_INVALID', `不认识的动作：${String(body.action ?? '')}`, '只支持 submit / query / cancel'))
+      if (body.action === 'redeliver') {
+        const taskId = String(body.taskId ?? '').trim()
+        if (!taskId) { json(res, 200, fail('TASK_ID_REQUIRED', '缺少要补发的任务号', '先发「本机任务列表」确认任务号')); return }
+        if (typeof runtime.redeliver !== 'function') {
+          json(res, 503, fail('LOCAL_TASK_REDELIVER_UNSUPPORTED', '当前运行时未装配结果补发接口', '重启 DSH 后重试'))
+          return
+        }
+        json(res, 200, await runtime.redeliver(taskId))
+        return
+      }
+      if (body.action === 'answer') {
+        if (typeof runtime.interactions?.answer !== 'function') {
+          json(res, 503, fail('LOCAL_TASK_ANSWER_UNSUPPORTED', '当前运行时未装配交互确认接口', '重启 DSH 后重试'))
+          return
+        }
+        json(res, 200, runtime.interactions.answer({
+          id: body.interactionId ?? body.id,
+          decision: body.decision,
+          answerText: body.answerText ?? body.text,
+          actor: body.source ?? null,
+        }))
+        return
+      }
+      json(res, 400, fail('LOCAL_TASK_ACTION_INVALID', `不认识的动作：${String(body.action ?? '')}`, '只支持 submit / query / cancel / redeliver / answer'))
     } catch (error) {
       json(res, 500, fail('LOCAL_TASK_HANDLER_FAILED', `本机任务接口出错：${String(error?.message ?? error)}`, '重启 DSH 后重试；已落盘的任务不会丢'))
     }

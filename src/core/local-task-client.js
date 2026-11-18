@@ -48,5 +48,7 @@ export function createLocalTaskClient({ stateDir, fetchImpl = globalThis.fetch, 
     submit: (input) => request({ action: 'submit', ...input }),
     query: (taskId) => request({ action: 'query', ...(taskId ? { taskId } : {}) }),
     cancel: (taskId) => request({ action: 'cancel', ...(taskId ? { taskId } : {}) }),
+    redeliver: (taskId) => request({ action: 'redeliver', ...(taskId ? { taskId } : {}) }),
+    answer: (input) => request({ action: 'answer', ...input }),
   })
 }

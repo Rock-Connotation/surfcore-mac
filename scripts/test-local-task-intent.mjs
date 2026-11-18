@@ -25,10 +25,11 @@ assert.deepEqual(parseLocalTaskIntent('本机任务列表'), { kind: 'query', ta
 assert.deepEqual(parseLocalTaskIntent('本机任务状态 task-abc'), { kind: 'query', taskId: 'task-abc', owner: null })
 pass('列表与状态')
 
-// 5. 取消
+// 5. 取消与补发
 assert.deepEqual(parseLocalTaskIntent('取消本机任务'), { kind: 'cancel', taskId: null, owner: null })
 assert.deepEqual(parseLocalTaskIntent('取消本机任务 task-abc'), { kind: 'cancel', taskId: 'task-abc', owner: null })
-pass('取消识别')
+assert.deepEqual(parseLocalTaskIntent('补发本机任务 task-abc'), { kind: 'redeliver', taskId: 'task-abc', owner: null })
+pass('取消与补发识别')
 
 // 6. 普通聊天绝不命中；尤其是 task-harness 已占用的三种说法
 for (const text of [

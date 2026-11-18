@@ -13,8 +13,8 @@ function makeDomain() {
         keys: () => [...store.keys()],
         entries: () => [...store.entries()],
         get size() { return store.size },
-        put(key, value) { LOCAL_TASK_DOMAIN.tables.tasks.valueSchema.parse(value); store.set(key, value) },
-        delete: (key) => store.delete(key),
+        async put(key, value) { LOCAL_TASK_DOMAIN.tables.tasks.valueSchema.parse(value); store.set(key, value) },
+        async delete(key) { return store.delete(key) },
       }
     },
   }
@@ -44,6 +44,7 @@ function harness() {
     tools: { schemas: () => [{ name: 'read' }, { name: 'write' }] },
     subscribe: (fn) => { listeners.push(fn); return () => { listeners.length = 0 } },
     isGateLive: () => true,
+    subscribeGate: () => () => {},
     workspaceRoot: ROOT,
     newRequestId: () => `r${++n}`,
   })
@@ -54,7 +55,9 @@ function harness() {
     text,
     workspaceId: 'w1',
   })
-  const emit = (sessionId, event) => listeners.forEach((fn) => fn({ id: sessionId }, event))
+  const emit = async (sessionId, event) => {
+    for (const fn of [...listeners]) await fn({ id: sessionId }, event)
+  }
   return { service, runner, created, prompted, cancelled, submit, emit, domain }
 }
 
@@ -66,7 +69,7 @@ applyGate({ tools: { guard: () => {} }, effect: () => {} })
 // 1. 查询：返回任务与可读文案，且不建会话、不送 prompt
 {
   const h = harness()
-  const { task } = h.submit('m1', '整理周报')
+  const { task } = await h.submit('m1', '整理周报')
   await h.runner.dispatch(task.taskId)
   const before = h.prompted.length
   const view = h.service.queryTask({ taskId: task.taskId })
@@ -92,10 +95,10 @@ applyGate({ tools: { guard: () => {} }, effect: () => {} })
 // 3. 重启对账：在途任务标 needs_reconciliation，且不重放 prompt
 {
   const h = harness()
-  const { task } = h.submit('m1', '整理周报')
+  const { task } = await h.submit('m1', '整理周报')
   await h.runner.dispatch(task.taskId)
   const before = h.prompted.length
-  const result = h.service.reconcileOnBoot()
+  const result = await h.service.reconcileOnBoot()
   assert.equal(result.ok, true)
   assert.equal(result.reconciled.length, 1)
   assert.equal(result.reconciled[0].from, 'running')
@@ -110,10 +113,10 @@ applyGate({ tools: { guard: () => {} }, effect: () => {} })
 // 4. 对账后并发席位释放：新任务可以立刻接
 {
   const h = harness()
-  const first = h.submit('m1', '任务一').task
+  const first = (await h.submit('m1', '任务一')).task
   await h.runner.dispatch(first.taskId)
-  h.service.reconcileOnBoot()
-  const second = h.submit('m2', '任务二').task
+  await h.service.reconcileOnBoot()
+  const second = (await h.submit('m2', '任务二')).task
   assert.equal(second.executionStatus, 'running', '对账后席位应释放')
   pass('对账释放并发席位')
 }
@@ -121,10 +124,10 @@ applyGate({ tools: { guard: () => {} }, effect: () => {} })
 // 5. 终态任务不被对账改写
 {
   const h = harness()
-  const { task } = h.submit('m1', '整理周报')
+  const { task } = await h.submit('m1', '整理周报')
   await h.runner.dispatch(task.taskId)
-  h.emit('s1', { type: 'turn/end', seq: 2, data: { turn: 1, reason: 'completed' } })
-  const result = h.service.reconcileOnBoot()
+  await h.emit('s1', { type: 'turn/end', seq: 2, data: { turn: 1, reason: 'completed' } })
+  const result = await h.service.reconcileOnBoot()
   assert.equal(result.reconciled.length, 0)
   assert.equal(h.service.queryTask({ taskId: task.taskId }).task.executionStatus, 'succeeded')
   pass('终态不受对账影响')
@@ -133,10 +136,10 @@ applyGate({ tools: { guard: () => {} }, effect: () => {} })
 // 6. 取消后重启：仍是 cancelled，不被对账改回 needs_reconciliation
 {
   const h = harness()
-  const { task } = h.submit('m1', '整理周报')
+  const { task } = await h.submit('m1', '整理周报')
   await h.runner.dispatch(task.taskId)
   await h.runner.cancel(task.taskId, actor)
-  const result = h.service.reconcileOnBoot()
+  const result = await h.service.reconcileOnBoot()
   assert.equal(result.reconciled.length, 0)
   assert.equal(h.service.queryTask({ taskId: task.taskId }).task.executionStatus, 'cancelled')
   pass('已取消的任务不被对账改写')
@@ -145,9 +148,9 @@ applyGate({ tools: { guard: () => {} }, effect: () => {} })
 // 7. 取消优先于排队：queued 也能被停止
 {
   const h = harness()
-  const first = h.submit('m1', '任务一').task
+  const first = (await h.submit('m1', '任务一')).task
   await h.runner.dispatch(first.taskId)
-  const second = h.submit('m2', '任务二').task
+  const second = (await h.submit('m2', '任务二')).task
   assert.equal(second.executionStatus, 'queued')
   const stopped = await h.runner.cancel(second.taskId, actor)
   assert.equal(stopped.ok, true)
@@ -159,7 +162,7 @@ applyGate({ tools: { guard: () => {} }, effect: () => {} })
 // 8. 别人的任务取消被拒
 {
   const h = harness()
-  const { task } = h.submit('m1', '整理周报')
+  const { task } = await h.submit('m1', '整理周报')
   await h.runner.dispatch(task.taskId)
   const stopped = await h.runner.cancel(task.taskId, { ...actor, userId: 'stranger' })
   assert.equal(stopped.ok, false)
