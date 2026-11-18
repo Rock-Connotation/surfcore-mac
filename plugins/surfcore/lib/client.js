@@ -1802,7 +1802,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           repairMsg ? h("div", { className: "qbw-hint", style: { marginTop: "6px", color: "var(--qbw-warn-text)" } }, repairMsg) : null,
           h("div", { className: "qbw-actions", style: { marginTop: "12px" } },
             canRepairDsh ? h(Btn, { onClick: repairDsh, disabled: repairing || repairSucceeded }, repairing ? "修复中…" : "修复 DSH 注册（MCP / bundle）") : null,
-            h(Btn, { onClick: () => onAck?.(event.id) }, urgent ? "确认并关闭" : "确认"),
+            h(Btn, { onClick: () => onAck?.(event) }, urgent ? "确认并关闭" : "确认"),
             h(Btn, { kind: "qbw-btn2", onClick: onClose }, "稍后"))));
     }
 
@@ -1857,6 +1857,11 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       const launch = overview?.launch ?? {};
       const [launchSel, setLaunchSel] = useState({ qq: true, bili: true, pet: false, voice: false });
       const [voiceBranch, setVoiceBranch] = useState("voice-local");
+      const installedVoiceKey = [...(launch.voice?.installed ?? []), ...(launch.voice?.volcConfigured ? ["voice-cloud"] : [])].join(",");
+      useEffect(() => {
+        const available = installedVoiceKey ? installedVoiceKey.split(",") : [];
+        if (available.length && !available.includes(voiceBranch)) setVoiceBranch(available[0]);
+      }, [installedVoiceKey]);
       const [launchResult, setLaunchResult] = useState(null);
       const [launchErr, setLaunchErr] = useState(null);
       // ── 组件更新（2026-10-26）──────────────────────────────────────────
@@ -1994,9 +1999,11 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         const timer = setInterval(loadGateEvents, 15000);
         return () => clearInterval(timer);
       }, [loadGateEvents]);
-      const ackGate = async (id) => {
+      const ackGate = async (target) => {
         try {
-          await api("/gate-events", { method: "POST", body: id ? { ids: [id] } : { all: true } });
+          const id = target && typeof target === "object" ? target.id : target;
+          const dedupeKey = target && typeof target === "object" ? target.dedupeKey : "";
+          await api("/gate-events", { method: "POST", body: id ? { ids: [id], ...(dedupeKey ? { dedupeKey } : {}) } : { all: true } });
           setGateAlert(null);
           await loadGateEvents();
         } catch (e) { toast(`✗ 确认失败：${e.message}`); }
@@ -2141,7 +2148,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("div", { className: "qbw-card" },
             h("h4", null, "B站 ", h(StatusDot, { ok: Boolean(bili.available) }, bili.available ? "已有账号配置" : "待配置账号"))),
           h("div", { className: "qbw-card" },
-            h("h4", null, "合体层 ", h(StatusDot, { ok: scheduler.running }, scheduler.reason === "comments-only" ? "受控评论监听中" : scheduler.running ? "生物钟在跑" : "生物钟未启动")),
+            h("h4", null, "合体层 ", h(StatusDot, { ok: scheduler.running || scheduler.reason === "controlled-only" }, scheduler.reason === "comments-only" ? "受控评论监听中" : scheduler.reason === "controlled-only" ? "受控单轮模式" : scheduler.running ? "生物钟在跑" : "生物钟未启动")),
             h("div", { className: "qbw-kv" }, h("span", null, "身份对齐"), h("span", null, `${align.links ?? 0} 条 / 候选 ${align.candidates ?? 0}`)),
             h("div", { className: "qbw-kv" }, h("span", null, "隐私策略"), h("span", null, `v${overview?.privacyPolicyVersion ?? "?"}`))),
           h("div", { className: "qbw-card" },
@@ -2155,7 +2162,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
               h("span", null, qqStart ? (bridge.running ? "启动开关开 · 运行中" : "启动开关开 · 未运行") : "启动开关关")),
             h("div", { className: "qbw-kv" },
               h("span", null, "B站"),
-              h("span", null, biliStart ? (scheduler.reason === "comments-only" ? "启动开关开 · 受控评论监听中" : scheduler.running ? "启动开关开 · 生物钟在跑" : "启动开关开 · 未运行") : "启动开关关")),
+              h("span", null, biliStart ? (scheduler.reason === "comments-only" ? "启动开关开 · 受控评论监听中" : scheduler.reason === "controlled-only" ? "启动开关开 · 受控单轮模式" : scheduler.running ? "启动开关开 · 生物钟在跑" : "启动开关开 · 未运行") : "启动开关关")),
             h("div", { className: "qbw-group", style: { marginTop: "8px" } }, "一键启动 SurfCore"),
             h("div", { className: "qbw-actions", style: { marginTop: "4px" } },
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
@@ -2163,13 +2170,13 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 h("span", null, `QQ（含 SnowLuma）${launch.qq?.running ? " · 运行中" : " · 未运行"}`)),
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
                 h("input", { type: "checkbox", checked: launchSel.bili, onChange: (e) => setLaunchSel((v) => ({ ...v, bili: e.target.checked })) }),
-                h("span", null, `B站${launch.bili?.running ? " · 运行中" : " · 未运行"}`)),
+                h("span", null, `B站${launch.bili?.running ? " · 运行中" : (scheduler.reason === "controlled-only" ? " · 受控单轮模式" : " · 未运行")}`)),
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
                 h("input", { type: "checkbox", checked: launchSel.pet, onChange: (e) => setLaunchSel((v) => ({ ...v, pet: e.target.checked })) }),
                 h("span", null, `桌宠${launch.pet?.running ? " · 运行中" : (launch.pet?.installed ? " · 未运行" : " · 未安装")}`)),
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px" } },
                 h("input", { type: "checkbox", checked: launchSel.voice, onChange: (e) => setLaunchSel((v) => ({ ...v, voice: e.target.checked })) }),
-                h("span", null, `语音${launch.voice?.running ? " · 运行中" : " · 未运行"}`))),
+                h("span", null, `语音${launch.voice?.running ? (launch.voice?.volcCloudActive ? " · 运行中（火山云端）" : " · 运行中") : (((launch.voice?.installed ?? []).length || launch.voice?.volcConfigured) ? " · 未运行" : " · 未安装")}`))),
             launchSel.voice ? h("div", { className: "qbw-actions", style: { marginTop: "2px", paddingTop: 0 } },
               h("span", { className: "qbw-hint" }, "语音分支："),
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "4px" } },
@@ -2177,7 +2184,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 h("span", null, `本地模型${(launch.voice?.installed ?? []).includes("voice-local") ? "" : "（未安装）"}`)),
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "4px" } },
                 h("input", { type: "radio", name: "voiceBranch", checked: voiceBranch === "voice-cloud", onChange: () => setVoiceBranch("voice-cloud") }),
-                h("span", null, `云端模型${(launch.voice?.installed ?? []).includes("voice-cloud") ? "" : "（未安装）"}`))) : null,
+                h("span", null, `云端模型${(launch.voice?.installed ?? []).includes("voice-cloud") ? "" : (launch.voice?.volcConfigured ? "（火山云端直连）" : "（未安装）")}`))) : null,
             h("div", { className: "qbw-actions", style: { marginTop: "6px" } },
               h(Btn, { onClick: () => runLaunch("start"), disabled: !!busy }, busy === "launch-start" ? "启动中…" : "一键启动 SurfCore"),
               h(Btn, { kind: "qbw-btn2", onClick: () => runLaunch("stop"), disabled: !!busy }, busy === "launch-stop" ? "停止中…" : "一键停止（全部）"),
@@ -5571,9 +5578,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
      * 本机任务：只读列表 + 停止 + 打开原生会话。
      * 派发入口只有 QQ（`本机任务：…`），设置页刻意不做第二个发起入口。
      */
-    function LocalTasksTab({ busy, setBusy, toast }) {
+    function LocalTasksTab({ busy, setBusy, toast, unified, setUnified, onSave, dirty }) {
       const [data, setData] = useState(null);
       const [err, setErr] = useState("");
+      const [answers, setAnswers] = useState({});
       const load = useCallback(async () => {
         setBusy("tasks-load");
         try { setData(await api("/local-tasks")); setErr(""); }
@@ -5581,17 +5589,23 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         finally { setBusy(""); }
       }, [setBusy]);
       useEffect(() => { load(); }, [load]);
-      const act = async (taskId, action) => {
+      const act = async (taskId, action, extra = {}) => {
         setBusy(`tasks-${action}`);
         try {
-          const r = await api("/local-tasks", { method: "POST", body: { action, taskId } });
+          const r = await api("/local-tasks", { method: "POST", body: { action, taskId, ...extra } });
           if (action === "cancel") toast("已请求停止");
+          else if (action === "redeliver") toast(r.text || "已补发结果");
+          else if (action === "recover-quarantine") toast("已重新打开并核对存储域");
+          else if (action === "answer") toast(r.text || "已提交确认");
           else toast(`原生会话：${r.sessionId}`);
           await load();
         } catch (e) { toast(`失败：${[e.code, e.message, e.hint].filter(Boolean).join(" · ")}`); }
         finally { setBusy(""); }
       };
       const items = Array.isArray(data?.items) ? data.items : [];
+      const pendingInteractions = Array.isArray(data?.pendingInteractions) ? data.pendingInteractions : [];
+      const ltMode = unified?.localTask?.mode === "files-only" ? "files-only" : "desktop";
+      const chatHandoff = unified?.localTask?.chatHandoff !== false;
       const statusText = {
         queued: "排队中", running: "执行中", waiting: "等待确认", succeeded: "已完成",
         failed: "失败", cancelled: "已取消", needs_reconciliation: "需要复核",
@@ -5599,17 +5613,83 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const deliveryText = (list) => {
         const last = (list ?? []).slice(-1)[0];
         if (!last) return "未回传";
-        return last.state === "delivered" ? "已回传" : last.state === "uncertain" ? "回传未知" : last.state;
+        return last.state === "delivered" ? "已回传" : last.state === "sending" ? "发送中" : last.state === "uncertain" ? "回传未知" : last.state;
       };
       const active = (status) => ["queued", "running", "waiting"].includes(status);
+      const canRedeliver = (item) => {
+        if (active(item.status)) return false;
+        const last = (item.deliveries ?? []).slice(-1)[0];
+        return !last || (last.state !== "delivered" && last.state !== "sending");
+      };
       return h("div", { className: "qbw-panel" },
         h("div", { className: "qbw-row" },
           h("div", null,
             h("div", { className: "qbw-title" }, "本机任务"),
-            h("div", { className: "qbw-hint" }, "发起入口在 QQ 私聊：发「本机任务：<要它做什么>」；这里只能看、停止、打开原生会话。"),
+            h("div", { className: "qbw-hint" }, "发起入口在 QQ 私聊：发「本机任务：<要它做什么>」或直接在主人私聊对话中委托；这里只能看、确认、停止、补发旧结果、打开原生会话。"),
           ),
           h("button", { className: "qbw-btn", onClick: load, disabled: Boolean(busy) }, "刷新"),
         ),
+        typeof setUnified === "function" ? h("div", { className: "qbw-box", style: { marginBottom: "10px", padding: "10px" } },
+          h("div", { className: "qbw-row", style: { gap: "12px", alignItems: "center" } },
+            h("div", null,
+              h("div", null, "默认能力模式"),
+              h("div", { className: "qbw-hint" }, "全能桌面模式可使用 DSH Computer Use（Mac 应用）、隔离 Chrome 浏览器与沙箱命令行；仅文件模式严格只新建工作区文件。"),
+            ),
+            h("select", {
+              className: "qbw-input",
+              value: ltMode,
+              disabled: Boolean(busy),
+              onChange: (e) => setUnified(["localTask", "mode"], e.target.value === "files-only" ? "files-only" : "desktop"),
+            },
+              h("option", { value: "desktop" }, "全能桌面 + 隔离 Chrome（推荐）"),
+              h("option", { value: "files-only" }, "仅限工作区新建文件"),
+            ),
+          ),
+          h("div", { className: "qbw-row", style: { gap: "12px", alignItems: "center", marginTop: "8px" } },
+            h("div", null,
+              h("div", null, "主人私聊自然委派"),
+              h("div", { className: "qbw-hint" }, "开启后与红豆在主人私聊正常对话时她就能把电脑/浏览器活转入本机任务执行（群聊与非主人永不开放）。"),
+            ),
+            h("div", { style: { display: "flex", gap: "8px" } },
+              h("button", {
+                className: "qbw-btn" + (chatHandoff ? " primary" : ""),
+                disabled: Boolean(busy),
+                onClick: () => setUnified(["localTask", "chatHandoff"], !chatHandoff),
+              }, chatHandoff ? "已开启" : "已关闭"),
+              dirty && typeof onSave === "function" ? h("button", {
+                className: "qbw-btn primary",
+                disabled: Boolean(busy),
+                onClick: () => onSave(false),
+              }, "保存配置") : null,
+            ),
+          ),
+        ) : null,
+        pendingInteractions.length ? h("div", { className: "qbw-warnbox", style: { marginBottom: "10px" } },
+          h("div", { style: { fontWeight: 600, marginBottom: "6px" } }, `等待主人确认（${pendingInteractions.length} 项）`),
+          pendingInteractions.map((inter) => h("div", { key: inter.id, style: { marginBottom: "8px" } },
+            h("div", null, h("span", { className: "qbw-mono" }, inter.id), " · ", inter.title),
+            inter.detail ? h("div", { className: "qbw-hint" }, inter.detail) : null,
+            inter.isBinaryApproval
+              ? h("div", { style: { display: "flex", gap: "8px", marginTop: "4px" } },
+                  h("button", { className: "qbw-btn primary", disabled: Boolean(busy), onClick: () => act("", "answer", { interactionId: inter.id, decision: "allow" }) }, "允许这次"),
+                  inter.allowAlways ? h("button", { className: "qbw-btn", disabled: Boolean(busy), onClick: () => act("", "answer", { interactionId: inter.id, decision: "always" }) }, "始终允许") : null,
+                  h("button", { className: "qbw-btn", disabled: Boolean(busy), onClick: () => act("", "answer", { interactionId: inter.id, decision: "reject" }) }, "拒绝"),
+                )
+              : h("div", { style: { display: "flex", gap: "8px", marginTop: "4px" } },
+                  h("input", {
+                    className: "qbw-input",
+                    placeholder: "输入回答（或序号）",
+                    value: answers[inter.id] ?? "",
+                    onChange: (e) => setAnswers((prev) => ({ ...prev, [inter.id]: e.target.value })),
+                  }),
+                  h("button", { className: "qbw-btn primary", disabled: Boolean(busy), onClick: () => act("", "answer", { interactionId: inter.id, answerText: answers[inter.id] ?? "" }) }, "提交回答"),
+                ),
+          )),
+        ) : null,
+        data?.quarantined ? h("div", { className: "qbw-err" },
+          `存储域写入结果不明，已隔离暂停派发（${data.quarantine?.reason ?? "unknown-state"}）。`,
+          h("button", { className: "qbw-btn", onClick: () => act("", "recover-quarantine"), disabled: Boolean(busy) }, "重开并核对"),
+        ) : null,
         err ? h("div", { className: "qbw-err" }, err) : null,
         !data && !err ? h("div", { className: "qbw-hint" }, "读取中…") : null,
         data && items.length === 0 ? h("div", { className: "qbw-hint" }, "还没有任务。在 QQ 里发一条「本机任务：…」就会出现。") : null,
@@ -5620,10 +5700,11 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("tbody", null, items.map((item) => h("tr", { key: item.taskId },
             h("td", { className: "qbw-mono" }, item.taskId),
             h("td", null, item.goal),
-            h("td", null, statusText[item.status] ?? item.status),
+            h("td", null, (statusText[item.status] ?? item.status) + (item.mode === "desktop" ? "（桌面）" : "")),
             h("td", null, deliveryText(item.deliveries)),
             h("td", null,
               active(item.status) ? h("button", { className: "qbw-btn", onClick: () => act(item.taskId, "cancel"), disabled: Boolean(busy) }, "停止") : null,
+              canRedeliver(item) ? h("button", { className: "qbw-btn", onClick: () => act(item.taskId, "redeliver"), disabled: Boolean(busy) }, "补发结果") : null,
               item.sessionId ? h("button", { className: "qbw-btn", onClick: () => act(item.taskId, "open"), disabled: Boolean(busy) }, "原生会话") : null,
             ),
           ))),
@@ -6613,7 +6694,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
       if (tab === "extensions") return h(ExtensionsTab, { busy, setBusy, toast: notify, reload });
         if (tab === "advanced") return h(AdvancedTab, { qq: qq, bili, unified: unified, setQqPath, setBiliPath, setUnifiedPath, busy });
-        if (tab === "tasks") return h(LocalTasksTab, { busy, setBusy, toast: notify });
+        if (tab === "tasks") return h(LocalTasksTab, { busy, setBusy, toast: notify, unified, setUnified: setUnifiedPath, onSave: save, dirty });
         if (tab === "diag") return h(DiagnosticsTab, { busy, setBusy, toast: notify, reload });
         return null;
       };

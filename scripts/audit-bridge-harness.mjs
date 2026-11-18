@@ -330,6 +330,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
       async submit() { return { ok: false, code: 'LOCAL_TASK_HOST_UNAVAILABLE', error: 'fixture', hint: 'fixture' } },
       async query() { return { ok: false, code: 'LOCAL_TASK_HOST_UNAVAILABLE', error: 'fixture', hint: 'fixture' } },
       async cancel() { return { ok: false, code: 'LOCAL_TASK_HOST_UNAVAILABLE', error: 'fixture', hint: 'fixture' } },
+      async redeliver() { return { ok: false, code: 'LOCAL_TASK_HOST_UNAVAILABLE', error: 'fixture', hint: 'fixture' } },
     }),
     ...conversationClosure,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。

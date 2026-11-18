@@ -134,6 +134,11 @@ export const DEFAULT_UNIFIED = {
     pet: { versionUrl: 'https://github.com/Mieksido/surfpet/releases/latest/download/version.json' },
     voice: { localVersionUrl: '', cloudVersionUrl: '' },
   },
+  localTask: {
+    mode: 'desktop',
+    chatHandoff: true,
+    chromeProfileDir: '',
+  },
 };
 
 export const SECRET_PATHS = new Set([
@@ -624,6 +629,12 @@ export function saveUnified(incoming) {
   };
   next.bridge = isPlainObject(next.bridge) ? next.bridge : {};
   next.bridge.autoStart = next.platforms.start.qq;
+  const rawLt = isPlainObject(next.localTask) ? next.localTask : {};
+  next.localTask = {
+    mode: rawLt.mode === 'files-only' ? 'files-only' : 'desktop',
+    chatHandoff: rawLt.chatHandoff !== false,
+    chromeProfileDir: typeof rawLt.chromeProfileDir === 'string' ? rawLt.chromeProfileDir.trim() : '',
+  };
   const backup = backupFile(UNIFIED_FILE, 'unified-config');
   writeJsonAtomic(UNIFIED_FILE, next);
   return { config: next, backup };
