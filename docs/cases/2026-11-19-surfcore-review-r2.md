@@ -47,7 +47,7 @@
 | `npm run test:console-ui` | 0 | 22/22，真实 Chrome headless |
 | `npm run lint:failures` | 0 | 无新增失败 |
 | `npm run doc-facts` | 0 | 文档数字与代码一致（桥接 18375 行） |
-| `node scripts/release-manifest.mjs --verify-ref HEAD` | 0 | 1122/1122，问题 0 |
+| `node scripts/release-manifest.mjs --verify-ref HEAD` | 0 | 最终候选 HEAD 1123/1123，问题 0 |
 | 插件全量脚本（125 个） | 复验 0（结果见残余） | 首轮 119/125、复验 120/125；5 个失败在干净 `dev@4069552` 上同错误复现，属基线环境缺口；首轮 `test-bili-dm-r2` 单次 26/27，独立重跑 8/8、复验套件通过，未能复现 |
 
 ## 5. 本批回归 / 基线缺口 / 残余风险
