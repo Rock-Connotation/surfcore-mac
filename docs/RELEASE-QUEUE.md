@@ -27,7 +27,7 @@
 任务账本 fail-closed、QQ 研究证据与投递可见、发布清单双向校验与 staging 前置失败、记忆库 ACL 回读、
 macOS locale 守卫、控制台夹具补齐 voice/packs、QQ 模式在线/离线双回执。
 
-**覆盖提交**：候选分支 `fix/review-2026-11-19-r2`，基线 `dev@4069552`（提交 SHA 待本地提交确认后回填）。
+**覆盖提交**：候选分支 `fix/review-2026-11-19-r2`，基线 `dev@4069552`；本地候选 `c4722c6`（B站）、`8c60dcf`（QQ）、`d555674`（制品）、`52863d6`（运行时）、`fae7ac6`（文档），清单重生成提交见分支末端。
 
 **验证**：`test:audit` 208/208；`test:regressions` 17/17；插件全量见交付报告；`test:memory-v2` 51 scripts；
 `test:console-ui` 22/22；`lint:failures` 0；`doc-facts` 0；`release-manifest --verify-ref HEAD` 1122/1122 问题 0。
