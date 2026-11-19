@@ -1,5 +1,6 @@
 import { newCaseRoot, createRealV2Factory, inbound, assert, fs, path, testHome, OWNER, KEY, GROUP_KEY, LOGIN } from './r2-v2-fixture.mjs';
 const { root, stateDir } = newCaseRoot('owner-delivery');
+import { bridgeHarness } from './audit-bridge-harness.mjs';
 process.env.DSH_HOME = root;
 process.env.R2_CASE_ROOT = root;
 process.env.R2_CASE_STATE_DIR = stateDir;
@@ -27,7 +28,7 @@ try {
   });
   await test('start and failure reach platform', async () => {
     fs.writeFileSync(path.join(h.temp, 'state', 'reports'), 'block report directory');
-    const text = '任务：failure fixture'; const before = f.platformSends.length;
+    const text = '任务：failure fixture http://127.0.0.1:1/failure'; const before = f.platformSends.length;
     await h.handleIncoming('private', Number(OWNER), inbound({ raw_message: text, message: [{ type: 'text', data: { text } }] }), h.cfg);
     const sends = f.platformSends.slice(before);
     console.log('start/failure=' + JSON.stringify({ sends, failure: h.memoryV2Failures.get(KEY)?.code ?? null }));
@@ -132,7 +133,7 @@ try {
     const pending = new Promise(resolve => { resolveReply = resolve; });
     reply = () => { enter(); return pending; };
     const before = f.platformSends.length;
-    const text = '任务：cancel start';
+    const text = '任务：cancel start http://127.0.0.1:1/cancel-start';
     const running = h.handleIncoming('private', Number(OWNER), inbound({ raw_message: text, message: [{ type: 'text', data: { text } }] }), h.cfg);
     await started;
     const task = h.taskLedger.listTasks({ conversationKey: KEY, limit: 1 })[0];
@@ -205,7 +206,96 @@ try {
     console.log('non-owner sends=' + JSON.stringify(f.platformSends.slice(before)));
     assert.ok(f.platformSends.length > before, 'non-owner must receive restricted system rejection');
   });
-} finally {
+  const makeAuditOwner = async (options = {}) => {
+    const auditConfig = {
+      ownerQQ: OWNER,
+      allow: { private: [OWNER], groups: [] },
+      deny: { private: [], groups: [], users: [] },
+      slang: { enabled: false },
+      socialV2: { tokenGuard: { enabled: false } }
+    };
+    const audit = await bridgeHarness({ config: auditConfig, ...options });
+    audit.setReady(true);
+    audit.setSelfUserId(100);
+    audit.setMode('chat');
+    audit.bot.sendPrivateMessage = async (id, text) => {
+      audit.calls.sent.push({ kind: 'private', id, text });
+      return { message_id: 9001 };
+    };
+    const send = async raw => {
+      const beforeAudit = audit.calls.sent.length;
+      await audit.handleIncoming('private', Number(OWNER), inbound({ raw_message: raw, message: [{ type: 'text', data: { text: raw } }] }), audit.cfg);
+      return audit.calls.sent.slice(beforeAudit);
+    };
+    return { h: audit, send };
+  };
+  await test('ack survives later ledger write failure', async () => {
+    const fetchCalls = [];
+    const { h: auditH, send: auditSend } = await makeAuditOwner({
+      globals: {
+        safeFetch: async (url, maxChars) => {
+          fetchCalls.push({ url, maxChars });
+          return { url, statusCode: 200, body: '<html>送达测试正文可以复现。</html>', truncated: false };
+        }
+      }
+    });
+    try {
+      const originalUpdate = auditH.taskLedger.updateTask.bind(auditH.taskLedger);
+      let failedTaskId = null;
+      auditH.taskLedger.updateTask = (id, patch) => {
+        if (patch && patch.status === 'completed' && patch.delivery && patch.delivery.status === 'delivered') {
+          failedTaskId = id;
+          throw Object.assign(new Error('模拟账本写入失败'), { code: 'TASK_LEDGER_UNAVAILABLE' });
+        }
+        return originalUpdate(id, patch);
+      };
+      const beforeAudit = auditH.calls.sent.length;
+      const raw = '任务：送达写入失败 https://source.example/delivery';
+      const sends = await auditSend(raw);
+      const allSends = auditH.calls.sent.slice(beforeAudit);
+      const report = allSends.find(s => String(s.text).includes('任务完成'));
+      assert.ok(failedTaskId, 'must reach the final ledger write');
+      assert.ok(report, 'delivered report must reach the platform');
+      assert.ok(String(report.text).includes(failedTaskId), 'delivered report must include task number');
+      assert.ok(!allSends.some(s => /未发送|任务失败/.test(String(s.text))), 'must never claim the acknowledged message was not sent');
+      assert.equal(fetchCalls.length, 1, 'the source must be fetched exactly once');
+      const saved = auditH.taskLedger.getTask(failedTaskId);
+      console.log('ack ledger failure=' + JSON.stringify({ status: saved.status, delivery: saved.delivery, sends: allSends.length }));
+      assert.notEqual(saved.status, 'failed', 'acknowledged delivery must not be rewritten as failed');
+      assert.notEqual(saved.delivery && saved.delivery.status, 'delivery_unknown', 'acknowledged delivery must not be rewritten as unknown');
+      auditH.taskLedger.updateTask = originalUpdate;
+      const repeat = await auditH.taskHarness.runTaskPipeline({ taskId: failedTaskId, requestor, goal: '送达写入失败 https://source.example/delivery', urls: ['https://source.example/delivery'] });
+      assert.equal(repeat.ok, false);
+      assert.equal(repeat.code, 'OWNER_REPLY_UNKNOWN', 'delivering task must block rerun');
+      assert.equal(auditH.calls.sent.length - beforeAudit, allSends.length, 'same task must not resend');
+      assert.equal(fetchCalls.length, 1, 'same task must not refetch');
+    } finally { await auditH.close(); }
+  });
+  await test('delivery_unknown task number never auto-resends', async () => {
+    const fetchCalls = [];
+    const { h: auditH, send: auditSend } = await makeAuditOwner({
+      globals: {
+        safeFetch: async (url, maxChars) => {
+          fetchCalls.push({ url, maxChars });
+          return { url, statusCode: 200, body: '<html>不应重发</html>', truncated: false };
+        }
+      }
+    });
+    try {
+      const task = auditH.taskLedger.createTask({ goal: 'unknown same id', requestor });
+      auditH.taskLedger.updateTask(task.taskId, { status: 'unknown', delivery: { platform: 'qq', targetKey: KEY, status: 'delivery_unknown', at: Date.now() } });
+      const beforeAudit = auditH.calls.sent.length;
+      const statusSends = await auditSend('任务状态 ' + task.taskId);
+      assert.equal(statusSends.length, 1);
+      assert.ok(String(statusSends[0].text).includes('- 交付：delivery_unknown'));
+      const repeat = await auditH.taskHarness.runTaskPipeline({ taskId: task.taskId, requestor, goal: 'unknown same id', urls: ['https://source.example/unknown'] });
+      assert.equal(repeat.ok, false);
+      assert.equal(repeat.code, 'OWNER_REPLY_UNKNOWN');
+      assert.ok(repeat.code && repeat.hint);
+      assert.equal(auditH.calls.sent.length - beforeAudit, 1, 'delivery_unknown task must not resend');
+      assert.equal(fetchCalls.length, 0, 'delivery_unknown task must not refetch');
+    } finally { await auditH.close(); }
+  });} finally {
   await f.close();
   assert.ok(fs.realpathSync(root).startsWith(testHome + path.sep));
   fs.rmSync(root, { recursive: true, force: true });

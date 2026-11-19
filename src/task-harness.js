@@ -65,20 +65,19 @@ function extractTitle(html, fallback) {
  */
 async function normalizeResearchResult(result, requestedUrl) {
   if (!result || typeof result !== 'object') throw new Error('抓取结果无效');
-  if (result.body === undefined && typeof result.text === 'function') {
-    return {
-      url: String(result.url || requestedUrl),
-      statusCode: Number(result.status ?? result.statusCode ?? 200),
-      body: String(await result.text()),
-      truncated: false
-    };
+  const url = String(result.url || requestedUrl);
+  const statusCode = Number(result.statusCode ?? result.status ?? 200);
+  let body = '';
+  if (typeof result.body === 'string') {
+    body = result.body;
+  } else if (typeof result.text === 'function') {
+    body = String(await result.text());
+  } else if (result.body && typeof result.body.text === 'function') {
+    body = String(await result.body.text());
+  } else if (result.body !== undefined && result.body !== null) {
+    body = String(result.body);
   }
-  return {
-    url: String(result.url || requestedUrl),
-    statusCode: Number(result.statusCode ?? result.status ?? 0),
-    body: typeof result.body === 'string' ? result.body : String(result.body ?? ''),
-    truncated: Boolean(result.truncated)
-  };
+  return { url, statusCode, body, truncated: Boolean(result.truncated) };
 }
 
 export function createTaskHarness({
@@ -179,7 +178,8 @@ export function createTaskHarness({
       intent: { action: 'web_research', urls, query }
     });
 
-    const sources = [...(activeTask.sources || [])];
+    // 每次执行只认本次实际抓到的来源；旧摘录不得冒充本次成功证据。
+    const sources = [];
     for (const targetUrl of urls) {
       let normalized = null;
       try {
@@ -196,7 +196,8 @@ export function createTaskHarness({
         }
         const html = normalized.body;
         const cleanText = cleanHtmlToText(html);
-        if (!cleanText) {
+        const authWallOnly = /^(?:login|sign in|log in|登录|please log in|access denied|forbidden)$/i.test(cleanText);
+        if (!cleanText || authWallOnly) {
           throw Object.assign(new Error('来源正文为空，无法作为研究证据'), { code: 'SOURCE_EMPTY_BODY' });
         }
         sources.push({
@@ -402,7 +403,8 @@ export function createTaskHarness({
         text: messageText,
         taskId: task.taskId,
         phase: 'delivery',
-        artifact: activeTask.artifact
+        artifact: activeTask.artifact,
+        task: activeTask
       });
 
       if (ledger.getTask(task.taskId)?.status === 'cancelled') {
@@ -417,17 +419,35 @@ export function createTaskHarness({
         return result;
       }
 
-      ledger.updateTask(task.taskId, {
-        status: 'completed',
-        delivery: {
-          platform,
-          targetKey: conversationKey,
-          status: 'delivered',
-          messageId: sendReceipt?.messageId || null,
-          at: now()
-        }
-      });
-
+      let recorded = true;
+      try {
+        ledger.updateTask(task.taskId, {
+          status: 'completed',
+          delivery: {
+            platform,
+            targetKey: conversationKey,
+            status: 'delivered',
+            messageId: sendReceipt?.messageId || null,
+            at: now()
+          }
+        });
+      } catch (recordError) {
+        recorded = false;
+        log('[Harness] 回执已送达但账本未能记录: ' + recordError.message);
+      }
+      if (!recorded) {
+        return {
+          ok: true,
+          status: 'delivery_unknown',
+          taskId: task.taskId,
+          delivery: 'delivered',
+          messageId: sendReceipt.messageId,
+          code: 'DELIVERY_RECEIPT_UNRECORDED',
+          error: '消息已送达，但任务账本未能记录回执。',
+          hint: '请核对任务 ' + task.taskId + ' 的平台消息和状态；不要自动重发。',
+          messageText
+        };
+      }
       return { ok: true, status: 'delivered', messageText };
     } catch (err) {
       log(`[Harness] 发送交付失败/结果未知: ${err.message}`);
@@ -457,6 +477,16 @@ export function createTaskHarness({
     const urlList = (Array.isArray(urls) ? urls : [])
       .filter(url => typeof url === 'string' && url.trim())
       .map(url => url.trim());
+
+    // 仅关键词、还没有可核验网址：先提示补齐，不建单、不执行、也不复用旧任务。
+    if (!urlList.length && !taskId) {
+      return {
+        ok: false,
+        code: 'RESEARCH_URLS_REQUIRED',
+        error: '仅有研究目标，缺少可核验的来源网址。',
+        hint: '请补充网址后重试，例如：任务：<研究目标> https://example.com'
+      };
+    }
 
     // 无新网址且未指定任务号：若同会话已有同目标、已完成并送达的任务，按幂等返回；
     // 否则仍创建工单再明确失败，保留“补网址后重试”的路径（不执行、不投递）。
@@ -494,7 +524,7 @@ export function createTaskHarness({
     if (task.status === 'cancelled') {
       return { ok: false, taskId: task.taskId, status: 'cancelled', code: 'TASK_CANCELLED', error: '任务已取消。', hint: '查询任务状态；如需执行请新建任务。' };
     }
-    if (['delivery_unknown', 'rejected'].includes(task.delivery?.status)) {
+    if (['delivering', 'delivery_unknown', 'rejected'].includes(task.delivery?.status)) {
       return { ok: false, taskId: task.taskId, status: 'unknown', code: 'OWNER_REPLY_UNKNOWN', error: '此前的送达结果尚未确认。', hint: '查询平台消息和任务状态，不要自动重发。' };
     }
 
