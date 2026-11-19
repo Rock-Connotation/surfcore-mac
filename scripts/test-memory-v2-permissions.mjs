@@ -8,14 +8,44 @@ import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { createMemoryService } from '../src/core/memory-v2-service.js';
+import { hardenDir } from '../src/state-acl.mjs';
+import { checkLifecycleControl } from '../src/core/memory-v2-lifecycle.js';
 
 const posix = process.platform !== 'win32';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-memory-permissions-'));
+
+// R2-08: exercise the real Windows branch with an offline icacls/whoami double.
+async function withFakeWindows({ acl, username, whoami = 'CORP\\ci-runner' }, fn) {
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  const oldPath = process.env.PATH, oldUser = process.env.USERNAME;
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-fake-win-'));
+  const aclFile = path.join(bin, 'acl.txt'), log = path.join(bin, 'calls.log');
+  fs.writeFileSync(aclFile, acl);
+  fs.writeFileSync(path.join(bin, 'icacls'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_ACL_LOG"\nif [ "$#" -eq 1 ]; then cat "$FAKE_ACL_FILE"; fi\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'whoami'), `#!/bin/sh\nprintf '%s\\n' '${whoami}'\n`, { mode: 0o755 });
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  process.env.PATH = `${bin}${path.delimiter}${oldPath ?? ''}`;
+  process.env.FAKE_ACL_LOG = log;
+  process.env.FAKE_ACL_FILE = aclFile;
+  if (username === undefined) delete process.env.USERNAME; else process.env.USERNAME = username;
+  try {
+    const value = await fn();
+    return { value, calls: fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '' };
+  } finally {
+    if (descriptor) Object.defineProperty(process, 'platform', descriptor); else delete process.platform;
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    if (oldUser === undefined) delete process.env.USERNAME; else process.env.USERNAME = oldUser;
+    delete process.env.FAKE_ACL_LOG; delete process.env.FAKE_ACL_FILE;
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+}
 const previousUmask = process.umask(0o022);
 process.on('exit', () => process.umask(previousUmask));
 
 let count = 0;
+const onlyFilter = process.env.R2_PERM_ONLY;
 function test(name, fn) {
+  if (onlyFilter && !name.includes(onlyFilter)) return Promise.resolve();
   return Promise.resolve().then(fn).then(() => { count++; console.log(`ok ${count} - ${name}`); });
 }
 const good = (value) => { assert.equal(value.ok, true, JSON.stringify(value)); return value; };
@@ -117,6 +147,42 @@ try {
     assert.equal(result.code, 'MEMORY_PERMISSIONS_UNSAFE', JSON.stringify(result));
     assert.ok(result.error && result.hint, JSON.stringify(result));
     assert.equal(fs.readFileSync(victim).length, 0, 'the symlink target must not be opened as a database');
+  });
+
+  await test('R2-08 Windows: an explicit wide SID grant cannot be silently reported as hardened', async () => {
+    const dir = path.join(root, 'win-wide'); fs.mkdirSync(dir, { recursive: true });
+    const acl = `${dir} CORP\\ci-runner:(F)  SYSTEM:(F)  BUILTIN\\\\Administrators:(F)  *S-1-5-32-545:(F)\n`;
+    const { value } = await withFakeWindows({ acl, username: 'ci-runner' }, () => hardenDir(dir));
+    assert.equal(value.ok, false, JSON.stringify(value));
+    assert.equal(value.code, 'MEMORY_PERMISSIONS_UNSAFE', JSON.stringify(value));
+    assert.ok(value.error && value.hint, JSON.stringify(value));
+  });
+
+  await test('R2-08 Windows: hardening resolves a stable principal and preserves the three-account grant contract', async () => {
+    const dir = path.join(root, 'win-principal'); fs.mkdirSync(dir, { recursive: true });
+    const acl = `${dir} CORP\\ci-runner:(F)  SYSTEM:(F)  BUILTIN\\\\Administrators:(F)\n`;
+    const { value, calls } = await withFakeWindows({ acl, username: '' }, () => hardenDir(dir));
+    assert.equal(value.ok, true, JSON.stringify(value));
+    assert.match(calls, /CORP\\ci-runner:F/);
+    assert.match(calls, /SYSTEM:F/);
+    assert.match(calls, /Administrators:F/);
+  });
+
+  await test('R2-08 lifecycle: a symlinked private directory is rejected with a visible permissions receipt', async () => {
+    const dir = path.join(root, 'lifecycle-symlink');
+    const stateDir = path.join(dir, 'state'), charactersDir = path.join(dir, 'characters');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const id = 'app-00000000000000000000000000000000';
+    const memoryDir = path.join(charactersDir, id, 'memory');
+    fs.mkdirSync(path.join(memoryDir, 'generations'), { recursive: true });
+    const outside = path.join(dir, 'outside'); fs.mkdirSync(outside); fs.chmodSync(outside, 0o700);
+    fs.symlinkSync(outside, path.join(memoryDir, 'quarantine'));
+    fs.writeFileSync(path.join(stateDir, 'memory-v2.lifecycle.json'), JSON.stringify({ format: 1, minimumCompatibleKernel: 2, minimumControlRevision: 0, characters: [id] }));
+    assert.throws(() => checkLifecycleControl(stateDir, charactersDir), (error) => {
+      assert.equal(error.code, 'MEMORY_PERMISSIONS_UNSAFE', JSON.stringify(error));
+      assert.ok(error.error && error.hint, JSON.stringify(error));
+      return true;
+    });
   });
 
   console.log(`Memory V2 permissions: ${count} checks passed; runtime ${process.version}`);

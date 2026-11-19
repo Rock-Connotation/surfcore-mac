@@ -51,7 +51,9 @@ export function hasInheritedPermissionAce(icaclsOutput) {
 
 /** 是否还有本机任意用户可读的宽松主体授权。 */
 export function hasPermissiveTrustee(icaclsOutput) {
-  return /Authenticated Users|BUILTIN\\Users|\bEveryone\b/i.test(String(icaclsOutput ?? ''));
+  const out = String(icaclsOutput ?? '');
+  const sidPatterns = PERMISSIVE_SIDS.map((sid) => new RegExp(`\\*?${sid.replace(/^\*/, '')}(?![0-9])`, 'i'));
+  return /Authenticated Users|BUILTIN\\Users|\bEveryone\b/i.test(out) || sidPatterns.some((pattern) => pattern.test(out));
 }
 
 /**
@@ -68,6 +70,33 @@ export function isHardened(target) {
   return !hasInheritedPermissionAce(out) && !hasPermissiveTrustee(out);
 }
 
+const ACL_PERMISSION_HINT = 'Fix the ownership or ACL of this managed memory folder, then reopen the memory service. Do not share the memory store between accounts.';
+const aclFail = (error) => ({ ok: false, detail: error, code: 'MEMORY_PERMISSIONS_UNSAFE', error, hint: ACL_PERMISSION_HINT });
+
+/** 运行账户的稳定主体：优先 whoami（不受 %USERNAME% 缺失影响），再退回环境变量。 */
+export function windowsPrincipal() {
+  const who = spawnSync('whoami', [], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+  const fromWho = who.error || who.status !== 0 ? '' : String(who.stdout ?? '').trim();
+  const fromEnv = String(process.env.USERNAME ?? '').trim();
+  for (const candidate of [fromWho, fromEnv]) {
+    if (candidate && /^[^\s\r\n]+$/.test(candidate)) return candidate;
+  }
+  return '';
+}
+
+/** 收紧后回读实际 ACL：宽松主体、继承权限或缺失的必要授权都视为失败。 */
+function verifyAcl(target, principals, label) {
+  const res = icacls([target], 10000);
+  if (res.error || res.status !== 0) return aclFail(`${label}: cannot read back the effective ACL after tightening (${res.error?.message ?? res.stderr ?? res.status}).`);
+  const out = String(res.stdout ?? '');
+  if (hasInheritedPermissionAce(out)) return aclFail(`${label}: an inherited permission ACE is still effective.`);
+  if (hasPermissiveTrustee(out)) return aclFail(`${label}: an explicit wide grant (Authenticated Users / Users / Everyone / well-known SID) is still effective.`);
+  for (const principal of principals) {
+    if (!out.toLowerCase().includes(principal.toLowerCase())) return aclFail(`${label}: the required grant for ${principal} is missing from the effective ACL.`);
+  }
+  return { ok: true };
+}
+
 /**
  * 收紧一个**目录**及其整棵子树的权限。
  * @param {string} dir - 目标目录。
@@ -78,8 +107,8 @@ export function hardenDir(dir) {
     try { fs.chmodSync(dir, 0o700); return { ok: true, detail: 'chmod 700' }; }
     catch (error) { return { ok: false, detail: error?.message ?? String(error) }; }
   }
-  const user = process.env.USERNAME;
-  if (!user) return { ok: false, detail: '无法确定当前用户名（%USERNAME% 为空）' };
+  const user = windowsPrincipal();
+  if (!user) return aclFail('Cannot determine the running account (whoami and %USERNAME% are both unavailable).');
   const steps = [
     [dir, '/inheritance:r', '/C', '/Q'],
     [dir, '/remove:g', ...PERMISSIVE_SIDS, '/T', '/C', '/Q'],
@@ -97,8 +126,10 @@ export function hardenDir(dir) {
   }
   // 自检：属主必须仍能读到目录内容（防止把 DACL 清空这种"成功"的破坏）。
   try { fs.readdirSync(dir); }
-  catch (error) { return { ok: false, detail: `收紧后目录已不可读，请检查 ACL（${error?.message ?? error}）` }; }
-  return { ok: true, detail: 'icacls' };
+  catch (error) { return aclFail(`The directory became unreadable after tightening (${error?.message ?? error}).`); }
+  const verified = verifyAcl(dir, [user, 'SYSTEM', 'Administrators'], 'Memory directory');
+  if (!verified.ok) return verified;
+  return { ok: true, detail: 'icacls + effective ACL readback' };
 }
 
 /**
@@ -111,16 +142,18 @@ export function hardenFile(file) {
     try { fs.chmodSync(file, 0o600); return { ok: true, detail: 'chmod 600' }; }
     catch (error) { return { ok: false, detail: error?.message ?? String(error) }; }
   }
-  const user = process.env.USERNAME;
-  if (!user) return { ok: false, detail: '无法确定当前用户名（%USERNAME% 为空）' };
+  const user = windowsPrincipal();
+  if (!user) return aclFail('Cannot determine the running account (whoami and %USERNAME% are both unavailable).');
   const res = icacls([file, '/inheritance:r',
     '/grant:r', `${user}:F`, '/grant:r', 'SYSTEM:F', '/grant:r', 'Administrators:F', '/C', '/Q']);
   const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
   if (res.error) return { ok: false, detail: res.error.message };
   if (/access is denied/i.test(out)) {
-    return { ok: false, detail: out.split('\n').filter(Boolean).slice(-2).join(' / ') };
+    return aclFail(out.split('\n').filter(Boolean).slice(-2).join(' / '));
   }
-  return { ok: true, detail: 'icacls' };
+  const verified = verifyAcl(file, [user, 'SYSTEM', 'Administrators'], 'Memory file');
+  if (!verified.ok) return verified;
+  return { ok: true, detail: 'icacls + effective ACL readback' };
 }
 
 /**
