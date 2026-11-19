@@ -6,7 +6,7 @@ import path from 'node:path';
 import {
   addMemoryRecord, createEmptyCard, normalizeMemoryCardConfig,
   renderMemoryCard, resolveMemoryCardPaths, saveMemoryCardOutputs,
-} from '../src/memory-card.js';
+} from './test-fixtures/memory-card.mjs';
 
 const CFG = normalizeMemoryCardConfig({
   sharing: { circles: [{ name: '熟人圈', groups: ['111', '222'] }] },
@@ -58,7 +58,4 @@ try {
 
 const bridgeSource = fs.readFileSync('src/bridge.js', 'utf8');
 assert.ok(bridgeSource.includes('conversationIdentityLineV2(key)'), '唤醒 prompt 必须带当前群/私聊身份');
-assert.ok(bridgeSource.includes('memoryCardPromptBlock(key)'), '记忆注入必须按当前会话取块');
-assert.ok(bridgeSource.includes('MEMORY_CARD_GROUP_PROMPTS'), '桥接必须读按会话记忆块');
-assert.ok(bridgeSource.includes("if (currentMode === 'reserved2') return '';"), 'v2 没有按会话块时必须 fail closed');
-assert.ok(bridgeSource.includes('groupNameForMemory'), '落库时必须带群名');
+assert.doesNotMatch(bridgeSource, /memoryCardPromptBlock|MEMORY_CARD_GROUP_PROMPTS/);

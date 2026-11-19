@@ -40,7 +40,7 @@ fs.writeFileSync(path.join(qqbotRoot, 'state', 'bili-memory.json'), `${JSON.stri
   ],
 }, null, 2)}\n`);
 
-const mod = await import('../lib/memory-card.js');
+const mod = await import('../../../scripts/test-fixtures/plugin-memory-card.mjs');
 const paths = mod.memoryCardPaths();
 
 try {

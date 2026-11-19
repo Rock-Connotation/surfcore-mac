@@ -31,20 +31,9 @@ const normalized = normalizeQqConfig({
 });
 assert.equal(normalized.consolePort, 65535);
 assert.deepEqual(normalized.allow.private, ['12345678']);
-assert.equal(normalized.biliBridge.memory.enabled, false);
-assert.equal(normalized.biliBridge.memory.refreshIntervalMs, 60000);
-assert.deepEqual(normalized.biliBridge.share.times, ['07:00']);
-// 分享形式：旧 card:boolean 收敛成 cardMode；card 变成派生值（PITFALLS #24）
-assert.equal(normalized.biliBridge.share.cardMode, 'text', '没写 cardMode 时默认文本链接');
-assert.equal(normalized.biliBridge.share.card, true);
-const cardOff = normalizeQqConfig({ biliBridge: { share: { card: false } } });
-assert.equal(cardOff.biliBridge.share.cardMode, 'off');
-assert.equal(cardOff.biliBridge.share.card, false);
-const cardMini = normalizeQqConfig({ biliBridge: { share: { card: true, cardMode: 'miniapp' } } });
-assert.equal(cardMini.biliBridge.share.cardMode, 'miniapp', '显式 cardMode 优先于旧 card');
-assert.equal(cardMini.biliBridge.share.card, true);
-const cardBad = normalizeQqConfig({ biliBridge: { share: { cardMode: 'weird' } } });
-assert.equal(cardBad.biliBridge.share.cardMode, 'text', '非法值回默认，不要静默变 off');
+assert.deepEqual(normalized.biliBridge.memory, { enabled: false, refreshIntervalMs: 1 });
+assert.deepEqual(normalized.biliBridge.share, { times: ['7:00', '99:99'] });
+assert.equal(normalizeQqConfig({}).biliBridge.share, undefined);
 
 const bili = normalizeBiliConfig({
   night: { windows: [{ start: '6:00', end: '8:00', wakes: 3 }], skipChance: 2, maxVideos: 99 },

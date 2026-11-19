@@ -158,6 +158,14 @@ try {
     assert.equal(savedConfig.data.qq.socialV2.voice.enabled, true); assert.equal(savedConfig.data.qq.testDraft, 'preserved');
     const savedRules = await invoke(api, 'GET', '/dsh-surfcore/api/voice/rules');
     assert.equal(savedRules.data.aiEnabled, true); assert.equal(savedRules.data.route, 'cloud');
+    const volcOverview = await invoke(api, 'GET', '/dsh-surfcore/api/overview');
+    assert.equal(volcOverview.data.launch.voice.volcConfigured, true);
+    assert.equal(volcOverview.data.launch.voice.volcCloudActive, true);
+    assert.equal(volcOverview.data.launch.voice.running, true);
+    const startCloud = await invoke(api, 'POST', '/dsh-surfcore/api/bridge', { action: 'start-selected', components: ['voice'], voicePack: 'voice-cloud' });
+    assert.equal(startCloud.data.ok, true);
+    assert.equal(startCloud.data.items[0].ok, true);
+    assert.match(startCloud.data.items[0].message, /火山云端/);
   }
   const malformedReq=fakeReq('POST','/dsh-surfcore/api/voice/send',null);malformedReq.headers.origin='https://foreign.invalid';const forbidden=fakeRes();await api.handler(malformedReq,forbidden);assert.equal(forbidden.statusCode,403);
   const stopped = await invoke(api,'POST','/dsh-surfcore/api/bridge',{action:'stop-selected',components:['voice']});

@@ -1,5 +1,4 @@
-// 目的机制只读检查器：把当前角色的「人格卡 + 记忆卡 + 近期 QQ/B站 记忆」喂给
-// src/purpose-engine.js，打印会生成哪些目标假设、当前驱动、会选哪一个。
+// 使用当前角色人格，预览目的机制的驱动与目标假设。
 //
 // 只读：不写 state/、不连 DSH、不发 QQ。
 // 用途：a) 换角色/改人格卡后不用重启桥接就能验证「载入即生成动机」；
@@ -7,17 +6,15 @@
 //
 // 运行：node scripts/purpose-inspect.mjs [--json]
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   analyzePersona, collectMaterials, deriveDrives, formGoalHypotheses, selectPurpose,
   summarizePurposeState, normalizePurposeConfig,
 } from '../src/purpose-engine.js';
-import { activeMemoryPaths, activePersonaFile, activePlatformStateDir, readCurrentCharacter } from '../src/character-persona.js';
+import { activePersonaFile, readCurrentCharacter } from '../src/character-persona.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 const asJson = process.argv.includes('--json');
 
 function readJson(file, fallback) {
@@ -30,16 +27,9 @@ function readText(file) {
 const character = readCurrentCharacter();
 const personaText = readText(activePersonaFile());
 const persona = analyzePersona(personaText);
-const memoryPath = activeMemoryPaths().json;
-const memoryCard = readJson(memoryPath, { records: [] });
-const biliStateDir = activePlatformStateDir(path.join(dshHome, 'surfcore', 'bili'));
-const biliIndex = readJson(path.join(biliStateDir, 'bili-memory.json'), null)
-  ?? readJson(path.join(root, 'state', 'bili-memory.json'), { entries: [] });
-const social = readJson(path.join(root, 'state', 'social-v2.json'), { conversations: {} });
 const qqConfig = readJson(path.join(root, 'config.json'), {});
 const ownerQQ = String(qqConfig.ownerQQ ?? '').replace(/[^\d]/g, '');
 const roleName = String(character?.name ?? readJson(path.join(root, 'state', 'current-role.json'), {}).role ?? '');
-const conversations = Object.entries(social.conversations ?? {}).map(([key, st]) => ({ key, ...(st ?? {}) }));
 
 const now = Date.now();
 const config = normalizePurposeConfig({}, { ownerQQ });
@@ -48,14 +38,8 @@ const packet = collectMaterials({
   config,
   ownerUin: ownerQQ,
   roleName,
-  conversations,
-  biliEntries: Array.isArray(biliIndex?.entries) ? biliIndex.entries : [],
-  memoryRecords: Array.isArray(memoryCard?.records) ? memoryCard.records : [],
 });
-const lastMasterAt = conversations
-  .filter((c) => c.key === `private:${ownerQQ}`)
-  .map((c) => Number(c.lastIncomingAt) || 0)
-  .sort((a, b) => b - a)[0] ?? 0;
+const lastMasterAt = 0;
 const derived = deriveDrives({ drives: {}, materials: packet.items, now, lastMasterAt, personaBias: persona.bias });
 const formed = formGoalHypotheses({
   materials: packet.items,

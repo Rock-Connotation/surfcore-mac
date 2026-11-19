@@ -15,7 +15,7 @@ for (const file of ['scripts/setup-dsh.mjs', 'scripts/build-agent-preset-patches
 fs.cpSync(path.join(root, 'dsh'), path.join(pkg, 'dsh'), { recursive: true });
 fs.cpSync(path.join(root, 'plugins/surfcore/presets'), path.join(pkg, 'plugins/surfcore/presets'), { recursive: true });
 fs.copyFileSync(path.join(root, 'plugins/surfcore/package.json'), path.join(pkg, 'plugins/surfcore/package.json'));
-for (const file of ['mcp-snowluma-safe.js', 'mcp-host-server.js', 'mcp-web-search-safe.js']) fs.writeFileSync(path.join(pkg, 'src', file), '// fixture\n');
+for (const file of ['mcp-snowluma-safe.js', 'mcp-host-server.js', 'mcp-web-search-safe.js', 'mcp-chrome-devtools.js']) fs.writeFileSync(path.join(pkg, 'src', file), '// fixture\n');
 fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'surfcore', version: '0.8.8', type: 'module', main: './plugins/surfcore/lib/index.js' }));
 fs.writeFileSync(path.join(pkg, '.surfcore-install.json'), JSON.stringify({ schemaVersion: 1, kind: 'package', sourceRepo: 'fixture/repo', updateOwner: 'dsh-package-manager' }));
 fs.writeFileSync(path.join(pkg, 'artifact-manifest.json'), JSON.stringify({ schemaVersion: 1, files: {} }));
@@ -56,7 +56,7 @@ assert.equal(fs.existsSync(path.join(pkg, 'state')), false, 'package must not ga
 for (let i = 0; i < 6; i++) assert.equal(fs.readFileSync(`${patch}.bak-fixture-${i}`, 'utf8'), 'preserve');
 const text = fs.readFileSync(patch, 'utf8'); assert.match(text, /# provider sentinel/);
 const entries = yaml.load(text).flatMap((row) => row.insert ?? []);
-for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe']) {
+for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe', 'mcp-chrome-devtools']) {
   const matches = entries.filter((entry) => entry.id === id); assert.equal(matches.length, 1);
   assert.equal(matches[0].config.env.DSH_HOME, home); assert.equal(path.dirname(fs.realpathSync(matches[0].config.args.at(-1))), fs.realpathSync(path.join(pkg, 'src')));
 }

@@ -56,7 +56,6 @@ import * as actionPlanner from '../src/action-planner.js';
 import * as sessionMap from '../src/session-map.js';
 import * as dshHealth from '../src/dsh-health.js';
 import * as contextTelemetry from '../src/context-telemetry.js';
-import * as memoryCard from '../src/memory-card.js';
 import * as characterStore from '../src/character-persona.js';
 import * as biliCard from '../src/bili-card.js';
 import * as historyCatchup from '../src/history-catchup.js';
@@ -64,13 +63,12 @@ import * as purposeEngine from '../src/purpose-engine.js';
 import * as interactionLifecycle from '../src/interaction-lifecycle.js';
 import * as taskLedger from '../src/task-ledger.js';
 import * as taskHarness from '../src/task-harness.js';
+import * as localTaskIntent from '../src/core/local-task-intent.js';
 import * as conversationClosure from '../src/conversation-closure.js';
 import { fetchVideoInfo } from '../src/bili-api.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import * as qqAt from '../src/qq-at.js';
 import * as modelOptions from '../src/model-options.js';
-import { createBiliMemory } from '../src/bili-memory.js';
-import { createOutbox } from '../src/outbox.js';
 import { isLoopbackBaseUrl } from '../src/dsh-port.js';
 import { resolveQqDataPaths } from '../src/qq-data-paths.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
@@ -116,17 +114,17 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   // 旧审计用例按“每条消息都能醒”写；Token 防爆破默认会让部分用例被 2 分钟间隔拦住。
   // 这里默认关掉，专门的 test-token-guard 覆盖开启逻辑，需要开启的用例显式覆盖。
   harnessConfig.socialV2 = { tokenGuard: { enabled: false }, ...(config.socialV2 ?? {}) };
-  // V2-only（2026-11-12）：生产路由缺省已是 v2，旧一代记忆卡路径永远不再走。
-  // 但 VM 夹具没有真实控制库/来源审批，绝大多数会话/发送/唤醒用例需要按旧基线
-  // 的「本地记忆卡路径」测它们自己的行为。这里把路由桩成 v1 仅用于夹具；
-  // 需要真实 V2 语义的用例通过 globals.createQQMemoryBridge 覆盖真实实现
-  // （见 test-memory-v2-qq-integration）。不要把这个桩当成生产可回退依据。
   if (!globals.createQQMemoryBridge) {
     globals = {
       ...globals,
       createQQMemoryBridge: () => ({
-        routing: () => ({ ok: true, backend: 'v1' }),
-        status: () => ({ active: false, sourceState: 'not_saved', failure: null }),
+        routing: () => ({ ok: true, backend: 'v2' }),
+        status: () => ({ active: false, sourceState: 'committed', failure: null }),
+        validate: async () => ({ ok: true }),
+        captureSource: async () => ({ ok: true }),
+        prepareReply: async () => ({ ok: true }),
+        retire: async () => ({ ok: true }),
+        validateSessionSafety: async () => ({ ok: false, code: 'MEMORY_PRESET_UNSAFE', error: 'Fixture only admits Native replies.', hint: 'Use the Native transport.' }),
       }),
     };
   }
@@ -138,7 +136,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, typeof content === 'string' ? content : JSON.stringify(content));
   }
-  const calls = { created: [], archived: [], sent: [], prompts: [], follows: [], cancelled: [], images: [], faces: [], http: [] };
+  const calls = { nativeReplies: [], created: [], archived: [], sent: [], prompts: [], follows: [], cancelled: [], images: [], faces: [], http: [] };
   // 语音发送在桥接里是**直接 fetch 网关**（与文本/表情共用 sendChain，但要自己带 record 段），
   // 所以这里给 VM 注入一个记录型 fetch：既不让测试真的发 QQ 消息，又能断言发出的段内容。
   const fakeFetch = async (url, init = {}) => {
@@ -243,7 +241,6 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     tokenGuardWakeBlock, tokenGuardSendBlock, bridgeDailyUsage, learnerBudgetBlock,
     buildWakePromptV2, buildWakeSnapshotV2, wakeFoldedNoticeV2, sendWakePromptV2, socialV2,
     currentRoleHint, adminPromptLine, ownerMessageTag,
-    memoryCardPromptBlock, recordMemoryInboxEvent, recordSelfMemoryEvent,
     refreshMode, checkDsh, modeAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
     // 人的黑名单（deny.users）：入站按发送者拦截，见 test-blacklist.mjs
     senderBlocked, handlePokeNotice,
@@ -266,13 +263,13 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     },
     flushQueue, retireSession,
     // 上线补历史：测试可手动触发，不依赖真实 WebSocket / QQ。
-    runHistoryCatchUp, historyCatchUpConfig, appendHistoryCatchupV2, fetchOneBotHistory,
+    retiredHistoryFailure, runSlangExtraction,
     // 目的机制：测试可只读预览 / 手动触发 / 模拟回合回执（不连真 QQ）。
     runPurpose, purposeState, notePurposeTurnEnded, notePurposeOutbound, startPurposeLoop, warmPurposeState,
     // 对话收尾判断：测试可直接调内部函数（不连真 QQ）。
     closeConversationV2, assessClosureV2, closureConfigV2, closureSuppressesWake, noteClosureReopenV2,
     voiceCfg, voiceTriggerBlock, voiceMentionAt, voiceOwnerAt, voiceLastSentAt, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator, synthesizeVoiceText, readConfigObject, atomicWriteJson,
-    voiceBudgetCheck, sendVoiceTransport, sendVoiceV2, sendVoiceForV2, sendNativeQQReply, getNativeQQCapabilities, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
+    voiceBudgetCheck, verifyVoiceMessageSent, sendVoiceTransport, sendVoiceV2, sendVoiceForV2, sendNativeQQReply, getNativeQQCapabilities, assertOutboundAuditOk, syncTokenToFile, snowlumaHealthSnapshot,
     taskLedger, taskHarness,
     setMode(value) { currentMode = value; modeBlocked = null; modeStatus = { state: 'valid', source: 'fixture', requested: value }; },
     getModelStatus() { return modelStatusState; },
@@ -296,7 +293,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     NodeApiClient: class { constructor() { return api; } },
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
-    discoverDshLaunchToken: () => '', unwrap, createTurnCollector, createBiliMemory, fetchVideoInfo,
+    discoverDshLaunchToken: () => '', unwrap, createTurnCollector, fetchVideoInfo,
     // DSH 端口兜底：isLoopbackBaseUrl 是真身（纯函数），两条探测是桩——
     // 测试不该在宿主机上真跑 netstat / 真去连 3080。
     isLoopbackBaseUrl,
@@ -310,7 +307,6 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...modelOptions,
     ...dshModelFollow,
     ...commandSpam,
-    createOutbox,
     ...voiceDiagnostics,
     ...allowlist,
     ...callname,
@@ -318,17 +314,28 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...dshHealth,
     synthesizeToFile: synthesizeImpl, createVoiceManagement: voiceManagementImpl, encodeVoiceRecord, readVolcKey, startVoxdCloud, voiceSendBudget, commitQqConfigPatch, transactQqConfig, persistSnowLumaEndpoint, persistToken, voiceGroupPolicies, voiceMentionBlock,
     ...tokenBudget,
-    createQQMemoryBridge, createMemoryClient, createNativeQQChannel, buildCharacterContext, deriveMemoryProviderRouteId,
-    ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
+    createQQMemoryBridge, createMemoryClient: () => ({
+      async requestQQReply(request) { calls.nativeReplies.push(request); return { ok: true }; },
+      async cancelQQReply() { return { ok: true }; },
+    }), createNativeQQChannel, buildCharacterContext, deriveMemoryProviderRouteId,
+    ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
     ...interactionLifecycle,
     ...taskLedger,
     ...taskHarness,
+    ...localTaskIntent,
+    // 本机任务通道在 fixture 里恒等于「Host 不可达」：测试绝不碰真实 DSH。
+    createLocalTaskClient: () => ({
+      async submit() { return { ok: false, code: 'LOCAL_TASK_HOST_UNAVAILABLE', error: 'fixture', hint: 'fixture' } },
+      async query() { return { ok: false, code: 'LOCAL_TASK_HOST_UNAVAILABLE', error: 'fixture', hint: 'fixture' } },
+      async cancel() { return { ok: false, code: 'LOCAL_TASK_HOST_UNAVAILABLE', error: 'fixture', hint: 'fixture' } },
+      async redeliver() { return { ok: false, code: 'LOCAL_TASK_HOST_UNAVAILABLE', error: 'fixture', hint: 'fixture' } },
+    }),
     ...conversationClosure,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。
     // 不能直接用真实 character-store 的 DSH_HOME（它在主进程 import 时已固定）。
-    readCurrentCharacter: () => null,
+    readCurrentCharacter: () => ({ id: "fixture", epoch: 1 }),
     activePersonaFile: () => '',
     readPersonaLayerText: () => '',
     activeBiliDir: () => path.join(temp, 'dsh', 'surfcore', 'bili'),

@@ -39,7 +39,6 @@ import {
   selectPurpose,
   summarizePurposeState,
 } from '../../../src/purpose-engine.js';
-import { activeBiliDir, activeMemoryPaths } from '../../../src/character-persona.js';
 import { QQ_STATE_DIR } from './paths.js';
 import { readQqConfig, readUnified, writeJsonAtomic } from './store.js';
 
@@ -150,21 +149,6 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     }));
   }
 
-  function biliEntries() {
-    try {
-      const dir = activeBiliDir();
-      const raw = readJson(path.join(dir, 'bili-memory.json'), null);
-      return Array.isArray(raw?.entries) ? raw.entries : [];
-    } catch { return []; }
-  }
-
-  function memoryRecords() {
-    try {
-      const raw = readJson(activeMemoryPaths().json, null);
-      return Array.isArray(raw?.records) ? raw.records : [];
-    } catch { return []; }
-  }
-
   function personaText() {
     try { return String(chat.roleInfo()?.persona || ''); } catch { return ''; }
   }
@@ -191,9 +175,6 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       config,
       ownerUin: p.ownerUin,
       roleName: roleName(),
-      conversations: conversationsFromDisk(),
-      biliEntries: biliEntries(),
-      memoryRecords: memoryRecords(),
     });
     const materials = packet.items;
     const pending = Array.isArray(state.pending) ? state.pending : [];
@@ -268,7 +249,6 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     const config = prepared.config;
     const role = chat.roleInfo();
     const owner = chat.ownerInfo();
-    const memory = chat.memoryBlock();
     const background = chat.purposeBackground();
     const voiceMax = 90;
     const textMax = 120;
@@ -282,11 +262,6 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     if (role.persona) {
       systemLines.push('【人格卡（你就是这个人）】');
       systemLines.push(sliceHead(role.persona, 4200));
-      systemLines.push('');
-    }
-    if (memory) {
-      systemLines.push('【记忆卡（越早的事记得越模糊，别把模糊的事说得很确定）】');
-      systemLines.push(sliceHead(memory, 2400));
       systemLines.push('');
     }
     systemLines.push('【说话规则】');

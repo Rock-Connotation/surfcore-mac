@@ -20,7 +20,7 @@ function browserFactory(opts) {
     async start() { running = true; emit(self('123456'), SELF); return { ok: true }; },
     async reload() { reloads++; if (config.lateMismatch && reloads === 1) { emit(feed, FEED); emit(self('123456'), SELF); seq++; } else if (config.lateMismatch && reloads === 2) { emit(self('999999'), SELF, seq); emit(self('123456'), SELF); } else if (config.oldMismatch && reloads === 1) { emit(self('999999'), SELF, seq); emit(feed, FEED); emit(self('123456'), SELF); } else if (config.sequence && reloads === 1) { emit(feed, FEED); emit(self('123456'), SELF); emit(config.sequence === 'logout' ? { status_code: 0, is_login: false } : self('999999'), SELF); } else if (config.late && reloads === 1) { const old = seq; seq++; emit(feed, FEED, old); } else if (reloads === 1) { emit(config.feed ?? feed, FEED); emit(self(config.midUid ?? '123456'), SELF); } else emit(self(config.postUid ?? '123456'), SELF); return { ok: true }; },
     get recommendationLoads() { return recommendationLoads; },
-    async loadRecommendations() { recommendationLoads++; if (config.failExtraRecommendations && recommendationLoads > 1) return { ok:false, code:'DOUYIN_VIDEO_NOT_ADVANCED', error:'重复翻页', hint:'身份复核只刷新首页' }; return this.reload(); },
+    async loadRecommendations() { recommendationLoads++; if (config.failExtraRecommendations && recommendationLoads > 1) return { ok:false, code:'DOUYIN_VIDEO_NOT_ADVANCED', error:'重复翻页', hint:'身份复核只刷新首页' }; return { ...await this.reload(), mediaUserAgent: 'Mozilla/5.0 fixture browser' }; },
     async snapshot() { if (config.invalidateOnSnapshot) { config.invalidateOnSnapshot = false; emit({ status_code: 0, is_login: false }, SELF); } return { ok: true, title: '请验证', text: '验证码', url: config.url ?? 'https://www.douyin.com/' }; },
     async close() { running = false; return config.closeFail ? { ok: false, code: 'CLOSE', error: '关闭失败', hint: '手动关闭' } : { ok: true }; } };
   browsers.push(b); return b;
@@ -286,4 +286,27 @@ assert.equal((await idSvc.invalidate()).ok, true);
 const idDisposedSvc = createDouyinService({ stateDir: idStateDir, getCharacter: () => idRole, browserFactory: idBrowserFactory, waitMs: 30 });
 assert.equal((await idDisposedSvc.dispose()).ok, true);
 fail(await idDisposedSvc.readOfficialIdentity(idCtx()), 'DOUYIN_STALE');
+// A companion round owns one browser across two captures and releases it once.
+config = {}; role = { id: 'role1', epoch: 1 };
+const roundService = createDouyinService({ stateDir, getCharacter: () => role, browserFactory, waitMs: 35 });
+const roundAbort = new AbortController();
+const countBeforeRound = browsers.length;
+const round = await roundService.openCompanionFeed(ctx(), { signal: roundAbort.signal });
+assert.equal(round.ok, true, JSON.stringify(round));
+assert.equal(typeof round.release, 'function');
+const roundBrowser = browsers.at(-1);
+assert.equal(roundBrowser.status().running, true);
+const firstProof = await roundService.readOfficialIdentity(ctx());
+const secondProof = await roundService.readOfficialIdentity(ctx());
+assert.equal(firstProof.verified, true);
+assert.deepEqual(secondProof, firstProof);
+assert.equal(browsers.length, countBeforeRound + 1, 'the next video must not create a browser');
+assert.equal(roundBrowser.recommendationLoads, 1, 'an identity check must not scroll the feed');
+roundBrowser.emit(self('999999'), SELF);
+fail(await roundService.readOfficialIdentity(ctx()), 'DOUYIN_ACCOUNT_CHANGED');
+roundAbort.abort();
+assert.equal((await round.release()).ok, true);
+assert.equal(roundBrowser.status().running, false);
+assert.equal(browsers.length, countBeforeRound + 1);
+await roundService.dispose();
 console.log('douyin service: ok');

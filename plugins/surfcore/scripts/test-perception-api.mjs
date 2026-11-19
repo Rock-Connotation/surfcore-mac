@@ -54,8 +54,8 @@ try {
   const submitted = await call({ action: 'submit', request: { ...request, source: { channel: 'bili' }, visibility: { classification: 'public' } } }); assert.equal(submitted.data.jobId, 'job1'); assert.equal(submits, 1);
   assert.equal(jobs.get('job1').request.visibility.classification, 'restricted');
   assert.equal(jobs.get('job1').request.source.channel, 'local');
-  jobs.get('job1').memoryState = 'failed'; jobs.get('job1').memoryError = { code: 'PROJECTION_FAILED', error: '写入失败', hint: '重试经历入库' };
-  const list = await call(null); assert.equal(list.data.jobs.length, 1); assert.equal(list.data.jobs[0].request, undefined); assert.equal(list.data.jobs[0].memoryError.hint, '重试经历入库');
+  jobs.get('job1').history = { status: 'failed', code: 'bili.history.failed', error: '写入失败', hint: '重试保存观看历史' };
+  const list = await call(null); assert.equal(list.data.jobs.length, 1); assert.equal(list.data.jobs[0].request, undefined); assert.equal(list.data.jobs[0].history.hint, '重试保存观看历史');
   assert.ok(list.data.doctor.code && list.data.doctor.hint);
   const cancel = await call({ action: 'cancel', jobId: 'job1' }); assert.equal(cancel.data.job.state, 'cancelled');
   jobs.set('local-interrupted', { jobId: 'local-interrupted', state: 'interrupted', characterId: 'test', characterEpoch: 2 });
@@ -67,9 +67,9 @@ try {
   jobs.set('bili-resume-test', { jobId: 'bili-resume-test', state: 'interrupted', characterId: 'test', characterEpoch: 2, activityId: 'test-resume' });
   const resumed = await call({ action: 'resume', jobId: 'bili-resume-test' });
   assert.equal(resumed.data.code, 'CHANNEL_DISABLED'); assert.ok(resumed.data.hint); assert.equal(resumeGateCalls, 1);
-  jobs.get('bili-resume-test').state = 'completed'; jobs.get('bili-resume-test').memoryState = 'failed';
+  jobs.get('bili-resume-test').state = 'completed'; jobs.get('bili-resume-test').history = { status: 'failed' };
   const projection = await call({ action: 'resume', jobId: 'bili-resume-test' });
-  assert.equal(projection.data.code, 'CHARACTER_STALE'); assert.equal(resumeGateCalls, 1, 'local projection replay must not require channel availability');
+  assert.equal(projection.data.code, 'CHARACTER_STALE'); assert.equal(resumeGateCalls, 1, 'local history retry must not require channel availability');
   current.id = 'other';
   const cross = await call({ action: 'cancel', jobId: 'job1' }); assert.equal(cross.data.code, 'JOB_FORBIDDEN'); assert.ok(cross.data.hint);
   console.log('PASS perception API: scoped auth, origin, managed assets, epoch, role isolation, status and cancellation');

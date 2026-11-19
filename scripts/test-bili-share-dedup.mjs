@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createBiliMemory } from '../src/bili-memory.js';
+import { createBiliMemory } from './test-fixtures/bili-memory.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bili-share-dedup-'));
 const stateDir = path.join(dir, 'state');

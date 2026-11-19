@@ -166,7 +166,9 @@ await test('worker unavailable and malformed routing never import legacy canarie
   const source = await captureObservation(f); await f.service.close();
   await assert.rejects(f.memory.prepareStep(source.session, '海洋小鱼'), error => !!error.code && !!error.hint);
   f.memoryV2.getRouting = () => ({ ok: false, code: 'MEMORY_ROUTING_INVALID', error: 'broken routing', hint: 'repair Host route' });
-  bad(f.memory.buildContext(f.context), 'MEMORY_ROUTING_INVALID'); bad(await f.memory.recordMemory(f.context, {}), 'MEMORY_ROUTING_INVALID');
+  await assert.rejects(f.memory.prepareStep(source.session, '海洋小鱼'), { code: 'MEMORY_ROUTING_INVALID' });
+  assert.equal(f.memory.buildContext, undefined);
+  assert.equal(f.memory.recordMemory, undefined);
 }));
 await test('late source callback after role change cannot adopt or prepare under new role', () => fixture('role', async f => {
   const original = f.memoryV2.adapter.capture; f.memoryV2.adapter.capture = async (...args) => { const result = await original(...args); f.changeRole(); return result; };
@@ -250,11 +252,11 @@ await test('production POST validates exact engine lease before JSON and release
   const result = await controllerResponse(controller, f.context, 'start'); assert.equal(result.status, 409); bad(result.body); assert.equal(released, 1); assert.doesNotMatch(result.text, /\/video\/123|\/video\/456/);
 }));
 await test('fresh factory is V2 by default while V2 requires prepared input', async () => {
-  current({ id: 'alpha', epoch: 1 }); const dir = path.join(root, 'fresh-v1');
+  current({ id: 'alpha', epoch: 1 }); const dir = path.join(root, 'fresh-v2');
   const memory = createCompanionMemory({ stateDir: dir, getCharacter: () => ({ id: 'alpha', epoch: 1 }) });
   good(memory.routing()); assert.equal(memory.routing().backend, 'v2');
   const v2 = createCompanionMemory({ getCharacter: () => ({ id: 'alpha', epoch: 1 }), memoryV2: { getRouting: () => ({ ok: true, backend: 'v2' }) } });
-  bad(v2.buildContext({ characterId: 'alpha', characterEpoch: 1 }), 'MEMORY_PREPARATION_REQUIRED');
+  await assert.rejects(v2.capture({ characterId: 'alpha', characterEpoch: 1 }, 'douyin:fixture'), { code: 'MEMORY_ADAPTER_REQUIRED' });
 });
 async function modelFixture(name, run) {
   return fixture(name, async f => {

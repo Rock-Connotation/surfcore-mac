@@ -203,7 +203,7 @@ async function runV1() {
   const fixtureHome = path.join(runDir, 'synthetic-home');
   // Set before importing the production memory-card module: every role read stays inside the fixture.
   process.env.DSH_HOME = fixtureHome;
-  const { addMemoryRecord, createEmptyCard, recallFullMemory, resolveMemoryCardPaths, renderMemoryCard, normalizeMemoryCardConfig } = await import('../src/memory-card.js');
+  const { addMemoryRecord, createEmptyCard, recallFullMemory, resolveMemoryCardPaths, renderMemoryCard, normalizeMemoryCardConfig } = await import('./test-fixtures/memory-card.mjs');
   const { DSH_HOME } = await import('../src/character-persona.js');
   assert.equal(path.resolve(DSH_HOME), fixtureHome, 'Production module was imported before fixture isolation.');
   const fixedNow = Date.parse(data.referenceTime);
@@ -280,7 +280,7 @@ async function runV1() {
   });
   const first = rows.find((row) => row.queryId === data.queries.find((query) => query.expectedSourceIds.includes(data.oldNeedleSourceId)).queryId);
   assert(first.diagnostic.sourceIds.includes(data.oldNeedleSourceId), 'Real old needle was not found by exported V1 full scan.');
-  const sourceHashes = Object.fromEntries(['src/memory-card.js', 'src/core/context.js', 'src/character-persona.js'].map((file) => [file, sha256(fs.readFileSync(path.join(ROOT, file)))]));
+  const sourceHashes = Object.fromEntries(['scripts/test-fixtures/memory-card.mjs', 'src/core/context.js', 'src/character-persona.js'].map((file) => [file, sha256(fs.readFileSync(path.join(ROOT, file)))]));
   const report = {
     fixtureId: data.fixtureId, fixtureSha256: FROZEN_SHA256, node: process.version, mode: 'exported_V1_only', sourceHashes,
     integrity, setupMs, archiveBytes, maxScanBytes, hotRecords: Object.fromEntries([...cards].map(([id, card]) => [id, card.records.length])),

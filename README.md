@@ -193,7 +193,7 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 
 ### 3.1 设置页（DSH → 设置 → SurfCore）
 
-15 个标签：概览 / 角色 / 目的 / QQ / 语音 / 桌宠 / B站 / 抖音 / Token 额度 / 观看历史 / 记忆 / 对齐 / 扩展 / 全部参数 / 诊断。
+16 个标签：概览 / 角色 / 目的 / QQ / 语音 / 桌宠 / B站 / 抖音 / Token 额度 / 观看历史 / 本机任务 / 记忆 / 对齐 / 扩展 / 全部参数 / 诊断。
 逐个说明见 [UI-AND-CONSOLE.md](docs/guides/UI-AND-CONSOLE.md)。
 
 ### 3.2 四种运行模式

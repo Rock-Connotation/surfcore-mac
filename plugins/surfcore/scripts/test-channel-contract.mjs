@@ -8,8 +8,8 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-channel-fixture-'))
 process.env.DSH_HOME = home;
 const { PlatformRegistry } = await import('../lib/platforms.js');
 const chars = await import('../../../src/character-persona.js');
-const { appendExperienceEvent, readExperienceInbox } = await import('../../../src/core/experience.js');
-const { createEmptyCard, ingestExperienceEvents, saveMemoryCardOutputs } = await import('../../../src/memory-card.js');
+const { appendExperienceEvent, readExperienceInbox } = await import('../../../scripts/test-fixtures/experience.mjs');
+const { createEmptyCard, ingestExperienceEvents, saveMemoryCardOutputs } = await import('../../../scripts/test-fixtures/memory-card.mjs');
 const { buildCharacterContext } = await import('../../../src/core/context.js');
 const { cardText, preparedMemoryView } = await import('../../../scripts/test-v2-context-fixture.mjs');
 // V2-only（2026-11-12）：context.js 不再直接读记忆卡，测试要把卡片文本包成 Host 准备包。

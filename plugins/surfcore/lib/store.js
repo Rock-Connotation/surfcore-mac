@@ -21,8 +21,6 @@ import { DEFAULT_LIMITS, normalizeLimits } from '../tools/lib/limits.mjs';
 import { dynamicDefaults, normalizeDynamics } from '../tools/lib/kinds.mjs';
 import { DEFAULT_QQ_FISH_GUARD, normalizeQqFishGuard } from '../../../src/fish-guard.js';
 import { adminFromSources, normalizeAdmin } from '../../../src/admin-identity.js';
-import { DEFAULT_MEMORY_CARD_CONFIG, normalizeMemoryCardConfig } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
-import { normalizeCardMode } from '../../../src/share-mode.js';
 import { normalizeClockText, normalizeWindow } from '../tools/lib/time-window.mjs';
 import { assertVoiceSelectionUnchanged, transactQqConfig } from '../../../src/qq-config-transaction.js';
 import { fileStamp } from '../../../src/config-stamps.js';
@@ -93,21 +91,6 @@ export const DEFAULT_UNIFIED = {
     gentle: false,
   },
   memory: {
-    qqToBili: {
-      enabled: false,
-      lookbackDays: 7,
-      maxMessages: 300,
-      maxChars: 6000,
-      intervalMs: 1800000,
-      includeOwner: false,
-      includeAgentReplies: false,
-      useNicknames: true,
-      includeGroups: [],
-    },
-    biliToQq: {
-      // 真正的开关是 qq.biliBridge.memory.enabled（默认 true，保持原行为）。
-      previewOnly: false,
-    },
     privacy: {
       blockPrivateMessages: true,
       blockSecrets: true,
@@ -126,12 +109,6 @@ export const DEFAULT_UNIFIED = {
     autoDetect: true,
     requireApproval: true,
     maxEntries: 200,
-  },
-  // 记忆卡（角色的长期记忆）：和角色卡分开——角色卡基本不变，记忆卡每天变。
-  // 默认值与 src/memory-card.js 的 DEFAULT_MEMORY_CARD_CONFIG 保持同一份，避免两处漂移。
-  memoryCard: {
-    ...DEFAULT_MEMORY_CARD_CONFIG,
-    injectMaxChars: { ...DEFAULT_MEMORY_CARD_CONFIG.injectMaxChars },
   },
   extensions: { enabled: true, disabled: [] },
   platforms: {
@@ -156,6 +133,11 @@ export const DEFAULT_UNIFIED = {
     // 默认指向官方 Release 的 latest 直链（无 API 限流）；自建发布源就改这里。
     pet: { versionUrl: 'https://github.com/Mieksido/surfpet/releases/latest/download/version.json' },
     voice: { localVersionUrl: '', cloudVersionUrl: '' },
+  },
+  localTask: {
+    mode: 'desktop',
+    chatHandoff: true,
+    chromeProfileDir: '',
   },
 };
 
@@ -389,20 +371,6 @@ function finiteNumber(value, fallback, min, max, { integer = false } = {}) {
   return integer ? Math.round(clamped) : clamped;
 }
 
-function normalizeTimes(value, fallback) {
-  const source = Array.isArray(value) ? value : String(value ?? '').split(/[\s,，;；]+/);
-  const out = [];
-  for (const item of source) {
-    const match = /^(\d{1,2}):(\d{2})$/.exec(String(item ?? '').trim());
-    if (!match) continue;
-    const hour = Number(match[1]);
-    const minute = Number(match[2]);
-    if (hour > 23 || minute > 59) continue;
-    out.push(`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
-  }
-  return out.length ? [...new Set(out)].sort() : fallback;
-}
-
 /** 保存前的 QQ 侧收敛：只做安全范围/类型校正，不认识的键原样保留。 */
 export function normalizeQqConfig(input) {
   const cfg = clone(input ?? {});
@@ -426,23 +394,10 @@ export function normalizeQqConfig(input) {
 
   cfg.biliBridge = isPlainObject(cfg.biliBridge) ? cfg.biliBridge : {};
   cfg.biliBridge.enabled = cfg.biliBridge.enabled !== false;
-  cfg.biliBridge.memory = isPlainObject(cfg.biliBridge.memory) ? cfg.biliBridge.memory : {};
-  cfg.biliBridge.memory.enabled = cfg.biliBridge.memory.enabled !== false;
-  cfg.biliBridge.memory.refreshIntervalMs = finiteNumber(cfg.biliBridge.memory.refreshIntervalMs, 600_000, 60_000, 3_600_000, { integer: true });
   cfg.biliBridge.dynamics = isPlainObject(cfg.biliBridge.dynamics) ? cfg.biliBridge.dynamics : {};
   cfg.biliBridge.dynamics.enabled = cfg.biliBridge.dynamics.enabled !== false;
   cfg.biliBridge.dynamics.pollIntervalMs = finiteNumber(cfg.biliBridge.dynamics.pollIntervalMs, 180_000, 60_000, 3_600_000, { integer: true });
   cfg.biliBridge.dynamics.groups = normalizeIdList(cfg.biliBridge.dynamics.groups);
-  cfg.biliBridge.share = isPlainObject(cfg.biliBridge.share) ? cfg.biliBridge.share : {};
-  cfg.biliBridge.share.enabled = cfg.biliBridge.share.enabled !== false;
-  cfg.biliBridge.share.times = normalizeTimes(cfg.biliBridge.share.times, ['07:00', '11:00', '13:00', '15:00', '17:00', '19:00', '21:00', '23:00']);
-  cfg.biliBridge.share.groups = normalizeIdList(cfg.biliBridge.share.groups);
-  cfg.biliBridge.share.gapMs = finiteNumber(cfg.biliBridge.share.gapMs, 4000, 0, 60_000, { integer: true });
-  // 卡片样式：link（默认）/ miniapp（B站小程序已下架，opt-in）/ off。
-  // `card` 保留成派生值，旧代码/旧配置读它不会错；UI 只暴露 cardMode 一个开关。
-  cfg.biliBridge.share.cardMode = normalizeCardMode(cfg.biliBridge.share);
-  cfg.biliBridge.share.card = cfg.biliBridge.share.cardMode !== 'off';
-
   if (isPlainObject(cfg.socialV2)) {
     cfg.socialV2.initialPromptMaxChars = finiteNumber(cfg.socialV2.initialPromptMaxChars, 2000, 100, 8000, { integer: true });
     if (isPlainObject(cfg.socialV2.media)) {
@@ -541,6 +496,7 @@ export function normalizeBiliConfig(input) {
   cfg.share.silentAfterDays = finiteNumber(cfg.share.silentAfterDays, 3, 0, 60, { integer: true });
   cfg.share.decayPerDay = finiteNumber(cfg.share.decayPerDay, 1, 0, 10, { integer: true });
   cfg.listen = isPlainObject(cfg.listen) ? cfg.listen : {};
+  cfg.listen.commentsInControlledMode = cfg.listen.commentsInControlledMode === true;
   cfg.listen.commentIntervalSec = finiteNumber(cfg.listen.commentIntervalSec, 300, 60, 86_400, { integer: true });
   cfg.listen.dmScope = cfg.listen.dmScope === 'all' ? 'all' : 'owner';
   cfg.listen.liveScope = cfg.listen.liveScope === 'mention' ? 'mention' : 'owner';
@@ -663,7 +619,6 @@ export function saveUnified(incoming) {
   next.version = 1;
   // 记忆卡上限必须按引擎的边界收敛：否则输入 999999 会原样落盘，界面显示 999999、
   // 实际注入/容量按 100000 算，用户会以为「改了没生效」。
-  next.memoryCard = normalizeMemoryCardConfig(next.memoryCard);
   // 平台启动开关：只收布尔，缺省 true。旧字段 bridge.autoStart 同步镜像一次，
   // 让「降级回旧版」或手工读配置的人看到同一份选择（新代码只认 platforms.start）。
   next.platforms = isPlainObject(next.platforms) ? next.platforms : {};
@@ -674,6 +629,12 @@ export function saveUnified(incoming) {
   };
   next.bridge = isPlainObject(next.bridge) ? next.bridge : {};
   next.bridge.autoStart = next.platforms.start.qq;
+  const rawLt = isPlainObject(next.localTask) ? next.localTask : {};
+  next.localTask = {
+    mode: rawLt.mode === 'files-only' ? 'files-only' : 'desktop',
+    chatHandoff: rawLt.chatHandoff !== false,
+    chromeProfileDir: typeof rawLt.chromeProfileDir === 'string' ? rawLt.chromeProfileDir.trim() : '',
+  };
   const backup = backupFile(UNIFIED_FILE, 'unified-config');
   writeJsonAtomic(UNIFIED_FILE, next);
   return { config: next, backup };

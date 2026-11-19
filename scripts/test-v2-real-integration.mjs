@@ -123,7 +123,7 @@ async function run() {
     const index = fs.readFileSync(path.join(ROOT, 'plugins/surfcore/lib/index.js'), 'utf8');
     assert.equal(/runMemoryCardMaintenance\(/.test(index), false, '生产装配不得再调用旧记忆卡维护');
     assert.equal(index.includes('startMemoryCardTimer('), false, '生产装配不得再启动旧卡定时器');
-    assert.match(index, /MEMORY_CARD_WRITE_RETIRED/);
+    assert.doesNotMatch(index, /handleMemoryCard\b/);
     assert.equal(sha(fs.readFileSync(path.join(roleDir, 'persona.md'))), personaHashBefore, '原 persona 必须保持原样');
   });
 

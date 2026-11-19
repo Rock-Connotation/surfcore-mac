@@ -95,8 +95,8 @@ export async function createQQV2NativeOwner({ nativeModules, llm, getLlmHookCont
       catch { throw problem('QQ_NATIVE_REQUEST_UNSAFE', 'The native prepared configuration changed or cannot be inspected safely.'); }
     };
     const scope = Object.freeze({ request, signal: controller.signal,
-      prepareInput: async () => { verify(); const result = await sourceAuthority.prepareInput({ options, request, preparedConfig, signal: controller.signal }); verify(); if (!result?.ok || !result.handle) return false; sourceHandle = result.handle; return true; },
-      validate: async (details) => { verify(); if (!sourceHandle) return false; const result = await sourceAuthority.validate({ ...details, options, request, preparedConfig, handle: sourceHandle, signal: controller.signal }); verify(); return yes(result); },
+      prepareInput: async () => { verify(); const result = await sourceAuthority.prepareInput({ options, request, preparedConfig, signal: controller.signal }); verify(); if (!result?.ok || !result.handle) return result?.code ? problem(result.code, 'The native source authority denied preparation.') : false; sourceHandle = result.handle; return true; },
+      validate: async (details) => { verify(); if (!sourceHandle) return false; const result = await sourceAuthority.validate({ ...details, options, request, preparedConfig, handle: sourceHandle, signal: controller.signal }); verify(); if (yes(result)) return true; return result?.code ? problem(result.code, 'The native source authority denied validation.') : false; },
       admitNetwork: async (dispatch) => { verify(); if (!sourceHandle) throw problem('QQ_NATIVE_SOURCE_UNPROVEN', 'The trusted source authority did not prepare this input.'); const result = await sourceAuthority.admitNetwork({ options, request, preparedConfig, handle: sourceHandle, signal: controller.signal, dispatch: () => { verify(); return dispatch(); } }); verify(); return result; },
     });
     scopes.set(options, scope);
@@ -114,7 +114,7 @@ export async function createQQV2NativeOwner({ nativeModules, llm, getLlmHookCont
         const result = await captureOutput.call(sourceAuthority, { options, request, preparedConfig, dispatchId, phase, ...(phase === 'chunk' ? { chunk } : {}), signal: controller.signal });
         verifyObservation();
         if (!yes(result) || phase === 'chunk' && !isDeepStrictEqual(chunk, originalChunk)) throw Error();
-      } catch { throw problem('QQ_NATIVE_OUTPUT_UNPROVEN', 'The native model output could not be verified.', 'Keep this session blocked and restore the trusted output authority before retrying.'); }
+      } catch (error) { throw Object.defineProperty(problem('QQ_NATIVE_OUTPUT_UNPROVEN', 'The native model output could not be verified.', 'Keep this session blocked and restore the trusted output authority before retrying.'), 'cause', { value: error, configurable: true }); }
     };
     return (async function* () {
       let complete = false, failure;
@@ -132,7 +132,13 @@ export async function createQQV2NativeOwner({ nativeModules, llm, getLlmHookCont
   };
   try {
     root = await createIsolatedNativeRoot({ nativeModules, llm, getLlmHookContext, corePersona, tools: approvedDefinitions, onStream });
-    if (onAgentError) root.ctx.on('agent/error', ({ error }) => { try { onAgentError({ code: typeof error?.code === 'string' ? error.code : 'QQ_NATIVE_INFERENCE_FAILED', error: 'The owned native inference failed.', hint: 'Inspect the trusted Host diagnostics and retain the original receipt.' }); } catch {} });
+    if (onAgentError) root.ctx.on('agent/error', ({ error }) => {
+      try {
+        const reported = { code: typeof error?.code === 'string' ? error.code : 'QQ_NATIVE_INFERENCE_FAILED', error: 'The owned native inference failed.', hint: 'Inspect the trusted Host diagnostics and retain the original receipt.' };
+        if (error) Object.defineProperty(reported, 'cause', { value: error, configurable: true });
+        onAgentError(reported);
+      } catch {}
+    });
     handle = await root.createAgent({ provider, model, sessionId }); agent = handle.agent;
     preset = root.ctx.agentPresets.composedPreset(agent.ctx);
     approvedSchemas = structuredClone(root.ctx.tools.schemas(agent));

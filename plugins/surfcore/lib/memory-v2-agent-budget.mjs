@@ -44,11 +44,20 @@ export function createAgentBudgetMiddleware({ tokenBudget, getCharacter, isAgent
       if (!current || current.id !== captured.id || current.epoch !== captured.epoch) throw reject(issue('MODEL_CHARACTER_STALE', 'The native job character changed.'));
       if (signal?.aborted) throw reject(issue('MODEL_CANCELLED', 'The native inference was cancelled.'));
     };
+    let lastAuthDenial = null;
     const check = async (callback, phase, context) => {
       let result, thrown;
       try { result = await callback(Object.freeze({ ...context, options, request, phase })); } catch (error) { thrown = error; }
       guard();
-      if (thrown || !approved(result)) return false;
+      if (thrown) {
+        lastAuthDenial = Object.assign(new Error(typeof thrown?.code === 'string' ? thrown.code : 'authorization callback failed'), { stage: phase, ...(typeof thrown?.code === 'string' ? { code: thrown.code } : {}) });
+        Object.defineProperty(lastAuthDenial, 'cause', { value: thrown, configurable: true });
+        return false;
+      }
+      if (!approved(result)) {
+        lastAuthDenial = Object.assign(new Error(typeof result?.code === 'string' ? result.code : 'authorization denied'), { stage: phase, ...(typeof result?.code === 'string' ? { code: result.code } : {}) });
+        return false;
+      }
       return true;
     };
     const nativeBudget = {
@@ -65,7 +74,14 @@ export function createAgentBudgetMiddleware({ tokenBudget, getCharacter, isAgent
       return check(validate, context.phase, context);
     } });
     guard();
-    return yield* runner.stream({ request, signal, invoke: () => next(options), admitNetwork: (dispatch) => admitNetwork(dispatch) });
+    try {
+      return yield* runner.stream({ request, signal, invoke: () => next(options), admitNetwork: (dispatch) => admitNetwork(dispatch) });
+    } catch (error) {
+      if (lastAuthDenial && error && typeof error === 'object' && !error.cause) {
+        Object.defineProperty(error, 'cause', { value: lastAuthDenial, configurable: true });
+      }
+      throw error;
+    }
   }
   return Object.freeze({ stream });
 }

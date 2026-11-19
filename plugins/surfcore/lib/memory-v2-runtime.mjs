@@ -124,9 +124,10 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
       result.push({ id, label, ...(channel === 'qq' ? { replyAccess: { provider: route.provider, model: route.model, accountId: conversationKey.split(':')[1] } } : {}), ...(sourceSetPreview ? { sourceSetPreview } : {}), processorScopes: [{ id: 'exact-model', label: sourceSetPreview ? '仅此来源集合与所示精确模型' : '仅此会话与所示精确模型', policy }] });
     };
     const local = `local:companion-sharing:${before.id}`;
-    if (channel !== 'qq') add('local-sharing', '本机伙伴对话', 'local', local, 'local:owner', COMPANION_ROUTE);
-    const state = await qqState(), selected = await getQQRoute(state);
+    if (!channel || channel === 'local') add('local-sharing', '本机伙伴对话', 'local', local, 'local:owner', COMPANION_ROUTE);
+    const state = !channel || channel === 'qq' ? await qqState() : null;
     if (state) {
+      const selected = await getQQRoute(state);
       for (const id of state.allowedGroups) add(`qq-group-${id}`, `QQ群 ${id}`, 'qq', `qq:${state.accountId}:group:${id}`, '*', selected);
       for (const id of state.allowedPrivates) add(`qq-private-${id}`, `QQ私聊 ${id}`, 'qq', `qq:${state.accountId}:private:${id}`, `qq:${id}`, selected);
     }
@@ -134,7 +135,7 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
       if (!sameRole(before, role())) throw Object.assign(new Error('角色已变化。'), failure('CHARACTER_EPOCH_STALE', '角色已变化。'));
       return result;
     }
-    const bili = await biliState();
+    const bili = !channel || channel === 'bili' ? await biliState() : null;
     if (bili) {
       const account = `bili:${bili.accountId}:actor:${bili.accountId}`;
       for (const conversationKey of bili.legacyConversations) add(`bili-${digest(conversationKey).slice(0, 24)}`, `B站 ${conversationKey.includes(':private:') ? '私信' : '公开来源'} ${conversationKey.split(':').at(-1)}`, 'bili', conversationKey, account, bili.route);
@@ -143,7 +144,7 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
         { id: set.id, characterId: before.id, characterEpoch: before.epoch, accountMid: bili.accountId, providerRouteId: bili.providerRouteId,
           provider: bili.route.provider, model: bili.route.model, selectors: set.selectors, outputTarget: set.outputTarget });
     }
-    const douyin = await getPlatformState('douyin');
+    const douyin = !channel || channel === 'douyin' ? await getPlatformState('douyin') : null;
     if (douyin?.verified === true && stable(douyin.accountId)) {
       const account = `douyin:${douyin.accountId}`;
       add('douyin-private', '抖音处理经历', 'douyin', 'douyin:homepage-recommendation', account, COMPANION_ROUTE);
@@ -165,7 +166,7 @@ export function createMemoryV2Runtime({ stateDir, charactersDir, getCharacter, c
         row.replyAccess = { ...row.replyAccess, approved: resolved.ok === true, ...(resolved.ok ? { policyId: resolved.audiencePolicyId } : { code: resolved.code || 'MEMORY_POLICY_DENIED' }) };
       }
       return { ...current, characterId: context.characterId, backend: route.backend,
-        policies: (current.policies ?? []).map(row => ({ id: row.policyId, label: row.approved ? '已批准' : '已撤销' })),
+        policies: (current.policies ?? []).map(row => ({ id: row.policyId, approved: row.approved === true, label: row.approved ? '已批准' : '已撤销' })),
         backups: (current.backups ?? []).map(row => ({ id: row.backupId, verified: row.state === 'verified' })),
         approvedConversations: conversations };
     },

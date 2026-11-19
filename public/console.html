@@ -2195,23 +2195,6 @@ button:active:not(:disabled) {
       </div>
 
       </div></details>
-<details class="settings-group"><summary>上线补历史消息（history：桥接/QQ 上线时补看离线消息，默认开）</summary><div class="settings-content">
-      <div class="row">
-        <label style="flex:1">每次上线补看历史消息</label><input type="checkbox" id="v2HistoryEnabled" style="width:auto">
-        <label style="flex:1">每个会话最多补</label><input type="number" id="v2HistoryLimit" min="1" max="100" style="width:80px">
-      </div>
-      <div class="row">
-        <label style="flex:1">只补最近（分钟）</label><input type="number" id="v2HistoryMaxAgeMin" min="1" max="10080" style="width:100px">
-        <label style="flex:1">也补私聊</label><input type="checkbox" id="v2HistoryIncludePrivate" style="width:auto">
-      </div>
-      <div class="row">
-        <label style="flex:1">发现漏消息时主动醒一次</label><input type="checkbox" id="v2HistoryWake" style="width:auto">
-        <button id="v2HistoryNow" class="small">立即检查一次</button>
-        <span class="meta" id="v2HistoryMsg"></span>
-      </div>
-      <div class="meta">桥接启动或 QQ 账号重新上线时，用 SnowLuma 的 OneBot 历史消息接口，把离线期间错过的白名单群/私聊补进未读（消息带 history=true），避免掉线期间的消息永久丢失。补到的消息不会重复触发鱼群/黑话；「主动醒一次」关掉后只并入未读，等下次有人说话时自然看到。</div>
-
-      </div></details>
 <details class="settings-group"><summary>反馈工具参数（qq_report_feedback）</summary><div class="settings-content">
       <div class="row">
         <label style="flex:1">反馈最大长度</label><input type="number" id="v2FeedbackMaxLength" min="1" style="width:90px">
@@ -3379,12 +3362,6 @@ async function loadV2Config() {
     document.getElementById('v2ContextRecentLimit').value = ctx.recentLimit ?? 100;
     document.getElementById('v2ContextUnreadLimit').value = ctx.unreadLimit ?? 30;
     document.getElementById('v2ContextWindow').value = ctx.contextWindow ?? 20;
-    const hs = c.history || {};
-    document.getElementById('v2HistoryEnabled').checked = hs.enabled !== false;
-    document.getElementById('v2HistoryLimit').value = hs.limit ?? 30;
-    document.getElementById('v2HistoryMaxAgeMin').value = hs.maxAgeMinutes ?? 720;
-    document.getElementById('v2HistoryIncludePrivate').checked = hs.includePrivate !== false;
-    document.getElementById('v2HistoryWake').checked = hs.wake !== false;
     const fb = c.feedback || {};
     document.getElementById('v2FeedbackMaxLength').value = fb.maxLength ?? 500;
     document.getElementById('v2FeedbackNotifyOwner').checked = fb.notifyOwnerOnError === true;
@@ -3473,13 +3450,6 @@ async function saveV2Config() {
       recentLimit: Math.round(Number(document.getElementById('v2ContextRecentLimit').value) || 100),
       unreadLimit: Math.round(Number(document.getElementById('v2ContextUnreadLimit').value) || 30),
       contextWindow: Math.round(Number(document.getElementById('v2ContextWindow').value) || 20)
-    },
-    history: {
-      enabled: document.getElementById('v2HistoryEnabled').checked,
-      limit: Math.min(100, Math.max(1, Math.round(Number(document.getElementById('v2HistoryLimit').value) || 30))),
-      maxAgeMinutes: Math.min(10080, Math.max(1, Math.round(Number(document.getElementById('v2HistoryMaxAgeMin').value) || 720))),
-      wake: document.getElementById('v2HistoryWake').checked,
-      includePrivate: document.getElementById('v2HistoryIncludePrivate').checked
     },
     feedback: {
       maxLength: Math.round(Number(document.getElementById('v2FeedbackMaxLength').value) || 500),
@@ -3899,34 +3869,6 @@ document.getElementById('v2SessionSelect').addEventListener('change', (ev) => {
 
 document.getElementById('v2ConfigSave').addEventListener('click', saveV2Config);
 document.getElementById('v2ConfigSaveTop').addEventListener('click', saveV2Config);
-document.getElementById('v2HistoryNow').addEventListener('click', async () => {
-  const msg = document.getElementById('v2HistoryMsg');
-  msg.textContent = '检查中…';
-  msg.className = 'meta';
-  try {
-    const r = await api('/api/socialV2/history-catchup', 'POST', { force: true });
-    if (r.ok === false) {
-      msg.textContent = '❌ ' + (r.error || '失败');
-      msg.className = 'meta err';
-    } else if (r.disabled) {
-      msg.textContent = '已关闭（先勾选「每次上线补看历史消息」并保存）';
-    } else if (r.skipped) {
-      msg.textContent = r.skipped === 'no-self-id' ? '还没拿到自己的 QQ 号，稍后再试' : '当前模式不需要补历史（仅二代仿真生效）';
-    } else if (r.throttled) {
-      msg.textContent = '刚检查过，稍后再试（10 秒节流）';
-    } else {
-      const total = Number(r.total) || 0;
-      const incoming = Number(r.incoming) || 0;
-      msg.textContent = total > 0
-        ? `✅ 补回 ${total} 条（群友/好友 ${incoming} 条）`
-        : `✅ 检查完成：${Number(r.targets) || 0} 个会话，没有需要补的新消息`;
-      msg.className = 'meta ok';
-    }
-  } catch (error) {
-    msg.textContent = '❌ ' + (error && error.message ? error.message : error);
-    msg.className = 'meta err';
-  }
-});
 document.getElementById('voiceRefreshBtn').addEventListener('click', () => loadVoiceLibrary(true));
 document.getElementById('voiceSendBtn').addEventListener('click', sendVoiceFromConsole);
 async function refreshV2Activity() {

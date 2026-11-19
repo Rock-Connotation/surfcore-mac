@@ -10,7 +10,7 @@ import { createCompanionController } from '../lib/douyin-companion-controller.mj
 const root = testHome;
 const chars = await import('../../../src/character-persona.js');
 const { createCompanionMemory } = await import('../lib/douyin-companion-memory.mjs');
-const { runMemoryCardMaintenance } = await import('../lib/memory-card.js');
+const { runMemoryCardMaintenance } = await import('../../../scripts/test-fixtures/plugin-memory-card.mjs');
 const { buildCharacterContext } = await import('../../../src/core/context.js');
 const { createTokenBudgetService } = await import('../lib/token-budget.js');
 const { whaleCompanionTone, whaleCompanionDouyinScene } = await import('../lib/whale-companion-persona.mjs');
@@ -258,11 +258,11 @@ await assert.rejects(memory.admitNetwork(cancelledSession, () => { cancelledDisp
 assert.equal(cancelledDispatches, 0, 'cancelled admission must not dispatch');
 assert.equal((await adapter.validate(cancelledSession.handle)).ok, true, 'cancellation must leave the captured session valid');
 memory.release(cancelledSession);
-// V1 记忆卡写者在生产装配层已退役（lib/memory-card.js 仍保留纯函数供评测/只读查看）。
+// V1 记忆卡只在离线比较夹具可用。
 // 这里断言生产入口不再调用维护函数、且旧卡字节不变。
 const indexSource = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
 assert.equal(/runMemoryCardMaintenance\(/.test(indexSource), false, '生产装配不得再调用旧记忆卡维护');
-assert.match(indexSource, /MEMORY_CARD_WRITE_RETIRED/, '旧记忆卡写动作必须返回结构化退役错误');
+assert.doesNotMatch(indexSource, /handleMemoryCard|MEMORY_CARD_WRITE_RETIRED/, '旧记忆 API 整体退役');
 const cardBefore = fs.existsSync(role.memoryJson) ? fs.readFileSync(role.memoryJson) : null;
 if (cardBefore) assert.ok(fs.readFileSync(role.memoryJson).equals(cardBefore), '旧记忆卡不得被改写');
 await host.close(); await service.close();

@@ -178,7 +178,13 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
       const scope = list(candidate?.processorScopes).find(row => row.id === payload.processorScope), preview = sourceSetPreview(candidate, role);
       ensure(scope?.policy, 'MEMORY_POLICY_REQUIRED', '从 Host 已批准会话及真实处理授权中选择；客户端不能填写授权字段。');
       const qqPreview = qqAccessPreview(candidate, role);
-      return { kind: 'control', request: { type: 'configure_policy', policy: validatePolicy(scope.policy) }, ...(preview ? { sourceSetPreview: preview } : {}), ...(qqPreview ? { qqAccessPreview: qqPreview } : {}) };
+      // A revoked policy is historical. The current revision determines the first
+      // reusable ID for this exact domain, so preview and commit bind the same plan.
+      const revoked = new Set(list(runtime.policies).filter(row => row.approved === false).map(row => row.id));
+      const basePolicyId = scope.policy.policyId;
+      let policyId = basePolicyId;
+      for (let issue = 1; revoked.has(policyId); issue++) policyId = `${basePolicyId}-r${issue}`;
+      return { kind: 'control', request: { type: 'configure_policy', policy: validatePolicy({ ...scope.policy, policyId }) }, ...(preview ? { sourceSetPreview: preview } : {}), ...(qqPreview ? { qqAccessPreview: qqPreview } : {}) };
     }
     if (action === 'revoke_policy') { ensure(list(runtime.policies).some(row => row.id === payload.policyId), 'MEMORY_POLICY_REQUIRED'); return { kind: 'control', request: { type: 'revoke_policy', policyId: payload.policyId } }; }
     if (action === 'continue_delete') {
@@ -235,7 +241,10 @@ export function createMemoryManagementController({ memoryService, getCharacter, 
   async function management(role, ctx, body) {
     const parsed = bodyShape(body), { action, payload, isPreview } = parsed;
     guard(role); ensure(body.characterId === role.id && body.characterEpoch === role.epoch, 'CHARACTER_EPOCH_STALE');
-    const { core, runtime } = await snapshot(role, ctx, action === 'configure_policy' && /^qq-(group|private)-/.test(payload.conversationId) ? 'qq' : undefined);
+    let channel;
+    if (action === 'configure_policy') channel = /^(qq|bili|douyin|local)-/.exec(payload.conversationId)?.[1];
+    else if (action === 'revoke_policy') channel = 'control';
+    const { core, runtime } = await snapshot(role, ctx, channel);
     const requestBinding = { operationId: body.operationId, action, payloadDigest: digest(payload), expectedRevision: body.expectedRevision, characterId: role.id, characterEpoch: role.epoch };
     if (!isPreview) {
       let previous = await query(role, ctx, body.operationId);

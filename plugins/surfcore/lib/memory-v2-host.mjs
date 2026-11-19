@@ -236,6 +236,9 @@ export function createMemoryHost({ memoryService, getCharacter, resolveIdentity 
         } catch (error) { return denied(error); }
       },
       withNetworkAdmission,
+      checkInputEvidence: (handle, refs) => operation(handle, (value) => canBindInput
+        ? memoryService.host.checkInputEvidence(value.context, manifestUnion([], refs))
+        : fail('MEMORY_ADAPTER_REQUIRED', 'Only a trusted input-building adapter may check candidate inputs.')),
       bindActualInput: (handle, refs) => operation(handle, (value) => canBindInput ? bind(value, refs) : fail('MEMORY_ADAPTER_REQUIRED', 'Only a trusted input-building adapter may attach actual inputs.')),
       release(handle) { try { entry(handle); handles.delete(handle); return { ok: true }; } catch (error) { return denied(error); } },
     });

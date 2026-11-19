@@ -109,10 +109,8 @@ try {
   bili.limits = { ...bili.limits, daily: 8, taDaily: -3, minePerPerson: 2 };
   bili.dynamics = { enabled: true, gapMin: 15, kinds: { ...bili.dynamics.kinds, best: { slot: 7, minLen: 30, maxLen: 120, prefix: '【早】' } } };
   const qq = readJson(qqFile);
-  qq.biliBridge.share.times = ['20:00', '8:00', '99:99'];
-  qq.biliBridge.share.groups = ['767098733'];
-  qq.biliBridge.share.gapMs = 1234;
-  qq.biliBridge.share.cardMode = 'off';
+  const archive = qq.biliBridge.share;
+  qq.biliBridge.dynamics = { enabled: false, groups: ['767098733', 'invalid'], pollIntervalMs: 1 };
   const saved = await invoke('POST', '/config', { bili, qq });
   assert.equal(saved.status, 200, JSON.stringify(saved.data).slice(0, 300));
   assert.equal(saved.data.saved.bili, true);
@@ -128,11 +126,8 @@ try {
   assert.equal(diskBili.dynamics.kinds.best.prefix, '【早】');
 
   const diskQq = readJson(qqFile);
-  assert.deepEqual(diskQq.biliBridge.share.times, ['08:00', '20:00'], '时间点要规范化/排序，非法项丢弃');
-  assert.equal(diskQq.biliBridge.share.gapMs, 1234);
-  assert.deepEqual(diskQq.biliBridge.share.groups, ['767098733']);
-  assert.equal(diskQq.biliBridge.share.cardMode, 'off', '卡片样式要落盘');
-  assert.equal(diskQq.biliBridge.share.card, false, 'card 是派生值：off 时必须是 false');
+  assert.deepEqual(diskQq.biliBridge.share, archive);
+  assert.deepEqual(diskQq.biliBridge.dynamics, { enabled: false, groups: ['767098733'], pollIntervalMs: 60000 });
 
   // ③ GET /bili/automation：快照读到刚保存的值
   const snap = await invoke('GET', '/bili/automation');
@@ -141,10 +136,9 @@ try {
   assert.equal(snap.data.limits.taDaily, 0);
   assert.equal(snap.data.dynamics.gapMin, 15);
   assert.equal(snap.data.dynamics.kinds.find((k) => k.key === 'best').slot, 7);
-  assert.deepEqual(snap.data.qqShare.times, ['08:00', '20:00']);
-  assert.equal(snap.data.qqShare.gapMs, 1234);
-  assert.equal(snap.data.qqShare.cardMode, 'off', '快照要带卡片样式，UI 才能显示对不对');
-  assert.equal(snap.data.qqShare.card, false);
+  assert.equal(snap.data.qqShare, undefined);
+  assert.equal(snap.data.dynamicsSync.enabled, false);
+  assert.deepEqual(snap.data.dynamicsSync.groups, ['767098733']);
 
   console.log('automation config API tests OK');
 } catch (error) {

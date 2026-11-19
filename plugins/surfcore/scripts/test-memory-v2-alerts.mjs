@@ -24,5 +24,11 @@ try {
   assert.match(store.list().events.find(row => row.subject.channel === 'local').recommendation, /不需要批准其他渠道/);
   report({ code: 'MEMORY_NATIVE_UNSAFE', channel: 'qq' });
   assert.equal(store.list().events.find(row => row.event === 'MEMORY_NATIVE_UNSAFE').level, 'L2');
+  report({ code: 'MEMORY_WORKER_UNAVAILABLE', channel: 'local' });
+  report({ code: 'MEMORY_WORKER_UNAVAILABLE', channel: 'local' });
+  const workerEvents = store.list({ includeAcked: false }).events.filter(row => row.event === 'MEMORY_WORKER_UNAVAILABLE');
+  assert.equal(workerEvents.length, 2);
+  store.ackByDedupe(workerEvents[0].dedupeKey);
+  assert.equal(store.list({ includeAcked: false }).events.filter(row => row.event === 'MEMORY_WORKER_UNAVAILABLE').length, 0);
   console.log('PASS actual Host failure reporter: scoped setup L1, persistent dedupe, actionable QQ entry, no permission expansion, genuine failures remain modal');
 } finally { fs.rmSync(dir, { recursive: true, force: true }); }

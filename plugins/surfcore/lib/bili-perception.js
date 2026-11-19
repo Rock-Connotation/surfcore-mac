@@ -13,12 +13,12 @@ function problem(code, message, hint) { return Object.assign(new Error(message),
 function publicJob(job) { return JSON.parse(JSON.stringify(job)) }
 function publicJobSummary(job) {
   const out = {}
-  for (const key of ['jobId', 'state', 'stage', 'characterId', 'characterEpoch', 'activityId', 'createdAt', 'updatedAt', 'progress', 'part', 'frames', 'coverage', 'memoryState', 'memoryError', 'history', 'code', 'error', 'hint', 'warnings']) if (job[key] !== undefined) out[key] = job[key]
+  for (const key of ['jobId', 'state', 'stage', 'characterId', 'characterEpoch', 'activityId', 'createdAt', 'updatedAt', 'progress', 'part', 'frames', 'coverage', 'history', 'code', 'error', 'hint', 'warnings']) if (job[key] !== undefined) out[key] = job[key]
   return publicJob(out)
 }
 function redact(value) { let text = String(value ?? ''), owner = {}; try { owner = config().owner ?? {} } catch {} for (const [item, minimum, label] of [[owner.name, 2, '「主人昵称·已打码」'], [owner.mid, 4, '「主人mid·已打码」']]) if (String(item ?? '').length >= minimum) text = text.split(String(item)).join(label); return text }
 function safeResult(value) { if (!value || typeof value !== 'object') return null; const result = publicJob(value); if (result.provenance) delete result.provenance.sourceUrl; if (Array.isArray(result.segments)) result.segments = result.segments.map(item => ({ ...item, text: redact(item.text) })); return result }
-export function createBiliPerceptionService({ asrService, stateDir, getCharacter, onExperience, createApi = createBiliApi, prepareMedia = prepareBiliMedia, makeFrames = createFrameSheet, pollMs = 1000 } = {}) {
+export function createBiliPerceptionService({ asrService, stateDir, getCharacter, createApi = createBiliApi, prepareMedia = prepareBiliMedia, makeFrames = createFrameSheet, pollMs = 1000 } = {}) {
   if (!asrService || !path.isAbsolute(String(stateDir ?? '')) || typeof getCharacter !== 'function') throw problem('bili.host.invalid', 'B 站感知服务配置无效。', '检查 Host 服务及角色配置。')
   const directory = path.join(stateDir, 'perception', 'bili-jobs'), assetsRoot = path.join(stateDir, 'perception', 'assets')
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
@@ -31,7 +31,7 @@ export function createBiliPerceptionService({ asrService, stateDir, getCharacter
   }
   for (const name of fs.readdirSync(directory)) {
     if (!/^bili-[0-9a-f-]+\.json$/.test(name)) continue
-    try { const job = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8')); if (name !== `${job.jobId}.json`) continue; if (['queued', 'running'].includes(job.state)) { job.state = 'interrupted'; job.error = { code: 'bili.job.interrupted', error: 'Host 重启中断了媒体作业。', hint: '确认当前角色后恢复作业。' }; save(job) } jobs.set(job.jobId, job) } catch { /* preserve unreadable records */ }
+    try { const job = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8')); if (name !== `${job.jobId}.json`) continue; delete job.memoryState; delete job.memoryError; if (['queued', 'running'].includes(job.state)) { job.state = 'interrupted'; job.error = { code: 'bili.job.interrupted', error: 'Host 重启中断了媒体作业。', hint: '确认当前角色后恢复作业。' }; save(job) } jobs.set(job.jobId, job) } catch { /* preserve unreadable records */ }
   }
   function current(job) { const role = getCharacter(); return Boolean(role && String(role.id) === job.characterId && Number(role.epoch) === job.characterEpoch) }
   function update(job, patch) { Object.assign(job, patch, { updatedAt: new Date().toISOString() }); save(job) }
@@ -40,27 +40,14 @@ export function createBiliPerceptionService({ asrService, stateDir, getCharacter
     const result = appendWatch({ at: new Date().toISOString(), observationId: job.activityId, bvid: job.part.bvid, cid: job.part.cid, page: job.part.page, pageCount: job.part.pageCount, title: job.part.title, duration: job.part.durationMs / 1000, mode: 'full', source: 'debrief', frames: !!job.frames?.sheet, frameStatus: job.frames?.status ?? 'skipped', sheet: job.frames?.sheet ?? '', jobId: job.jobId, transcriptId: job.result?.transcriptId ?? '', speechStatus: job.request.asr ? job.state : 'none', speechSource: job.request.asr ? 'asr' : 'none', speechState: job.result?.speechState ?? 'unknown', coverage: job.coverage, error: job.error }, { file: path.join(stateDir, 'characters', job.characterId, 'bili', 'watch-history.jsonl') })
     return { status: result.ok ? 'recorded' : result.reason === 'duplicate' ? 'duplicate' : 'failed' }
   }
-  async function projectExperience(job) {
-    if (job.request.recordExperience === false || job.request.recordHistory === false) { update(job, { memoryState: 'skipped', memoryError: null }); return }
-    if (!current(job)) { update(job, { memoryState: 'failed', memoryError: { code: 'STALE_CHARACTER', error: '角色已切换，未写入经历。', hint: '切回原角色和 epoch 后重试。' } }); return }
-    const hasSpeech = Boolean(job.result && (job.coverage?.processedRanges?.length || job.result.coverage?.processedRanges?.length))
-    const hasFrames = ['completed', 'partial'].includes(job.frames?.status) && Boolean(job.frames?.sheet)
-    if (!hasSpeech && !hasFrames) { update(job, { memoryState: 'skipped' }); return }
-    const ranges = job.coverage?.processedRanges ?? job.result?.coverage?.processedRanges ?? []
-    const event = { schemaVersion: 1, eventId: `bili-observation:${job.jobId}`, characterId: job.characterId, characterEpoch: job.characterEpoch, activityId: job.activityId, occurredAt: job.completedAt, observedAt: job.completedAt, source: { channel: 'bili', objectId: `${job.part.bvid}:cid:${job.part.cid}` }, kind: 'content_observed', visibility: { classification: 'restricted', allowedContexts: ['bili'], legacyScope: 'bili' }, content: { summary: `取得 B 站 ${job.part.bvid} P${job.part.page} 的${hasSpeech ? `语音转写（${job.coverage?.complete ? '处理范围完整' : '处理范围部分'}）` : ''}${hasSpeech && hasFrames ? '和' : ''}${hasFrames ? `画面采样（${job.frames.status}）` : ''}。`, title: job.part.title }, attribution: { subject: 'external', certainty: 'observed' }, evidenceRefs: ranges.slice(0, 16).map(range => ({ assetId: `bili:${job.part.bvid}:p${job.part.page}:${job.part.cid}`, startMs: range.startMs, endMs: range.endMs })) }
-    update(job, { memoryState: 'pending', memoryError: null })
-    try {
-      if (typeof onExperience !== 'function') throw problem('EXPERIENCE_SERVICE_UNAVAILABLE', '经历服务尚未接入。', '启动 Host 记忆维护服务后重试经历投影。')
-      const result = await onExperience(event)
-      if (result?.ok !== true) throw problem(result?.code ?? 'EXPERIENCE_FAILED', result?.error ?? '经历写入失败。', result?.hint ?? '检查记忆维护状态后重试。')
-      update(job, { memoryState: 'completed', memoryError: null })
-    } catch (error) { update(job, { memoryState: 'failed', memoryError: structuredError(error, 'EXPERIENCE_FAILED') }) }
-  }
-  async function finish(job) {
+  function finish(job) {
     const history = recordHistory(job)
+    if (history.status === 'failed') {
+      history.code = 'bili.history.failed'
+      history.error = '观看历史未能保存。'
+      history.hint = '检查角色目录后重试保存观看历史。'
+    }
     update(job, { completedAt: job.completedAt ?? new Date().toISOString(), history })
-    if (history.status === 'failed') { update(job, { memoryState: 'failed', memoryError: { code: 'bili.history.failed', error: '观看历史未能保存，经历尚未投影。', hint: '检查角色目录后重试经历保存。' } }); return }
-    await projectExperience(job)
   }
   async function run(job, releaseMedia) {
     const controller = new AbortController(); controllers.set(job.jobId, controller)
@@ -88,7 +75,7 @@ export function createBiliPerceptionService({ asrService, stateDir, getCharacter
       if (!current(job)) throw problem('STALE_CHARACTER', '作业所属角色已切换。', '切回原角色并确认 epoch 后再恢复。')
       update(job, { frames, progress: { stage: job.request.asr ? 'submit-asr' : 'frames' } })
       releaseMedia()
-      if (!job.request.asr) { update(job, { state: frameError ? 'failed' : frames.status === 'partial' ? 'partial' : 'completed', error: frameError, memoryState: 'pending', progress: { stage: 'finished' } }); await finish(job); return }
+      if (!job.request.asr) { update(job, { state: frameError ? 'failed' : frames.status === 'partial' ? 'partial' : 'completed', error: frameError, progress: { stage: 'finished' } }); finish(job); return }
       if (!media.audio?.path || media.audio.status === 'failed') throw problem('media.audio.unavailable', '没有可用音轨。', '检查播放权限与媒体依赖后恢复。')
       const request = buildBiliTranscriptionRequest({ part: precisePart, media: media.audio, character: { id: job.characterId, epoch: job.characterEpoch }, activityId: job.activityId, languageHint: job.request.languageHint, assetsRoot })
       if (!current(job)) throw problem('STALE_CHARACTER', '作业所属角色已切换。', '切回原角色并确认 epoch 后再恢复。')
@@ -101,7 +88,7 @@ export function createBiliPerceptionService({ asrService, stateDir, getCharacter
         if (terminal.has(result.state)) {
           if (!current(job)) throw problem('STALE_CHARACTER', '作业所属角色已切换。', '原作业结果保留在共享服务中，不写入当前角色。')
           const state = result.state === 'completed' && frameError ? 'partial' : result.state
-          update(job, { state, result: safeResult(result.result), coverage: result.coverage ?? result.result?.coverage ?? null, error: result.error ?? frameError, memoryState: 'pending', progress: { stage: 'finished' } }); await finish(job); return
+          update(job, { state, result: safeResult(result.result), coverage: result.coverage ?? result.result?.coverage ?? null, error: result.error ?? frameError, progress: { stage: 'finished' } }); finish(job); return
         }
         await new Promise(resolve => { const done = () => { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve() }; const timer = setTimeout(done, pollMs); timer.unref?.(); controller.signal.addEventListener('abort', done, { once: true }); if (controller.signal.aborted) done() })
       }
@@ -140,13 +127,13 @@ export function createBiliPerceptionService({ asrService, stateDir, getCharacter
       if (!activityId || !/^[a-zA-Z0-9_-]{1,80}$/.test(activityId)) throw problem('bili.activity.invalid', '活动标识无效。', '重新发起视频活动。')
       const cid = input?.cid == null || input.cid === '' ? '' : String(input.cid)
       if (cid && !/^\d{1,24}$/.test(cid)) throw problem('bili.cid.invalid', 'cid 格式无效。', '使用视频分 P 的数字 cid。')
-      const recordHistory = input?.recordHistory !== false, recordExperience = recordHistory && input?.recordExperience !== false
+      const recordHistory = input?.recordHistory !== false
       const asr = input?.asr === true, frames = input?.frames === true
       if (!asr && !frames) throw problem('bili.job.empty', '作业没有需要处理的材料。', '选择转写或抽帧。')
       const grid = String(input.grid ?? '3x3'), dimensions = /^(\d{1,2})x(\d{1,2})$/i.exec(grid); if (!dimensions || Number(dimensions[1]) * Number(dimensions[2]) < 1 || Number(dimensions[1]) * Number(dimensions[2]) > 64) throw problem('media.grid.invalid', '网格格式无效。', '使用最多 64 格的 3x3 或 4x4。')
       if (input.subtitleEvery != null && (!Number.isFinite(Number(input.subtitleEvery)) || Number(input.subtitleEvery) < 1)) throw problem('media.substrip.invalid', '字幕条间隔无效。', '使用至少 1 秒的间隔。')
       if (!['auto', 'zh'].includes(String(input.languageHint ?? 'auto'))) throw problem('bili.language.invalid', '语音语言参数无效。', '使用 auto 或 zh。')
-      const job = { jobId: `bili-${crypto.randomUUID()}`, state: 'queued', characterId, characterEpoch, activityId, request: { bvid: parsed.bvid, page: parsed.page, cid, asr, frames, recordHistory, recordExperience, grid, uniform: input.uniform === true, subtitleEvery: input.subtitleEvery == null ? null : Number(input.subtitleEvery), languageHint: String(input.languageHint ?? 'auto') }, createdAt: new Date().toISOString(), progress: { stage: 'queued' } }
+      const job = { jobId: `bili-${crypto.randomUUID()}`, state: 'queued', characterId, characterEpoch, activityId, request: { bvid: parsed.bvid, page: parsed.page, cid, asr, frames, recordHistory, grid, uniform: input.uniform === true, subtitleEvery: input.subtitleEvery == null ? null : Number(input.subtitleEvery), languageHint: String(input.languageHint ?? 'auto') }, createdAt: new Date().toISOString(), progress: { stage: 'queued' } }
       jobs.set(job.jobId, job); save(job); start(job); return { jobId: job.jobId }
     },
     async getJob(id) { if (!jobs.has(id)) return await asrService.getJob(id); return publicJob(jobs.get(id)) },
@@ -177,7 +164,7 @@ export function createBiliPerceptionService({ asrService, stateDir, getCharacter
       if (runner) await runner
       return publicJob(job)
     },
-    async resume(id) { if (!jobs.has(id)) return await asrService.resume(id); const job = jobs.get(id); if (!current(job)) throw problem('STALE_CHARACTER', '作业所属角色已改变。', '确认原角色及 epoch 后再恢复。'); if (controllers.has(id)) throw problem('bili.job.resume-invalid', '作业仍在收尾。', '等待作业收尾后重试。'); if (terminal.has(job.state) && ['failed', 'pending'].includes(job.memoryState)) { await finish(job); return { jobId: id, memoryState: job.memoryState } } if (!['interrupted', 'failed', 'cancelled', 'partial'].includes(job.state) || controllers.has(id)) throw problem('bili.job.resume-invalid', '该作业当前不能恢复。', '先查询作业状态。'); update(job, { state: 'queued', childJobId: null, error: null, progress: { stage: 'queued' } }); start(job); return { jobId: id } },
+    async resume(id) { if (!jobs.has(id)) return await asrService.resume(id); const job = jobs.get(id); if (!current(job)) throw problem('STALE_CHARACTER', '作业所属角色已改变。', '确认原角色及 epoch 后再恢复。'); if (controllers.has(id)) throw problem('bili.job.resume-invalid', '作业仍在收尾。', '等待作业收尾后重试。'); if (terminal.has(job.state) && job.history?.status === 'failed') { finish(job); return { jobId: id, history: job.history } } if (!['interrupted', 'failed', 'cancelled', 'partial'].includes(job.state) || controllers.has(id)) throw problem('bili.job.resume-invalid', '该作业当前不能恢复。', '先查询作业状态。'); update(job, { state: 'queued', childJobId: null, error: null, progress: { stage: 'queued' } }); start(job); return { jobId: id } },
     listModels: (...args) => asrService.listModels(...args), doctor: (...args) => asrService.doctor(...args), getStatus: (...args) => asrService.getStatus(...args), async configure(...args) { if ([...jobs.values()].some(job => ['queued', 'running'].includes(job.state))) throw problem('ASR_CONFIG_BUSY', 'B 站媒体作业正在运行，不能更改 ASR 配置。', '等待作业完成或取消后重试。'); return await asrService.configure(...args) },
     async dispose() { disposed = true; for (const entry of pendingMedia.splice(0)) { update(entry.job, { state: 'interrupted', error: { code: 'bili.host.stopped', error: 'Host 已停止。', hint: '重新启动 Host 后恢复作业。' } }); runners.delete(entry.job.jobId); entry.resolve() } for (const controller of controllers.values()) controller.abort(); await Promise.allSettled([...runners.values()]); await asrService.dispose() },
   }

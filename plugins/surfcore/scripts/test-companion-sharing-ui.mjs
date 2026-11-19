@@ -18,10 +18,10 @@ const opening = activeOpening = {
   question: '你觉得它们为什么停在那里？',
   coverage: { transcriptComplete: true, frameSamples: 3 }, unread: true,
 };
-let messages = [];
+let messages = [], historyNotice = null;
 let stateRevision = 0, priorState = '';
 function value() {
-  const state = { openings: activeOpening ? [{ ...activeOpening, unread }] : [], messages: [...messages], active: remoteActive, unread: unread ? 1 : 0, lastError: null };
+  const state = { openings: activeOpening ? [{ ...activeOpening, unread }] : [], messages: [...messages], active: remoteActive, unread: unread ? 1 : 0, lastError: null, historyNotice };
   const fingerprint = JSON.stringify({ role, ...state });
   if (fingerprint !== priorState) { stateRevision++; priorState = fingerprint; }
   return { revision: stateRevision, ...state };
@@ -418,12 +418,14 @@ try {
   role = { id: 'host', epoch: 7, name: '小海星' };
   activeOpening = { id: 'opening-host', jobId: 'job-host', sourceId: 'BV4fixture', sourceTitle: '晚风里的浪', occurredAt: '2026-11-07T06:04:00.000Z', text: '晚风把海边变得安静。', question: '你想在这样的海边待一会儿吗？', coverage: { transcriptComplete: true, frameSamples: 2 } };
   unread = true; messages = [];
+  historyNotice = { code: 'DOUYIN_CHAT_HISTORY_RESTRICTED', error: '部分历史分享在当前许可下不可用。', hint: '可以继续查看和回复当前有权访问的分享。' };
   const host = await browser.newPage({ viewport: { width: 375, height: 760 } });
   await host.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
   host.on('pageerror', error => errors.push(error.message));
   await host.goto(`http://127.0.0.1:${server.address().port}/host`);
   await host.evaluate(() => window.__sharingReady);
   await host.getByRole('button', { name: /未读 1 条/ }).waitFor();
+  assert.equal(await host.getByRole('button', { name: '重载状态' }).count(), 0, 'history advice is not a sidebar health error');
   assert.deepEqual(await host.evaluate(() => window.__slotCalls), ['sidebar.footer.action']);
   assert.deepEqual(await host.evaluate(() => ({ name: window.__slotRegistration.name, id: window.__slotRegistration.id, order: window.__slotRegistration.order })), { name: 'sidebar.footer.action', id: 'surfcore-companion-sharing', order: 7 });
   assert.equal(await host.locator('iframe').count(), 0, 'the sidebar entry does not interrupt or auto-open a conversation');
@@ -432,6 +434,8 @@ try {
   const iframe = host.locator('iframe'); await iframe.waitFor();
   assert.equal(await iframe.getAttribute('src'), '/dsh-surfcore/api/douyin/companion-page#conversation');
   await host.frameLocator('iframe').locator('#conversation').waitFor({ state: 'visible' });
+  await host.frameLocator('iframe').getByText(historyNotice.error, { exact: false }).waitFor();
+  assert.equal(await host.frameLocator('iframe').locator('#sharing-error').isHidden(), true, 'history advice is informational in the conversation');
   assert.equal(posts.filter(post => post.openingId === 'opening-host').length, hostAckCount, 'opening a hidden iframe does not acknowledge a share before it is seen');
   await host.getByRole('button', { name: '关闭伙伴对话' }).click(); await iframe.waitFor({ state: 'detached' });
   assert.equal(await host.locator('iframe').count(), 0, 'closing the floating dialog removes its iframe');

@@ -14,8 +14,15 @@ export function createBiliRoundController({ ctx, stateDir, tokenBudget, runBili,
     getCharacter: current, buildContext, maintainMemory });
   async function pause() {
     const wasRunning = legacyRunning();
-    if (readConfig().night?.controlledOnly !== true) saveConfig({ night: { controlledOnly: true } });
-    if (wasRunning) { restartRequired = true; await stopLegacy(); }
+    const config = readConfig();
+    if (config.night?.controlledOnly !== true || config.listen?.commentsInControlledMode === true) {
+      saveConfig({ night: { controlledOnly: true }, listen: { commentsInControlledMode: false } });
+    }
+    if (wasRunning) {
+      restartRequired = true;
+      const stopped = await stopLegacy();
+      if (stopped?.ok === false) return stopped;
+    }
     return { ok: true, restartRequired };
   }
   async function cancelActive() {

@@ -25,6 +25,10 @@ assert.ok(bridge.includes("url.pathname === '/api/notify/owner'"), '桥接必须
 assert.ok(bridge.includes('NOTIFY_CONSOLE_ONLY'), 'AI 不能调用管理员通知');
 assert.ok(bridge.includes('NOTIFY_OWNER_MISSING'), '未配置管理员要结构化报错');
 assert.ok(bridge.includes('NOTIFY_SENSITIVE'), '敏感正文要阻止并给 hint');
+assert.ok(bridge.includes('hasSensitiveTaskOutput'), '本机任务回执必须走专用敏感审计');
+assert.ok(bridge.includes('NOTIFY_IMAGE_BLOCKED') && bridge.includes('NOTIFY_IMAGE_INVALID'), '附图校验失败必须给出结构化 code 与 hint');
+const localTaskHost = fs.readFileSync(path.resolve('plugins/surfcore/lib/local-task-host.mjs'), 'utf8');
+assert.ok(localTaskHost.includes('response?.data?.code') && localTaskHost.includes('extractTaskImagePaths'), '本机任务回传必须保留桥接错误码并附带截图路径');
 assert.ok(bridge.includes("url.pathname === '/api/notice/timeout'"), '超时提醒必须进错误报告');
 assert.ok(bridge.includes('readBiliTimeoutMutes'), '超时静音必须读配置文件');
 assert.ok(client.includes('/timeout-mute'), '超时“不再提示”必须写配置');

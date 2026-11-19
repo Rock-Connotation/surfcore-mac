@@ -30,6 +30,15 @@ function readJson(file, fallback = null) {
   }
 }
 
+/** Convert the fields saved by the Bilibili QR login into the underlying Cookie header. */
+export function biliCookieHeader(cred) {
+  return [
+    cred.sessdata ? `SESSDATA=${cred.sessdata}` : '',
+    cred.bili_jct ? `bili_jct=${cred.bili_jct}` : '',
+    cred.buvid3 ? `buvid3=${cred.buvid3}` : '',
+  ].filter(Boolean).join('; ');
+}
+
 /**
  * 读取 B 站账号配置与凭据。
  * 这里只读 bili.config.json 和 credentials.json，绝不触碰 dm-*.json。
@@ -40,11 +49,7 @@ export function loadBiliAccount({ home = os.homedir() } = {}) {
   const cred = readJson(p.credentials, {}) ?? {};
   const mid = String(config?.self?.mid ?? '').trim();
   const name = String(config?.self?.name ?? '').trim();
-  const cookie = [
-    cred.sessdata ? `SESSDATA=${cred.sessdata}` : '',
-    cred.bili_jct ? `bili_jct=${cred.bili_jct}` : '',
-    cred.buvid3 ? `buvid3=${cred.buvid3}` : '',
-  ].filter(Boolean).join('; ');
+  const cookie = biliCookieHeader(cred);
   return {
     paths: p,
     config,

@@ -1,3 +1,12 @@
+## 2026-11-19 R2 复审补齐 + 本机任务审批 403 修复与双线合流（待切换本机活 DSH / 真机验收）
+
+- **Step 1（已合入 `dev` @ `8d66d8a`）**：在独立工作树 `../surfcore-r2-followup`（分支 `fix/review-2026-11-19-r2-followup`）补齐 R2 复审发现的 4 处缺口——送达后读账本损坏不再谎报未投递、`executeDeliveryStep` 补拦 `delivering`、Windows `hardenFile` 补 `/remove:g`、`apply-update.mjs` 修根目录用户目录过滤并加 preflight，已通过 `test:audit` 208/208、`test:regressions` 17/17、`lint:failures` 0、`doc-facts` 0，并 `--no-ff` 合入 `dev`（清单 `1123/1123` 问题 0）。
+- **Step 2（合流分支 `feat/local-task-integrated`，独立工作树 `../surfcore-local-task-integrated`）**：
+  - 修复 P1 交互确认 403 拦截：`local-task-interactions.mjs` 调 `/api/notify/owner` 携带 `taskInteraction: { id, kind, taskId }` 并把推送失败以结构化 `notifyError` 暴露在 `listPending()` / `本机任务列表`；`src/bridge.js` 对合法 `taskInteraction` 走 `hasSensitiveTaskOutput`（放行工作区/桌面常规路径，仍严拦密钥与 `.ssh` 等敏感目录）；
+  - 已将最新 `dev`（含 R1 + R2 + R2 复审补齐）合并进 `feat/local-task-integrated`，9 处冲突全部手工对齐，同步更新 `doc-facts` 统计数字与安装清单；
+  - 详见 [case](cases/2026-11-19-qq-r2-followup-and-local-task-integration.md)。
+- **未动**：本机正在运行的 `DeepSeek Harness.app` / `surfcore-local-task` 目录与真实 `~/.dsh` 数据未改动；未 bump/tag/push/发布。下一步待用户确认后切换活进程/重启 DSH 并做真实手机 QQ 闭环验收。
+
 ## 2026-11-19 SurfCore 审核修复 A–D（01–12，已合入 dev、未发布）
 
 工作树 `../surfcore-review-fix`，分支 `fix/review-2026-11-19`，基线 `dev@d46612a`，最终提交见 `git log --oneline`（A 两批 `be91df8`/`f88397d`、B `548ef19`、C `6b01e73`、D `5c0ce72`、清单 `17c732c`）。
@@ -11,6 +20,77 @@
 **未验证**：真实 B 站账号历史分页语义、真实网络抓取、Windows 真机 ACL/启停脚本、已发布 tag 下载包（未发版）。**未做**：bump/tag/Release/推送。
 
 **回滚**：`git revert` 本批提交；B 站状态新增字段需先停旧消费者。细节与七步逻辑见 [case](cases/2026-11-19-surfcore-review-a-d.md)。
+
+## 2026-11-18 本机任务扩展：DSH CUA 桌面操控 + 隔离 Chrome DevTools MCP + 主人私聊自然委派（待实机重启验收）
+
+在保留全部 P0/P1 安全与持久化不变量（`files-only` / `local-task`）基础上，经用户确认 A1/A2/A3 方案后，已完成向 DSH `0.2.2-rc.3` 官方能力全面复用与 QQ 对话打通（详见 [case](cases/2026-11-18-local-task-desktop-cua-chrome.md)）：
+
+- **Chrome（A1）**：新增 `src/mcp-chrome-devtools.js`，并在 `scripts/setup-dsh.mjs` 注册 `mcp-chrome-devtools`，强制使用独立 `--user-data-dir=<DSH_HOME>/surfcore/chrome-profile` 并拒绝个人 Chrome 目录及 `--auto-connect` / `--browserUrl` / `--wsEndpoint`；`plugins/surfcore/qq-tool-restrict.mjs` 新增对 `tools.schemas(undefined)` 的动态非白名单屏蔽，防止 32 个 `mcp__chrome-devtools__*` 工具泄露到 `qq-chat-v2`。
+- **Mac / CUA / 确认流（A2）**：`scripts/setup-dsh.mjs` 为 macOS `desktop` profile 注册官方 `@deepseek-ai/dsh-cua-bundle`；`local-task-service.mjs` / `local-task-runner.mjs` / `local-task-gate.mjs` / `local-task-host.mjs` / `store.js` 支持 `desktop`（`ptc`）与 `files-only`（`local-task`）双模式、捕获 `assistant/message` 生成 `resultSummary`、`mountDesktopGate` 仅对自有 `ptc` 会话屏蔽 `mcp__snowluma*`/`subagent`/`schedule_*`/第三方 `own.tools`（普通手动 `ptc` 会话零影响）；新增 `plugins/surfcore/lib/local-task-interactions.mjs`，将自有会话的 `user-questions/request`（`cua-app-access` / `cua-mouse-control` / `ask_user_question`）和 `approval/request` 转发至主人 QQ（`通过/始终允许/拒绝 t<7hex>` 或 `t<7hex> <回答>`）及设置页，非自有会话原样 `next()` 透传。
+- **QQ 自然聊天委派（A3）**：仅在 Verified 主人私聊 `private:<ownerQQ>` 的 `getNativeQQCapabilities` 开放 `localTask.enabled`，`qq-v2-reply-host.mjs` 为 NativeOwner 挂载符合 `qq-v2-native-ledger` 校验的单工具 `qq_dispatch_local_task`（群聊/非主人零暴露），结果送达 `/api/notify/owner` 后同步记入 `recordSentMessagesV2`。
+- **真机生效前还需人工完成**：
+  1. 在宿主终端执行 `node scripts/setup-dsh.mjs desktop` 写入新 MCP 与 `@deepseek-ai/dsh-cua-bundle`；
+  2. 重启运行中的 DSH 桌面端与 `src/bridge.js`；
+  3. macOS 首次执行 CUA 桌面控制时，在「系统设置 → 隐私与安全性」为 `DSH Computer Use` 开启「辅助功能」与「屏幕录制」权限；
+  4. 按真实手机 QQ → 红豆自然聊天发起 Chrome 网页查阅与桌面应用操控、并在手机端用 `通过 t<hex>` 确认一次完成实机闭环验收。
+
+## 2026-11-17 本机任务 P0/P1 审核修复 + 隔离真宿主 / 浏览器验收完成（真实手机 QQ / NapCat 待真机环境）
+
+针对 `dd03233` 审核工单的三项 P0 与九项 P1 修复已全部落地，并进一步关闭三条残余风险与前两条实装宿主阻断项：
+- **P0-1**：`local-task-service.mjs` 全部写操作改为 `async` + 单写者串行链 `writeChain`，等 `table.put()` 确认后提交，失败回滚内存与 `activeTaskId`，`unknown-state` 隔离禁派发并支持关闭重开核对。
+- **P0-2**：`local-task-gate.mjs` 卸载同步通知 `runner` 中止会话（不可确认标 `needs_reconciliation` 并锁席位），`local-task-host.mjs` 注册仅作用于本机任务会话的宿主兜底 `tools.guard`（普通 DSH 会话零影响）。
+- **P0-3**：`local-task-gate.mjs` 与 `local-task-host.mjs` 以 `{ prepend: true }` 抢占 `fs/write-intent` 返回 `{ kind: 'createIfAbsent' }`（已读过文件也绝不放行覆写），移除 `agent.cordis.yml` 重复宿主服务行避免 `leakedServices`。
+- **P1（1–9）+ 残余 1（`llm/stream`）**：并发 1 + FIFO 队列与 `queued` 禁直派、持久化/取消失败保留席位、DSH 对象/未知 `turn/end` 保守状态、Delivery `sending -> delivered/uncertain`、`redeliver` 结果补发、`llm/stream` 瀑布流预扣减 + `session/event` 全事件（`assistant/message` + `assistant/attempt` + `session/title-llm-request` + `tool/call`/`tool/result` 去重）额度封堵。
+- **隔离真实 DSH Host + Playwright UI + 真实 `src/bridge.js` 全链路验收与三处实装漏洞根治**（详见 [case](cases/2026-11-17-local-task-p0-p1-fixes.md) 与 [PITFALLS #247](PITFALLS.md#2472026-11-17p0真实宿主发现mock-单测全绿一上真实-dsh-desktop-host连踩三条实装契约差)）：
+  - 通过 `scripts/test-local-task-isolated-host.mjs`（隔离 temp `DSH_HOME` 启动真实 `dsh-desktop-host`，零接触 `~/.dsh` 与在跑桌面端）与 `plugins/surfcore/scripts/test-local-task-ui.mjs`（Playwright Chrome 实测设置页全交互与失败 toast 可见性）；
+  - 修复真实宿主中暴露的三处缺陷：`local-task-gate.mjs` 动态 `tools.restrict({ deny })` 隐藏全局/MCP 工具并保持 `read`/`write` 可见；`local-task-runner.mjs` 修正 `sessionController.prompt(req, AbortSignal)` 参数契约；`src/bridge.js` `/api/notify/owner` 经 `sendChain` + 一次性 `managementSendTickets` 放行，避免无普通 QQ 聊天会话时被 Memory V2 拒收 `502`。
+- **尚未验证（外部环境边界）**：真实手机 QQ ↔ 在线 NapCat OneBot 网关真机收发（本机未配置 `ownerQQ` 与在线 `NapCat`，全程使用回环 OneBot 夹具测试，未重启运行中的桌面端 DSH）。
+
+## 2026-11-17 本机任务（T01–T06）：QQ 一句话，DSH 自己用工具做完
+
+主人私聊发 `本机任务：<要它做什么>` → Host 记账 → 建专用 DSH 会话（preset `local-task`）→ 模型用真实文件工具执行
+→ 完成回执回到同一个私聊。查询 `本机任务列表`、停止 `取消本机任务 <号>`；设置页 `DSH 设置 → SurfCore → 本机任务`
+可看列表、停止、拿原生会话号（刻意没有发起入口）。
+
+已提交（分支 `feat/local-task-t01t08`，基于 `b559af5`）：T01 能力矩阵 `964d3c2`、存储层 `7f14bbf`、闸门 `00a171d`、
+会话编排 `eeb33ed`、控制面 `a46033b`、QQ 入口 `349ec8e`、设置页 `77bd71e`。
+`npm run test:audit` 208/208；本机任务自带 5 个测试文件（service/gate/runner/host/recovery/api/intent）。
+
+**未验证**：真实 QQ 收发、真实 DSH 会话执行、设置页界面（都需要重启 DSH，而本会话跑在 DSH 里）。
+确切步骤与旧入口退役清单见 [T07/T08 交接](plans/2026-11-17-t07t08-handoff.md)；
+踩坑：`任务：` 这三个说法已被 task-harness 占用，新入口必须叫「本机任务：」（见 case 文档）。
+
+## 2026-11-16 QQ 主人私聊新建 Mac 文本文件
+
+本机 QQ 桥接已加载 `任务：新建文件`。用户从本人 QQ 私聊新建 `qq-test.txt` 并确认收到回执。OneBot 读回原指令和送达回执，Mac 上新文件的 18 字节与原指令正文一致，原有文件保持原样。写入单独授权至 `qq-readonly-nAJcwO`，隔离回归确认同名保护。见 [验收记录](cases/2026-11-16-qq-mac-create-file.md#qq-真机验收)。
+
+## 2026-11-16 QQ 主人私聊读取 Mac 文本文件
+
+本机 QQ 桥接已加载 `任务：读取文件`，文件读取只授权上次使用的 `qq-readonly-nAJcwO`。用户从本人私聊发送 `任务：读取文件 alpha-notes.txt` 并确认收到正确正文。OneBot 可读回原指令和送达回执，回传的 17 字节正文与原文件一致。隔离回归验证拒绝越界和排队时撤权。见 [验收记录](cases/2026-11-16-qq-mac-readonly-file.md#qq-真机验收)。
+
+## 2026-11-16 QQ 主人私聊读取 Mac 目录
+
+固定只读目录命令已安装到本机 QQ 桥接，重启后原账号 OneBot 已连接。用户从主人 QQ 私聊发来真实指令，在同一私聊收到红豆回传的两个测试文件名。OneBot 可读回原指令和回执，账本标记已送达，文件字节保持原样。隔离回归确认拒绝越界和去重。见 [验收记录](cases/2026-11-16-qq-mac-readonly-directory.md#qq-真机验收)。
+
+## 2026-11-16 V2 安装后的红豆 QQ 真机复验
+
+原账号的真实私聊文字、群 @ 和私聊语音均由 OneBot 在对应会话读回。6 条收发事件均已提交到 Memory V2 并建好索引。分别按私聊和群受众读回对应来源。私聊的新语音请求没有重复代号，红豆跨轮找回代号，实际返回的 10.64 秒语音可在本机解码，用户已确认 QQ 客户端播放正常、代号正确。抖音与 B 站留待后续。见 [验收记录](cases/2026-11-16-v1-runtime-retirement.md#v2-上线后的-qq-真机复验)。
+
+## 2026-11-16 收口 V1 运行时
+
+QQ 只走 V2 Native 回复，旧卡同步、群消息跨渠道日志和旧出站补发已移除。抖音反思与分享要求 V2。桌宠保留本机聊天记录，B 站观看工具保留观看历史。范围、回滚与门禁见 [本轮案例](cases/2026-11-16-v1-runtime-retirement.md)。
+
+## 2026-11-16 NapCat 快速登录实机复验
+
+现有 NapCat 4.18.42 的持久化 `webui.json` 已指定原红豆 QQ 账号。重启原容器一次，约 23 秒自动登录同一账号并重连 OneBot，约 52 秒收到心跳；无需扫码。回滚位置和验证过程见 [渠道实机验收](cases/2026-11-16-live-channel-acceptance.md#napcat-原账号快速登录复验)。
+
+## 2026-11-16 修复撤销临时许可后伙伴入口报红
+
+伙伴状态现在按当前许可读取历史，撤权分享和依赖它的消息留档、停止展示和参与回复。恢复旧本机许可后，DSH 原生主窗口的 `MEMORY_EVIDENCE_DENIED` 已消失；对话页显示红豆和普通历史提示。抖音发现日记仍单独显示缺少平台许可。已核对本机权限有效、临时合并许可撤回、分享归档字节一致、验收调用仍为 12。实装文件 404/404，详见 [case](cases/2026-11-16-companion-history-revocation.md)。QQ 复查发现 NapCat 已在 DSH 重启前开始刷新账号登录二维码，等待原号重登。
+
+## 2026-11-16 红豆 QQ 与本机伙伴真机验收
+
+NapCat 重启后用户原号扫码，OneBot HTTP/WS 恢复。私聊文字、群 @ 与私聊语音均经 OneBot 读回，用户确认语音可播放。B站 V2 能使用已保存的扫码凭据核验真实账号，站内评论仍需用户指定测试链接与送达回执。抖音一次受控真机观看中，正式推荐/媒体处理/分享写入贯穿同一个浏览器。DSH 真实收到分享并回话，共两次模型请求。测试许可已撤回，原本机许可按相同受众和处理模型用新编号恢复，临时额外一次请求已归档。重启后 QQ 仍在线，安装文件 404/404 一致。完整时间线和发布交接见 [case](cases/2026-11-16-live-channel-acceptance.md)。
 
 ## 2026-11-15 根治：`publish-dev` 同步文档版本字（发 dev 构建不再把 `doc-facts` 弄红）
 

@@ -58,7 +58,7 @@ try {
       const doc = yaml.load(fs.readFileSync(f.patchFile, 'utf8'));
       const entries = doc.flatMap((op) => op.insert || []);
       assert.deepEqual(entries.find((entry) => entry.id === 'custom'), originalCustom);
-      for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe']) {
+      for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe', 'mcp-chrome-devtools']) {
         assert.equal(entries.filter((entry) => entry.id === id).length, 1, `${id} duplicate`);
       }
       assert.equal(entries.find((entry) => entry.id === 'mcp-snowluma').config.toolCallTimeoutMs, 725000);
@@ -111,6 +111,25 @@ try {
     fs.writeFileSync(path.join(blocker.home, 'plugins/surfcore/keep.txt'), 'keep');
     assert.notEqual(blocker.run().status, 0);
     assert.equal(fs.readFileSync(path.join(blocker.home, 'plugins/surfcore/keep.txt'), 'utf8'), 'keep');
+  });
+
+  test('desktop profile on darwin adds built-in CUA bundle once while web profile omits it', () => {
+    const f = fixture('desktop-cua', '[]\n');
+    const desktopDir = path.join(f.home, 'profiles/desktop');
+    fs.mkdirSync(desktopDir, { recursive: true });
+    fs.writeFileSync(path.join(desktopDir, 'cordis.patch.yml'), '[]\n');
+    fs.writeFileSync(path.join(desktopDir, 'package.json'), JSON.stringify({
+      name: 'fixture-desktop', dependencies: {},
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } },
+    }));
+    const r = f.run('desktop');
+    assert.equal(r.status, 0, r.stderr);
+    const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
+    if (process.platform === 'darwin') {
+      assert.ok(pkg.dsh.profile.bundles.includes('@deepseek-ai/dsh-cua-bundle'));
+    } else {
+      assert.equal(pkg.dsh.profile.bundles.includes('@deepseek-ai/dsh-cua-bundle'), false);
+    }
   });
 
   if (process.platform === 'win32') test('Windows runs the npm .cmd shim with literal profile arguments', () => {

@@ -102,7 +102,12 @@ if (sharingStatus.statusCode !== 409 || sharingFailure.code !== 'DOUYIN_CHAT_CHA
   throw new Error('伙伴状态必须到达真实控制器并返回可行动的角色缺失错误');
 }
 
-for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/dsh-surfcore/api/persona', '/dsh-surfcore/api/memory', '/dsh-surfcore/api/memory-card', '/dsh-surfcore/api/memory-card/full', '/dsh-surfcore/api/align', '/dsh-surfcore/api/extensions', '/dsh-surfcore/api/platforms', '/dsh-surfcore/api/diagnostics', '/dsh-surfcore/api/bili/automation', '/dsh-surfcore/api/watch-history', '/dsh-surfcore/api/preferences/scan?sources=local&limit=5', '/dsh-surfcore/api/bili/fish-guard', '/dsh-surfcore/api/fish-guard/qq']) {
+for (const path of ['/memory', '/memory-card', '/memory-card/full']) {
+  const retired = await invoke(apiRoute, 'GET', '/dsh-surfcore/api' + path);
+  if (retired.statusCode !== 404) throw new Error('旧记忆 API 仍能访问：' + path);
+}
+
+for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/dsh-surfcore/api/persona', '/dsh-surfcore/api/memory-v2/status', '/dsh-surfcore/api/align', '/dsh-surfcore/api/extensions', '/dsh-surfcore/api/platforms', '/dsh-surfcore/api/diagnostics', '/dsh-surfcore/api/bili/automation', '/dsh-surfcore/api/watch-history', '/dsh-surfcore/api/preferences/scan?sources=local&limit=5', '/dsh-surfcore/api/bili/fish-guard', '/dsh-surfcore/api/fish-guard/qq']) {
   const res = await invoke(apiRoute, 'GET', path);
   const data = JSON.parse(res.body || '{}');
   console.log(path, res.statusCode, data.ok, Object.keys(data).slice(0, 8));
@@ -141,7 +146,7 @@ for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/
     if (!data.dynamics || !Array.isArray(data.dynamics.kinds) || data.dynamics.kinds.length !== 4) {
       throw new Error('自动化快照缺少四类动态');
     }
-    if (!data.qqShare || !Array.isArray(data.qqShare.times)) throw new Error('自动化快照缺少 QQ 分享排期');
+    if (!Array.isArray(data.dynamicsSync?.groups) || data.qqShare !== undefined) throw new Error('公开动态同步快照错误');
   }
   if (path.endsWith('/watch-history')) {
     if (data.ok !== true) throw new Error('/watch-history 没有返回 ok');

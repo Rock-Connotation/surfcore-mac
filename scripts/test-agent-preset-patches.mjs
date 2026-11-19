@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import {
-  BUNDLE_DIR, GUARD_SPECIFIER, PRESETS, REPO_ROOT,
+  BUNDLE_DIR, GUARD_SPECIFIER, PRESETS, RELATIVE_ROW_REWRITES, REPO_ROOT,
   buildPatches, patchFileFor, presetRowId,
 } from './build-agent-preset-patches.mjs';
 
@@ -51,7 +51,7 @@ for (const name of PRESETS) {
   // 与源行列表逐字对比：只允许守卫行的 name 被改写。
   const source = load(path.join(REPO_ROOT, 'dsh', 'agent-presets', name, 'agent.cordis.yml'));
   const expected = structuredClone(source);
-  for (const r of expected) if (r.name === './qq-tool-restrict.mjs') r.name = GUARD_SPECIFIER;
+  for (const r of expected) { const rewrite = RELATIVE_ROW_REWRITES.get(r.name); if (rewrite !== undefined) r.name = rewrite }
   assert.deepEqual(row.config.plugins, expected, `${name}: config.plugins 必须与 agent.cordis.yml 完全一致（守卫名除外）`);
   ok(true, `${name}: config.plugins 与 agent.cordis.yml 逐字一致（${expected.length} 行）`);
 
@@ -65,12 +65,13 @@ for (const name of PRESETS) {
 console.log('## 3. 守卫行引用方式：只用「profile 目录可解析」的裸说明符');
 for (const name of PRESETS) {
   const row = load(patchFileFor(name))[0].insert[0];
-  const guard = row.config.plugins.find((r) => r.id === 'qq-tool-restrict');
-  ok(guard !== undefined, `${name}: 有 qq-tool-restrict 守卫行`);
-  ok(guard?.name === GUARD_SPECIFIER, `${name}: 守卫行 name = ${GUARD_SPECIFIER}`);
+  const guardRowId = { 'qq-chat-v2': 'qq-tool-restrict', 'local-task': 'local-task-gate' }[name];
+  const guard = row.config.plugins.find((r) => r.id === guardRowId);
+  ok(guard !== undefined, `${name}: 有 ${guardRowId} 守卫行`);
+  ok(typeof guard?.name === 'string' && guard.name.startsWith('surfcore/'), `${name}: 守卫行用 bundle 裸说明符（${guard?.name}）`);
   const bad = row.config.plugins.filter((r) => typeof r.name === 'string' && (r.name.startsWith('.') || path.isAbsolute(r.name)));
   ok(bad.length === 0, `${name}: 没有任何相对/绝对路径子行名（0.1.7 下会按 profile 目录解析而装不上）${bad.length ? `：${bad.map((r) => r.name).join(', ')}` : ''}`);
-  const guardFile = path.join(BUNDLE_DIR, GUARD_SPECIFIER.slice('surfcore/'.length));
+  const guardFile = path.join(BUNDLE_DIR, String(guard?.name ?? GUARD_SPECIFIER).slice('surfcore/'.length));
   ok(fs.existsSync(guardFile), `${name}: 守卫实现存在（${path.relative(REPO_ROOT, guardFile)}）`);
 }
 
@@ -94,6 +95,7 @@ console.log('## 4. bundle 声明与安全边界');
   const canonicalMod = await import(pathToFileURL(canonical).href);
   for (const name of PRESETS) {
     const shim = path.join(REPO_ROOT, 'dsh', 'agent-presets', name, 'qq-tool-restrict.mjs');
+    if (!fs.existsSync(shim)) continue;
     ok(/^export \* from '\.\.\/\.\.\/\.\.\/plugins\/surfcore\/qq-tool-restrict\.mjs'$/m.test(read(shim).trim()),
       `${name}/qq-tool-restrict.mjs 是指向唯一实现的 re-export 壳`);
     const shimMod = await import(pathToFileURL(shim).href);

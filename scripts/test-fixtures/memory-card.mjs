@@ -29,8 +29,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { sliceHead } from './safe-text.js';
-import { validateExperienceEvent } from './core/experience.js';
+import { sliceHead } from '../../src/safe-text.js';
+import { validateExperienceEvent } from './experience.mjs';
 
 export const MEMORY_CARD_VERSION = 1;
 export const DAY_MS = 24 * 60 * 60 * 1000;

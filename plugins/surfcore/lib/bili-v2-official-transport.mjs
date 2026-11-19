@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { types } from 'node:util';
+import { biliCookieHeader } from '../../../src/bili-api.js';
 import { readBiliV2VideoMetadata } from './bili-v2-video-metadata.mjs';
 import { safeData, verifyPublicSet, memberFor, sameData } from './bili-v2-official-public-source.mjs';
 import { biliV2InputDigest } from './bili-v2-agent.mjs';
@@ -112,20 +113,21 @@ export function createBiliV2OfficialTransport({ getCredentials, getScope, fetchI
   // One immutable, value-copied Host credential snapshot per public operation.
   // It lives only in the operation's local ctx (never a global currentCredentials),
   // so concurrent jobs cannot cross accounts and no request mixes two snapshots.
+  function credentialView(credentials) {
+    if (!credentials || typeof credentials !== 'object') return null;
+    const fields = [credentials.sessdata, credentials.bili_jct, credentials.buvid3];
+    const validSavedFields = typeof fields[0] === 'string' && fields[0].length > 0
+      && fields.every(value => value === undefined || (typeof value === 'string' && !/[;\x00-\x20\x7f]/.test(value)));
+    const cookie = credentials.cookie ?? (validSavedFields ? biliCookieHeader(credentials) : '');
+    if (typeof cookie !== 'string' || cookie.length === 0 || cookie.length > 8192) return null;
+    return { cookie, bili_jct: typeof credentials.bili_jct === 'string' ? credentials.bili_jct : undefined };
+  }
   function readSnapshot(credentials) {
-    if (!credentials || typeof credentials !== 'object' || typeof credentials.cookie !== 'string'
-      || credentials.cookie.length === 0 || credentials.cookie.length > 8192) {
+    const snapshot = credentialView(credentials);
+    if (!snapshot) {
       abort('BILI_OFFICIAL_CREDENTIALS_UNAVAILABLE', 'The Host has no current Bili credentials; restore the approved session before retrying.');
     }
-    return Object.freeze({
-      cookie: credentials.cookie,
-      bili_jct: typeof credentials.bili_jct === 'string' ? credentials.bili_jct : undefined,
-    });
-  }
-  function sameCredentials(current, snapshot) {
-    if (!current || typeof current !== 'object' || typeof current.cookie !== 'string') return false;
-    const jct = typeof current.bili_jct === 'string' ? current.bili_jct : undefined;
-    return current.cookie === snapshot.cookie && jct === snapshot.bili_jct;
+    return Object.freeze(snapshot);
   }
   async function beginOperation(signal) {
     ensureOpen(signal);
@@ -141,7 +143,8 @@ export function createBiliV2OfficialTransport({ getCredentials, getScope, fetchI
     let current;
     try { current = await getCredentials(); }
     catch { abort('BILI_OFFICIAL_CREDENTIALS_UNAVAILABLE', 'Host credentials became unavailable; cancel the job and restore the approved session.'); }
-    if (!sameCredentials(current, ctx.snapshot)) {
+    const fresh = credentialView(current);
+    if (!fresh || fresh.cookie !== ctx.snapshot.cookie || fresh.bili_jct !== ctx.snapshot.bili_jct) {
       abort('BILI_OFFICIAL_CREDENTIALS_CHANGED', 'Host credentials or account changed during this operation; cancel the job and capture a fresh one under a single account.');
     }
   }

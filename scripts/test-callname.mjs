@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pickPeerAlias, buildPeerAliasTag } from '../src/callname.js';
-import { renderMemoryCard } from '../src/memory-card.js';
+import { renderMemoryCard } from './test-fixtures/memory-card.mjs';
 
 let failures = 0;
 const ok = (cond, label, extra = '') => {
@@ -57,7 +57,7 @@ ok(pickPeerAlias([{ label: '小零', identities: { bili: { id: '37634003' } } }]
   ok(bridge.includes('peerAliasTagV2'), '桥接注入当前对方称呼');
   ok(bridge.includes("if (kind !== 'private') return ''"), '只在私聊注入');
   ok(bridge.includes('pickPeerAlias'), '按 QQ 取称呼');
-  const memory = fs.readFileSync(path.resolve('src/memory-card.js'), 'utf8');
+  const memory = fs.readFileSync(path.resolve('scripts/test-fixtures/memory-card.mjs'), 'utf8');
   ok(memory.includes('memorySourceLabel(record)'), '记忆行带来源（私聊/群聊/群名）归属');
 }
 

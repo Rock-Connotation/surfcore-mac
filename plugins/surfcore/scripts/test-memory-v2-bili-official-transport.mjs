@@ -210,6 +210,17 @@ await test('getAccount confirms the real official nav mid and leaks no credentia
   assert.equal(navCall.headers.cookie, HOST_SECRET);
 });
 
+await test('QR-saved credentials authenticate without rewriting the credential file', async () => {
+  const credentials = { sessdata: 'fixture%2Csession', bili_jct: HOST_CSRF, buvid3: 'fixture-device' };
+  const { api, state } = fixture({ credentials });
+  assert.equal(good(await api.getAccount()).accountMid, '9');
+  const nav = state.calls.find(call => call.base.endsWith('/x/web-interface/nav'));
+  assert.equal(nav.headers.cookie, `SESSDATA=fixture%2Csession; bili_jct=${HOST_CSRF}; buvid3=fixture-device`);
+  assert.equal(Object.hasOwn(credentials, 'cookie'), false);
+  state.credentials = { bili_jct: HOST_CSRF, buvid3: 'fixture-device' };
+  bad(await api.getAccount(), 'BILI_OFFICIAL_CREDENTIALS_UNAVAILABLE');
+});
+
 await test('getAccount refuses a failed official login with a visible hint', async () => {
   for (const nav of [
     { code: -101, data: { isLogin: false, mid: 9 } },

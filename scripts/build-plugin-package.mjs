@@ -29,8 +29,8 @@ function put(relative, bytes, mode = 0o644) {
   hashes[relative] = crypto.createHash('sha256').update(bytes).digest('hex');
 }
 for (const relative of files) {
-  if (!(/^(src|scripts|dsh)\//.test(relative) || relative.startsWith(pluginPrefix) || ['config.example.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'].includes(relative))) continue;
-  if (relative.startsWith('scripts/test-') || relative.startsWith('scripts/probe-') || relative.startsWith(`${pluginPrefix}scripts/`)) continue;
+  if (!(/^(src|scripts|dsh)\//.test(relative) || relative.startsWith(pluginPrefix) || ['config.example.json', 'public/console.html', 'LICENSE', 'THIRD_PARTY_NOTICES.md'].includes(relative))) continue;
+  if (relative.startsWith('scripts/test-') || ['scripts/audit-bridge-harness.mjs', 'scripts/r2-v2-fixture.mjs'].includes(relative) || relative.startsWith('scripts/probe-') || relative.startsWith(`${pluginPrefix}scripts/`)) continue;
   const bytes = git('show', `${sourceRef}:${relative}`);
   const tree = git('ls-tree', sourceRef, '--', relative).toString();
   if (tree.startsWith('120000')) throw new Error(`制品不接受源码符号链接：${relative}`);
@@ -44,7 +44,7 @@ const prefixPaths = (value) => typeof value === 'string' && value.startsWith('./
 const metadata = { ...plugin, main: prefixPaths(plugin.main), exports: prefixPaths(plugin.exports), dsh: prefixPaths(plugin.dsh),
   scripts: {}, dependencies: { ...source.dependencies, ...plugin.dependencies },
   bundledDependencies: Object.keys({ ...source.dependencies, ...plugin.dependencies }),
-  files: ['src', 'scripts', 'dsh', 'plugins', 'config.example.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md', '.surfcore-install.json', 'artifact-manifest.json', 'npm-shrinkwrap.json'] };
+  files: ['src', 'scripts', 'dsh', 'plugins', 'public/console.html', 'config.example.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md', '.surfcore-install.json', 'artifact-manifest.json', 'npm-shrinkwrap.json'] };
 put('package.json', Buffer.from(JSON.stringify(metadata, null, 2) + '\n'));
 const lock = JSON.parse(git('show', `${sourceRef}:package-lock.json`));
 lock.name = plugin.name;

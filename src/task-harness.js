@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { createTaskText, listTaskDirectory, readTaskText } from './task-directory.js';
 import { safeFetch } from './safe-fetch.js';
 
 // 研究来源的受控读取上限：safe-fetch 在读取阶段按字符截断，并保留 truncated 标记。
@@ -83,6 +84,8 @@ async function normalizeResearchResult(result, requestedUrl) {
 export function createTaskHarness({
   ledger,
   reportsDir,
+  readOnlyRoot,
+  canSendLiteralText = () => false,
   safeFetchImpl = safeFetch,
   sendCallback = async () => ({ ok: true }),
   now = Date.now,
@@ -348,7 +351,7 @@ export function createTaskHarness({
   }
 
   // 4. 平台回传步骤：格式化回送私聊并严格确认回执
-  async function executeDeliveryStep(task) {
+  async function executeDeliveryStep(task, { text: resultText, validate } = {}) {
     const activeTask = ledger.getTask(task.taskId);
     if (!activeTask || activeTask.status === 'cancelled') {
       throw new Error(`Task ${task.taskId} is cancelled or not found.`);
@@ -361,7 +364,7 @@ export function createTaskHarness({
       return { ok: false, status: 'delivery_unknown', code: 'OWNER_REPLY_UNKNOWN', error: '此前的送达结果未知。', hint: '查询平台消息和任务状态，不要自动重发。' };
     }
 
-    if (!activeTask.artifact) {
+    if (!activeTask.artifact && !resultText) {
       throw new Error(`Task ${task.taskId} has no generated artifact to deliver.`);
     }
 
@@ -377,7 +380,7 @@ export function createTaskHarness({
       ? `【失败来源】${failedSources.length} 个：${failedSources.slice(0, 3).map(s => `${s.url}${s.statusCode ? `（HTTP ${s.statusCode}）` : ''}`).join('，')}`
       : '';
 
-    const messageText = [
+    const messageText = resultText ?? [
       `📋 任务完成：${activeTask.goal}`,
       `【任务编号】${activeTask.taskId}`,
       `【研究摘要】${activeTask.artifact.summary}`,
@@ -403,6 +406,7 @@ export function createTaskHarness({
         text: messageText,
         taskId: task.taskId,
         phase: 'delivery',
+        ...(validate ? { validate } : {}),
         artifact: activeTask.artifact,
         task: activeTask
       });
@@ -498,6 +502,59 @@ export function createTaskHarness({
       }
       return { ok: false, status: 'delivery_unknown', code: 'OWNER_REPLY_UNKNOWN', error: err.message, hint: '查询任务和平台消息，不要自动重发。' };
     }
+  }
+
+  async function runMacFileTask({ requestor, action, target, body, taskId, validate }) {
+    const reading = action === 'file_read';
+    const creating = action === 'file_create';
+    if (!creating && !reading && action !== 'directory_list') throw new TypeError('Unsupported Mac file task action.');
+    const admission = checkAdmission({ requestor });
+    if (!admission.ok) return admission;
+    if (requestor.platform !== 'qq' || requestor.conversationKey !== `private:${requestor.userId}` ||
+        !readOnlyRoot || !taskId || typeof validate !== 'function' || !validate()) {
+      return { ok: false, code: 'TASK_FILE_IDENTITY_REQUIRED', error: '未确认主人私聊或本机工作区。', hint: '由主人在已允许的 QQ 私聊发起，并检查本机工作区。' };
+    }
+    if (ledger.getTask(taskId)) return { ok: true, idempotent: true };
+    const task = ledger.createTask(creating
+      ? { taskId, requestor, type: action, goal: '新建本机文件', steps: ['create', 'delivery'] }
+      : { taskId, requestor, type: action,
+      goal: reading ? '读取本机文件' : '列出本机文件', steps: [reading ? 'read' : 'list', 'delivery'] });
+    const source = { root: readOnlyRoot, target };
+
+    if (creating) {
+      ledger.updateTask(taskId, { status: 'executing', intent: { effect: 'unconfirmed' } });
+      const created = createTaskText({ ...source, text: body, validate });
+      if (!created.ok) {
+        const effect = created.effect ?? 'not_created';
+        ledger.updateTask(taskId, { status: effect === 'unconfirmed' ? 'unknown' : 'failed', intent: { effect }, error: `${created.code} ${created.error}` });
+        return created;
+      }
+      ledger.updateTask(taskId, { status: 'running', intent: { effect: 'created', name: created.name, bytes: created.bytes } });
+      return executeDeliveryStep(task, { text: `Mac 文件已新建\n任务编号 ${taskId}\n文件 ${created.name}\n已写入 ${created.bytes} 字节。`, validate });
+    }
+
+    const result = reading ? readTaskText(source) : listTaskDirectory(source);
+    const failTask = failure => {
+      ledger.updateTask(taskId, { status: 'failed', error: `${failure.code} ${failure.error}` });
+      return failure;
+    };
+    if (!result.ok) return failTask(result);
+
+    if (reading) {
+      const messageText = `Mac 文件内容（只读）\n任务编号 ${taskId}\n正文 ${result.bytes} 字节\n【正文开始】\n${result.text}\n【正文结束】`;
+      if (!canSendLiteralText(messageText)) {
+        return failTask({ ok: false, code: 'TASK_FILE_TEXT_BLOCKED', error: '正文含有无法安全原样回传的文本。', hint: '在本机选一个不含凭据或 QQ 控制码的文本文件。' });
+      }
+      ledger.updateTask(taskId, { status: 'running', intent: { bytes: result.bytes } });
+      const receipt = await executeDeliveryStep(task, { text: messageText,
+        validate: () => validate() && result.verifyScope() && canSendLiteralText(messageText) });
+      if (receipt.ok) return { ok: true, status: receipt.status };
+      return receipt;
+    }
+    ledger.updateTask(taskId, { status: 'running', intent: { displayed: result.displayed, truncated: result.truncated } });
+    const scope = result.truncated ? `清单达到上限，已显示 ${result.displayed} 个文件。` : `共 ${result.displayed} 个文件。`;
+    const messageText = `Mac 目录清单（只读）\n任务编号 ${taskId}\n${scope}\n${result.text}`;
+    return executeDeliveryStep(task, { text: messageText, validate });
   }
 
   // 5. 编排端到端任务运行流水线
@@ -967,6 +1024,7 @@ export function createTaskHarness({
     executeCommandStep,
     executeMacAppStep,
     runAutonomousIdleActivity,
+    runMacFileTask,
     runTaskPipeline,
     resolvedReportsDir
   };

@@ -98,6 +98,20 @@ try {
   await manage('revoke_policy', { policyId: localPolicy });
   const revoked = (await request('status')).value;
   assert.equal(revoked.policies.find(row => row.id === localPolicy)?.label, '已撤销');
+  const local = runtime.channelMemory('local');
+  const captureLocal = () => local.adapter.capture({ conversationKey: 'local:companion-sharing:' + current.id });
+  assert.equal((await captureLocal()).code, 'MEMORY_POLICY_DENIED');
+  await manage('configure_policy', { conversationId: 'local-sharing', processorScope: 'exact-model' });
+  const reissued = await captureLocal();
+  assert.equal(reissued.ok, true, JSON.stringify(reissued));
+  assert.notEqual(reissued.sourceStamp.audiencePolicyId, localPolicy, 'A revoked policy ID must stay revoked.');
+  local.adapter.release(reissued.handle);
+  await manage('configure_policy', { conversationId: 'local-sharing', processorScope: 'exact-model' });
+  const repeated = await captureLocal();
+  assert.equal(repeated.ok, true, JSON.stringify(repeated));
+  assert.equal(repeated.sourceStamp.audiencePolicyId, reissued.sourceStamp.audiencePolicyId);
+  local.adapter.release(repeated.handle);
+
   const backup = await manage('backup', {});
   const backedUp = (await request('status')).value;
   assert.ok(backedUp.backups.some(row => row.id === backup.backupId && row.verified === true), JSON.stringify(backedUp));

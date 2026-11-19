@@ -131,7 +131,11 @@ export async function status() {
  */
 export function mapStatusPayload(data = {}, { port = consolePort(), pid } = {}) {
   const payload = data ?? {};
-  const memoryFailure = payload.memoryV2?.ok === false ? payload.memoryV2 : payload.memoryV2?.failures?.find(item => item?.ok === false);
+  // 'purpose' 是后台自主搭话模块的状态，不能污染「QQ 聊天回复是否受阻」指示灯。
+  const failures = Array.isArray(payload.memoryV2?.failures) ? payload.memoryV2.failures : [];
+  const memoryFailure = payload.memoryV2?.ok === false
+    ? payload.memoryV2
+    : failures.find(item => item?.ok === false && item?.key !== 'purpose');
   return {
     ok: true,
     running: true,

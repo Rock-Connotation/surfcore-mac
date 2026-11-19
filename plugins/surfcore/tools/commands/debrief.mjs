@@ -110,7 +110,7 @@ async function main() {
     try {
       if (!character) throw Object.assign(new Error('当前角色不可用。'), { code: 'character.unavailable', hint: '选择角色后重试。' })
       const client = createPerceptionClient({ stateDir: SURFCORE_DIR })
-      const { jobId } = await client.submitBili({ bvid: part.bvid, page: part.page, cid: part.cid, characterId: character.id, characterEpoch: character.epoch, activityId, asr: needAsr, frames: needFrames, recordHistory: !options['no-history'], recordExperience: !options['no-history'], grid: options.grid ?? '3x3', uniform: !!options.uniform, subtitleEvery: options.substrip ? (options.substrip === true ? 7 : Number(options.substrip)) : null, languageHint: 'auto' })
+      const { jobId } = await client.submitBili({ bvid: part.bvid, page: part.page, cid: part.cid, characterId: character.id, characterEpoch: character.epoch, activityId, asr: needAsr, frames: needFrames, recordHistory: !options['no-history'], grid: options.grid ?? '3x3', uniform: !!options.uniform, subtitleEvery: options.substrip ? (options.substrip === true ? 7 : Number(options.substrip)) : null, languageHint: 'auto' })
       try { assertExpectedCharacter() } catch (error) {
         if (error?.code === 'STALE_CHARACTER') {
           let cancelled = false

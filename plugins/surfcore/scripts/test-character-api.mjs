@@ -94,9 +94,13 @@ const card = (text) => ({
 });
 
 try {
-  const createdA = await invoke('POST', '/characters', { action: 'create', name: '角色甲', personaText: persona('甲'), memoryCard: card('甲的记忆') });
+  const retired = await invoke('POST', '/characters', { action: 'create', name: '旧卡', personaText: persona('旧'), memoryCard: card('旧记忆') });
+  assert.equal(retired.status, 400);
+  assert.equal(retired.data.code, 'MEMORY_CARD_IMPORT_RETIRED');
+  assert.ok(retired.data.hint);
+  const createdA = await invoke('POST', '/characters', { action: 'create', name: '角色甲', personaText: persona('甲') });
   assert.equal(createdA.status, 200, JSON.stringify(createdA.data));
-  const createdB = await invoke('POST', '/characters', { action: 'create', name: '角色乙', personaText: persona('乙'), memoryCard: card('乙的记忆') });
+  const createdB = await invoke('POST', '/characters', { action: 'create', name: '角色乙', personaText: persona('乙') });
   assert.equal(createdB.status, 200, JSON.stringify(createdB.data));
   assert.notEqual(createdA.data.character.id, createdB.data.character.id);
 

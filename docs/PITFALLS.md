@@ -3,8 +3,6 @@
 > 目的：**半天后的我认不出自己做过什么**，所以每个坑都留「现象 / 根因 / 处置 / 怎么验证 / 怎么预防」。
 > 新坑先加到这里，再改代码；只改代码不记坑 = 下次重踩。
 
----
-
 ## #1（2026-10-22，P0）一个坏会话日志让整个 workspace 服务起不来
 
 **现象**
@@ -4661,6 +4659,92 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 **怎么验证**：`node scripts/test-dev-publish.mjs`（含同步红→绿断言）→ `TEST_EXIT=0`；`npm run doc-facts > /tmp/x.log 2>&1; echo EXIT=$?` → `EXIT=0`。
 
 
+## 2026-11-16 B站扫码状态与 V2 凭据契约不同，抖音按素材重复开启浏览器
+
+扫码凭据保存为 sessdata / bili_jct / buvid3，V2 transport 要在请求边界转成 Cookie 并用同一规则比对重读结果。避免改写历史凭据或从账号状态推断可发送。受控模式可显式仅启动评论监听，不必启用整套自动巡航。
+
+抖音推荐已经在浏览器里验证官方 SELF。轮次保留同一会话给素材独立授权用，30 秒内复用最近证明，过期在同一浏览器拿新 SELF。当前角色、账号或会话变化立即拒绝，结束或取消统一关闭。日记授权失败时保留最小角色信息让本机分享独立加载。详细复现和实机证据见 [case](cases/2026-11-16-live-channel-acceptance.md)。
+
+
+记忆管理的撤回只依赖已有控制状态。联查平台账号会让无关网页登录拖至客户端超时。相同受众和路由同时授予两份许可会报 MEMORY_AUDIENCE_AMBIGUOUS。历史策略编号撤销后不可变；重新批准同一范围须通过正式预览使用新的策略编号，重复批准复用当前有效编号，不扩大受众。
+
+## 2026-11-16 临时许可撤回后，伙伴状态批量绑定历史触发 `MEMORY_EVIDENCE_DENIED`
+
+回复和查看历史都必须按当前许可筛选。原许可恢复后，历史仍受写入时的许可约束。展示前用 Host 只读校验过滤失效记录和依赖它的对话，实际输入继续使用完整绑定和响应前复验。避免把候选历史的拒绝当成当前请求附件失败；真正的上下文和 Worker 错误继续显示。复现和回滚见 [case](cases/2026-11-16-companion-history-revocation.md)。
+
+## 2026-11-16 NapCat 自动快速登录可与启动期二维码同时出现
+
+已有持久化 QQ 数据时，本机 NapCat 4.18.42 从 `webui.json` 的 `autoLoginAccount` 读取目标。一次重启后看自动登录终态、同账号 OneBot `get_status` 与新心跳，再决定是否要求人工扫码。启动早期生成二维码属于中间状态。详情见 [渠道实机验收](cases/2026-11-16-live-channel-acceptance.md#napcat-原账号快速登录复验)。
+
+## 2026-11-16 V1 退出必须检查后台写入和制品内容
+
+切 V2 后，群消息旧跨渠道日志、拒绝前的离线补录请求和媒体工单的旧经历收件箱仍可能在后台使用。按入口验证已安装文件、旧卡正文标记和旧收件箱字节。离线比较实现分离并排出插件制品。见 [本轮案例](cases/2026-11-16-v1-runtime-retirement.md)。
+
+## 2026-11-16 QQ 任务入口需要为本机只读动作单独校验身份
+
+原 `任务` 入口只调度网页调研。本机文件名需要走固定命令，在读取目录及排队发回 QQ 时分别验证主人、私聊白名单和当前账号角色。用目录分隔边界检查同名前缀，用文件类型检查排除符号链接。真机验收需要 OneBot 原始私聊事件和实际回执，隔离回归只覆盖实现。见 [验收记录](cases/2026-11-16-qq-mac-readonly-directory.md)。
+
+## 2026-11-16 QQ 目录清单权限不足以授予文件正文
+
+正文需本机独立绑定一个目录。校验路径后用只读且禁止跟随链接的描述符，限制字节数并验证普通文件身份。正文只在原私聊回执中使用。排队发回之前复查目录授权，避免撤权后交付。见 [验收记录](cases/2026-11-16-qq-mac-readonly-file.md)。
+
+## 2026-11-16 QQ 创建文件必须原子拒绝同名目标
+
+仅检查文件是否存在会留下并发窗口。完整写入私有临时文件后使用排他创建语义，链接和文件同样视为既有目标。任务账本分别记录本机创建与 QQ 送达，平台回执丢失时保留本机结果且不重新执行。见 [验收记录](cases/2026-11-16-qq-mac-create-file.md)。
+
+---
+
+## #246（2026-11-17，P1）新入口词撞上旧入口：`任务：` 有三个主人
+
+**现象**
+- 给「本机任务」加了 QQ 入口，用 `任务：…` 做触发词后，`npm run test:audit` 里 `test-owner-delivery-r3.mjs` 四条用例红：
+  发送条数多一条（`1 !== 2`）、旧的三条文件指令不再生成文件、日志里 `Cannot read properties of undefined (reading 'includes')`。
+
+**根因**
+- `src/bridge.js:220` 早就写明：`任务：` / `任务状态` / `取消任务` 由 task-harness（远程研究任务）承接；
+  我在 `handleIncoming` 的 `plainContent` 之后插了更靠前的分流，把这三句话全部抢走，
+  于是 task-harness 与「固定三条文件指令」两条老链路同时断掉——测试只是替真机暴露问题。
+
+**处置**
+- 换词而不是加例外：新入口必须带「本机」二字（`本机任务：` / `本机任务列表` / `取消本机任务`），
+  意图解析里把原因写进注释，避免下次有人"顺手简化"。
+
+**怎么验证**
+- `node scripts/test-owner-delivery-r3.mjs`（旧三条必须仍绿）、`node scripts/test-local-task-intent.mjs`（新词命中、旧词不命中）、
+  最后 `npm run test:audit` 208/208。
+
+**怎么预防**
+- 新增任何"从聊天里截话"的入口前：先 `grep` 这句触发词，确认没有第二个消费者；
+  触发词宁可长、宁可带限定词，也不要和既有说法重名。
+
+---
+
+## #247（2026-11-17，P0/真实宿主发现）Mock 单测全绿，一上真实 `dsh-desktop-host` 连踩三条实装契约差
+
+**现象**
+- 本机任务 P0/P1 单测与 `app.asar` 组件级测试全绿后，跑完整隔离 `dsh-desktop-host`（`ELECTRON_RUN_AS_NODE=1`）+ 真实 `src/bridge.js` 端到端测试连踩三个阻断：
+  1. `verifySurface` 拒绝建会话：`会话里出现了本任务不该有的工具：load_workspace_dependencies,list_mcp_resources,team_task_*,mcp__*`；改成 `tools.restrict({ allow: [] })` 后，`tools.schemas(agent)` 变成空数组 `[]`，把 `read`/`write` 也吞了；
+  2. `sessionController.prompt(request, { kind: 'user', rpcId })` 在真实 `dsh-api-session-controller` 中立刻抛出 `TypeError: signal.throwIfAborted is not a function`；
+  3. 真实 Host 调真实 `bridge.js` 的 `POST /api/notify/owner` 回传任务结果时，若管理员私聊当前无活跃 QQ 聊天会话，被 Memory V2 `bot.sendPrivateMessage` 拦截返回 `502`（`The QQ session changed during its native safety check.`）。
+
+**根因**
+1. DSH `dsh-tools` 的 `view(agent.ctx)` 只把 `agent.ctx` 自身层的工具当作 exempt；preset 内 `tool-fs` 注册在 `presetScope`（是 `agent.ctx` 的父域而非 `own`），`allow: []` 会把 `read`/`write` 连同全局工具一起屏蔽，必须用显式 `deny`（排除白名单并监听 `tools/change`），同时 `verifySurface` 不能只查 `foreign.length === 0`，还得校验必需工具 `read`/`write` 都在场。
+2. 真实 `dsh-api-session-controller.prompt(request, signal)` 第二参数是 `AbortSignal`，`source` 由宿主从 `request.requestId` 内部构造；之前测试桩 `(req, from) => {}` 没有校验 `signal.throwIfAborted()`。
+3. Memory V2 在 `bridge.js` 启动时用 `requireMemoryV2SessionSafety` 包装了 `bot.sendPrivateMessage`，只有带 `managementSendTickets` 才放行系统直发；`/api/notify/owner` 已校验 `x-console-token`、拒收 `x-agent-token` 且过 `SENSITIVE_RE`，却裸调 `bot.sendPrivateMessage`，一旦主人私聊尚无普通聊天会话（或桥接刚重启清空旧会话）必返回 `502`。
+
+**处置**
+1. `plugins/surfcore/lib/local-task-gate.mjs`：改用动态 `tools.restrict({ deny: [...] })`（只拒绝 `TASK_ALLOWED_TOOLS` 之外的全局工具并订阅 `tools/change`）；`local-task-runner.mjs` `verifySurface` 增加 `['read', 'write']` 缺漏检查（`TASK_TOOL_SURFACE_INCOMPLETE`）。
+2. `local-task-runner.mjs` 传 `new AbortController().signal` 给 `sessionController.prompt`；`test-local-task-runner.mjs` 桩同步改为调用 `signal.throwIfAborted()` 防止回退。
+3. `src/bridge.js` `/api/notify/owner` 经 `sendChain`（带 `pendingSend.catch(() => {})` 防断链）与一次性 `managementSendTickets` 放行控制台通知。
+
+**怎么验证**
+- `node scripts/test-local-task-isolated-host.mjs`（真实 `dsh-desktop-host` + 真实 `src/bridge.js`）全项通过；`npm --prefix plugins/surfcore test`（含 Playwright 浏览器 UI 测试 `test-local-task-ui.mjs`）。
+
+**怎么预防**
+- DSH/桥接边界单测的桩函数签名必须逐字对齐 `app.asar` 实装签名（含 `signal.throwIfAborted()` 等运行时前置校验）；新功能不能只过组件单测，必须跑隔离全宿主 `dsh-desktop-host` + 真实 `bridge.js` 集成验证。
+
+---
+
 ## #162（2026-11-19，P1）读取失败不能等于“没有数据”；校验器必须证明被校验物本身
 
 **现象**（2026-11-18–19 审查，详见 [case](cases/2026-11-19-surfcore-review-a-d.md)）：任务账本 JSON 截断后仍能创建任务，下一次保存把原文件覆盖成只剩新任务；B 站同秒第二条私信直接消失；QQ 研究唯一来源 HTTP 503 仍发“任务完成”；5 个 Windows 脚本的 blob 与归档字节不同；删掉包内 `install-manifest.json` 目录校验仍 100% 通过。
@@ -4678,3 +4762,17 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 - 校验链先证明包内清单字节 = 固定 ref 的 blob，再证明文件；发布物永远用 `git archive`/下载包复核，不能只看工作区。
 
 **怎么验证**：`node scripts/test-task-ledger-guard.mjs`、`node scripts/test-qq-research-evidence.mjs`、`node plugins/surfcore/scripts/test-bili-dm-r2.mjs`、`node scripts/test-release-manifest-guard.mjs`；以及 `git archive HEAD | tar -x -C <tmp> && node scripts/release-manifest.mjs --verify <tmp> --ref HEAD`。
+
+---
+
+## #163（2026-11-19，P1）两处“边界漏网”：送达后读账本失败反报未投递；本机任务确认通知被 `SENSITIVE_RE` 静默 403 卡死
+
+**现象**（详见 [case](cases/2026-11-19-qq-r2-followup-and-local-task-integration.md)）：
+1. QQ 研究任务在 `sendCallback` 已拿到平台 `messageId` 后，若 `ledger.getTask` 因账本损坏抛错，会落入 `catch` 再抛给入口，触发「未投递报告」的误报。
+2. 本机任务（`desktop` 模式）请求 `bash` 升权或提问时，若说明含 `/Users/...` 桌面/工作区路径，`local-task-interactions.mjs` 调 `/api/notify/owner` 没带任务标识而被严格 `SENSITIVE_RE` 返回 `403 NOTIFY_SENSITIVE`，且只记日志不告知用户，任务干等审批直到超时。
+
+**根因与预防**：
+- 任何外部发送点一旦越过 `sendCallback`，后续所有本地读/写账本都必须在独立 `try/catch` 内容错，只能降级为「已送达待核对（`DELIVERY_RECEIPT_UNRECORDED`）」，绝不允许回流成 `failed / 未投递`。
+- 同一功能家族（`taskResult` 与 `taskInteraction`）经过 `/api/notify/owner` 必须共享一致的敏感路径判据（`hasSensitiveTaskOutput`），且任何推送失败都必须保留结构化 `notifyError`（`code/error/hint`）暴露到状态查询与设置页，禁止只打 `log`。
+
+**怎么验证**：`node scripts/test-owner-delivery-r3.mjs`、`node plugins/surfcore/scripts/test-local-task-desktop.mjs`、`node scripts/test-local-task-desktop-host.mjs`。

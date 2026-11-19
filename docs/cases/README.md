@@ -6,7 +6,21 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-19 | [R2 复审补齐、本机任务审批 403 修复与双线合流](2026-11-19-qq-r2-followup-and-local-task-integration.md) | 补齐 R2 送达后读账本容错/delivering 防重发/Windows hardenFile/apply-update 预检，修复本机任务交互确认 403 静默拦截，并合入 dev（R1+R2） | 隔离真宿主/全套门禁通过，未切活进程、未发布 |
+| 2026-11-19 | [SurfCore 审核返工 R2（01–12）](2026-11-19-surfcore-review-r2.md) | B站分页恢复/原文/终态回执、任务账本严格校验、QQ 研究证据与送达容错、发布清单双向校验、记忆库 ACL 回读、控制台夹具与模式双回执 | 本地验收，未发布 |
 | 2026-11-19 | [SurfCore 审核修复 A–D（01–12）](2026-11-19-surfcore-review-a-d.md) | 账本损坏即拒写、B站按历史收件与离线重放、QQ 研究受控抓取+来源证据、归档行尾与包内清单校验、记忆库 0600/0700、中文路径识别、控制台 21/21 | 本地验收，未发布 |
+| 2026-11-18 | [桌面全能 + 隔离 Chrome + QQ 聊天委派](2026-11-18-local-task-desktop-cua-chrome.md) | 复用 DSH CUA/PTC、新增隔离 chrome-devtools MCP、桥接 CUA/沙箱确认至 QQ、主人私聊开放 qq_dispatch_local_task | 隔离真宿主/全套单测验证，真机重启/TCC 待验 |
+| 2026-11-17 | [本机任务 P0/P1 审核修复](2026-11-17-local-task-p0-p1-fixes.md) | 异步 storageDomain 隔离与回滚、在途卸载阻断与宿主演防、createIfAbsent 原子抢占、FIFO 队列与 DSH 全事件额度 | 离线+原生包验证通过，真机待验 |
+| 2026-11-16 | [QQ 主人私聊读取 Mac 目录](2026-11-16-qq-mac-readonly-directory.md) | 固定只读目录命令和同会话回执 | QQ 真机验收通过 |
+| 2026-11-16 | [QQ 主人私聊读取 Mac 文本文件](2026-11-16-qq-mac-readonly-file.md) | 指定目录的文件正文和同会话回执 | QQ 真机验收通过 |
+| 2026-11-16 | [QQ 主人私聊新建 Mac 文本文件](2026-11-16-qq-mac-create-file.md) | 指定目录内原子新建及同会话回执 | QQ 真机验收通过 |
+| 2026-11-16 | [V1 运行时退役收口](2026-11-16-v1-runtime-retirement.md) | 退出旧读写、同步和补发入口，本机复核 QQ 原账号与 Memory V2 | 本机已安装，未发布 |
+| 2026-11-16 | [临时许可撤回后伙伴侧栏报红](2026-11-16-companion-history-revocation.md) | 按当前许可筛选显示及回复所用的历史，保留归档并恢复侧栏 | 本机已安装，未发布 |
+| 2026-11-17 | [本机任务存储层（T02）](2026-11-17-local-task-storage.md) | Task 单一写者、来源去重、停止屏障与持久失败不外报 | 单测通过，未接 Host |
+| 2026-11-17 | [本机任务闸门（T03）](2026-11-17-local-task-gate.md) | 工具白名单、realpath 路径围栏、只新建与禁止自行升权，闸门不健康即 fail-closed | 单测通过，未接任务会话 |
+| 2026-11-17 | [本机任务会话编排（T04）](2026-11-17-local-task-session.md) | 一 Task 一专用 Session、装配取证后才送 prompt、事件投影与停止屏障、local-task preset 只有 read/write | 单测通过，真实进程端到端待 T07 |
+| 2026-11-17 | [本机任务查询与取消（T05）](2026-11-17-local-task-recovery.md) | 查询只读不开回合、停止意图先落盘再撤回会话、重启只对账不复算并让出并发席位 | 单测通过，真实重启验收待 T07 |
+| 2026-11-17 | [本机任务 QQ 入口（T06）](2026-11-17-local-task-qq-entry.md) | 主人私聊三句话发起/查询/取消，任务身份来自平台消息号，执行状态与回执投递分开记 | 单测通过，真实 QQ 与真实会话待 T07 |
 | 2026-11-15 | [V1 退役四轮（接管重驱动合同 + 取消后回执可查）](2026-11-15-v1-retirement-r4-resume-and-receipt.md) | 生产 scheduler 用原 requestId 重驱动 `pre_dispatch` 接管任务的离线合同（51→52 场景，含反向重放）、抖音取消后按原操作编号查真实 Host 回执、越界帧数经核实无需再修（附证据） | 已合入 dev |
 | 2026-11-15 | [V1 退役三轮复审离线修复（F01–F05/N01/P2）](2026-11-15-v1-retirement-r3-offline-fixes.md) | 准入代数与 lease 撤销、管理回执按真实 ACK 入账、B站诚实降级不再假称 durable、退役等真实退出、单轮来源集合、抖音/预检错误分类，另加 9 条常驻合同测试 | 已合入 dev |
 | 2026-11-12 | [A6 失败可见性：ok:false 三件套静态检查](2026-11-12-a6-failure-visibility.md) | lint-failures 棘轮基线（669 处债务入册只许降不许升），B站扫码/更新/TTS/语音包 P0 链路补齐 code+hint 并加失败分支断言 | 本地验收，未发布 |

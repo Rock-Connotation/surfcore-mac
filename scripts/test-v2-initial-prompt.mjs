@@ -226,7 +226,7 @@ await test('initial-prompts.json 损坏时降级为只读，保存失败且原�
 });
 
 // ── 7. 控制台「立即唤醒」在首次唤醒时升级为 bootstrap ────────────────────────
-await test('手动唤醒在会话未 bootstrap 时必须走 bootstrap（否则初始提示词永远发不出去）', async () => {
+await test('手动唤醒走 Native 作业，旧提示词不直送 DSH', async () => {
   const h = await bridgeHarness();
   try {
     h.setMode('reserved2');
@@ -243,18 +243,15 @@ await test('手动唤醒在会话未 bootstrap 时必须走 bootstrap（否则�
       assert.equal(second.json.reason, 'admin', '已 bootstrap 过则保持原原因');
       assert.equal(second.json.firstWake, false);
     });
-    // 真正投递出去的 prompt 里必须带初始提示词（content 是 [{type:'text', text}]）
-    for (let i = 0; i < 50 && !h.calls.prompts.length; i += 1) await new Promise((resolve) => setImmediate(resolve));
-    assert.ok(h.calls.prompts.length >= 1, 'bootstrap 必须真的投递一次 prompt');
-    const delivered = h.calls.prompts
-      .map((p) => (Array.isArray(p.content) ? p.content.map((c) => String(c?.text ?? '')).join('\n') : String(p.text ?? p.prompt ?? '')))
-      .join('\n---\n');
-    assert.ok(delivered.includes(ENV_TEXT), 'bootstrap 投递给 DSH 的 prompt 必须包含环境说明');
+    for (let i = 0; i < 50 && !h.calls.nativeReplies.length; i += 1) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(h.calls.nativeReplies.length >= 1);
+    assert.equal(h.calls.prompts.length, 0);
+    assert.ok(!JSON.stringify(h.calls.nativeReplies).includes(ENV_TEXT));
   } finally { await h.close(); }
 });
 
 // ── 8. 端到端：真实进线消息 → bootstrap 唤醒 → 投递的 prompt 带环境说明 ────────
-await test('端到端：群消息进线触发的首次唤醒，投递给 DSH 的 prompt 带初始提示词', async () => {
+await test('群消息只提交一个 Native 作业，不携带旧提示词', async () => {
   const h = await bridgeHarness({ config: { socialV2: { wake: { batchWindowMs: 1000 } } } });
   try {
     h.setMode('reserved2');
@@ -268,20 +265,10 @@ await test('端到端：群消息进线触发的首次唤醒，投递给 DSH 的
       sender: { nickname: '测试群友', card: '测试群友' }
     };
     await h.handleIncoming('group', '456', event, h.cfg);
-    for (let i = 0; i < 100 && !h.calls.prompts.length; i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(h.calls.prompts.length, 1, '首条消息应触发恰好一次 bootstrap 唤醒');
-    const delivered = h.calls.prompts[0].content.map((c) => String(c?.text ?? '')).join('\n');
-    assert.ok(delivered.includes('【引导唤醒】'), '首次唤醒走的是 bootstrap 文案');
-    assert.ok(delivered.includes(ENV_TEXT), 'bootstrap prompt 必须带操作者预写的环境说明');
-
-    // 第二条消息（非首次唤醒）不得再注入
-    const second = { ...event, message_id: 4243, message: [{ type: 'text', data: { text: '有没有人在' } }], raw_message: '有没有人在' };
-    await h.handleIncoming('group', '456', second, h.cfg);
-    for (let i = 0; i < 100 && h.calls.prompts.length < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
-    if (h.calls.prompts.length >= 2) {
-      const text2 = h.calls.prompts[1].content.map((c) => String(c?.text ?? '')).join('\n');
-      assert.ok(!text2.includes(ENV_TEXT), '第二次唤醒不得重复注入初始提示词');
-    }
+    for (let i = 0; i < 100 && !h.calls.nativeReplies.length; i += 1) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(h.calls.nativeReplies.length, 1);
+    assert.equal(h.calls.prompts.length, 0);
+    assert.ok(!JSON.stringify(h.calls.nativeReplies).includes(ENV_TEXT));
   } finally { await h.close(); }
 });
 

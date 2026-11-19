@@ -5,6 +5,7 @@ import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { findBrowser } from '../lib/bili-qr-login.mjs';
 import { douyinCompanionPage } from '../lib/douyin-companion-page.mjs';
+import { createCompanionController } from '../lib/douyin-companion-controller.mjs';
 import { createSharingController } from '../lib/companion-sharing-controller.mjs';
 import { createCompanionSharing } from '../lib/companion-sharing.mjs';
 import { fixture, opening, context } from './sharing-fixture.mjs';
@@ -49,10 +50,18 @@ const controller = createSharingController({ service: { ...service, status: asyn
   if (omitRevision) { const invalid = { ...value }; delete invalid.revision;return invalid; }
   return value;
 } }, getCharacter: () => role });
+let denyDiary = false;
+const deniedDiary = createCompanionController({
+  getCharacter: () => role,
+  readiness: async () => ({ ok: true }),
+  engine: { status: async () => ({ ok: false, code: 'MEMORY_POLICY_DENIED',
+    error: '发现日记尚未授权。', hint: '在记忆页确认此抖音账号的处理许可。' }) },
+});
 const webp = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA==', 'base64');
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   if (await controller.handle(req, res, url)) return;
+  if (denyDiary && url.pathname.endsWith('/companion') && await deniedDiary.handle(req, res, url)) return;
   if (url.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(douyinCompanionPage); return; }
   if (url.pathname.endsWith('/companion-portrait')) { res.writeHead(200, { 'content-type': 'image/webp' }); res.end(webp); return; }
   if (url.pathname.endsWith('/companion')) {
@@ -70,6 +79,15 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 let browser;
 try {
   browser = await chromium.launch({ headless: true, executablePath: findBrowser().executable });
+  const unavailableDiary = await browser.newPage();
+  unavailableDiary.setDefaultTimeout(2500);
+  denyDiary = true;
+  await unavailableDiary.goto(`http://127.0.0.1:${server.address().port}/#conversation`);
+  await unavailableDiary.getByText(/MEMORY_POLICY_DENIED.*发现日记尚未授权/).waitFor();
+  await unavailableDiary.waitForFunction(() => !document.getElementById('conversation-input').disabled);
+  assert.equal(await unavailableDiary.locator('#role').textContent(), '当前伙伴：小白鲸');
+  await unavailableDiary.close();
+  denyDiary = false;
   const page = await browser.newPage({ viewport: { width: 430, height: 660 } });
   page.setDefaultTimeout(5000);
   await page.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());

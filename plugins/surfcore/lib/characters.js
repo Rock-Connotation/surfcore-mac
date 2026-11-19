@@ -120,23 +120,15 @@ export function createCharacterFromPayload(body = {}) {
     const severe = scan.secrets.length > 0 || scan.pii.some((hit) => hit.severe);
     if (severe) throw new Error('人格卡命中密钥/密码/身份证/住址规则，拒绝保存');
   }
-  let memoryCard = body.memoryCard ?? null;
-  if (typeof memoryCard === 'string' && memoryCard.trim()) {
-    try { memoryCard = JSON.parse(memoryCard); } catch { throw new Error('记忆卡不是合法 JSON'); }
-  }
-  if (memoryCard && (!Array.isArray(memoryCard.records))) {
-    throw new Error('记忆卡缺少 records 数组');
-  }
-  let fullRecords = body.fullRecords ?? null;
-  if (typeof fullRecords === 'string' && fullRecords.trim()) {
-    const lines = fullRecords.split('\n').map((line) => line.trim()).filter(Boolean);
-    try { fullRecords = lines.map((line) => JSON.parse(line)); } catch { throw new Error('全量记忆必须是每行一个 JSON'); }
+  if (body.memoryCard != null || body.fullRecords != null) {
+    throw Object.assign(new Error('旧记忆卡导入已退役。'), {
+      code: 'MEMORY_CARD_IMPORT_RETIRED',
+      hint: '移除旧记忆卡参数后创建角色。在 V2 记忆页配置来源与访问许可。',
+    });
   }
   const created = createCharacter({
     name,
     personaText,
-    memoryCard,
-    fullRecords,
     source: 'manual',
   });
   return { ok: true, ...created };

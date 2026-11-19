@@ -13,8 +13,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fetchMyDynamics, fetchVideoInfo, resolveBiliPaths, sleep } from './bili-api.js';
-import { characterPersonaMeta, readCurrentCharacter } from './character-persona.js';
+import { fetchMyDynamics, fetchVideoInfo, resolveBiliPaths, sleep } from '../../src/bili-api.js';
+import { characterPersonaMeta, readCurrentCharacter } from '../../src/character-persona.js';
 
 const BV_RE = /\bBV[0-9A-Za-z]{10}\b/;
 

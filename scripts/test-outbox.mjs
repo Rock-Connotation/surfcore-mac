@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createOutbox } from '../src/outbox.js';
+import { createOutbox } from './test-fixtures/outbox.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-outbox-'));
 const file = path.join(dir, 'outbox.json');
@@ -45,8 +45,7 @@ try {
   const p = await policy.flush('test');
   assert.equal(p.left, 0, '策略失败不能留在队列里反复撞');
   const bridge = fs.readFileSync('src/bridge.js', 'utf8');
-  assert.ok(bridge.includes("createOutbox({") && bridge.includes("flush(`account-online:${source}`)"),
-    'bridge 必须在账号上线边沿补发');
+  assert.doesNotMatch(bridge, /createOutbox|outbox\.flush/, 'V2 must not replay an old send without authorized input');
   assert.ok(bridge.includes('probeOneBotSendable') && bridge.includes("reason: 'QQ 暂不可发送'"),
     '早安必须先探活，不能只凭 deliverPrompt 成功就记已发');
 } finally {

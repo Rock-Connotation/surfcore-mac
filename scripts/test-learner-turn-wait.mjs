@@ -29,14 +29,13 @@ import { createTurnCollector } from '../src/dsh-client.js';
 }
 
 const bridge = fs.readFileSync(path.resolve('src/bridge.js'), 'utf8');
-const extractionAt = bridge.indexOf('async function runSlangExtraction');
-const researchAt = bridge.indexOf('async function runSlangResearch');
-for (const [name, at] of [['extraction', extractionAt], ['research', researchAt]]) {
-  assert.ok(at > 0, `${name} 必须存在`);
-  const section = bridge.slice(at, at + 2600);
-  assert.ok(section.indexOf('waitLearnerTurn(sessionId)') < section.indexOf('api.sessions.prompt'),
-    `${name} 必须先注册 waiter 再发 prompt`);
-  assert.ok(section.includes('turnWait.cancel()'), `${name} prompt 失败必须取消 waiter`);
+for (const name of ['runSlangExtraction', 'runSlangResearch']) {
+  const start = bridge.indexOf(`async function ${name}`);
+  assert.ok(start > 0);
+  const end = bridge.indexOf('\n  }', start);
+  const section = bridge.slice(start, end);
+  assert.match(section, /MEMORY_DERIVATION_UNAVAILABLE/);
+  assert.ok(!section.includes('api.sessions.prompt'));
 }
 assert.ok(bridge.includes("error.code = 'LEARNER_TURN_TIMEOUT'"), '超时必须有稳定 code');
 assert.ok(!bridge.includes('/会话|session|not found|404/i'), '超时不能再用泛化“会话”判死');

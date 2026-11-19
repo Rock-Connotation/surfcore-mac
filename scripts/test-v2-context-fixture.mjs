@@ -6,7 +6,7 @@
 // 就把 renderMemoryCard 的结果包成一个合法的 V2 准备包传进去 —— 测的是新契约，
 // 不在生产代码里复活旧后端。
 import { CONTEXT_FIELDS, digest } from '../src/core/memory-v2-contract.js';
-import { loadMemoryCard, normalizeMemoryCardConfig, renderMemoryCard } from '../src/memory-card.js';
+import { loadMemoryCard, normalizeMemoryCardConfig, renderMemoryCard } from './test-fixtures/memory-card.mjs';
 import { readCurrentCharacter } from '../src/character-persona.js';
 
 /**

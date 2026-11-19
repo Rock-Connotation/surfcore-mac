@@ -185,6 +185,10 @@ const SAFE_EXACT = new Set([
 export const SAFE_EXACT_TOOLS = Object.freeze([...SAFE_EXACT])
 export const SAFE_TOOL_PREFIXES = Object.freeze([...SAFE_PREFIXES])
 
+function isAllowedTool(name) {
+  return SAFE_EXACT.has(name) || SAFE_PREFIXES.some((prefix) => name.startsWith(prefix))
+}
+
 export function apply(ctx) {
   // 1) 把已知危险全局工具从 schema 隐藏（restrict 只影响继承的全局层，
   //    不会误删 preset 自己注册的 scoped 工具）。
@@ -199,20 +203,39 @@ export function apply(ctx) {
   // 名字不存在时跳过（执行期白名单仍然兜底），但**只汇总一行**：
   // 以前每个工具打一行，DSH 启动时刷几百行日志，把真实告警淹没（2026-10-28 用户反馈）。
   const restricted = new Set()
+  function denyIfAvailable(name, skipped, report) {
+    if (restricted.has(name)) return
+    // 先登记再 restrict：restrict 可能同步触发 tools/change，避免重入时重复安装。
+    restricted.add(name)
+    try {
+      ctx.tools.restrict({ deny: [name] })
+    } catch (error) {
+      restricted.delete(name)
+      skipped.push(name)
+      if (report && skipped.length === 1) {
+        // 只在第一次失败时记一条细节，便于排查“某个名字失效”。
+        console.error(`[qq-tool-restrict] restrict 跳过（示例）：${name} — ${error?.message ?? error}`)
+      }
+    }
+  }
   function restrictAvailable(report = false) {
     const skipped = []
-    for (const name of KNOWN_DANGEROUS_GLOBAL_TOOLS) {
-      if (restricted.has(name)) continue
-      // 先登记再 restrict：restrict 可能同步触发 tools/change，避免重入时重复安装。
-      restricted.add(name)
+    for (const name of KNOWN_DANGEROUS_GLOBAL_TOOLS) denyIfAvailable(name, skipped, report)
+    // 动态拦截非 QQ 白名单的全局/MCP 工具（如 mcp__surfcore-chrome__*、mcp__chrome-devtools__*、第三方 MCP、全局 CUA 等），
+    // 防止这些工具泄露进 qq-chat-v2 模型 schema；若 tools.schemas 不可用仍由 guard 兜底。
+    if (typeof ctx.tools?.schemas === 'function') {
       try {
-        ctx.tools.restrict({ deny: [name] })
+        const globalSchemas = ctx.tools.schemas(undefined)
+        if (Array.isArray(globalSchemas)) {
+          for (const item of globalSchemas) {
+            const name = item?.name
+            if (typeof name !== 'string' || name.length === 0 || isAllowedTool(name)) continue
+            denyIfAvailable(name, skipped, report)
+          }
+        }
       } catch (error) {
-        restricted.delete(name)
-        skipped.push(name)
-        if (report && skipped.length === 1) {
-          // 只在第一次失败时记一条细节，便于排查“某个名字失效”。
-          console.error(`[qq-tool-restrict] restrict 跳过（示例）：${name} — ${error?.message ?? error}`)
+        if (report) {
+          console.error(`[qq-tool-restrict] 读取全局 schemas 失败（执行期白名单仍生效）：${error?.message ?? error}`)
         }
       }
     }
@@ -235,8 +258,7 @@ export function apply(ctx) {
   ctx.tools.guard((exec) => {
     const name = exec?.name
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
-    if (SAFE_EXACT.has(name)) return
-    if (SAFE_PREFIXES.some((prefix) => name.startsWith(prefix))) return
+    if (isAllowedTool(name)) return
     return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 QQ MCP 工具与无害模型侧工具）`
   })
 }

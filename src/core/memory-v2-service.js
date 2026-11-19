@@ -372,6 +372,8 @@ export function createMemoryService({ stateDir, charactersDir, getCharacter, now
       },
       captureAdminContext: (input, authorization) => capture(input, true, authorization),
       configurePolicy: (ctx, policy, expectedRevision, operationId) => applyMemoryAction(ctx, { type: 'configure_policy', policy }, expectedRevision, operationId),
+      // A view can screen candidate history before deciding which references it actually uses.
+      checkInputEvidence: (ctx, refs) => invoke(ctx, 'validateManifest', [clone(refs)]),
       async bindInputManifest(ctx, refs) {
         let record;
         try {

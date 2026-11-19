@@ -53,7 +53,7 @@ const ok = (cond, label, extra = '') => {
   ok(bridge.includes('noteSecretInInbound'), '入站密钥检测存在');
   ok(bridge.includes('SECRET_TOKEN_RE'), '日志/活动脱敏使用 SECRET_TOKEN_RE');
   ok(bridge.includes("new RegExp(SECRET_TOKEN_RE.source, 'g'), '***'"), 'redactKnownTokensOnly 也打码密钥');
-  ok(/function appendPublicFeed[\s\S]{0,300}redactSensitiveText/.test(bridge), '公共群消息日志也打码（同类漏洞）');
+  ok(!/appendPublicFeed|qq-public-feed\.jsonl/.test(bridge), '旧群消息明文跨渠道日志已退役');
 }
 
 if (failures) { console.error(`\n${failures} 项失败`); process.exit(1); }

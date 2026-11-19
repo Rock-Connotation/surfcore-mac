@@ -19,6 +19,18 @@
 > **2026-11-15 补充**：远端 `dev` **分支**已同步（含 setup-dsh 基座 bundle 修复、抖音共享记录零帧边界修复、存量红复核文档），并且这两批已随 `v0.9.0-dev.2` 发成 Pre-release——测试机通过「检查更新」即可收到。
 > **本次未交付的已知残余**（详见 `docs/HANDOFF.md` 顶部）：AC4/AC5 需在真桌面外壳内才能取产品级证据；Electron/Chromium 与非 Node 子进程的出站未做系统级审计。（`scripts/setup-dsh.mjs` 的基座 bundle 缺口已在 2026-11-15 第二批修复，见下；`plugins/surfcore/lib/memory-v2-host.mjs` 不感知 `frameSamples` 属**设计分工**（通用适配器不做领域校验），非缺陷，见第三批。）
 
+### 2026-11-19 R2 复审补齐 + 本机任务审批 403 修复与双线合流（本地候选）
+
+**建议**：待本机切换验收通过、确认合入 `dev` 后随下一次发布带上；无破坏性接口变更。
+
+**改了什么**：
+- R2 复审补齐（已合 `dev@8d66d8a`）：`src/task-harness.js` 送达后读账本损坏不再谎报未投递、`executeDeliveryStep` 补拦 `delivering`；`src/state-acl.mjs` Windows `hardenFile` 补 `/remove:g`；`scripts/apply-update.mjs` 修根目录用户目录过滤并加 preflight 预检。
+- 本机任务审批修复与合流（`feat/local-task-integrated`）：`local-task-interactions.mjs` 推送确认携带 `taskInteraction` 并暴露结构化 `notifyError`；`src/bridge.js` `/api/notify/owner` 对合法 `taskInteraction` 走 `hasSensitiveTaskOutput`；合入最新 `dev`（R1+R2）使本机红豆同时具备桌面操控与全部 11/19 QQ 修复。
+
+**case**：`docs/cases/2026-11-19-qq-r2-followup-and-local-task-integration.md`（内含可直接转发的发布交接块）。
+
+---
+
 ### 2026-11-19 审核返工 R2（编号 01–12，本地候选）
 
 **建议**：与上一批 A–D 一起随下一次发布带上；版本由发布会话判断（无接口删除，但 B站状态新增 resume/receipt 键）。
