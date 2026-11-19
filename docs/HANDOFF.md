@@ -1,3 +1,12 @@
+## 2026-11-19 R2 复审补齐 + 本机任务审批 403 修复与双线合流（待切换本机活 DSH / 真机验收）
+
+- **Step 1（已合入 `dev` @ `8d66d8a`）**：在独立工作树 `../surfcore-r2-followup`（分支 `fix/review-2026-11-19-r2-followup`）补齐 R2 复审发现的 4 处缺口——送达后读账本损坏不再谎报未投递、`executeDeliveryStep` 补拦 `delivering`、Windows `hardenFile` 补 `/remove:g`、`apply-update.mjs` 修根目录用户目录过滤并加 preflight，已通过 `test:audit` 208/208、`test:regressions` 17/17、`lint:failures` 0、`doc-facts` 0，并 `--no-ff` 合入 `dev`（清单 `1123/1123` 问题 0）。
+- **Step 2（合流分支 `feat/local-task-integrated`，独立工作树 `../surfcore-local-task-integrated`）**：
+  - 修复 P1 交互确认 403 拦截：`local-task-interactions.mjs` 调 `/api/notify/owner` 携带 `taskInteraction: { id, kind, taskId }` 并把推送失败以结构化 `notifyError` 暴露在 `listPending()` / `本机任务列表`；`src/bridge.js` 对合法 `taskInteraction` 走 `hasSensitiveTaskOutput`（放行工作区/桌面常规路径，仍严拦密钥与 `.ssh` 等敏感目录）；
+  - 已将最新 `dev`（含 R1 + R2 + R2 复审补齐）合并进 `feat/local-task-integrated`，9 处冲突全部手工对齐，同步更新 `doc-facts` 统计数字与安装清单；
+  - 详见 [case](cases/2026-11-19-qq-r2-followup-and-local-task-integration.md)。
+- **未动**：本机正在运行的 `DeepSeek Harness.app` / `surfcore-local-task` 目录与真实 `~/.dsh` 数据未改动；未 bump/tag/push/发布。下一步待用户确认后切换活进程/重启 DSH 并做真实手机 QQ 闭环验收。
+
 ## 2026-11-19 SurfCore 审核修复 A–D（01–12，已合入 dev、未发布）
 
 工作树 `../surfcore-review-fix`，分支 `fix/review-2026-11-19`，基线 `dev@d46612a`，最终提交见 `git log --oneline`（A 两批 `be91df8`/`f88397d`、B `548ef19`、C `6b01e73`、D `5c0ce72`、清单 `17c732c`）。

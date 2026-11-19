@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-19 | [R2 复审补齐、本机任务审批 403 修复与双线合流](2026-11-19-qq-r2-followup-and-local-task-integration.md) | 补齐 R2 送达后读账本容错/delivering 防重发/Windows hardenFile/apply-update 预检，修复本机任务交互确认 403 静默拦截，并合入 dev（R1+R2） | 隔离真宿主/全套门禁通过，未切活进程、未发布 |
 | 2026-11-19 | [SurfCore 审核返工 R2（01–12）](2026-11-19-surfcore-review-r2.md) | B站分页恢复/原文/终态回执、任务账本严格校验、QQ 研究证据与送达容错、发布清单双向校验、记忆库 ACL 回读、控制台夹具与模式双回执 | 本地验收，未发布 |
 | 2026-11-19 | [SurfCore 审核修复 A–D（01–12）](2026-11-19-surfcore-review-a-d.md) | 账本损坏即拒写、B站按历史收件与离线重放、QQ 研究受控抓取+来源证据、归档行尾与包内清单校验、记忆库 0600/0700、中文路径识别、控制台 21/21 | 本地验收，未发布 |
 | 2026-11-18 | [桌面全能 + 隔离 Chrome + QQ 聊天委派](2026-11-18-local-task-desktop-cua-chrome.md) | 复用 DSH CUA/PTC、新增隔离 chrome-devtools MCP、桥接 CUA/沙箱确认至 QQ、主人私聊开放 qq_dispatch_local_task | 隔离真宿主/全套单测验证，真机重启/TCC 待验 |

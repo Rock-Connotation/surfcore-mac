@@ -60,7 +60,7 @@
 | [guides/MODULE-CORE-A.md](guides/MODULE-CORE-A.md) | **核心引擎 A**：记忆卡、角色人格、目的机制、对话收尾、每日额度、token 账本、价目表、管理员/自我/身份闸、分享范围 | ✅ 2026-10-26 新增 |
 | [guides/MODULE-CORE-B.md](guides/MODULE-CORE-B.md) | **核心引擎 B**：B站 API/记忆/动态/卡片、鱼群、表情语义、黑话、md→纯文本、转发展开、补历史、问候、SSRF 防护、联网搜索、DSH 客户端、语音内核、ACL | ✅ 2026-10-26 新增 |
 | [guides/MODULE-PLUGIN.md](guides/MODULE-PLUGIN.md) | **插件宿主**：装配顺序、配置模型（脱敏/原子写/备份保留）、设置页 API 动作面、B站 调度器、记忆与对齐、token 采集、扩展/平台接口、桥接自愈 | ✅ 2026-10-26 新增 |
-| [guides/UI-AND-CONSOLE.md](guides/UI-AND-CONSOLE.md) | **两套界面**：插件设置页 15 个标签逐页逐卡片（控件↔配置键↔API）、浏览器控制台 10 个页面、分工与重叠 | ✅ 2026-10-26 新增 |
+| [guides/UI-AND-CONSOLE.md](guides/UI-AND-CONSOLE.md) | **两套界面**：插件设置页 16 个标签逐页逐卡片（控件↔配置键↔API）、浏览器控制台 10 个页面、分工与重叠 | ✅ 2026-10-26 新增 |
 | [guides/SUBSYSTEM-BILI.md](guides/SUBSYSTEM-BILI.md) | **B站 子系统**：账号与凭据、生物钟、内容生产/消费、34 个 CLI 命令与 23 个库、四本账额度、鱼群、脱敏、配置全解 | ✅ 2026-10-26 新增 |
 | [guides/SUBSYSTEM-VOICE.md](guides/SUBSYSTEM-VOICE.md) | **语音子系统**：三条链路（语音库/现场合成/语音包）、状态机、本地↔云端路由、合成契约、发送全链路、触发规则、配置全解 | ✅ 2026-10-26 新增 |
 | [guides/SUBSYSTEM-PET.md](guides/SUBSYSTEM-PET.md) | **桌宠子系统**：拓扑、发现与鉴权、pet-api 端点、对话链路、事件队列、目的载体与互斥、记忆写入、语音与回音、专注模式、桌宠侧契约 | ✅ 2026-10-26 新增 |

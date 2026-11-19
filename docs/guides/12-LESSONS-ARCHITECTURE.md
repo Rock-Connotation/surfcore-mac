@@ -125,7 +125,7 @@ voxd :8765/8767 ← HTTP ← 桥接/桌宠         │ 三个 MCP server     │
 ### 1.4 代码分层（依赖只能从上往下）
 
 ```
-表现层   client.js（15 标签）            public/console.html（10 页）
+表现层   client.js（16 标签）            public/console.html（10 页）
 装配层   lib/index.js（路由/生命周期）     src/bridge.js（控制台/生命周期）
 领域层   scheduler/memory/characters/align/pet-*/token-budget/updates/extensions
          bridge 内部：入站/唤醒/出站/socialV2/目的/语音/鱼群/额度
@@ -133,7 +133,7 @@ voxd :8765/8767 ← HTTP ← 桥接/桌宠         │ 三个 MCP server     │
 外部     DSH API、SnowLuma、voxd、文件系统
 ```
 
-耦合注意：插件用相对路径 import 仓库根 `src/`（40 个模块、97 处；`npm run doc-facts` 复核）；`src/memory-card.js` 带 `?rev=` 缓存破坏后缀，**同一字符串硬编码在 3 处**（`lib/memory-card.js`、`lib/pet-chat.js:27`、桥接对应引用），改了引擎不 bump rev → 热重载仍跑旧代码。
+耦合注意：插件用相对路径 import 仓库根 `src/`（38 个模块、86 处；`npm run doc-facts` 复核）；`src/memory-card.js` 带 `?rev=` 缓存破坏后缀，**同一字符串硬编码在 3 处**（`lib/memory-card.js`、`lib/pet-chat.js:27`、桥接对应引用），改了引擎不 bump rev → 热重载仍跑旧代码。
 
 ---
 

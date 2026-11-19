@@ -4762,3 +4762,17 @@ node plugins/surfcore/scripts/test-douyin-companion-ui.mjs
 - 校验链先证明包内清单字节 = 固定 ref 的 blob，再证明文件；发布物永远用 `git archive`/下载包复核，不能只看工作区。
 
 **怎么验证**：`node scripts/test-task-ledger-guard.mjs`、`node scripts/test-qq-research-evidence.mjs`、`node plugins/surfcore/scripts/test-bili-dm-r2.mjs`、`node scripts/test-release-manifest-guard.mjs`；以及 `git archive HEAD | tar -x -C <tmp> && node scripts/release-manifest.mjs --verify <tmp> --ref HEAD`。
+
+---
+
+## #163（2026-11-19，P1）两处“边界漏网”：送达后读账本失败反报未投递；本机任务确认通知被 `SENSITIVE_RE` 静默 403 卡死
+
+**现象**（详见 [case](cases/2026-11-19-qq-r2-followup-and-local-task-integration.md)）：
+1. QQ 研究任务在 `sendCallback` 已拿到平台 `messageId` 后，若 `ledger.getTask` 因账本损坏抛错，会落入 `catch` 再抛给入口，触发「未投递报告」的误报。
+2. 本机任务（`desktop` 模式）请求 `bash` 升权或提问时，若说明含 `/Users/...` 桌面/工作区路径，`local-task-interactions.mjs` 调 `/api/notify/owner` 没带任务标识而被严格 `SENSITIVE_RE` 返回 `403 NOTIFY_SENSITIVE`，且只记日志不告知用户，任务干等审批直到超时。
+
+**根因与预防**：
+- 任何外部发送点一旦越过 `sendCallback`，后续所有本地读/写账本都必须在独立 `try/catch` 内容错，只能降级为「已送达待核对（`DELIVERY_RECEIPT_UNRECORDED`）」，绝不允许回流成 `failed / 未投递`。
+- 同一功能家族（`taskResult` 与 `taskInteraction`）经过 `/api/notify/owner` 必须共享一致的敏感路径判据（`hasSensitiveTaskOutput`），且任何推送失败都必须保留结构化 `notifyError`（`code/error/hint`）暴露到状态查询与设置页，禁止只打 `log`。
+
+**怎么验证**：`node scripts/test-owner-delivery-r3.mjs`、`node plugins/surfcore/scripts/test-local-task-desktop.mjs`、`node scripts/test-local-task-desktop-host.mjs`。

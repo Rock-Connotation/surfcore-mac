@@ -18,6 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
+| **R2 复审补齐与本机任务合流 2026-11-19** | `../surfcore-r2-followup`、`../surfcore-local-task-integrated` | `fix/review-2026-11-19-r2-followup`（已合 `dev@8d66d8a`）、`feat/local-task-integrated` | 复审 R2 补齐 4 处缺口并合入 `dev`；修复本机任务交互确认 403 静默拦截；将 `dev`（R1+R2）合并进本机任务桌面操控分支并过全量门禁 | ✅ 离线与隔离真宿主完成；未动活进程 `surfcore-local-task`、未 bump/tag/发布；case 见 `docs/cases/2026-11-19-qq-r2-followup-and-local-task-integration.md` |
 | **审核修复 A–D 2026-11-19** | `../surfcore-review-fix`（独立工作树） | `fix/review-2026-11-19`，基线 `dev@d46612a` | 审查 01–12：账本 fail-closed、B站历史收件/离线重放/连续 ACK、QQ 研究受控抓取与来源证据、归档行尾与包内清单校验、记忆库权限、macOS 中文路径、控制台测试、模式回执核对 | ✅ 离线完成：audit 208/208、regressions 17/17、插件 37、Memory 51、console-ui 21/21、lint/doc-facts 0、清单 verify-ref 0、git archive 1121/0/0；提交 `be91df8` `f88397d` `548ef19` `6b01e73` `5c0ce72` `17c732c`；已合入 dev（merge `d5378b8` + 清单 `25851b2`，合并后 audit 208/208、regressions 17/17、verify-ref 1122/1122 问题 0）、未 bump/tag/发布；真实 B站/网络/Windows 未验收；case 见 docs/cases/2026-11-19-surfcore-review-a-d.md |
 | **QQ 只读 Mac 验收** | surfcore-live-channels/surfcore-mac | feat/live-channels-acceptance | QQ 主人私聊目录任务 | 本机已安装，隔离回归和真实 QQ 收发通过，见案例 |
 | **QQ 只读 Mac 文件正文** | surfcore-live-channels/surfcore-mac | feat/live-channels-acceptance | 主人私聊、已批准目录的短文本 | 本机已安装，真实 QQ 正文回传及隔离回归通过，见案例 |
