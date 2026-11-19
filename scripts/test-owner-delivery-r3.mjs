@@ -295,6 +295,46 @@ try {
       assert.equal(auditH.calls.sent.length - beforeAudit, 1, 'delivery_unknown task must not resend');
       assert.equal(fetchCalls.length, 0, 'delivery_unknown task must not refetch');
     } finally { await auditH.close(); }
+  });
+  await test('ack survives post-send ledger file corruption without claiming undelivered', async () => {
+    const fetchCalls = [];
+    const { h: auditH, send: auditSend } = await makeAuditOwner({
+      globals: {
+        safeFetch: async (url, maxChars) => {
+          fetchCalls.push({ url, maxChars });
+          return { url, statusCode: 200, body: '<html>送达后账本损坏复现正文。</html>', truncated: false };
+        }
+      }
+    });
+    try {
+      const originalSend = auditH.bot.sendPrivateMessage;
+      auditH.bot.sendPrivateMessage = async (id, text) => {
+        const res = await originalSend(id, text);
+        if (String(text).includes('任务完成')) {
+          fs.writeFileSync(auditH.taskLedger.filePath, '{CORRUPTED_AFTER_SEND');
+        }
+        return res;
+      };
+      const beforeAudit = auditH.calls.sent.length;
+      await auditSend('任务：送达后读账本损坏 https://source.example/post-send-corrupt');
+      const allSends = auditH.calls.sent.slice(beforeAudit);
+      assert.ok(allSends.some(s => String(s.text).includes('任务完成')), 'report must reach platform');
+      assert.ok(!allSends.some(s => /未投递报告|未发送|任务失败/.test(String(s.text))), 'must never claim report was undelivered after platform ACK: ' + JSON.stringify(allSends));
+      assert.equal(fetchCalls.length, 1);
+    } finally { await auditH.close(); }
+  });
+  await test('direct executeDeliveryStep refuses delivering task without resending', async () => {
+    const task = h.taskLedger.createTask({ goal: 'delivering guard', requestor });
+    h.taskLedger.updateTask(task.taskId, {
+      artifact: { summary: 'fixture', path: '/tmp/fixture', sizeBytes: 10, sha256: '12345678' },
+      delivery: { platform: 'qq', targetKey: KEY, status: 'delivering', at: Date.now() }
+    });
+    const before = f.platformSends.length;
+    const res = await h.taskHarness.executeDeliveryStep(task);
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'OWNER_REPLY_UNKNOWN');
+    assert.ok(res.hint);
+    assert.equal(f.platformSends.length - before, 0, 'delivering task must never be resent by direct executeDeliveryStep');
   });} finally {
   await f.close();
   assert.ok(fs.realpathSync(root).startsWith(testHome + path.sep));

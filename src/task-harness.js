@@ -357,7 +357,7 @@ export function createTaskHarness({
     if (activeTask.delivery?.status === 'delivered') {
       return { ok: true, status: 'delivered', messageId: activeTask.delivery.messageId, idempotent: true };
     }
-    if (['delivery_unknown', 'rejected'].includes(activeTask.delivery?.status)) {
+    if (['delivering', 'delivery_unknown', 'rejected'].includes(activeTask.delivery?.status)) {
       return { ok: false, status: 'delivery_unknown', code: 'OWNER_REPLY_UNKNOWN', error: '此前的送达结果未知。', hint: '查询平台消息和任务状态，不要自动重发。' };
     }
 
@@ -407,33 +407,63 @@ export function createTaskHarness({
         task: activeTask
       });
 
-      if (ledger.getTask(task.taskId)?.status === 'cancelled') {
-        const acknowledged = sendReceipt?.ok === true && sendReceipt?.delivery === 'delivered' && sendReceipt?.messageId != null;
-        ledger.updateTask(task.taskId, { delivery: { platform, targetKey: conversationKey, status: acknowledged ? 'delivered' : 'delivery_unknown', messageId: acknowledged ? sendReceipt.messageId : null, at: now() } });
+      const acknowledged = sendReceipt?.ok === true
+        && (!sendReceipt?.delivery || sendReceipt.delivery === 'delivered')
+        && sendReceipt?.messageId != null;
+
+      let latestTask = null;
+      let postSendLedgerError = null;
+      try {
+        latestTask = ledger.getTask(task.taskId);
+      } catch (readError) {
+        postSendLedgerError = readError;
+        log('[Harness] 回执后读取任务账本失败: ' + readError.message);
+      }
+
+      if (latestTask?.status === 'cancelled') {
+        try {
+          ledger.updateTask(task.taskId, {
+            delivery: {
+              platform,
+              targetKey: conversationKey,
+              status: acknowledged ? 'delivered' : 'delivery_unknown',
+              messageId: acknowledged ? sendReceipt.messageId : null,
+              at: now()
+            }
+          });
+        } catch (recordError) {
+          log('[Harness] 取消态回执写入账本失败: ' + recordError.message);
+        }
         return { ok: false, status: 'cancelled', code: 'TASK_CANCELLED', error: '任务在回执期间已取消。', hint: '查询平台消息和任务状态，不要自动重发。' };
       }
-      if ((sendReceipt?.delivery && sendReceipt.delivery !== 'delivered') || sendReceipt?.ok !== true || sendReceipt?.messageId == null) {
+      if (!acknowledged) {
         const rejected = sendReceipt?.delivery === 'rejected';
         const result = { ok: false, status: rejected ? 'rejected' : 'delivery_unknown', code: sendReceipt?.code || (rejected ? 'OWNER_REPLY_REJECTED' : 'OWNER_REPLY_UNKNOWN'), error: sendReceipt?.error || '送达结果未知。', hint: sendReceipt?.hint || '查询任务和平台消息，不要自动重发。' };
-        ledger.updateTask(task.taskId, { status: 'unknown', error: result.error, delivery: { platform, targetKey: conversationKey, status: result.status, messageId: null, error: result.error, at: now() } });
+        try {
+          ledger.updateTask(task.taskId, { status: 'unknown', error: result.error, delivery: { platform, targetKey: conversationKey, status: result.status, messageId: null, error: result.error, at: now() } });
+        } catch (recordError) {
+          log('[Harness] 未知/拒绝回执写入账本失败: ' + recordError.message);
+        }
         return result;
       }
 
-      let recorded = true;
-      try {
-        ledger.updateTask(task.taskId, {
-          status: 'completed',
-          delivery: {
-            platform,
-            targetKey: conversationKey,
-            status: 'delivered',
-            messageId: sendReceipt?.messageId || null,
-            at: now()
-          }
-        });
-      } catch (recordError) {
-        recorded = false;
-        log('[Harness] 回执已送达但账本未能记录: ' + recordError.message);
+      let recorded = !postSendLedgerError;
+      if (recorded) {
+        try {
+          ledger.updateTask(task.taskId, {
+            status: 'completed',
+            delivery: {
+              platform,
+              targetKey: conversationKey,
+              status: 'delivered',
+              messageId: sendReceipt?.messageId || null,
+              at: now()
+            }
+          });
+        } catch (recordError) {
+          recorded = false;
+          log('[Harness] 回执已送达但账本未能记录: ' + recordError.message);
+        }
       }
       if (!recorded) {
         return {
@@ -451,17 +481,21 @@ export function createTaskHarness({
       return { ok: true, status: 'delivered', messageText };
     } catch (err) {
       log(`[Harness] 发送交付失败/结果未知: ${err.message}`);
-      ledger.updateTask(task.taskId, {
-        status: 'unknown',
-        error: `Delivery error: ${err.message}`,
-        delivery: {
-          platform,
-          targetKey: conversationKey,
-          status: 'delivery_unknown',
-          error: err.message,
-          at: now()
-        }
-      });
+      try {
+        ledger.updateTask(task.taskId, {
+          status: 'unknown',
+          error: `Delivery error: ${err.message}`,
+          delivery: {
+            platform,
+            targetKey: conversationKey,
+            status: 'delivery_unknown',
+            error: err.message,
+            at: now()
+          }
+        });
+      } catch (recordError) {
+        log('[Harness] 交付异常后写入账本失败: ' + recordError.message);
+      }
       return { ok: false, status: 'delivery_unknown', code: 'OWNER_REPLY_UNKNOWN', error: err.message, hint: '查询任务和平台消息，不要自动重发。' };
     }
   }
@@ -486,21 +520,6 @@ export function createTaskHarness({
         error: '仅有研究目标，缺少可核验的来源网址。',
         hint: '请补充网址后重试，例如：任务：<研究目标> https://example.com'
       };
-    }
-
-    // 无新网址且未指定任务号：若同会话已有同目标、已完成并送达的任务，按幂等返回；
-    // 否则仍创建工单再明确失败，保留“补网址后重试”的路径（不执行、不投递）。
-    if (!urlList.length && !taskId && requestor?.conversationKey) {
-      let existing = null;
-      try {
-        existing = ledger.listTasks({ conversationKey: requestor?.conversationKey, limit: 100 })
-          .find(t => t.goal === String(goal ?? '').trim() && t.status === 'completed' && t.artifact && t.delivery?.status === 'delivered');
-      } catch (error) {
-        return ledgerFailure(error, { status: 'failed' });
-      }
-      if (existing) {
-        return { ok: true, taskId: existing.taskId, status: 'completed', artifact: existing.artifact, idempotent: true };
-      }
     }
 
     // 创建或复用任务。账本不可读时这里必须停住：不能执行研究，也不能投递报告。

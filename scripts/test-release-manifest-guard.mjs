@@ -499,6 +499,44 @@ try {
           ok(!fs.existsSync(pendingFile), '合法候选：pending 已清理');
         }
       } finally { restore(); }
+
+      // R2 follow-up: verifiedFiles 必须拦住根目录用户目录子文件（如 models/foo.bin），且在写盘前完成全量预检不留半套覆盖。
+      for (const [caseName, mutatePending, needle] of [
+        ['apply-reject-root-user-dir', (pending) => {
+          const userFile = path.join(pending.staging, 'models', 'keep.bin');
+          fs.mkdirSync(path.dirname(userFile), { recursive: true });
+          fs.writeFileSync(userFile, 'overwrite\n');
+          pending.verifiedFiles = ['package.json', 'models/keep.bin'];
+        }, 'models/keep.bin'],
+        ['apply-preflight-atomic', (pending) => {
+          pending.verifiedFiles = ['package.json', 'plugins/surfcore/lib/nonexistent-r2.txt'];
+        }, 'nonexistent-r2.txt'],
+      ]) {
+        const dir2 = makeTarget(caseName);
+        const restore2 = stubFetch(makeArchive(caseName));
+        try {
+          const svc2 = mkService(dir2);
+          await svc2.check({ fetch: true });
+          await svc2.apply(['surfcore']);
+          const pendingFile2 = path.join(dir2, '.state', 'updates-pending.json');
+          const pending2 = JSON.parse(fs.readFileSync(pendingFile2, 'utf8'));
+          mutatePending(pending2);
+          pending2.waitPid = 999999;
+          fs.writeFileSync(pendingFile2, `${JSON.stringify(pending2, null, 2)}\n`);
+          let failedCode = 0;
+          try {
+            execFileSync(process.execPath, [path.join(dir2, 'scripts', 'apply-update.mjs'), '--pending', pendingFile2], {
+              cwd: dir2, env: { ...process.env, ...shareTestRoot() }, stdio: 'pipe', timeout: 10_000,
+            });
+          } catch (err) {
+            failedCode = err?.status ?? 1;
+          }
+          ok(failedCode !== 0, `${caseName}：apply-update 非零退出`, String(failedCode));
+          const failedPath = `${pendingFile2}.failed`;
+          ok(fs.existsSync(failedPath) && fs.readFileSync(failedPath, 'utf8').includes(needle), `${caseName}：失败记录包含目标路径`, failedPath);
+          ok(JSON.parse(fs.readFileSync(path.join(dir2, 'package.json'), 'utf8')).version === '1.0.0', `${caseName}：预检失败前不覆盖 package.json`);
+        } finally { restore2(); }
+      }
     } finally {
       delete process.env.SURFCORE_UPDATE_NO_SPAWN;
     }

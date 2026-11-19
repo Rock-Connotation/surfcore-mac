@@ -100,10 +100,11 @@ function copyZip(staging, target, verifiedFiles = null) {
       const destination = path.resolve(target);
       rejectSymlink(root, '暂存目录');
       rejectSymlink(destination, '目标目录');
+      const planned = [];
       for (const rel of verifiedFiles) {
         const parts = String(rel).split(/[\\/]/).filter(Boolean);
         if (!parts.length || parts.some((p) => p === '.' || p === '..' || excludedDir(p))
-          || excludedFile(parts[parts.length - 1]) || (parts.length === 1 && rootUserDirs.includes(parts[0]))) {
+          || excludedFile(parts[parts.length - 1]) || rootUserDirs.includes(parts[0])) {
           throw new Error(`校验集合包含不允许的路径：${rel}`);
         }
         const source = path.join(root, ...parts);
@@ -111,11 +112,14 @@ function copyZip(staging, target, verifiedFiles = null) {
         const stat = fs.lstatSync(source);
         if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`校验集合不是普通文件：${rel}`);
         rejectSymlink(dest, '目标文件');
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        fs.copyFileSync(source, dest);
-        fs.chmodSync(dest, stat.mode & 0o7777);
+        planned.push({ source, dest, mode: stat.mode & 0o7777 });
       }
-      return { ok: true, verified: verifiedFiles.length };
+      for (const item of planned) {
+        fs.mkdirSync(path.dirname(item.dest), { recursive: true });
+        fs.copyFileSync(item.source, item.dest);
+        fs.chmodSync(item.dest, item.mode);
+      }
+      return { ok: true, verified: planned.length };
     } catch (error) {
       return { ok: false, error: `校验集合复制失败：${String(error?.message ?? error)}` };
     }

@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { createMemoryService } from '../src/core/memory-v2-service.js';
-import { hardenDir } from '../src/state-acl.mjs';
+import { hardenDir, hardenFile } from '../src/state-acl.mjs';
 import { checkLifecycleControl } from '../src/core/memory-v2-lifecycle.js';
 
 const posix = process.platform !== 'win32';
@@ -166,6 +166,20 @@ try {
     assert.match(calls, /CORP\\ci-runner:F/);
     assert.match(calls, /SYSTEM:F/);
     assert.match(calls, /Administrators:F/);
+  });
+
+  await test('R2-08 Windows: hardenFile removes explicit permissive SIDs and rejects lingering wide grants', async () => {
+    const file = path.join(root, 'win-file.sqlite'); fs.writeFileSync(file, 'db');
+    const cleanAcl = `${file} CORP\\ci-runner:(F)  SYSTEM:(F)  BUILTIN\\\\Administrators:(F)\n`;
+    const okRes = await withFakeWindows({ acl: cleanAcl, username: '' }, () => hardenFile(file));
+    assert.equal(okRes.value.ok, true, JSON.stringify(okRes.value));
+    assert.match(okRes.calls, /\/remove:g \*S-1-5-11 \*S-1-5-32-545 \*S-1-1-0/);
+    assert.match(okRes.calls, /CORP\\ci-runner:F/);
+    const wideAcl = `${file} CORP\\ci-runner:(F)  SYSTEM:(F)  BUILTIN\\\\Administrators:(F)  Everyone:(R)\n`;
+    const badRes = await withFakeWindows({ acl: wideAcl, username: '' }, () => hardenFile(file));
+    assert.equal(badRes.value.ok, false, JSON.stringify(badRes.value));
+    assert.equal(badRes.value.code, 'MEMORY_PERMISSIONS_UNSAFE', JSON.stringify(badRes.value));
+    assert.ok(badRes.value.error && badRes.value.hint, JSON.stringify(badRes.value));
   });
 
   await test('R2-08 lifecycle: a symlinked private directory is rejected with a visible permissions receipt', async () => {

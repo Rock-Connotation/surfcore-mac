@@ -118,10 +118,10 @@ export function hardenDir(dir) {
   for (const args of steps) {
     const res = icacls(args);
     const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
-    if (res.error) return { ok: false, detail: res.error.message };
+    if (res.error) return aclFail(res.error.message);
     // /C 会让 icacls 继续处理剩余文件、即使全失败退出码仍是 0，所以必须看输出。
     if (/access is denied/i.test(out)) {
-      return { ok: false, detail: out.split('\n').filter(Boolean).slice(-3).join(' / ') };
+      return aclFail(out.split('\n').filter(Boolean).slice(-3).join(' / '));
     }
   }
   // 自检：属主必须仍能读到目录内容（防止把 DACL 清空这种"成功"的破坏）。
@@ -144,12 +144,18 @@ export function hardenFile(file) {
   }
   const user = windowsPrincipal();
   if (!user) return aclFail('Cannot determine the running account (whoami and %USERNAME% are both unavailable).');
-  const res = icacls([file, '/inheritance:r',
-    '/grant:r', `${user}:F`, '/grant:r', 'SYSTEM:F', '/grant:r', 'Administrators:F', '/C', '/Q']);
-  const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
-  if (res.error) return { ok: false, detail: res.error.message };
-  if (/access is denied/i.test(out)) {
-    return aclFail(out.split('\n').filter(Boolean).slice(-2).join(' / '));
+  const steps = [
+    [file, '/inheritance:r', '/C', '/Q'],
+    [file, '/remove:g', ...PERMISSIVE_SIDS, '/C', '/Q'],
+    [file, '/grant:r', `${user}:F`, '/grant:r', 'SYSTEM:F', '/grant:r', 'Administrators:F', '/C', '/Q']
+  ];
+  for (const args of steps) {
+    const res = icacls(args);
+    const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+    if (res.error) return aclFail(res.error.message);
+    if (/access is denied/i.test(out)) {
+      return aclFail(out.split('\n').filter(Boolean).slice(-2).join(' / '));
+    }
   }
   const verified = verifyAcl(file, [user, 'SYSTEM', 'Administrators'], 'Memory file');
   if (!verified.ok) return verified;
