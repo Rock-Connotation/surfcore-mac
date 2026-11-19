@@ -11,6 +11,9 @@ const REPLY = 'https://api.bilibili.com/x/v2/reply/reply';
 const MAIN_REPLY = 'https://api.bilibili.com/x/v2/reply';
 const DYNAMIC = 'https://api.bilibili.com/x/polymer/web-dynamic/v1/detail';
 const SESSIONS = 'https://api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions';
+const DM_HISTORY = 'https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs';
+const DM_HISTORY_PAGE_SIZE = 50
+const DM_HISTORY_MAX_PAGES = 20
 const MSGFEED = 'https://api.bilibili.com/x/msgfeed/reply';
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const REFERER = 'https://www.bilibili.com/';
@@ -34,7 +37,7 @@ const REQUIRED_IDS = Object.freeze({
   notification: ['id'],
   telemetry: ['id'],
 });
-const OFFICIAL_BASES = new Set([NAV, VIEW, REPLY, MAIN_REPLY, DYNAMIC, SESSIONS, MSGFEED, ...Object.values(BILI_V2_ENDPOINTS)]
+const OFFICIAL_BASES = new Set([NAV, VIEW, REPLY, MAIN_REPLY, DYNAMIC, SESSIONS, DM_HISTORY, MSGFEED, ...Object.values(BILI_V2_ENDPOINTS)]
   .map((url) => { const parsed = new URL(url); return parsed.origin + parsed.pathname; }));
 
 const MIXIN_TAB = Object.freeze([46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52]);
@@ -378,6 +381,36 @@ export function createBiliV2OfficialTransport({ getCredentials, getScope, fetchI
     assertTargetInScope(target, scope);
     return { kind: 'dynamic', objectId: locator.id, authorMid, occurredAt: occurredAt(modules?.module_author?.pub_ts), audience: 'public', target, coverage: 'full', wire };
   }
+  /** 按对端 + 精确 msg_key 查官方历史原文；不拿 get_sessions.last_msg 或摘要代替。 */
+  async function officialDmHistory(locator, ctx) {
+    let end = null;
+    const seenPages = new Set();
+    for (let page = 0; page < DM_HISTORY_MAX_PAGES; page += 1) {
+      const url = new URL(DM_HISTORY);
+      url.searchParams.set('talker_id', locator.mid);
+      url.searchParams.set('session_type', '1');
+      url.searchParams.set('size', String(DM_HISTORY_PAGE_SIZE));
+      url.searchParams.set('mobi_app', 'web');
+      if (end) url.searchParams.set('end_seqno', end);
+      const body = await officialGet(url.toString(), ctx);
+      if (!body || body.code !== 0 || !Array.isArray(body.data?.messages)) {
+        abort('BILI_OFFICIAL_OFFICIAL_UNAVAILABLE', 'The official private-message history did not return code 0; restore the source before retrying.');
+      }
+      let oldest = null;
+      for (const message of body.data.messages) {
+        const key = officialId(message?.msg_key ?? '');
+        if (!key) abort('BILI_OFFICIAL_ID_UNPROVEN', 'A historical private message has no official msg_key; do not skip it or infer its identity.');
+        if (key === locator.msgKey) return message;
+        const seq = officialId(message.msg_seqno ?? '');
+        if (!seq) abort('BILI_OFFICIAL_ID_UNPROVEN', 'A historical private message has no official seqno; cannot page back safely.');
+        if (!oldest || BigInt(seq) < BigInt(oldest)) oldest = seq;
+      }
+      if (!body.data.has_more || !oldest || seenPages.has(oldest)) break;
+      seenPages.add(oldest);
+      end = oldest;
+    }
+    abort('BILI_OFFICIAL_PAGINATION_NOT_FOUND', 'The exact historical private msg_key was not returned by the official history endpoint; do not substitute the latest message.');
+  }
   async function officialDm(locator, scope, accountMid, ctx) {
     const url = `${SESSIONS}?session_type=1&group_id=0&count=50&mobi_app=web`;
     const body = await officialGet(url, ctx);
@@ -386,11 +419,8 @@ export function createBiliV2OfficialTransport({ getCredentials, getScope, fetchI
     }
     const session = body.data.session_list.find((entry) => entry && officialId(entry.talker_id) === locator.mid);
     if (!session) abort('BILI_OFFICIAL_PAGINATION_NOT_FOUND', 'The registered private peer was not present in the official session list.');
-    const last = session.last_msg;
-    if (!last || officialId(last.msg_key ?? '') !== locator.msgKey) {
-      unimplementedScopes.add('dm-history');
-      abort('BILI_OFFICIAL_SCOPE_UNSUPPORTED', 'Only the latest official private message per session is retrievable; a historical msg_key needs a shared-seam extension.', { scope: 'dm-history' });
-    }
+    let last = session.last_msg;
+    if (!last || officialId(last.msg_key ?? '') !== locator.msgKey) last = await officialDmHistory(locator, ctx);
     if (last.deleted === true || typeof last.content !== 'string') abort('BILI_OFFICIAL_ORIGINAL_DELETED', 'The official private message was deleted; do not substitute a digest.');
     let parsed;
     try { parsed = JSON.parse(last.content); } catch { abort('BILI_OFFICIAL_ORIGINAL_DELETED', 'The official private message content is unreadable; do not substitute a digest.'); }

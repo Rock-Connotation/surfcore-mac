@@ -263,14 +263,17 @@ export function createBiliV2Host({ ctx, stateDir, memoryV2, tokenBudget, getChar
       const terminal = complete && result.jobs.every(job => job.phase === 'terminal');
       const accepted = complete && result.jobs.every(job => ['accepted', 'terminal'].includes(job.phase));
       const state = terminal ? 'terminal' : accepted ? 'accepted-needs-retry' : complete && result.jobs.every(job => job.phase === 'pre_dispatch') ? 'pre_dispatch' : 'unknown';
-      const failure = state === 'accepted-needs-retry' || state === 'unknown' ? { ok: false, code: 'BILI_V2_NOT_DURABLE', error: 'B站原作业尚无持久接管确认。', hint: '在记忆卡检查 B站阻断提示，保留原通知并查询同一作业；不要另建编号或重复发送。', unknown: true } : null;
+      // 只有整组 terminal 的持久注册表回执才可作为终态 proof；其余状态一律 unconfirmed。
+      const durable = state === 'terminal' && result.receipt?.source === 'bili-v2-registry' && result.receipt.durable === true && result.receipt.state === 'terminal' && result.receipt.requestId === requestId && Array.isArray(result.receipt.jobs) && result.receipt.jobs.length === result.jobs.length && result.jobs.every(job => result.receipt.jobs.some((entry) => entry?.sessionId === job.sessionId && entry.requestId === job.requestId && entry.jobId === job.jobId));
+      const receipt = durable ? result.receipt : null;
+      const failure = state === 'accepted-needs-retry' || state === 'unknown' || state === 'terminal' && !receipt ? { ok: false, code: 'BILI_V2_NOT_DURABLE', error: 'B站原作业尚无持久接管确认。', hint: '在记忆卡检查 B站阻断提示，保留原通知并查询同一作业；不要另建编号或重复发送。', unknown: true } : null;
       if (failure) {
         lastFailure = failure;
         if (reportedOutcomes.get(requestId) !== state) { try { onBlocked(failure); } catch {} }
       }
       reportedOutcomes.delete(requestId); reportedOutcomes.set(requestId, state);
       if (reportedOutcomes.size > 256) reportedOutcomes.delete(reportedOutcomes.keys().next().value);
-      return { ...result, state, ...(failure ? { code: failure.code, error: failure.error, hint: failure.hint, unknown: failure.unknown } : {}) };
+      return { ...result, state, ...(receipt ? { receipt } : {}), ...(failure ? { code: failure.code, error: failure.error, hint: failure.hint, unknown: failure.unknown } : {}) };
     } catch (error) { return report(error); }
   }
   async function enqueue({ requestId, input, signal } = {}) {

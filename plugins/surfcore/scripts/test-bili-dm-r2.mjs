@@ -46,6 +46,7 @@ fs.writeFileSync(SHIM, [
   "    let msgs = Array.isArray(peer.messages) ? peer.messages.slice() : [];",
   "    msgs.sort((a, b) => { const x = big(a.msg_seqno), y = big(b.msg_seqno); return x === y ? 0 : (x < y ? -1 : 1); });",
   "    if (end) { const e = big(end); msgs = msgs.filter((m) => { const v = big(m.msg_seqno); return v !== null && e !== null && v < e; }); }",
+  "    if (end && peer.failPage2) return { ok: true, status: 200, json: async () => ({ code: -400, message: 'SYNTHETIC_PAGE2_FAIL', data: {} }) };",
   "    const start = Math.max(0, msgs.length - pageSize);",
   "    let page = msgs.slice(start);",
   "    if (peer.overlap && start > 0) page = [msgs[start - 1], ...page];",
@@ -87,6 +88,7 @@ const mkSession = (o = {}) => ({
     timestamp: o.ts ?? TS,
     content: JSON.stringify({ content: o.text ?? 'SYNTHETIC_INBOUND' }),
     ...(o.msgKey === undefined ? {} : { msg_key: o.msgKey }),
+    ...(o.seq === undefined ? {} : { msg_seqno: String(o.seq) }),
   },
 });
 
@@ -314,6 +316,44 @@ try {
     });
   }
 
+  // ── 返工阶段 1：分页中断恢复——完整边界不跟着失败页移动 ────────────────────
+  await test('R2-02 分页恢复：首轮入 4/5 但完整边界仍 1，恢复补齐 2/3 且 4/5 ID 不变', async () => {
+    const msgs = []
+    for (let i = 1; i <= 5; i += 1) msgs.push(historyMsg(i, { msgKey: String(1000 + i), text: `m${i}`, ts: TS }))
+    resetState({ collect: { [OWNER]: { lastKey: '1001', lastTs: TS, order: 'p:1', updatedAt: null } }, seen: { [OWNER]: TS } })
+    hostReply = async () => ({ ok: true })   // 不 ACK，pending 保留用于核对 ID
+    writeHistory({ [OWNER]: { messages: msgs, pageSize: 2, failPage2: true } })
+    sessions([mkSession({ msgKey: '1005', seq: 5, ts: TS, text: 'm5' })])
+    const first = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' })
+    assert.equal(first.status, 0, first.stderr + first.stdout)
+    const out1 = JSON.parse(first.stdout)
+    assert.deepEqual(out1.items.map((it) => it.text), ['m4', 'm5'], '首轮可入 4、5')
+    const id4 = out1.items.find((it) => it.text === 'm4').requestId
+    const id5 = out1.items.find((it) => it.text === 'm5').requestId
+    let st = readState()
+    assert.equal(st.collect[OWNER].order, 'p:1', '完整边界在补齐前仍须停在 1')
+    const gap = st.historyIncomplete?.[OWNER]
+    assert.ok(gap?.code && gap?.error && gap?.hint, '缺口必须带 code/error/hint')
+
+    writeHistory({ [OWNER]: { messages: msgs, pageSize: 2, failPage2: false } })
+    const second = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' })
+    assert.equal(second.status, 0, second.stderr + second.stdout)
+    const out2 = JSON.parse(second.stdout)
+    const byText = Object.fromEntries(out2.items.map((it) => [it.text, it]))
+    assert.ok(byText.m2 && byText.m3, '恢复轮必须新增 2、3')
+    assert.equal(byText.m4?.requestId, id4, '4 必须保持原 requestId')
+    assert.equal(byText.m5?.requestId, id5, '5 必须保持原 requestId')
+    st = readState()
+    assert.equal(st.collect[OWNER].order, 'p:5', '2–5 全部落盘后完整边界才到 5')
+    assert.equal(st.historyIncomplete?.[OWNER], undefined, '补齐后缺口应清除')
+
+    const third = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' })
+    assert.equal(third.status, 0, third.stderr + third.stdout)
+    const out3 = JSON.parse(third.stdout)
+    assert.equal(new Set(out3.items.map((it) => it.requestId)).size, out3.items.length, '第三轮不得重复新增')
+    assert.equal(readState().collect[OWNER].order, 'p:5', '第三轮完整边界不后退')
+  })
+
   // ── 批次 B / 07：远端离线时仍交付本地 pending ──────────────────────────────
   await test('07 CLI：远端离线且 local pending=1 时仍输出原件并报告采集失败', async () => {
     resetState({ pending: { 'local-offline': pendingRow('local-offline', { msgKey: '40001', seq: 1, text: 'LOCAL_ORIGINAL' }) } });
@@ -344,6 +384,67 @@ try {
     assert.equal(recovered.length, 0, '已接管项不得产生第二次业务效果');
     assert.equal(scheduler.status().dmCollectFailure, null);
   });
+
+  // ── 返工阶段 1：大队列分批 / 大序号 / 区间未证 ───────────────────────────
+  await test('R2-07 大队列：100 条本地 pending 离线分批输出，调度器跨两轮稳定遍历', async () => {
+    const pending = {}
+    for (let i = 1; i <= 100; i += 1) pending[`bulk-${i}`] = pendingRow(`bulk-${i}`, { msgKey: String(50000 + i), seq: i, text: `bulk-${i}` })
+    resetState({ pending })
+    sessions([])
+    const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'],
+      { env: { ...env, SURFCORE_DM_TEST_OFFLINE: '1' }, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
+    assert.equal(run.status, 0, run.stderr.slice(0, 500))
+    const lines = run.stdout.split('\n').filter(Boolean)
+    assert.ok(lines.length > 1, `100 条须分批输出，实际 ${lines.length} 行；bytes=${Buffer.byteLength(run.stdout)}`)
+    const items = []
+    for (const line of lines) {
+      assert.ok(Buffer.byteLength(line, 'utf8') <= 20 * 1024, `单行不得超过分批上限：${Buffer.byteLength(line, 'utf8')}`)
+      const j = JSON.parse(line)
+      assert.equal(j.ok, true, '每批都必须可独立解析且成功')
+      items.push(...j.items)
+    }
+    assert.equal(items.length, 100, '批内条目总数必须是 100')
+    assert.equal(new Set(items.map((it) => it.requestId)).size, 100, '不得因分批产生重复身份')
+    assert.ok(lines.some((line) => JSON.parse(line).batch?.total === lines.length), '须带批次元信息')
+    assert.equal(JSON.parse(lines.at(-1)).done, true, '最后一批须标记 done')
+
+    hostReply = async () => ({ ok: true })   // 无回执，pending 保留用于第二轮重放
+    process.env.SURFCORE_DM_TEST_OFFLINE = '1'
+    let first, second
+    try { first = await tick(); second = await tick() } finally { delete process.env.SURFCORE_DM_TEST_OFFLINE }
+    const bulkFirst = first.filter((j) => String(j.requestId).startsWith('bulk-'))
+    const bulkSecond = second.filter((j) => String(j.requestId).startsWith('bulk-'))
+    assert.equal(bulkFirst.length, 100, `首轮须交付 100 条 bulk 原件，实际 ${bulkFirst.length}`)
+    assert.equal(bulkSecond.length, 100, `第二轮仍须读完全部批，实际 ${bulkSecond.length}`)
+    assert.deepEqual(new Set(bulkSecond.map((j) => j.requestId)), new Set(bulkFirst.map((j) => j.requestId)), '两轮身份集合须一致')
+  })
+
+  await test('R2-02 大序号：19 位 msg_seqno 原样保留并按数值排序', async () => {
+    const seqs = ['9223372036854775800', '9223372036854775801', '9223372036854775802']
+    resetState({ collect: { [OWNER]: { lastKey: '60001', lastTs: TS, order: `p:${seqs[0]}` } }, seen: { [OWNER]: TS } })
+    writeHistory({ [OWNER]: { messages: seqs.map((seq, i) => historyMsg(seq, { msgKey: String(60001 + i), text: `m${i + 1}`, ts: TS + i })), pageSize: 20 } })
+    sessions([mkSession({ msgKey: '60003', seq: seqs[2], ts: TS + 2, text: 'm3' })])
+    const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' })
+    assert.equal(run.status, 0, run.stderr + run.stdout.slice(0, 300))
+    const out = JSON.parse(run.stdout)
+    assert.deepEqual(out.items.map((it) => it.text), ['m2', 'm3'], `大序号须按数值比较，不得字典序截断：${JSON.stringify(out.items.map((it) => it.text))}`)
+    const orders = Object.values(readState().pending).map((row) => row.order)
+    for (const seq of seqs.slice(1)) assert.ok(orders.some((order) => String(order).endsWith(seq)), `序号 ${seq} 须原样保留`)
+  })
+
+  await test('R2-02 has_more=0 但上一边界未覆盖时记录区间未证而非跳过', async () => {
+    const msgs = [1, 2, 3].map((i) => historyMsg(i, { msgKey: String(70000 + i), text: `m${i}`, ts: TS }))
+    resetState({ collect: { [OWNER]: { lastKey: '69999', lastTs: TS, order: 'p:0' } }, seen: { [OWNER]: TS } })
+    writeHistory({ [OWNER]: { messages: msgs, pageSize: 20 } })
+    sessions([mkSession({ msgKey: '70003', seq: 3, ts: TS, text: 'm3' })])
+    const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' })
+    assert.equal(run.status, 0, run.stderr + run.stdout.slice(0, 300))
+    const out = JSON.parse(run.stdout)
+    assert.ok(out.items.some((it) => it.text === 'm2'), '到顶消息仍须在上一边界之后补齐')
+    const gap = readState().historyIncomplete?.[OWNER]
+    assert.equal(gap?.code, 'BILI_DM_HISTORY_RANGE_UNPROVEN', `has_more=0 不等于区间已覆盖：${JSON.stringify(gap)} / items=${JSON.stringify(out.items.map((it)=>it.text))}`)
+    assert.equal(readState().collect[OWNER].order, 'p:0', `区间未证不得推进完整边界：${JSON.stringify(readState().collect[OWNER])}`)
+  })
 
   // ── 批次 B / 11：保护验证（无回执拒绝、连续推进、作用域独立） ───────────────
   await test('11 ACK 只沿连续已处理范围推进：前面的未 ACK 项阻断游标', async () => {

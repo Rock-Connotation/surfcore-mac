@@ -351,6 +351,42 @@ await fixture('reminder retries original occurrence and later occurrence has a n
     console.log('REMINDER_IDS ' + JSON.stringify(submitted));
   } finally { scheduler.stop(); globalThis.Date = RealDate; }
 });
+await fixture('terminal receipt is materialized only for a complete terminal group and survives restart', async f => {
+  const drive = async (sessionId) => {
+    const agent = f.agents.get(sessionId);
+    await collect(f.stream(f.options(sessionId), () => (async function* () { yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }; })()));
+    agent.cancel();
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  const single = await f.start('r2-single-accepted');
+  assert.equal(single.ok, true);
+  assert.equal(f.runtime.query('r2-single-accepted').receipt, undefined, '普通 accepted 保持 unconfirmed');
+  const submit = (id) => f.runtime.enqueue({ requestId: id, originalRequestId: 'r2-group', groupCount: 2, input: { kind: 'comment-notification', items: [{ id: '12' }], coverage: 'notification-only' } });
+  const a = await submit('r2-job-a'), b = await submit('r2-job-b');
+  assert.equal(a.ok, true, JSON.stringify(a));
+  assert.equal(b.ok, true, JSON.stringify(b));
+  assert.equal(f.runtime.query('r2-group').receipt, undefined, 'accepted 阶段不得出现终态回执');
+  await drive(a.sessionId);
+  assert.equal(f.runtime.query('r2-group').receipt, undefined, '整组未全部 terminal 不得出现回执');
+  await drive(b.sessionId);
+  const done = f.runtime.query('r2-group');
+  assert.ok(done.receipt, '整组 terminal 必须由持久注册表给出回执');
+  assert.equal(done.receipt.source, 'bili-v2-registry');
+  assert.equal(done.receipt.durable, true);
+  assert.equal(done.receipt.state, 'terminal');
+  assert.equal(done.receipt.requestId, 'r2-group');
+  assert.equal(done.receipt.jobs.length, 2);
+  assert.equal(new Set(done.receipt.jobs.map((job) => job.sessionId)).size, 2);
+  const disk = JSON.parse(fs.readFileSync(f.registryPath, 'utf8'));
+  for (const job of done.receipt.jobs) assert.deepEqual(disk.sessions[job.sessionId].receipt, done.receipt, 'CLI 须能逐作业核对同一回执');
+  await f.runtime.close();
+  const restarted = f.restart();
+  try {
+    const after = restarted.query('r2-group');
+    assert.deepEqual(after.receipt, done.receipt, '重启后须从持久注册表复现同一回执');
+    assert.ok(after.jobs.every((job) => job.phase === 'terminal'));
+  } finally { await restarted.close(); }
+});
 if (process.argv.includes('--contract-only')) { console.log('PASS durable runtime contract'); process.exit(0); }
 
 await fixture('retirement waits for an in-flight creation before releasing its real session', async f => {

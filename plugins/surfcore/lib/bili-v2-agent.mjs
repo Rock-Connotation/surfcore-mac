@@ -59,8 +59,9 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
       const data = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
       if (data?.version !== 1 || !data.sessions || typeof data.sessions !== 'object' || Array.isArray(data.sessions) || Object.keys(data).some((k) => !['version', 'sessions'].includes(k))) throw new Error('registry');
       for (const [id, entry] of Object.entries(data.sessions)) {
-        if (!entry || id !== entry.sessionId || typeof entry.jobId !== 'string' || !entry.jobId || typeof entry.requestId !== 'string' || !entry.requestId || typeof entry.characterId !== 'string' || !entry.characterId || !Number.isSafeInteger(entry.characterEpoch) || entry.characterEpoch < 0 || Object.keys(entry).some((k) => !['sessionId', 'jobId', 'requestId', 'characterId', 'characterEpoch', 'originalRequestId', 'input', 'inputDigest', 'phase', 'originalInput', 'originalDigest', 'scope', 'groupCount'].includes(k))) throw new Error('registry');
+        if (!entry || id !== entry.sessionId || typeof entry.jobId !== 'string' || !entry.jobId || typeof entry.requestId !== 'string' || !entry.requestId || typeof entry.characterId !== 'string' || !entry.characterId || !Number.isSafeInteger(entry.characterEpoch) || entry.characterEpoch < 0 || Object.keys(entry).some((k) => !['sessionId', 'jobId', 'requestId', 'characterId', 'characterEpoch', 'originalRequestId', 'input', 'inputDigest', 'phase', 'originalInput', 'originalDigest', 'scope', 'groupCount', 'receipt'].includes(k))) throw new Error('registry');
         if (entry.phase !== undefined && (!['pre_dispatch', 'dispatching', 'accepted', 'terminal'].includes(entry.phase) || typeof entry.originalRequestId !== 'string' || !entry.originalRequestId || !entry.input || !entry.originalInput || typeof entry.inputDigest !== 'string' || entry.inputDigest !== biliV2InputDigest({ value: entry.input }) || entry.originalDigest !== originalTriggerDigest(entry.originalInput) || !Number.isSafeInteger(entry.groupCount) || entry.groupCount < 1 || entry.groupCount > 32 || entry.scope === undefined)) throw new Error('registry');
+        if (entry.receipt !== undefined && (!entry.receipt || typeof entry.receipt !== 'object' || Array.isArray(entry.receipt) || entry.receipt.source !== 'bili-v2-registry' || entry.receipt.durable !== true || entry.receipt.state !== 'terminal' || entry.receipt.requestId !== (entry.originalRequestId ?? entry.requestId) || !Array.isArray(entry.receipt.jobs) || entry.receipt.jobs.length < 1 || entry.receipt.jobs.some((job) => !job || typeof job.sessionId !== 'string' || !job.sessionId || typeof job.requestId !== 'string' || !job.requestId || typeof job.jobId !== 'string' || !job.jobId || !Number.isSafeInteger(job.groupCount) || job.groupCount < 1))) throw new Error('registry');
         triggers.set(entry.requestId, { historical: true, sessionId: id, entry });
       }
       registry = data;
@@ -81,9 +82,8 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
     if (state.stopped || state.controller.signal.aborted || String(current?.id) !== state.job.characterId || Number(current?.epoch) !== state.job.characterEpoch) throw issue('BILI_V2_JOB_REVOKED', 'The original role or job changed; start a newly authorized job.');
     if (state.agent && (ctx.agents?.get(state.job.sessionId) !== state.agent || nativeRoot && !nativeRoot.ownsAgent(state.agent))) throw issue('BILI_V2_SESSION_CHANGED', 'The actual agent binding was lost.');
   }
-  function persist(job, details = {}) {
+  function writeRegistry(next) {
     if (owner.issue()) throw issue('BILI_V2_REGISTRY_UNAVAILABLE', 'Restore the protected registry owner.');
-    const next = { version: 1, sessions: { ...registry.sessions, [job.sessionId]: { sessionId: job.sessionId, jobId: job.jobId, requestId: job.requestId, characterId: job.characterId, characterEpoch: job.characterEpoch, ...registry.sessions[job.sessionId], ...details } } };
     fs.mkdirSync(path.dirname(registryPath), { recursive: true });
     const temp = registryPath + '.' + crypto.randomUUID() + '.tmp';
     try {
@@ -93,6 +93,23 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
       syncBudgetFiles([registryPath], path.dirname(registryPath));
       registry = next;
     } catch { fault = issue('BILI_V2_REGISTRY_UNAVAILABLE', 'Repair the protected registry before submitting any new job.'); throw fault; }
+  }
+  function persist(job, details = {}) {
+    const next = { version: 1, sessions: { ...registry.sessions, [job.sessionId]: { sessionId: job.sessionId, jobId: job.jobId, requestId: job.requestId, characterId: job.characterId, characterEpoch: job.characterEpoch, ...registry.sessions[job.sessionId], ...details } } };
+    writeRegistry(next);
+  }
+  /** 只有整组全部进入 terminal，才由持久注册表生成一次可重启验证的终态回执。 */
+  function materializeTerminalReceipt(requestId) {
+    const latest = new Map();
+    for (const entry of Object.values(registry.sessions)) if ((entry.originalRequestId ?? entry.requestId) === requestId) latest.set(entry.requestId, entry);
+    const records = [...latest.values()];
+    if (!records.length || !records.every((entry) => entry.groupCount === records.length && entry.phase === 'terminal')) return null;
+    const receipt = { requestId, source: 'bili-v2-registry', durable: true, state: 'terminal', jobs: records.map((entry) => ({ sessionId: entry.sessionId, requestId: entry.requestId, jobId: entry.jobId, groupCount: entry.groupCount })) };
+    if (records.every((entry) => JSON.stringify(entry.receipt) === JSON.stringify(receipt))) return receipt;
+    const sessions = { ...registry.sessions };
+    for (const entry of records) sessions[entry.sessionId] = { ...entry, receipt };
+    writeRegistry({ version: 1, sessions });
+    return receipt;
   }
   function isManagedSession(id) { if (closed) return Object.hasOwn(registry.sessions, id) || jobs.has(id); if (fault || owner?.issue()) return { ok: false, code: 'BILI_V2_REGISTRY_UNAVAILABLE', error: 'Managed session membership is unknown.', hint: 'Repair the protected registry before running models.' }; return Object.hasOwn(registry.sessions, id) || jobs.has(id); }
   const guard = (exec) => {
@@ -409,7 +426,8 @@ export function createBiliV2AgentRuntime({ ctx, nativeRoot, memoryV2, getCharact
     if (!records.length) return { ok: true, found: false };
     const latest = new Map();
     for (const entry of records) latest.set(entry.requestId, entry);
-    return { ok: true, found: true, jobs: [...latest.values()].map(entry => ({ requestId: entry.requestId, sessionId: entry.sessionId, jobId: entry.jobId, phase: entry.phase === 'accepted' && !jobs.has(entry.sessionId) ? 'unknown' : entry.phase ?? 'unknown', characterId: entry.characterId, characterEpoch: entry.characterEpoch, groupCount: entry.groupCount ?? null })) };
+    const receipt = materializeTerminalReceipt(requestId);
+    return { ok: true, found: true, jobs: [...latest.values()].map(entry => ({ requestId: entry.requestId, sessionId: entry.sessionId, jobId: entry.jobId, phase: entry.phase === 'accepted' && !jobs.has(entry.sessionId) ? 'unknown' : entry.phase ?? 'unknown', characterId: entry.characterId, characterEpoch: entry.characterEpoch, groupCount: entry.groupCount ?? null })), ...(receipt ? { receipt } : {}) };
   }
   async function retire() { const values = [...jobs.values()]; values.forEach(stop); return Promise.all(values.map(finish)); }
   async function close() {

@@ -78,6 +78,11 @@ const H = {
 const HISTORY_URL = 'https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs'
 const HISTORY_PAGE_SIZE = 50
 const HISTORY_MAX_PAGES = 20
+// 大队列按条数与字节数分批输出；每批单独成行，避免 stdout 被截断后调度器读不到后续项。
+const OUTPUT_MAX_ITEMS = 25
+const OUTPUT_MAX_BYTES = 16 * 1024
+// 远端采集独立时限：无响应时仍要回到本地 pending，不能被上层子进程超时先杀掉。
+const REMOTE_TIMEOUT_MS = 15_000
 const HISTORY_HINT = '检查网络与 B站 会话历史接口；已持久化的本地待处理消息不会丢，恢复后自动重试。'
 
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v)
@@ -170,7 +175,13 @@ function normalizeHistoryIncomplete(raw) {
   const out = {}
   for (const [mid, row] of Object.entries(raw)) {
     if (!mid || !isObj(row) || typeof row.code !== 'string' || !row.code || typeof row.error !== 'string' || typeof row.hint !== 'string') throw blocked('BILI_DM_STATE_CORRUPT', 'scope.historyIncomplete 损坏。')
-    out[String(mid)] = { code: row.code, error: row.error, hint: row.hint, at: typeof row.at === 'string' ? row.at : null }
+    const entry = { code: row.code, error: row.error, hint: row.hint, at: typeof row.at === 'string' ? row.at : null }
+    // 缺口同时记录“下次续拉位置”；只有页面数据与续拉位置一起落盘才允许续页。
+    if (row.resume !== undefined) {
+      if (!isObj(row.resume) || !isOrderToken(row.resume.order) || row.resume.lastKey !== undefined && row.resume.lastKey !== null && typeof row.resume.lastKey !== 'string' || row.resume.lastTs !== undefined && (typeof row.resume.lastTs !== 'number' || !Number.isFinite(row.resume.lastTs) || row.resume.lastTs < 0)) throw blocked('BILI_DM_STATE_CORRUPT', 'scope.historyIncomplete 续拉位置损坏。')
+      entry.resume = { order: row.resume.order ?? null, lastKey: row.resume.lastKey ?? null, lastTs: Number(row.resume.lastTs ?? 0) || 0 }
+    }
+    out[String(mid)] = entry
   }
   return out
 }
@@ -344,7 +355,7 @@ const parsed = (content) => {
 }
 async function fetchSessions() {
   const u = 'https://api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions?session_type=1&group_id=0&count=50&mobi_app=web'
-  const r = await fetch(u, { headers: H })
+  const r = await fetch(u, { headers: H, signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS) })
   const j = await r.json().catch(() => ({}))
   if (j.code !== 0) return { ok: false, why: `get_sessions code=${j.code} ${j.message ?? ''}` }
   return { ok: true, list: j.data?.session_list ?? [] }
@@ -453,7 +464,7 @@ async function fetchSessionHistory(talker, { beforeOrder = null } = {}) {
   if (beforeOrder && beforeOrder.startsWith('p:')) u.searchParams.set('end_seqno', beforeOrder.slice(2))
   let j
   try {
-    const r = await fetch(u.toString(), { headers: H, signal: AbortSignal.timeout(15_000) })
+    const r = await fetch(u.toString(), { headers: H, signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS) })
     j = await r.json().catch(() => ({}))
   } catch (error) {
     return { ok: false, code: 'BILI_DM_HISTORY_FAILED', error: String(error?.message ?? error), hint: HISTORY_HINT }
@@ -501,7 +512,9 @@ async function discoverSession(session, scope, scopeName, { emitFirst = true } =
   const lastOrder = orderOfWire(last)
   const lastTs = Number(last.timestamp ?? 0) || 0
   const boundary = boundaryOf(scope, talker, scopeName)
-  const retrying = Boolean(scope.historyIncomplete?.[talker])
+  const gap = scope.historyIncomplete?.[talker]
+  const retrying = Boolean(gap)
+  const resumeOrder = retrying ? gap.resume?.order ?? null : null
   // 旧边界只有时间戳时按时间推进；新边界有官方编号时按编号身份判断，避免同秒漏信。
   const lastChanged = boundary
     ? (boundary.lastKey && lastKey ? boundary.lastKey !== lastKey : Number(boundary.lastTs ?? 0) < lastTs)
@@ -531,7 +544,7 @@ async function discoverSession(session, scope, scopeName, { emitFirst = true } =
     }
   }
 
-  let page = await fetchSessionHistory(talker)
+  let page = await fetchSessionHistory(talker, resumeOrder ? { beforeOrder: resumeOrder } : {})
   if (!page.ok) {
     // 历史不可用时仍交付会话列表给出的官方末条；不推进既有边界，下一轮继续补历史。
     const item = directItem()
@@ -564,7 +577,11 @@ async function discoverSession(session, scope, scopeName, { emitFirst = true } =
       if (!boundary.order && boundary.lastKey && asc.some((m) => m.msgKey === boundary.lastKey)) { reached = true; break }
       if (!boundary.order && !boundary.lastKey && min.ts <= Number(boundary.lastTs ?? 0)) { reached = true; break }
     }
-    if (!page.hasMore) { reached = true; break }
+    if (!page.hasMore) {
+      // 平台声明到顶却未回退到已完整边界：旧锚点可能已删除，证据不足，保留缺口。
+      incomplete = { code: 'BILI_DM_HISTORY_RANGE_UNPROVEN', error: '会话历史到顶但未到达上一完整边界，区间未证。', hint: HISTORY_HINT }
+      break
+    }
     if (!min?.order) {
       incomplete = { code: 'BILI_DM_HISTORY_PAGINATION_UNSUPPORTED', error: '会话历史缺少平台序号，无法继续向后分页。', hint: HISTORY_HINT }
       break
@@ -585,7 +602,8 @@ async function discoverSession(session, scope, scopeName, { emitFirst = true } =
   for (const m of pages.flat()) if (!byKey.has(m.msgKey)) byKey.set(m.msgKey, m)
   // 历史页没有会话最后一条（接口为空、权限受限或该消息刚被删除）时，用会话列表里
   // 已经官方给出的 last_msg 兜底——它同样是官方原件，不是猜测；仅用于收信，不补历史。
-  if (lastKey && !byKey.has(lastKey) && String(last.sender_uid ?? '') !== SELF) {
+  // 续拉轮只补缺口，会话末尾那条已随首次页面落盘，不再用 last_msg 兜底重复生成。
+  if (!retrying && lastKey && !byKey.has(lastKey) && String(last.sender_uid ?? '') !== SELF) {
     byKey.set(lastKey, { msgKey: lastKey, sender: String(last.sender_uid ?? ''), text: parsed(last.content), ts: lastTs, order: lastOrder })
   }
   const unique = [...byKey.values()]
@@ -648,9 +666,15 @@ async function discoverSession(session, scope, scopeName, { emitFirst = true } =
     unread: Number(session.unread_count ?? 0), isOwner: talker === OWNER,
     msgKey: m.msgKey, order: m.order,
   }))
+  // 续拉位置随缺口落盘：指向最后一个“整页已落盘”的最旧项，下轮从它向旧拉。
+  const resume = !reached ? {
+    order: pageMin?.order ?? boundary?.order ?? null,
+    lastKey: pageMin?.msgKey ?? boundary?.lastKey ?? null,
+    lastTs: Math.max(Number(boundary?.lastTs ?? 0) || 0, pageMin?.ts ?? 0),
+  } : null
   return {
     items, failure: null, incomplete, nextBoundary, talker, boundary, reached,
-    historyIncomplete: incomplete ? { mid: talker, ...incomplete, at: new Date().toISOString() } : null,
+    historyIncomplete: incomplete ? { mid: talker, ...incomplete, at: new Date().toISOString(), resume } : null,
   }
 }
 
@@ -672,7 +696,7 @@ async function replayOnly(scopeName, failure) {
       },
     }
   })
-  if (JSONOUT) return { code: out.hit ? 0 : 3, stdout: JSON.stringify(out) }
+  if (JSONOUT) return { code: out.hit ? 0 : 3, stdoutLines: jsonChunks(out) }
   if (out.hit) {
     return {
       code: 0,
@@ -681,6 +705,29 @@ async function replayOnly(scopeName, failure) {
     }
   }
   return { code: 3, stderr: `✗ [${out.collect.code}] ${out.collect.error} · ${out.collect.hint}` }
+}
+
+/** 把一次采集结果切成完整、可逐行解析的 JSON 批；小结果保持单行原格式。 */
+function jsonChunks(out) {
+  const items = Array.isArray(out.items) ? out.items : []
+  const full = JSON.stringify(out)
+  if (!items.length || (items.length <= OUTPUT_MAX_ITEMS && Buffer.byteLength(full, 'utf8') <= OUTPUT_MAX_BYTES)) return [full]
+  const fits = (chunk, index, total) => Buffer.byteLength(JSON.stringify({
+    ...out, items: chunk, batch: { index, total }, done: index === total - 1,
+  }), 'utf8') <= OUTPUT_MAX_BYTES
+  const batches = []
+  let batch = []
+  for (const item of items) {
+    const next = [...batch, item]
+    if (batch.length && (batch.length >= OUTPUT_MAX_ITEMS || !fits(next, batches.length, batches.length + 1))) {
+      batches.push(batch); batch = []
+    }
+    batch.push(item)
+  }
+  if (batch.length) batches.push(batch)
+  return batches.map((chunk, index) => JSON.stringify({
+    ...out, items: chunk, batch: { index, total: batches.length }, done: index === batches.length - 1,
+  }))
 }
 
 async function pollCommand() {
@@ -731,11 +778,12 @@ async function pollCommand() {
     for (const session of list) {
       const result = await discoverSession(session, scope, scopeName, { emitFirst: true })
       if (result.failure) failures.push(result.failure)
-      if (result.historyIncomplete && scope.historyIncomplete) scope.historyIncomplete[result.historyIncomplete.mid] = {
-        code: result.historyIncomplete.code, error: result.historyIncomplete.error, hint: result.historyIncomplete.hint, at: result.historyIncomplete.at,
+      if (result.historyIncomplete && scope.historyIncomplete) {
+        const { mid, code, error, hint, at, resume } = result.historyIncomplete
+        scope.historyIncomplete[mid] = { code, error, hint, at, ...(resume ? { resume } : {}) }
       }
-      if (result.nextBoundary && result.talker) scope.collect[result.talker] = result.nextBoundary
-      // 只有“完整到达边界且没有未补齐说明”才清除历史缺口；缺编号/页数上限要保留重试入口。
+      // 完整边界只在整段区间补齐后前移；失败页只留缺口与续拉位置，不推进边界。
+      if (result.reached && result.nextBoundary && result.talker) scope.collect[result.talker] = result.nextBoundary
       if (result.reached && result.talker && !result.historyIncomplete) delete scope.historyIncomplete?.[result.talker]
       if (result.items?.length) discovered.push(...result.items)
     }
@@ -775,7 +823,7 @@ async function pollCommand() {
   })
 
   const degraded = out.collect?.ok === false
-  if (JSONOUT) return { code: out.hit ? 0 : (degraded ? 3 : 1), stdout: JSON.stringify(out) }
+  if (JSONOUT) return { code: out.hit ? 0 : (degraded ? 3 : 1), stdoutLines: jsonChunks(out) }
   if (out.hit) {
     const text = out.items.map((it) => `DM_HIT mid=${it.mid} ts=${it.ts} requestId=${it.requestId}`).join('\n')
     return {
@@ -803,6 +851,10 @@ catch (error) {
   console.error(`✗ [${envelope.code}] ${envelope.error} · ${envelope.hint}`)
   process.exit(code)
 }
-if (result?.stdout) console.log(result.stdout)
-if (result?.stderr) console.error(result.stderr)
-process.exit(result?.code ?? 0)
+// 等每一批真正写完再退出：process.exit() 会截断仍排队的 stdout。
+const stdoutLines = result?.stdoutLines ?? (result?.stdout ? [result.stdout] : [])
+for (const line of stdoutLines) {
+  if (!process.stdout.write(line + '\n')) await new Promise((resolve) => process.stdout.once('drain', resolve))
+}
+if (result?.stderr) process.stderr.write(result.stderr + '\n')
+process.exitCode = result?.code ?? 0

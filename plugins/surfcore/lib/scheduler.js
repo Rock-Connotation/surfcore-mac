@@ -435,18 +435,30 @@ export function startScheduler(ctx, opts) {
     trackChild(child)
   })
 
-  /** 解析 CLI 的最后一行 JSON；非 0 退出或坏 JSON 返回结构化失败，不吞错误。 */
+  /** 解析 CLI 的每一行 JSON 并归并 items；任一行坏掉或子进程失败都结构化报错，不吞错误。 */
   async function runBiliJson(args, signal) {
     const r = await runBili(args, { signal })
-    const line = String(r.out ?? '').trim().split('\n').pop() ?? ''
-    let j = null
-    try { j = JSON.parse(line) } catch { j = null }
-    if (!j || typeof j !== 'object') {
+    const lines = String(r.out ?? '').split('\n').map((s) => s.trim()).filter(Boolean)
+    const parsed = []
+    for (const line of lines) {
+      let j = null
+      try { j = JSON.parse(line) } catch { j = null }
+      if (!j || typeof j !== 'object' || Array.isArray(j)) {
+        return { ok: false, code: r.ok ? 'BILI_DM_BAD_RESPONSE' : (r.code || 'BILI_COMMAND_FAILED'),
+          error: r.ok ? 'dm-await 某批输出不是有效 JSON。' : (r.error || 'dm-await 执行失败。'),
+          hint: r.hint || '检查本角色私信状态与 CLI 输出，不要重置游标。', raw: r }
+      }
+      parsed.push(j)
+    }
+    if (!parsed.length) {
       return { ok: false, code: r.ok ? 'BILI_DM_BAD_RESPONSE' : (r.code || 'BILI_COMMAND_FAILED'),
-        error: r.ok ? 'dm-await 未返回有效 JSON。' : (r.error || 'dm-await 执行失败。'),
+        error: r.ok ? 'dm-await 未返回任何 JSON 批。' : (r.error || 'dm-await 执行失败。'),
         hint: r.hint || '检查本角色私信状态与 CLI 输出，不要重置游标。', raw: r }
     }
-    return { ...j, ok: j.ok !== false, rawOk: r.ok }
+    if (parsed.length === 1) return { ...parsed[0], ok: parsed[0].ok !== false, rawOk: r.ok }
+    const merged = { ...parsed[0], ok: parsed.every((j) => j.ok !== false), rawOk: r.ok,
+      items: parsed.flatMap((j) => (Array.isArray(j.items) ? j.items : [])) }
+    return merged
   }
 
   /**
