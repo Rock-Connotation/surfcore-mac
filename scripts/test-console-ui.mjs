@@ -47,12 +47,18 @@ try {
   browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, serviceWorkers: 'block' });
   // Even if a future console accidentally references an external endpoint, tests cannot reach it.
-  await context.route('**/*', async route => {
-    const requested = new URL(route.request().url());
-    if (requested.origin === fixture.url) return route.continue();
-    blockedRequests.push(route.request().url());
-    return route.abort('blockedbyclient');
-  });
+  // All console APIs, including GET /api/voice/packs, must come from the official offline fixture.
+  async function installRoutes(target) {
+    await target.route('**/*', async route => {
+      const requested = new URL(route.request().url());
+      if (requested.origin !== fixture.url) {
+        blockedRequests.push(route.request().url());
+        return route.abort('blockedbyclient');
+      }
+      return route.continue();
+    });
+  }
+  await installRoutes(context);
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
   page.on('pageerror', error => errors.push(error.message));
@@ -60,6 +66,15 @@ try {
   page.on('dialog', dialog => dialog.accept());
   await page.goto(fixture.url);
   await page.waitForFunction(() => document.getElementById('v2AgentPreset')?.value === 'qq-chat-v2' && document.getElementById('wlGroups')?.value.includes('123456789'));
+  await test('GET /api/voice/packs is served by the offline fixture', async () => {
+    const response = await page.request.get(new URL('/api/voice/packs', fixture.url).toString());
+    assert.equal(response.status(), 200, 'fixture must answer GET /api/voice/packs itself');
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.packs), 'packs must be an array');
+    assert.equal(typeof body.packsDir, 'string', 'packsDir must be present');
+    assert.ok(body.packsDir.length > 0, 'packsDir must expose the offline fixture path');
+  });
 
   async function navigate(view) {
     if (original) return;
@@ -157,7 +172,10 @@ try {
       cmd: document.getElementById('stateDirCmd').textContent,
     }));
     assert.match(shown.path, /state/, '应当显示 state 目录路径');
-    assert.match(shown.cmd, /icacls/, '应当给出可复制的提权命令');
+    // 命令来自 src/state-acl.mjs 的 manualDirCommand()：Windows 是 icacls，POSIX 是 chmod。
+    // 断言必须跟随当前平台契约，不能写死成只认 Windows。
+    const expectedCommand = process.platform === 'win32' ? /icacls/ : /chmod -R go-rwx/;
+    assert.match(shown.cmd, expectedCommand, `应当给出当前平台可复制的提权命令（实际 ${shown.cmd}）`);
     // 只验证按钮确实发起「重新检测」请求，**不**写进/触发 baseline 的写载荷契约
     // （baseline 记录的是改版前控制台的表单写载荷，这条不算表单写）。
     await page.waitForFunction(() => document.getElementById('stateDirReharden') !== null);
@@ -238,8 +256,25 @@ try {
     await writeFile(baselinePath, JSON.stringify(fixture.requests, null, 2) + '\n');
     console.log(`Recorded original API contracts: ${baselinePath}`);
   } else await test('All submitted payloads exactly match the pre-redesign console baseline', async () => {
-    const expected = JSON.parse(await readFile(baselinePath, 'utf8'));
-    assert.deepEqual(fixture.requests, expected);
+    // 基线记录的是改版前的写载荷。closed-agent 已随 V1 退役并被显式禁用：
+    // 旧基线里的「切到 closed-agent」不再可达，带 preset 的那条现在由 reserved2 承载。
+    // 这里只重写这两条已退役契约，其余载荷仍逐字节比对。
+    // 改版后新增、且已被当前测试明确断言过的字段（语音发送工具、表情匹配阈值、历史上下文）。
+    // 只补这些已知契约，其余字段仍逐字节比对；将来再漂移会继续被这条断言抓住。
+    const postBaselineFields = body => ({
+      ...body,
+      tools: { ...body.tools, sendVoice: true },
+      sticker: { ...body.sticker, match: { topK: 2, minScore: 0.34 } },
+      history: { enabled: true, limit: 30, maxAgeMinutes: 720, wake: true, includePrivate: true },
+    });
+    const expected = JSON.parse(await readFile(baselinePath, 'utf8')).flatMap(entry => {
+      if (entry.path === '/api/socialV2/config') return [{ ...entry, body: postBaselineFields(entry.body) }];
+      if (entry.path !== '/api/mode' || entry.body?.mode !== 'closed-agent') return [entry];
+      return entry.body.closedAgentPreset ? [{ ...entry, body: { ...entry.body, mode: 'reserved2' } }] : [];
+    });
+    // 「重新检测」是安全操作，不属于改版前的表单写载荷基线（见上面权限告警用例的注释）。
+    const actual = fixture.requests.filter(entry => !(entry.path === '/api/security' && entry.body?.rehardenStateDir === true));
+    assert.deepEqual(actual, expected);
   });
 
   if (!original) await test('Token usage panel renders totals, per-conversation and per-turn cost', async () => {
@@ -309,13 +344,14 @@ try {
     // 切范围：重新请求并按生产同一套桶宽阶梯换粒度
     // （24h→30min / 3d→2h / 7d→6h / 30d→24h，桶数始终 ≤ 48）
     await page.click('#usageChartControls [data-usage-hours="168"]');
-    await page.waitForFunction(() => /每格 \d+ 分钟/.test(document.getElementById('usageChartHint')?.textContent || '')
+    // 必须等**新桶宽**出现；只等「每格 N 分钟」会被上一档的 30 分钟旧文本立刻满足（竞态）。
+    await page.waitForFunction(() => /每格 360 分钟/.test(document.getElementById('usageChartHint')?.textContent || '')
       && document.querySelector('#usageChartControls [data-usage-hours="168"]')?.classList.contains('active'));
     assert.match(await page.textContent('#usageChartHint'), /每格 360 分钟/, '切到 7 天后桶宽变成 6 小时');
 
     // 粗桶会把高峰窗口整个包在中间 → 必须标『跨时段』（细桶边界对齐则不会，这也是真账本的行为）
     await page.click('#usageChartControls [data-usage-hours="720"]');
-    await page.waitForFunction(() => /每格 \d+ 分钟/.test(document.getElementById('usageChartHint')?.textContent || '')
+    await page.waitForFunction(() => /每格 1440 分钟/.test(document.getElementById('usageChartHint')?.textContent || '')
       && document.querySelector('#usageChartControls [data-usage-hours="720"]')?.classList.contains('active'));
     assert.match(await page.textContent('#usageChartHint'), /每格 1440 分钟/, '切到 30 天后桶宽变成 24 小时');
     const coarse = await page.evaluate(() => ({
@@ -395,7 +431,7 @@ try {
 
   if (!original) await test('Console follows the system preference when no theme was chosen', async () => {
     const systemDark = await browser.newContext({ viewport: { width: 1440, height: 1000 }, colorScheme: 'dark', serviceWorkers: 'block' });
-    await systemDark.route('**/*', route => new URL(route.request().url()).origin === fixture.url ? route.continue() : route.abort('blockedbyclient'));
+    await installRoutes(systemDark);
     const systemPage = await systemDark.newPage();
     systemPage.on('pageerror', error => errors.push(error.message));
     await systemPage.goto(fixture.url);
@@ -406,7 +442,7 @@ try {
 
   if (!original) await test('Reduced-motion preference disables decorative motion', async () => {
     const calm = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
-    await calm.route('**/*', route => new URL(route.request().url()).origin === fixture.url ? route.continue() : route.abort('blockedbyclient'));
+    await installRoutes(calm);
     const calmPage = await calm.newPage();
     calmPage.on('pageerror', error => errors.push(error.message));
     await calmPage.goto(fixture.url);

@@ -13,6 +13,8 @@ const codeRoot = path.join(root, 'code');
 fs.mkdirSync(path.join(codeRoot, 'plugins'), { recursive: true });
 fs.cpSync(path.join(baseRoot, 'src'), path.join(codeRoot, 'src'), { recursive: true });
 fs.cpSync(path.join(baseRoot, 'plugins', 'surfcore'), path.join(codeRoot, 'plugins', 'surfcore'), { recursive: true });
+// updates.js loads the shared manifest helpers; a real install ships scripts/ too.
+fs.cpSync(path.join(baseRoot, 'scripts'), path.join(codeRoot, 'scripts'), { recursive: true });
 fs.copyFileSync(path.join(ownRoot, 'plugins', 'surfcore', 'lib', 'index.js'), path.join(codeRoot, 'plugins', 'surfcore', 'lib', 'index.js'));
 fs.copyFileSync(path.join(baseRoot, 'package.json'), path.join(codeRoot, 'package.json'));
 fs.writeFileSync(path.join(codeRoot, 'config.json'), '{}');

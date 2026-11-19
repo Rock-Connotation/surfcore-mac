@@ -480,6 +480,11 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             limits: { maxSeconds: 300, maxBytes: 20971520, maxPerMinute: 2, maxPerHour: 10 },
             hint: '用 qq_send_voice 传 name 即可把其中一个当语音发出去',
           });
+          case '/api/voice/packs': return json({
+            ok: true,
+            packsDir: 'D:\\demo\\qq-bridge\\voice-packs',
+            packs: [],
+          });
           case '/api/slang': return json({ ok: true, entries: state.slang, config: state.slangConfig });
           // state/ 的 ACL 收紧结果：用离线示例值演示「未收紧」的告警条（Windows 上未提权时的真实情况）
           // 命令本身必须来自 `src/state-acl.mjs`，不能在这里另抄一份：这里曾经抄的是

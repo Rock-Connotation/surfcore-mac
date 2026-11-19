@@ -24,17 +24,46 @@ const OWNER = '22000';
 const SELF = '9';
 const MSG_KEY = '99001';
 const SESSIONS_FILE = path.join(testHome, 'sessions.json');
+const HISTORY_FILE = path.join(testHome, 'history.json');
 const SHIM = path.join(testHome, 'fetch-shim.mjs');
+// 历史接口按“最新一页 + end_seqno 向旧翻页”模拟；direction/overlap 用于验证正序/倒序/相邻页重叠。
 fs.writeFileSync(SHIM, [
   "import fs from 'node:fs';",
-  "const file = process.env.SURFCORE_DM_TEST_SESSIONS;",
+  "const SESSIONS = process.env.SURFCORE_DM_TEST_SESSIONS;",
+  "const HISTORY = process.env.SURFCORE_DM_TEST_HISTORY;",
+  "const OFFLINE = process.env.SURFCORE_DM_TEST_OFFLINE === '1';",
+  "const big = (v) => { try { return BigInt(String(v)); } catch { return null; } };",
   "globalThis.fetch = async (url) => {",
+  "  if (OFFLINE) throw new Error('SYNTHETIC_OFFLINE');",
   "  const u = new URL(String(url));",
   "  if (u.hostname !== 'api.vc.bilibili.com') throw new Error('UNEXPECTED_NETWORK');",
-  "  let list = []; try { list = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}",
+  "  if (/fetch_session_msgs|get_session_msgs/.test(u.pathname)) {",
+  "    let conf = {}; try { conf = JSON.parse(fs.readFileSync(HISTORY, 'utf8')); } catch {}",
+  "    const talker = String(u.searchParams.get('talker_id') ?? '');",
+  "    const peer = conf[talker] ?? conf['*'] ?? { messages: [] };",
+  "    const pageSize = Number(peer.pageSize ?? conf.pageSize ?? 20) || 20;",
+  "    const end = u.searchParams.get('end_seqno');",
+  "    let msgs = Array.isArray(peer.messages) ? peer.messages.slice() : [];",
+  "    msgs.sort((a, b) => { const x = big(a.msg_seqno), y = big(b.msg_seqno); return x === y ? 0 : (x < y ? -1 : 1); });",
+  "    if (end) { const e = big(end); msgs = msgs.filter((m) => { const v = big(m.msg_seqno); return v !== null && e !== null && v < e; }); }",
+  "    if (end && peer.failPage2) return { ok: true, status: 200, json: async () => ({ code: -400, message: 'SYNTHETIC_PAGE2_FAIL', data: {} }) };",
+  "    const start = Math.max(0, msgs.length - pageSize);",
+  "    let page = msgs.slice(start);",
+  "    if (peer.overlap && start > 0) page = [msgs[start - 1], ...page];",
+  "    const direction = peer.direction ?? conf.direction ?? 'desc';",
+  "    if (direction !== 'asc') page = page.reverse();",
+  "    return { ok: true, status: 200, json: async () => ({ code: 0, data: { messages: page, has_more: start > 0 ? 1 : 0 } }) };",
+  "  }",
+  "  let list = []; try { list = JSON.parse(fs.readFileSync(SESSIONS, 'utf8')); } catch {}",
   "  return { ok: true, status: 200, json: async () => ({ code: 0, data: { session_list: list } }) };",
   "};",
 ].join('\n') + '\n');
+const writeHistory = (o) => fs.writeFileSync(HISTORY_FILE, JSON.stringify(o));
+const historyMsg = (seq, o = {}) => ({
+  msg_key: String(o.msgKey ?? (30000 + seq)), msg_seqno: String(seq),
+  timestamp: o.ts ?? TS, sender_uid: Number(o.sender ?? OWNER), receiver_id: Number(SELF),
+  msg_type: 1, content: JSON.stringify({ content: o.text ?? `m${seq}` }),
+});
 
 fs.mkdirSync(path.join(testHome, 'surfcore', 'bili'), { recursive: true });
 const cfgPath = path.join(testHome, 'surfcore', 'bili.config.json');
@@ -59,6 +88,7 @@ const mkSession = (o = {}) => ({
     timestamp: o.ts ?? TS,
     content: JSON.stringify({ content: o.text ?? 'SYNTHETIC_INBOUND' }),
     ...(o.msgKey === undefined ? {} : { msg_key: o.msgKey }),
+    ...(o.seq === undefined ? {} : { msg_seqno: String(o.seq) }),
   },
 });
 
@@ -76,6 +106,7 @@ const env = {
   DSH_HOME: testHome,
   SURFCORE_BILI_CONFIG: cfgPath,
   SURFCORE_DM_TEST_SESSIONS: SESSIONS_FILE,
+  SURFCORE_DM_TEST_HISTORY: HISTORY_FILE,
   NODE_OPTIONS: '--import ' + SHIM,
   DSH_NODE: process.execPath,
 };
@@ -92,6 +123,31 @@ const scheduler = startScheduler(ctx, {
 
 const tick = async () => { enqueues.length = 0; await scheduler.dmTick(); return [...enqueues]; };
 const results = [];
+
+// 批次 B 状态助手：采集边界/ACK 进度/本地 seq 全部显式写入，避免测试互相污染。
+const scopeState = (o = {}) => ({ cursor: 0, seen: {}, pending: {}, receipts: {}, collect: {}, ackThrough: {}, seq: 0, historyIncomplete: {}, initialized: true, ...o });
+const resetState = (owner = {}, all = {}) => {
+  hostReceipts.clear();
+  enqueues.length = 0;
+  writeState({ version: 2, scopes: { owner: scopeState(owner), all: scopeState(all) } });
+};
+const pendingRow = (id, { msgKey, ts = TS, seq = 1, text = 'LOCAL_ORIGINAL', scope = 'owner' } = {}) => ({
+  requestId: id, scope, state: 'observed', seq, order: `p:${seq}`,
+  original: { mid: OWNER, name: 'SYNTHETIC_OWNER', msgKey, ts, text, order: `p:${seq}` },
+});
+const registryFile = path.join(testHome, 'surfcore', 'bili-v2-managed-sessions.json');
+function grantReceipt(id, { state = 'accepted', sessionId = `session-${id}` } = {}) {
+  const receipt = { requestId: id, durable: true, state, source: 'bili-v2-registry', jobs: [{ requestId: `internal-${id}`, sessionId, jobId: `job-${id}` }] };
+  let registry = { version: 1, sessions: {} };
+  try { registry = JSON.parse(fs.readFileSync(registryFile, 'utf8')); } catch {}
+  registry.sessions[sessionId] = { ...receipt.jobs[0], originalRequestId: id, phase: state === 'terminal' ? 'terminal' : 'accepted', groupCount: 1, receipt };
+  fs.writeFileSync(registryFile, JSON.stringify(registry, null, 2));
+  return receipt;
+}
+// 变体：语义等价但字节/坐标不同的伪造回执（用于“不匹配必须拒绝”）。
+function durableReceiptForHost(job) {
+  return { requestId: job.requestId, durable: true, state: 'accepted', source: 'bili-v2-registry', jobs: [{ requestId: `internal-${job.requestId}`, sessionId: `session-${job.requestId}`, jobId: `job-${job.requestId}` }] };
+}
 const test = async (name, fn) => {
   try { await fn(); results.push({ name, ok: true }); console.log('PASS ' + name); }
   catch (error) { results.push({ name, ok: false, error: String(error?.message ?? error) }); console.log('FAIL ' + name + ': ' + String(error?.message ?? error)); }
@@ -207,6 +263,271 @@ try {
     assert.equal(run.status, 0, run.stdout + run.stderr);
     assert.match(run.stdout, /PASS durable runtime contract/);
     console.log(run.stdout.trim());
+  });
+
+  // ── 批次 B / 02：同会话同秒、跨轮询中间消息 ────────────────────────────────
+  await test('02 同会话同秒 A、B 均进入 Host（第一条确认后第二条不丢）', async () => {
+    resetState();
+    hostReply = async (job) => ({ ok: true, accepted: true, receipt: grantReceipt(job.requestId) });
+    writeHistory({ [OWNER]: { pageSize: 50, messages: [historyMsg(1, { msgKey: '2001', text: 'A', ts: TS }), historyMsg(2, { msgKey: '2002', text: 'B', ts: TS })] } });
+    sessions([mkSession({ msgKey: '2001', ts: TS, text: 'A' })]);
+    const first = await tick();
+    assert.equal(first.length, 1, '第一条 A 必须进入 Host');
+    assert.equal(first[0].input.items[0].text, 'A');
+    sessions([mkSession({ msgKey: '2002', ts: TS, text: 'B' })]);
+    const second = await tick();
+    assert.equal(second.length, 1, '同秒、不同平台编号的 B 必须进入 Host');
+    assert.equal(second[0].input.items[0].text, 'B');
+    const st = readState();
+    assert.equal(Object.keys(st.pending).length, 0, '两条都已取得回执并 ACK');
+  });
+
+  await test('02 两轮之间的同秒中间消息沿历史补齐（A/B/C 一次收齐）', async () => {
+    resetState({ collect: { [OWNER]: { lastKey: '2000', lastTs: TS, order: 'p:1', updatedAt: null } }, seen: { [OWNER]: TS } });
+    hostReply = async (job) => ({ ok: true, accepted: true, receipt: grantReceipt(job.requestId) });
+    writeHistory({ [OWNER]: { pageSize: 50, messages: [
+      historyMsg(1, { msgKey: '2000', text: 'PREVIOUS', ts: TS }),
+      historyMsg(2, { msgKey: '2001', text: 'A', ts: TS }),
+      historyMsg(3, { msgKey: '2002', text: 'B', ts: TS }),
+      historyMsg(4, { msgKey: '2003', text: 'C', ts: TS }),
+    ] } });
+    sessions([mkSession({ msgKey: '2003', ts: TS, text: 'C' })]);
+    const got = await tick();
+    assert.deepEqual(got.map((job) => job.input.items[0].text), ['A', 'B', 'C'], '同秒中间消息必须全部补齐');
+  });
+
+  // ── 批次 B / 02：正序、倒序、相邻页重叠、跨页 N 条 ─────────────────────────
+  for (const variant of [
+    { name: '倒序+跨页', direction: 'desc', overlap: false },
+    { name: '正序+跨页', direction: 'asc', overlap: false },
+    { name: '相邻页重叠', direction: 'desc', overlap: true },
+  ]) {
+    await test(`02 采集 ${variant.name} 仍收齐 N 条`, async () => {
+      resetState({ collect: { [OWNER]: { lastKey: '30001', lastTs: TS, order: 'p:1', updatedAt: null } }, seen: { [OWNER]: TS } });
+      const messages = []
+      for (let i = 1; i <= 6; i += 1) messages.push(historyMsg(i, { msgKey: String(30000 + i), text: `m${i}`, ts: TS }))
+      writeHistory({ [OWNER]: { messages, pageSize: 2, direction: variant.direction, overlap: variant.overlap } });
+      sessions([mkSession({ msgKey: '30006', ts: TS, text: 'm6' })]);
+      const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' });
+      assert.equal(run.status, 0, run.stderr + run.stdout);
+      const out = JSON.parse(run.stdout);
+      assert.deepEqual(out.items.map((it) => it.text), ['m2', 'm3', 'm4', 'm5', 'm6'], `${variant.name}: 跨页消息必须按平台序号收齐`);
+      assert.equal(new Set(out.items.map((it) => it.requestId)).size, out.items.length, '相邻页重叠不得产生重复身份');
+    });
+  }
+
+  // ── 返工阶段 1：分页中断恢复——完整边界不跟着失败页移动 ────────────────────
+  await test('R2-02 分页恢复：首轮入 4/5 但完整边界仍 1，恢复补齐 2/3 且 4/5 ID 不变', async () => {
+    const msgs = []
+    for (let i = 1; i <= 5; i += 1) msgs.push(historyMsg(i, { msgKey: String(1000 + i), text: `m${i}`, ts: TS }))
+    resetState({ collect: { [OWNER]: { lastKey: '1001', lastTs: TS, order: 'p:1', updatedAt: null } }, seen: { [OWNER]: TS } })
+    hostReply = async () => ({ ok: true })   // 不 ACK，pending 保留用于核对 ID
+    writeHistory({ [OWNER]: { messages: msgs, pageSize: 2, failPage2: true } })
+    sessions([mkSession({ msgKey: '1005', seq: 5, ts: TS, text: 'm5' })])
+    const first = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' })
+    assert.equal(first.status, 0, first.stderr + first.stdout)
+    const out1 = JSON.parse(first.stdout)
+    assert.deepEqual(out1.items.map((it) => it.text), ['m4', 'm5'], '首轮可入 4、5')
+    const id4 = out1.items.find((it) => it.text === 'm4').requestId
+    const id5 = out1.items.find((it) => it.text === 'm5').requestId
+    let st = readState()
+    assert.equal(st.collect[OWNER].order, 'p:1', '完整边界在补齐前仍须停在 1')
+    const gap = st.historyIncomplete?.[OWNER]
+    assert.ok(gap?.code && gap?.error && gap?.hint, '缺口必须带 code/error/hint')
+
+    writeHistory({ [OWNER]: { messages: msgs, pageSize: 2, failPage2: false } })
+    const second = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' })
+    assert.equal(second.status, 0, second.stderr + second.stdout)
+    const out2 = JSON.parse(second.stdout)
+    const byText = Object.fromEntries(out2.items.map((it) => [it.text, it]))
+    assert.ok(byText.m2 && byText.m3, '恢复轮必须新增 2、3')
+    assert.equal(byText.m4?.requestId, id4, '4 必须保持原 requestId')
+    assert.equal(byText.m5?.requestId, id5, '5 必须保持原 requestId')
+    st = readState()
+    assert.equal(st.collect[OWNER].order, 'p:5', '2–5 全部落盘后完整边界才到 5')
+    assert.equal(st.historyIncomplete?.[OWNER], undefined, '补齐后缺口应清除')
+
+    const third = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' })
+    assert.equal(third.status, 0, third.stderr + third.stdout)
+    const out3 = JSON.parse(third.stdout)
+    assert.equal(new Set(out3.items.map((it) => it.requestId)).size, out3.items.length, '第三轮不得重复新增')
+    assert.equal(readState().collect[OWNER].order, 'p:5', '第三轮完整边界不后退')
+  })
+
+  // ── 批次 B / 07：远端离线时仍交付本地 pending ──────────────────────────────
+  await test('07 CLI：远端离线且 local pending=1 时仍输出原件并报告采集失败', async () => {
+    resetState({ pending: { 'local-offline': pendingRow('local-offline', { msgKey: '40001', seq: 1, text: 'LOCAL_ORIGINAL' }) } });
+    sessions([]);
+    const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env: { ...env, SURFCORE_DM_TEST_OFFLINE: '1' }, encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    const out = JSON.parse(run.stdout);
+    assert.equal(out.collect.ok, false, '采集失败必须结构化表达');
+    assert.ok(out.collect.code && out.collect.error && out.collect.hint, '失败必须带 code/error/hint');
+    assert.equal(out.localPending, 1);
+    assert.deepEqual(out.items.map((it) => it.text), ['LOCAL_ORIGINAL'], '本地原件不得因远端失败被丢弃');
+  });
+
+  await test('07 调度器：远端离线不阻断本地 pending 交付，并暴露采集失败', async () => {
+    resetState({ pending: { 'local-scheduler': pendingRow('local-scheduler', { msgKey: '40002', seq: 1, text: 'LOCAL_SCHED' }) } });
+    sessions([]);
+    hostReply = async (job) => ({ ok: true, accepted: true, receipt: grantReceipt(job.requestId) });
+    process.env.SURFCORE_DM_TEST_OFFLINE = '1';
+    let got
+    try { got = await tick() } finally { delete process.env.SURFCORE_DM_TEST_OFFLINE }
+    assert.equal(got.length, 1, '离线时调度器仍必须交付已持久化 pending');
+    assert.equal(got[0].input.items[0].text, 'LOCAL_SCHED');
+    const failure = scheduler.status().dmCollectFailure;
+    assert.ok(failure && failure.code === 'BILI_DM_COLLECT_FAILED' && failure.error && failure.hint, '采集失败必须可见且可行动');
+    // 远端恢复后失败状态清除，且不再重复交付已 ACK 的本地原件。
+    hostReply = async () => ({ ok: true });
+    const recovered = await tick();
+    assert.equal(recovered.length, 0, '已接管项不得产生第二次业务效果');
+    assert.equal(scheduler.status().dmCollectFailure, null);
+  });
+
+  // ── 返工阶段 1：大队列分批 / 大序号 / 区间未证 ───────────────────────────
+  await test('R2-07 大队列：100 条本地 pending 离线分批输出，调度器跨两轮稳定遍历', async () => {
+    const pending = {}
+    for (let i = 1; i <= 100; i += 1) pending[`bulk-${i}`] = pendingRow(`bulk-${i}`, { msgKey: String(50000 + i), seq: i, text: `bulk-${i}` })
+    resetState({ pending })
+    sessions([])
+    const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'],
+      { env: { ...env, SURFCORE_DM_TEST_OFFLINE: '1' }, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
+    assert.equal(run.status, 0, run.stderr.slice(0, 500))
+    const lines = run.stdout.split('\n').filter(Boolean)
+    assert.ok(lines.length > 1, `100 条须分批输出，实际 ${lines.length} 行；bytes=${Buffer.byteLength(run.stdout)}`)
+    const items = []
+    for (const line of lines) {
+      assert.ok(Buffer.byteLength(line, 'utf8') <= 20 * 1024, `单行不得超过分批上限：${Buffer.byteLength(line, 'utf8')}`)
+      const j = JSON.parse(line)
+      assert.equal(j.ok, true, '每批都必须可独立解析且成功')
+      items.push(...j.items)
+    }
+    assert.equal(items.length, 100, '批内条目总数必须是 100')
+    assert.equal(new Set(items.map((it) => it.requestId)).size, 100, '不得因分批产生重复身份')
+    assert.ok(lines.some((line) => JSON.parse(line).batch?.total === lines.length), '须带批次元信息')
+    assert.equal(JSON.parse(lines.at(-1)).done, true, '最后一批须标记 done')
+
+    hostReply = async () => ({ ok: true })   // 无回执，pending 保留用于第二轮重放
+    process.env.SURFCORE_DM_TEST_OFFLINE = '1'
+    let first, second
+    try { first = await tick(); second = await tick() } finally { delete process.env.SURFCORE_DM_TEST_OFFLINE }
+    const bulkFirst = first.filter((j) => String(j.requestId).startsWith('bulk-'))
+    const bulkSecond = second.filter((j) => String(j.requestId).startsWith('bulk-'))
+    assert.equal(bulkFirst.length, 100, `首轮须交付 100 条 bulk 原件，实际 ${bulkFirst.length}`)
+    assert.equal(bulkSecond.length, 100, `第二轮仍须读完全部批，实际 ${bulkSecond.length}`)
+    assert.deepEqual(new Set(bulkSecond.map((j) => j.requestId)), new Set(bulkFirst.map((j) => j.requestId)), '两轮身份集合须一致')
+  })
+
+  await test('R2-02 大序号：19 位 msg_seqno 原样保留并按数值排序', async () => {
+    const seqs = ['9223372036854775800', '9223372036854775801', '9223372036854775802']
+    resetState({ collect: { [OWNER]: { lastKey: '60001', lastTs: TS, order: `p:${seqs[0]}` } }, seen: { [OWNER]: TS } })
+    writeHistory({ [OWNER]: { messages: seqs.map((seq, i) => historyMsg(seq, { msgKey: String(60001 + i), text: `m${i + 1}`, ts: TS + i })), pageSize: 20 } })
+    sessions([mkSession({ msgKey: '60003', seq: seqs[2], ts: TS + 2, text: 'm3' })])
+    const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' })
+    assert.equal(run.status, 0, run.stderr + run.stdout.slice(0, 300))
+    const out = JSON.parse(run.stdout)
+    assert.deepEqual(out.items.map((it) => it.text), ['m2', 'm3'], `大序号须按数值比较，不得字典序截断：${JSON.stringify(out.items.map((it) => it.text))}`)
+    const orders = Object.values(readState().pending).map((row) => row.order)
+    for (const seq of seqs.slice(1)) assert.ok(orders.some((order) => String(order).endsWith(seq)), `序号 ${seq} 须原样保留`)
+  })
+
+  await test('R2-02 has_more=0 但上一边界未覆盖时记录区间未证而非跳过', async () => {
+    const msgs = [1, 2, 3].map((i) => historyMsg(i, { msgKey: String(70000 + i), text: `m${i}`, ts: TS }))
+    resetState({ collect: { [OWNER]: { lastKey: '69999', lastTs: TS, order: 'p:0' } }, seen: { [OWNER]: TS } })
+    writeHistory({ [OWNER]: { messages: msgs, pageSize: 20 } })
+    sessions([mkSession({ msgKey: '70003', seq: 3, ts: TS, text: 'm3' })])
+    const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' })
+    assert.equal(run.status, 0, run.stderr + run.stdout.slice(0, 300))
+    const out = JSON.parse(run.stdout)
+    assert.ok(out.items.some((it) => it.text === 'm2'), '到顶消息仍须在上一边界之后补齐')
+    const gap = readState().historyIncomplete?.[OWNER]
+    assert.equal(gap?.code, 'BILI_DM_HISTORY_RANGE_UNPROVEN', `has_more=0 不等于区间已覆盖：${JSON.stringify(gap)} / items=${JSON.stringify(out.items.map((it)=>it.text))}`)
+    assert.equal(readState().collect[OWNER].order, 'p:0', `区间未证不得推进完整边界：${JSON.stringify(readState().collect[OWNER])}`)
+  })
+
+  // ── 批次 B / 11：保护验证（无回执拒绝、连续推进、作用域独立） ───────────────
+  await test('11 ACK 只沿连续已处理范围推进：前面的未 ACK 项阻断游标', async () => {
+    resetState({
+      seq: 3,
+      pending: {
+        'notice-B': pendingRow('notice-B', { msgKey: '50001', ts: TS, seq: 1, text: 'B' }),
+        'notice-C': pendingRow('notice-C', { msgKey: '50002', ts: TS + 1, seq: 2, text: 'C' }),
+        'notice-D': pendingRow('notice-D', { msgKey: '50003', ts: TS + 2, seq: 3, text: 'D' }),
+      },
+      ackThrough: {},
+    }, { pending: { 'all-only': pendingRow('all-only', { msgKey: '50009', ts: TS + 9, seq: 1, text: 'ALL', scope: 'all' }) }, seq: 1 });
+    const beforeAll = JSON.stringify(JSON.parse(fs.readFileSync(stateFile, 'utf8')).scopes.all);
+    const receiptC = grantReceipt('notice-C');
+    const ackC = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--ack', 'notice-C', '--receipt', JSON.stringify(receiptC), '--json'], { env, encoding: 'utf8' });
+    assert.equal(ackC.status, 0, ackC.stderr + ackC.stdout);
+    let st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(st.scopes.owner.cursor, 0, 'B 未 ACK 时 C 的 ACK 不得推进游标');
+    assert.equal(st.scopes.owner.ackThrough[OWNER], 0, '连续高水位必须停在 B 之前');
+    assert.equal(JSON.stringify(st.scopes.all), beforeAll, 'owner 的 ACK 不得改动 all scope');
+
+    const receiptB = grantReceipt('notice-B');
+    const ackB = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--ack', 'notice-B', '--receipt', JSON.stringify(receiptB), '--json'], { env, encoding: 'utf8' });
+    assert.equal(ackB.status, 0, ackB.stderr + ackB.stdout);
+    st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(st.scopes.owner.ackThrough[OWNER], 2, 'B、C 连续 ACK 后高水位到 2');
+    assert.ok(st.scopes.owner.cursor >= TS, '连续前缀内的数值镜像才可推进');
+
+    const receiptD = grantReceipt('notice-D');
+    const ackD = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--ack', 'notice-D', '--receipt', JSON.stringify(receiptD), '--json'], { env, encoding: 'utf8' });
+    assert.equal(ackD.status, 0, ackD.stderr + ackD.stdout);
+    st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(st.scopes.owner.ackThrough[OWNER], 3);
+    assert.equal(Object.keys(st.scopes.owner.pending).length, 0);
+    // 重启（新进程）后不重复投递已 ACK 项。
+    sessions([]); writeHistory({});
+    const again = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' });
+    assert.equal(JSON.parse(again.stdout).items.length, 0, '重启后已 ACK 项不得再次进入队列');
+  });
+
+  await test('11 --scope 限定 ACK 不消费另一作用域的同一 pending', async () => {
+    const row = (scope) => ({ ...pendingRow('same-id', { msgKey: '50020', seq: 1, text: 'SAME' }), scope });
+    resetState({ pending: { 'same-id': row('owner') }, seq: 1 }, { pending: { 'same-id': row('all') }, seq: 1 });
+    const receipt = grantReceipt('same-id');
+    const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--ack', 'same-id', '--scope', 'all', '--receipt', JSON.stringify(receipt), '--json'], { env, encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr + run.stdout);
+    const st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.ok(st.scopes.owner.pending['same-id'], 'owner 的同一 pending 必须保留');
+    assert.equal(st.scopes.all.pending['same-id'], undefined, 'all 的 pending 已按 scope 消费');
+    assert.equal(st.scopes.owner.cursor, 0, 'owner 游标不得被 all 的 ACK 推进');
+    assert.equal(st.scopes.all.ackThrough[OWNER], 1);
+  });
+
+  await test('11 回执与 Host 原作业不匹配时拒绝 ACK', async () => {
+    resetState({ pending: { 'notice-X': pendingRow('notice-X', { msgKey: '50010', seq: 1, text: 'X' }) }, seq: 1 });
+    const receipt = grantReceipt('notice-X');
+    receipt.jobs[0].jobId = 'tampered-job';
+    const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--ack', 'notice-X', '--receipt', JSON.stringify(receipt), '--json'], { env, encoding: 'utf8' });
+    assert.notEqual(run.status, 0);
+    const out = JSON.parse(run.stdout);
+    assert.equal(out.code, 'BILI_DM_RECEIPT_INVALID');
+    assert.ok(out.error && out.hint);
+    const st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(st.scopes.owner.cursor, 0);
+    assert.ok(st.scopes.owner.pending['notice-X'], '不匹配回执不得消费 pending');
+  });
+
+  await test('11 旧游标迁移后仍可继续收件，两个作用域互不覆盖', async () => {
+    writeState({ version: 2, scopes: {
+      owner: { cursor: 100, seen: { [OWNER]: 100 }, pending: {}, receipts: {}, initialized: true },
+      all: { cursor: 0, seen: {}, pending: {}, receipts: {}, initialized: true },
+    } });
+    writeHistory({ [OWNER]: { pageSize: 50, messages: [historyMsg(1, { msgKey: '60001', ts: 90, text: 'LEGACY_OLD' }), historyMsg(2, { msgKey: '60002', ts: 102, text: 'LEGACY_NEW' })] } });
+    sessions([mkSession({ msgKey: '60002', ts: 102, text: 'LEGACY_NEW' })]);
+    const run = spawnSync(process.execPath, [BILI_MJS, 'dm-await', '--once', '--json'], { env, encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr + run.stdout);
+    const out = JSON.parse(run.stdout);
+    assert.deepEqual(out.items.map((it) => it.text), ['LEGACY_NEW'], '旧 seen 时间戳作为重叠边界，只补其后的消息');
+    const st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(st.scopes.owner.cursor, 100, '旧游标保留');
+    assert.ok(st.scopes.owner.collect[OWNER], '新采集边界已建立');
+    assert.equal(st.scopes.all.cursor, 0, 'all scope 未被 owner 迁移覆盖');
+    assert.equal(Object.keys(st.scopes.all.pending).length, 0);
   });
 
   const failed = results.filter((r) => !r.ok);

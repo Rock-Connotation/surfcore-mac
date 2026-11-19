@@ -1,3 +1,17 @@
+## 2026-11-19 SurfCore 审核修复 A–D（01–12，已合入 dev、未发布）
+
+工作树 `../surfcore-review-fix`，分支 `fix/review-2026-11-19`，基线 `dev@d46612a`，最终提交见 `git log --oneline`（A 两批 `be91df8`/`f88397d`、B `548ef19`、C `6b01e73`、D `5c0ce72`、清单 `17c732c`）。
+
+**已完成**：审查 01–12 全部处置——01 账本 fail-closed 与 QQ 入口可见失败；02/07/11 B 站历史收件、离线 pending 重放、连续 ACK 与 scope 隔离；03/04 QQ 研究接 `safe-fetch`、结论带来源摘录、全失败不发成功报告；05 归档行尾与 Git blob 一致；06 目录校验先证明包内清单；08 记忆库 0600/0700；09 macOS UTF-8 查询；10 控制台 17/21→21/21；12 既有模式回执已核对。
+
+**门禁**（本分支 HEAD 实测）：`test:audit` 208/208、`test:regressions` 17/17、插件 37 scripts、`test:memory-v2` 51 scripts、`test:console-ui` 21/21、`lint:failures` 0、`doc-facts` 0、`release-manifest --verify-ref HEAD` 问题 0、`git archive` 解包 `--verify` 1121/不符 0/缺失 0。
+
+**合并**：已按仓库规则合入 `dev`（`git merge --no-ff fix/review-2026-11-19`，合并提交 `d5378b8`；合并后重生成清单 `25851b2`）。合并后 `test:audit` 208/208、`test:regressions` 17/17、`release-manifest --verify-ref HEAD` 1122/1122 问题 0。
+
+**未验证**：真实 B 站账号历史分页语义、真实网络抓取、Windows 真机 ACL/启停脚本、已发布 tag 下载包（未发版）。**未做**：bump/tag/Release/推送。
+
+**回滚**：`git revert` 本批提交；B 站状态新增字段需先停旧消费者。细节与七步逻辑见 [case](cases/2026-11-19-surfcore-review-a-d.md)。
+
 ## 2026-11-18 本机任务扩展：DSH CUA 桌面操控 + 隔离 Chrome DevTools MCP + 主人私聊自然委派（待实机重启验收）
 
 在保留全部 P0/P1 安全与持久化不变量（`files-only` / `local-task`）基础上，经用户确认 A1/A2/A3 方案后，已完成向 DSH `0.2.2-rc.3` 官方能力全面复用与 QQ 对话打通（详见 [case](cases/2026-11-18-local-task-desktop-cua-chrome.md)）：

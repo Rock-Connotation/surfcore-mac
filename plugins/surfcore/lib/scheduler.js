@@ -406,18 +406,30 @@ export function startScheduler(ctx, opts) {
     trackChild(child)
   })
 
-  /** 解析 CLI 的最后一行 JSON；非 0 退出或坏 JSON 返回结构化失败，不吞错误。 */
+  /** 解析 CLI 的每一行 JSON 并归并 items；任一行坏掉或子进程失败都结构化报错，不吞错误。 */
   async function runBiliJson(args, signal) {
     const r = await runBili(args, { signal })
-    const line = String(r.out ?? '').trim().split('\n').pop() ?? ''
-    let j = null
-    try { j = JSON.parse(line) } catch { j = null }
-    if (!j || typeof j !== 'object') {
+    const lines = String(r.out ?? '').split('\n').map((s) => s.trim()).filter(Boolean)
+    const parsed = []
+    for (const line of lines) {
+      let j = null
+      try { j = JSON.parse(line) } catch { j = null }
+      if (!j || typeof j !== 'object' || Array.isArray(j)) {
+        return { ok: false, code: r.ok ? 'BILI_DM_BAD_RESPONSE' : (r.code || 'BILI_COMMAND_FAILED'),
+          error: r.ok ? 'dm-await 某批输出不是有效 JSON。' : (r.error || 'dm-await 执行失败。'),
+          hint: r.hint || '检查本角色私信状态与 CLI 输出，不要重置游标。', raw: r }
+      }
+      parsed.push(j)
+    }
+    if (!parsed.length) {
       return { ok: false, code: r.ok ? 'BILI_DM_BAD_RESPONSE' : (r.code || 'BILI_COMMAND_FAILED'),
-        error: r.ok ? 'dm-await 未返回有效 JSON。' : (r.error || 'dm-await 执行失败。'),
+        error: r.ok ? 'dm-await 未返回任何 JSON 批。' : (r.error || 'dm-await 执行失败。'),
         hint: r.hint || '检查本角色私信状态与 CLI 输出，不要重置游标。', raw: r }
     }
-    return { ...j, ok: j.ok !== false, rawOk: r.ok }
+    if (parsed.length === 1) return { ...parsed[0], ok: parsed[0].ok !== false, rawOk: r.ok }
+    const merged = { ...parsed[0], ok: parsed.every((j) => j.ok !== false), rawOk: r.ok,
+      items: parsed.flatMap((j) => (Array.isArray(j.items) ? j.items : [])) }
+    return merged
   }
 
   /**
@@ -549,6 +561,8 @@ export function startScheduler(ctx, opts) {
     //   你不说话 = 没有新私信 = 不叫醒 = 零 token ✓（主人设计的低风险互动 ✓）
     let dmBusy = false
     let lastDmAt = 0
+    // 批次 B/07：远端采集失败不能遮住本地 pending 的交付；失败事实单独保留并暴露给状态查询。
+    let lastDmCollectFailure = null
 
     // R2/F03：只有「可查询的持久接管回执」才能推进 ACK；任意 ok:true 不算。
     const durableReceipt = (r, id) => Boolean(r && r.durable === true && ['accepted', 'terminal'].includes(r.state) && r.requestId === id)
@@ -571,8 +585,24 @@ export function startScheduler(ctx, opts) {
       try {
         // 2026-10-20（用户定）：listen.dmScope = 'all' 时**谁找她都叫醒她**（不只主人）
         const any = String(L.dmScope ?? "owner") === "all"
+        // 两个作用域可能持有同一官方消息的 pending；查询/接管/ACK 必须带上本轮作用域。
+        const scopeArg = ["--scope", any ? "all" : "owner"]
         const j = await runBiliJson(["dm-await", "--once", "--json", ...(any ? ["--any"] : [])], sig)
         live(ticket)
+        // 采集失败（会话列表/历史不可用）要看得见；但本地已持久化的 pending 仍必须继续交付。
+        if (j.collect && j.collect.ok === false) {
+          lastDmCollectFailure = {
+            code: j.collect.code || 'BILI_DM_COLLECT_FAILED',
+            error: j.collect.error || 'B站新私信采集失败。',
+            hint: j.collect.hint || '检查网络与 B站 会话接口；本地待处理消息仍会交付，恢复后自动重试。',
+            at: new Date().toISOString(),
+            localPending: Number(j.localPending ?? 0) || 0,
+            historyIncomplete: Array.isArray(j.historyIncomplete) ? j.historyIncomplete : [],
+          }
+          log(`[bili-whale] DM 新消息采集失败 [${lastDmCollectFailure.code}] ${lastDmCollectFailure.error}；本轮交付本地待处理 ${lastDmCollectFailure.localPending} 条`)
+        } else if (j.ok) {
+          lastDmCollectFailure = null
+        }
         if (!j.ok || !j.hit || !Array.isArray(j.items) || !j.items.length) return
         // CLI 已优先重放 pending 的首次不可变原件；逐条按稳定 ID 核对，不新建 ID 重试。
         for (const row of j.items) {
@@ -580,7 +610,7 @@ export function startScheduler(ctx, opts) {
           const id = typeof row?.requestId === 'string' ? row.requestId : ''
           if (!id) continue   // 没有稳定 ID 的项不提交，不猜测坐标
           // ① 只查询同 ID 的当前持久状态与接管回执；未知/已完成都不重新建模。
-          const q = await runBiliJson(["dm-await", "--query", id, "--json"], sig)
+          const q = await runBiliJson(["dm-await", "--query", id, "--json", ...scopeArg], sig)
           live(ticket)
           if (q.ok && q.found && (q.state === 'terminal' || q.acked)) continue
           if (typeof biliV2Agent?.query !== 'function') continue
@@ -588,8 +618,8 @@ export function startScheduler(ctx, opts) {
           live(ticket)
           if (hostState?.ok !== true) continue
           if (hostState.found && ['accepted', 'terminal'].includes(hostState.state) && durableReceipt(hostState.receipt, id)) {
-            const transition = await runBiliJson(["dm-await", "--transition", id, "--receipt", JSON.stringify(hostState.receipt), "--json"], sig)
-            if (transition.ok) await runBiliJson(["dm-await", "--ack", id, "--receipt", JSON.stringify(hostState.receipt), "--json"], sig)
+            const transition = await runBiliJson(["dm-await", "--transition", id, "--receipt", JSON.stringify(hostState.receipt), "--json", ...scopeArg], sig)
+            if (transition.ok) await runBiliJson(["dm-await", "--ack", id, "--receipt", JSON.stringify(hostState.receipt), "--json", ...scopeArg], sig)
             continue
           }
           if (hostState.found && hostState.state !== 'pre_dispatch') continue
@@ -614,10 +644,10 @@ export function startScheduler(ctx, opts) {
             continue
           }
           // ③ 先落「可查询、可恢复」的持久接管回执，再推进对应 scope 游标。
-          const transition = await runBiliJson(["dm-await", "--transition", id, "--receipt", JSON.stringify(receipt), "--json"], sig)
+          const transition = await runBiliJson(["dm-await", "--transition", id, "--receipt", JSON.stringify(receipt), "--json", ...scopeArg], sig)
           live(ticket)
           if (!transition.ok) { log(`[bili-whale] DM 接管回执落盘失败：${transition.error ?? ''}`); continue }
-          const ack = await runBiliJson(["dm-await", "--ack", id, "--receipt", JSON.stringify(receipt), "--json"], sig)
+          const ack = await runBiliJson(["dm-await", "--ack", id, "--receipt", JSON.stringify(receipt), "--json", ...scopeArg], sig)
           if (!ack.ok) log(`[bili-whale] DM ACK 未确认：${ack.error ?? ''}`)
         }
       } catch (e) {
@@ -1054,8 +1084,8 @@ export function startScheduler(ctx, opts) {
       }
       try { return await retirePromise } finally { retirePromise = null }
     },
-    /** 测试/诊断用：当前是否有在途任务、是否已禁入。 */
-    status() { return { closed, generation, inflight: inflight.size, retired: Boolean(retiredAck), lastFailure: lastRetireFailure } },
+    /** 测试/诊断用：当前是否有在途任务、是否已禁入；集合失败供界面/日志显示。 */
+    status() { return { closed, generation, inflight: inflight.size, retired: Boolean(retiredAck), lastFailure: lastRetireFailure, dmCollectFailure: lastDmCollectFailure } },
     // 公开入口也必须经过 tracked()：否则手动 tick 不在在途集合里，退役就等不到它。
     tick: () => runBackground(tick),
     listenTick: () => tracked(() => listenTick()),

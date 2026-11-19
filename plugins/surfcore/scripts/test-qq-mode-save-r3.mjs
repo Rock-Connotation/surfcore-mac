@@ -8,10 +8,12 @@
  * 断言：①离线时 200 + applied:false + QQ_MODE_SAVED_PENDING_BRIDGE（不得 409/QQ_MODE_INVALID）
  *      ②带空格的合法模式按与桥接相同的 trim 语义归一，并原样落盘
  *      ③退役值仍是 409/QQ_MODE_RETIRED，非法值仍是 400/QQ_MODE_INVALID
+ *      ④在线桥接确认后 200/applied:true、模式落盘、桥接恰好调用一次
  */
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -106,12 +108,44 @@ try {
   assert.equal(retired.data.code, 'QQ_MODE_RETIRED');
   assert.ok(retired.data.hint && retired.data.hint.length > 5);
 
+  // ④ 在线桥接确认：必须 applied:true、落盘、且只调用桥接一次。
+  const modeCalls = [];
+  const bridgeServer = http.createServer((req, res) => {
+    let payload = '';
+    req.on('data', (chunk) => { payload += chunk; });
+    req.on('end', () => {
+      modeCalls.push({ method: req.method, url: req.url, body: payload ? JSON.parse(payload) : null });
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  await new Promise((resolve) => bridgeServer.listen(0, '127.0.0.1', resolve));
+  const configPath = path.join(tempRoot, 'config.json');
+  const offlineConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  fs.writeFileSync(configPath, JSON.stringify({ ...offlineConfig, consolePort: bridgeServer.address().port }, null, 2));
+  let applied;
+  try {
+    applied = await invoke('POST', '/mode', { mode: 'chat' });
+  } finally {
+    fs.writeFileSync(configPath, JSON.stringify(offlineConfig, null, 2));
+    await new Promise((resolve) => bridgeServer.close(resolve));
+  }
+  assert.equal(applied.status, 200);
+  assert.equal(applied.data.ok, true);
+  assert.equal(applied.data.applied, true, '在线桥接确认后必须 applied:true');
+  assert.notEqual(applied.data.code, 'QQ_MODE_SAVED_PENDING_BRIDGE');
+  assert.equal(JSON.parse(fs.readFileSync(findModeFile(), 'utf8')).mode, 'chat');
+  assert.equal(modeCalls.length, 1, '桥接必须恰好被调用一次');
+  assert.equal(modeCalls[0].method, 'POST');
+  assert.equal(modeCalls[0].url, '/api/mode');
+  assert.deepEqual(modeCalls[0].body, { mode: 'chat' });
+
   const bogus = await invoke('POST', '/mode', { mode: 'bogus' });
   assert.equal(bogus.status, 400);
   assert.equal(bogus.data.code, 'QQ_MODE_INVALID');
   assert.ok(bogus.data.hint && bogus.data.hint.length > 5);
 
-  console.log('PASS QQ mode save stays honest when the bridge is offline (saved-pending, not invalid)');
+  console.log('PASS QQ mode save stays honest offline and online (saved-pending / applied-once)');
   process.exit(0);
 } catch (error) {
   console.error(`FAIL ${error?.message ?? error}`);

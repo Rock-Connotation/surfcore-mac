@@ -11,8 +11,9 @@ const REPLY = 'https://api.bilibili.com/x/v2/reply/reply';
 const MAIN_REPLY = 'https://api.bilibili.com/x/v2/reply';
 const DYNAMIC = 'https://api.bilibili.com/x/polymer/web-dynamic/v1/detail';
 const SESSIONS = 'https://api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions';
+const DM_HISTORY = 'https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs';
 const MSGFEED = 'https://api.bilibili.com/x/msgfeed/reply';
-const ALLOWED = new Set([NAV, REPLY, MAIN_REPLY, DYNAMIC, SESSIONS, MSGFEED, ...Object.values(BILI_V2_ENDPOINTS)]
+const ALLOWED = new Set([NAV, REPLY, MAIN_REPLY, DYNAMIC, SESSIONS, DM_HISTORY, MSGFEED, ...Object.values(BILI_V2_ENDPOINTS)]
   .map((u) => { const p = new URL(u); return p.origin + p.pathname; }));
 
 const HOST_SECRET = 'SESSDATA=HOST_ONLY_SECRET_VALUE';
@@ -60,6 +61,10 @@ function dmSession(overrides = {}) {
 const commentLocator = () => ({ kind: 'comment', rpid: '31', type: '1', oid: '11', root: '0', parent: '0', authorMid: '8' });
 const dynamicLocator = () => ({ kind: 'dynamic', id: '9000000000000000001' });
 const dmlLocator = () => ({ kind: 'dm', mid: '22', msgKey: '31' });
+const dmHistoryMessage = (msgKey, content, overrides = {}) => ({
+  msg_key: msgKey, msg_seqno: String(1000 + Number(msgKey)), sender_uid: '22', receiver_id: '9',
+  msg_type: 1, content: JSON.stringify({ content }), timestamp: 1700000000, ...overrides,
+});
 const notificationLocator = () => ({ kind: 'notification', id: '31' });
 const telemetryLocator = () => ({ kind: 'telemetry', id: '31' });
 
@@ -86,6 +91,7 @@ function fixture(overrides = {}) {
     replyPages: [[commentReply()]],
     dynamic: dynamicItem(),
     sessions: [dmSession()],
+    history: {},
     notifications: [{ id: '31', kind: 'reply', uri: 'https://www.bilibili.com/opus/11' }],
     write: { code: 0, message: '0', data: {} },
     status: 200,
@@ -110,6 +116,7 @@ function fixture(overrides = {}) {
       body = { code: 0, data: { replies: state.replyPages[pn - 1] || [] } };
     } else if (base === new URL(DYNAMIC).origin + new URL(DYNAMIC).pathname) body = { code: 0, data: { item: state.dynamic } };
     else if (base === new URL(SESSIONS).origin + new URL(SESSIONS).pathname) body = { code: 0, data: { session_list: state.sessions } };
+    else if (base === new URL(DM_HISTORY).origin + new URL(DM_HISTORY).pathname) body = state.history[u.searchParams.get('end_seqno') ?? ''] ?? { code: 0, data: { messages: [], has_more: 0 } };
     else if (base === new URL(MSGFEED).origin + new URL(MSGFEED).pathname) body = { code: 0, data: { items: state.notifications } };
     else body = state.write;
     return {
@@ -348,6 +355,37 @@ await test('a dm peer + msgKey hydrates a strict full private wire', async () =>
   assert.equal(record.wire.receiver_id, '9');
   assert.equal(record.wire.sender_uid, record.authorMid);
   assert.equal(record.wire.msg_type, 1);
+});
+
+await test('historical private msg_keys hydrate exact originals, not the latest message', async () => {
+  const history = {
+    '': { code: 0, data: { messages: [dmHistoryMessage('30', 'Historical B.')], has_more: 1 } },
+    '1030': { code: 0, data: { messages: [dmHistoryMessage('29', 'Historical A.')], has_more: 0 } },
+  }
+  const { api, state } = fixture({ scope: dmScope(), history });
+  const value = good(await api.sourceTransport.hydrate({
+    job: job(), selector: { kind: 'trigger', input: trig([
+      { kind: 'dm', mid: '22', msgKey: '29' }, { kind: 'dm', mid: '22', msgKey: '30' }, dmlLocator(),
+    ], 'dm') },
+  }));
+  const dms = value.records.filter((r) => r.kind === 'dm');
+  assert.equal(dms.length, 3, 'A/B/C 三条原文都要进入来源集合');
+  assert.deepEqual(dms.map((r) => r.objectId).sort(), ['29', '30', '31']);
+  const a = dms.find((r) => r.objectId === '29');
+  const b = dms.find((r) => r.objectId === '30');
+  assert.equal(a.wire.content, JSON.stringify({ content: 'Historical A.' }), '非末条 A 原文须来自历史接口');
+  assert.equal(b.wire.content, JSON.stringify({ content: 'Historical B.' }), '非末条 B 原文须来自历史接口');
+  assert.ok(state.calls.some((c) => c.base === new URL(DM_HISTORY).origin + new URL(DM_HISTORY).pathname && c.query.get('talker_id') === '22'), '必须按对端查历史');
+  assert.ok(state.calls.some((c) => c.base === new URL(DM_HISTORY).origin + new URL(DM_HISTORY).pathname && c.query.get('end_seqno') === '1030'), '历史页须按精确 seqno 续拉');
+});
+
+await test('historical private originals refuse wrong peer, deleted text and missing identity', async () => {
+  const wrongPeer = fixture({ scope: dmScope(), history: { '': { code: 0, data: { messages: [dmHistoryMessage('29', 'A', { sender_uid: '77' })], has_more: 0 } } } });
+  bad(await wrongPeer.api.sourceTransport.hydrate({ job: job(), selector: { kind: 'trigger', input: trig([{ kind: 'dm', mid: '22', msgKey: '29' }], 'dm') } }), 'BILI_OFFICIAL_AUTHOR_MISMATCH');
+  const deleted = fixture({ scope: dmScope(), history: { '': { code: 0, data: { messages: [dmHistoryMessage('29', 'A', { deleted: true })], has_more: 0 } } } });
+  bad(await deleted.api.sourceTransport.hydrate({ job: job(), selector: { kind: 'trigger', input: trig([{ kind: 'dm', mid: '22', msgKey: '29' }], 'dm') } }), 'BILI_OFFICIAL_ORIGINAL_DELETED');
+  const noKey = fixture({ scope: dmScope(), history: { '': { code: 0, data: { messages: [dmHistoryMessage('29', 'A', { msg_key: '' })], has_more: 0 } } } });
+  bad(await noKey.api.sourceTransport.hydrate({ job: job(), selector: { kind: 'trigger', input: trig([{ kind: 'dm', mid: '22', msgKey: '29' }], 'dm') } }), 'BILI_OFFICIAL_ID_UNPROVEN');
 });
 
 await test('telemetry is supported as observed-receiver only', async () => {

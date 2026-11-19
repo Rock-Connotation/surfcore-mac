@@ -25,6 +25,7 @@ import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { isManagedRel, listManagedFiles } from '../../../scripts/release-manifest.mjs';
 
 const GIT_TIMEOUT_MS = 30_000;
 // 仓库根（plugins/surfcore/lib → ../../..）
@@ -1157,21 +1158,30 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     }
   }
 
-  /** 校验解压出来的包和清单一致（防止"清单是好的、包被换过"） */
+  /** 校验解压出来的包和清单一致：逐项 hash + 枚举实际可安装文件，防止删条/加文件漏过。 */
   function verifyStaging(srcDir, manifest) {
     const bad = [];
     const missing = [];
+    const unverified = [];
+    const verifiedFiles = [];
+    const wanted = manifest?.files && typeof manifest.files === 'object' ? manifest.files : {};
     let checked = 0;
-    for (const [rel, want] of Object.entries(manifest.files)) {
+    for (const [rel, want] of Object.entries(wanted)) {
+      if (!isManagedRel(rel)) continue; // 老清单里的 _backups/audio 等用户数据不是可安装程序文件
       const file = path.join(srcDir, rel);
       if (!fs.existsSync(file)) { missing.push(rel); continue; }
       checked += 1;
-      if (hashFile(file) !== want) {
-        bad.push(rel);
-        if (bad.length >= 5) break;
-      }
+      if (hashFile(file) !== want) bad.push(rel);
+      else verifiedFiles.push(rel);
     }
-    return { bad, missing, checked };
+    const wantedSet = new Set(Object.keys(wanted).filter(isManagedRel));
+    for (const rel of listManagedFiles(srcDir)) {
+      if (!wantedSet.has(rel)) unverified.push(rel);
+    }
+    return {
+      bad, missing, unverified: unverified.slice(0, 20), totalUnverified: unverified.length,
+      verifiedFiles: verifiedFiles.sort(), checked,
+    };
   }
 
   /**
@@ -1624,19 +1634,32 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         });
       }
       const stagingCheck = verifyStaging(src, pkg.manifest);
-      if (stagingCheck.missing.length) {
-        // 归档里少了清单中的文件：旧清单/分支差异；不判失败，但要留痕（诊断里可见）
-        pluginLog(`[updates] ${item.id} 校验：清单 ${stagingCheck.missing.length} 个文件在包内缺失（${stagingCheck.missing.slice(0, 3).join('、')}…）`);
-      }
-      if (stagingCheck.bad.length) {
+      const stagingProblems = [
+        ...stagingCheck.missing.map((rel) => `清单要求但包内缺失：${rel}`),
+        ...stagingCheck.bad.map((rel) => `哈希不符：${rel}`),
+        ...stagingCheck.unverified.map((rel) => `清单未覆盖的可安装文件：${rel}`),
+      ];
+      if (stagingProblems.length) {
+        const counts = [
+          stagingCheck.bad.length ? `${stagingCheck.bad.length} 个文件哈希不符` : '',
+          stagingCheck.missing.length ? `${stagingCheck.missing.length} 个清单文件缺失` : '',
+          stagingCheck.totalUnverified ? `${stagingCheck.totalUnverified} 个可安装文件未被清单覆盖` : '',
+        ].filter(Boolean).join('、');
+        const reason = `发布包与它自带的清单不一致：${counts || `${stagingProblems.length} 项问题`}：${stagingProblems.slice(0, 8).join('；')}`
+          + (stagingProblems.length > 8 ? `（共 ${stagingProblems.length} 项）` : '');
         return fail({
           ok: false, status: 'failed', stage: 'verify', code: 'verify.staging-mismatch',
-          reason: `发布包与它自带的清单不一致：${stagingCheck.bad.length} 个文件哈希不符（${stagingCheck.bad.join('、')}…）`
-            + (stagingCheck.missing.length ? `，另有 ${stagingCheck.missing.length} 个缺失` : ''),
+          reason, error: reason,
           // 这是发布侧问题（重试必然同样结果），不是本地损坏：别让用户反复下载
           hint: '这个版本的发布包自身不一致，自动更新无法完成：请到 Release 页手动下载该版本覆盖；这是发布流程问题，重试无效',
           deterministic: true,
-          diagnostics: { checked: stagingCheck.checked, mismatch: stagingCheck.bad.length, missing: stagingCheck.missing.length, sample: stagingCheck.bad.slice(0, 5) },
+          diagnostics: {
+            checked: stagingCheck.checked,
+            mismatch: stagingCheck.bad.length,
+            missing: stagingCheck.missing.length,
+            unverified: stagingCheck.totalUnverified,
+            sample: stagingProblems.slice(0, 20),
+          },
         });
       }
       let priorFiles = null;
@@ -1701,6 +1724,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         kind: 'zip', component: String(item.id), target: dir, staging: src, to: String(report?.latestVersion ?? ''),
         txn, backup: backup.dir, from: report?.installedVersion ?? '',
         manifest: { version: pkg.manifest.version ?? '', files: Object.keys(pkg.manifest.files).length },
+        verifiedFiles: stagingCheck.verifiedFiles,
         meta: { version: String(report?.latestVersion ?? ''), sha: String(report?.remoteSha ?? '') },
       });
       downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: staged.ok ? 'pending' : 'failed' };

@@ -37,15 +37,35 @@ try {
  child=spawn(runtime.executable,[...runtime.argvPrefix,'--no-warnings',script],{env:{...process.env,...runtime.envPatch,FIXTURE_ROOT:root},stdio:'ignore'}); await once(child,'spawn');
  fs.writeFileSync(path.join(root,'state','bridge.lock'),String(child.pid));
  for(let i=0;i<100 && !(await bridge.portOpen(port));i++) await new Promise(r=>setTimeout(r,25));
+ assert.equal(inspectBridgeProcess({pid:child.pid,port,runtime,script,platform:'darwin'}),false,'wrong argv must not be recognized as our bridge');
  stopped=await bridge.stop(); assert.equal(stopped.ok,false,'authenticated listener with wrong argv must not be killed'); assert.ok(stopped.code && stopped.hint); assert.ok(!dead(child)); await cleanup();
  child=spawn(runtime.executable,[...runtime.argvPrefix,script],{env:{...process.env,...runtime.envPatch,FIXTURE_ROOT:root},stdio:'ignore'}); await once(child,'spawn');
  fs.writeFileSync(path.join(root,'state','bridge.lock'),String(child.pid));
  for(let i=0;i<100 && !(await bridge.portOpen(port));i++) await new Promise(r=>setTimeout(r,25));
  assert.equal(await bridge.portOpen(port),true,'fixture server started');
+ assert.equal(inspectBridgeProcess({pid:child.pid,port,runtime,script,platform:'darwin'}),true,'own bridge in a Chinese/space path must be recognized');
  const started=await bridge.start(); assert.equal(started.ok,true,JSON.stringify(started)); assert.equal(started.already,true);
  assert.equal(inspectBridgeProcess({pid:child.pid,port,runtime,script,platform:'darwin',execFile:()=>{throw Error('inspection unavailable')}}),false);
  fs.writeFileSync(path.join(root,'swap-lock'),''); stopped=await bridge.stop(); assert.equal(stopped.ok,false,'changed lock must invalidate ownership'); assert.ok(stopped.code && stopped.hint); assert.ok(!dead(child)); fs.unlinkSync(path.join(root,'swap-lock')); fs.writeFileSync(path.join(root,'state','bridge.lock'),String(child.pid));
  stopped=await bridge.stop(); assert.equal(stopped.ok,true,JSON.stringify(stopped)); assert.ok(dead(child)); child=null;
+ // R2-09: ps metadata locale is the only place allowed to override LC_ALL/LANG.
+ const seen = [];
+ const fakeExec = (bin, args, options) => {
+   seen.push({ bin, env: options?.env });
+   if (bin === '/bin/ps') return args.includes('comm=') ? runtime.executable : `${runtime.executable} ${script}`;
+   if (String(bin).endsWith('lsof')) return `n127.0.0.1:${port}`;
+   throw new Error('unexpected inspection command: ' + bin);
+ };
+ assert.equal(inspectBridgeProcess({ pid: process.pid, port, runtime, script, platform: 'darwin', execFile: fakeExec }), true, 'Darwin ownership inspection with mocked metadata');
+ const psCalls = seen.filter((call) => call.bin === '/bin/ps');
+ assert.equal(psCalls.length, 2, 'Darwin must only override the two ps metadata calls');
+ for (const call of psCalls) {
+   assert.match(call.env?.LC_ALL ?? '', /UTF-8$/, 'ps must receive a verified UTF-8 locale even under LC_ALL=C');
+   assert.equal(call.env?.LANG, call.env?.LC_ALL, 'LANG and LC_ALL must agree for ps');
+ }
+ seen.length = 0;
+ assert.equal(inspectBridgeProcess({ pid: process.pid, port, runtime, script, platform: 'linux', execFile: fakeExec }), false, 'non-Darwin path must not be affected');
+ assert.equal(seen.some((call) => call.bin === '/bin/ps'), false, 'no ps locale injection outside Darwin');
  assert.equal(fs.existsSync(path.join(process.cwd(),'INJECTED')),false,'command line must never be evaluated by shell');
  console.log('PASS foreign listener, unrelated PID, stale lock, authenticated owner, inspection failure, shell-safe paths');
 } finally {

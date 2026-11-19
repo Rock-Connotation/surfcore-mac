@@ -182,10 +182,17 @@ try {
   // Idempotency: re-running completed task returns existing artifact
   const reRunRes = await deliveryHarness.runTaskPipeline({
     requestor: { platform: 'qq', userId: '10001', conversationKey: 'private:10001', isOwner: true },
-    goal: '调研 Node.js 22 特性'
+    goal: '调研 Node.js 22 特性',
+    urls: ['https://nodejs.org/en/blog/release/v22.0.0']
   });
   assert.ok(reRunRes.artifact);
-  console.log('✔ Task execution preserves idempotent artifact state');
+  const keywordRes = await deliveryHarness.runTaskPipeline({
+    requestor: { platform: 'qq', userId: '10001', conversationKey: 'private:10001', isOwner: true },
+    goal: '调研 Node.js 22 特性'
+  });
+  assert.equal(keywordRes.code, 'RESEARCH_URLS_REQUIRED');
+  assert.equal(keywordRes.artifact, undefined, '仅关键词不得复用旧已完成任务');
+  console.log('✔ Task execution preserves idempotent artifact state without keyword-only reuse');
 
   // Cancellation: cancel active task
   const taskToCancel = ledger.createTask({
@@ -271,12 +278,15 @@ try {
     sender: { user_id: 10001, nickname: '主人' }
   }, harnessEnv.cfg);
 
-  assert.ok(groupSent.some(m => m.text.includes('收到电脑研究任务，已创建工单并加入调度')),
-    'Owner task must be accepted and acknowledged');
-  assert.ok(groupSent.some(m => m.text.includes('📋 任务完成：调研量子计算最新突破')),
-    'Owner task must complete and deliver report summary with path and sha256');
+  // 审查 03：仅关键词必须先提示补网址，不得声称已建单执行，也不得伪造成功报告。
+  assert.ok(groupSent.some(m => m.text.includes('请补充网址')),
+    'Only-keyword task must ask the owner to supply a URL');
+  assert.ok(!groupSent.some(m => m.text.includes('收到电脑研究任务，已创建工单并加入调度')),
+    'Only-keyword task must not claim a task was created');
+  assert.ok(!groupSent.some(m => m.text.includes('📋 任务完成')),
+    'Only-keyword task must not deliver a success report');
 
-  console.log('✔ Bridge message handling integrates cleanly with taskHarness, denying unauthorized users and delivering owner tasks');
+  console.log('✔ Bridge message handling integrates cleanly with taskHarness, denying unauthorized users and requiring sources for owner tasks');
 
   console.log('\n========================================');
   console.log('All Phase B & C tests passed successfully!');

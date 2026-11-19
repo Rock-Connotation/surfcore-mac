@@ -10,6 +10,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createTaskText, listTaskDirectory, readTaskText } from './task-directory.js';
+import { safeFetch } from './safe-fetch.js';
+
+// 研究来源的受控读取上限：safe-fetch 在读取阶段按字符截断，并保留 truncated 标记。
+const RESEARCH_MAX_CHARS = 50000;
+const RESEARCH_SNIPPET_CHARS = 600;
 
 const SYSTEM_RESTRICTED_ROOTS = [
   '/System',
@@ -41,18 +46,64 @@ export function isSystemRestrictedPath(targetPath) {
   return false;
 }
 
+function cleanHtmlToText(html) {
+  return String(html ?? '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractTitle(html, fallback) {
+  const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(String(html ?? ''));
+  return titleMatch ? titleMatch[1].trim() : fallback;
+}
+
+/**
+ * 统一受控抓取契约：生产实现返回 {url,statusCode,body,truncated}；
+ * 兼容旧测试替身/原生 Response 的 {text()} 形态，避免调用方各自判断。
+ */
+async function normalizeResearchResult(result, requestedUrl) {
+  if (!result || typeof result !== 'object') throw new Error('抓取结果无效');
+  const url = String(result.url || requestedUrl);
+  const statusCode = Number(result.statusCode ?? result.status ?? 200);
+  let body = '';
+  if (typeof result.body === 'string') {
+    body = result.body;
+  } else if (typeof result.text === 'function') {
+    body = String(await result.text());
+  } else if (result.body && typeof result.body.text === 'function') {
+    body = String(await result.body.text());
+  } else if (result.body !== undefined && result.body !== null) {
+    body = String(result.body);
+  }
+  return { url, statusCode, body, truncated: Boolean(result.truncated) };
+}
+
 export function createTaskHarness({
   ledger,
   reportsDir,
   readOnlyRoot,
   canSendLiteralText = () => false,
-  safeFetchImpl = fetch,
+  safeFetchImpl = safeFetch,
   sendCallback = async () => ({ ok: true }),
   now = Date.now,
   log = () => {}
 } = {}) {
   if (!ledger) throw new TypeError('ledger is required.');
   const resolvedReportsDir = path.resolve(reportsDir || './state/reports');
+
+  // 账本读写失败必须变成结构化失败交给入口展示；绝不吞成空账本继续执行任务。
+  function ledgerFailure(error, extra = {}) {
+    return {
+      ok: false,
+      code: 'TASK_LEDGER_UNAVAILABLE',
+      error: error?.error || error?.message || '本机任务账本不可读。',
+      hint: error?.hint || '保留任务账本文件，检查文件和读写权限后重试。',
+      ...extra
+    };
+  }
 
   // 1. 独立执行准入检查
   function checkAdmission({ requestor, action = 'research', targetPath = '', allowedRoots = [] } = {}) {
@@ -130,39 +181,49 @@ export function createTaskHarness({
       intent: { action: 'web_research', urls, query }
     });
 
-    const sources = [...(activeTask.sources || [])];
+    // 每次执行只认本次实际抓到的来源；旧摘录不得冒充本次成功证据。
+    const sources = [];
     for (const targetUrl of urls) {
+      let normalized = null;
       try {
         log(`[Harness] 抓取研究资料来源: ${targetUrl}`);
-        const res = await safeFetchImpl(targetUrl, {
-          headers: { 'User-Agent': 'SurfCore-ResearchBot/1.0' },
-          signal: AbortSignal.timeout(10000)
-        });
-        const html = await res.text();
-        // 简易文本提取与摘要
-        const cleanText = html.replace(/<script[\s\S]*?<\/script>/gi, '')
-                              .replace(/<style[\s\S]*?<\/style>/gi, '')
-                              .replace(/<[^>]+>/g, ' ')
-                              .replace(/\s+/g, ' ')
-                              .trim();
-        const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(html);
-        const title = titleMatch ? titleMatch[1].trim() : targetUrl;
-        const snippet = cleanText.slice(0, 300);
-
+        // 生产默认走 src/safe-fetch.js：目标地址检查、逐跳重定向复核、正文上限都在那里。
+        normalized = await normalizeResearchResult(
+          await safeFetchImpl(targetUrl, RESEARCH_MAX_CHARS),
+          targetUrl
+        );
+        if (!(normalized.statusCode >= 200 && normalized.statusCode < 300)) {
+          throw Object.assign(new Error(`HTTP ${normalized.statusCode || '未知'}`), {
+            statusCode: normalized.statusCode
+          });
+        }
+        const html = normalized.body;
+        const cleanText = cleanHtmlToText(html);
+        const authWallOnly = /^(?:login|sign in|log in|登录|please log in|access denied|forbidden)$/i.test(cleanText);
+        if (!cleanText || authWallOnly) {
+          throw Object.assign(new Error('来源正文为空，无法作为研究证据'), { code: 'SOURCE_EMPTY_BODY' });
+        }
         sources.push({
-          url: targetUrl,
-          title,
-          snippet,
+          url: normalized.url,
+          requestedUrl: targetUrl,
+          title: extractTitle(html, normalized.url),
+          snippet: cleanText.slice(0, RESEARCH_SNIPPET_CHARS),
           fetchedAt: now(),
-          byteLength: Buffer.byteLength(cleanText)
+          byteLength: Buffer.byteLength(cleanText),
+          statusCode: normalized.statusCode,
+          truncated: normalized.truncated,
+          ok: true
         });
       } catch (err) {
         log(`[Harness] 抓取来源失败 [${targetUrl}]: ${err.message}`);
         sources.push({
-          url: targetUrl,
+          url: normalized?.url || targetUrl,
+          requestedUrl: targetUrl,
           title: targetUrl,
-          snippet: `[抓取失败: ${err.message}]`,
+          snippet: '',
           fetchedAt: now(),
+          statusCode: normalized?.statusCode ?? err?.statusCode ?? null,
+          ok: false,
           error: err.message
         });
       }
@@ -183,8 +244,24 @@ export function createTaskHarness({
     const reportFileName = `report-${activeTask.taskId}.md`;
     const reportFilePath = path.join(resolvedReportsDir, reportFileName);
 
+    const allSources = Array.isArray(activeTask.sources) ? activeTask.sources : [];
+    const usableSources = allSources.filter(s => !s?.error && typeof s?.snippet === 'string' && s.snippet.trim());
+    const failedSources = allSources.filter(s => s?.error);
+
+    // 没有可用正文就没有“研究结论”。绝不能生成占位句后仍标记完成并投递。
+    if (usableSources.length === 0) {
+      const detail = failedSources.length
+        ? failedSources.map(s => `${s.url}${s.statusCode ? `（HTTP ${s.statusCode}）` : ''}：${s.error}`).join('；')
+        : '没有可读取的来源正文';
+      throw Object.assign(new Error(`本次来源均不可用：${detail}`), {
+        code: 'RESEARCH_NO_SOURCES',
+        hint: '确认网址可访问后重试，或补充新的来源网址；本次未生成成功报告。',
+        sources: allSources
+      });
+    }
+
     const reportTitle = title || `研究报告：${activeTask.goal}`;
-    const reportSummary = summary || `关于「${activeTask.goal}」的自动化调研与分析报告。`;
+    const reportSummary = summary || `本次研究成功读取 ${usableSources.length} 个来源${failedSources.length ? `，另有 ${failedSources.length} 个来源失败` : ''}；以下结论仅基于本次抓取到的可读片段。`;
 
     const lines = [
       `# ${reportTitle}`,
@@ -202,26 +279,32 @@ export function createTaskHarness({
       ''
     ];
 
-    if (findings.length > 0) {
-      for (const f of findings) {
-        lines.push(`### ${f.headline || '发现'}`);
-        lines.push('');
-        lines.push(f.content || '');
-        lines.push('');
-      }
-    } else {
-      lines.push('（从收集的原始来源材料中综合整理得出主要结论）');
+    // 每条结论都附「来源摘录」：摘录直接来自本次成功抓取的正文，并给出可复核链接。
+    const excerptFindings = usableSources.map((s, idx) => ({
+      headline: `来源摘录 ${idx + 1}：${s.title}`,
+      content: `「${s.snippet}」\n\n来源：${s.url}${s.truncated ? '（正文超过读取上限，仅摘录可见片段）' : ''}`
+    }));
+    const reportFindings = [...findings, ...excerptFindings];
+    for (const f of reportFindings) {
+      lines.push(`### ${f.headline || '发现'}`);
+      lines.push('');
+      lines.push(f.content || '');
       lines.push('');
     }
 
     lines.push('## 参考来源与证据清单 (Sources & Citations)');
     lines.push('');
-    if (activeTask.sources?.length > 0) {
-      lines.push('| # | 来源标题 | 链接 | 抓取时间 | 摘要 |');
-      lines.push('|---|---|---|---|---|');
-      activeTask.sources.forEach((s, idx) => {
+    if (allSources.length > 0) {
+      lines.push('| # | 来源标题 | 链接 | 抓取时间 | 状态 | 摘录 |');
+      lines.push('|---|---|---|---|---|---|');
+      allSources.forEach((s, idx) => {
         const fetchTime = s.fetchedAt ? new Date(s.fetchedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '-';
-        lines.push(`| ${idx + 1} | ${s.title.replace(/\|/g, '-')} | [查看链接](${s.url}) | ${fetchTime} | ${s.snippet.slice(0, 80).replace(/\|/g, '-')}… |`);
+        const status = s.error
+          ? `失败：${s.error}`
+          : `HTTP ${s.statusCode ?? 200}${s.truncated ? '（截断）' : ''}`;
+        const title = String(s.title || s.url || '').replace(/\|/g, '-');
+        const excerpt = String(s.snippet || '').slice(0, 120).replace(/\|/g, '-');
+        lines.push(`| ${idx + 1} | ${title} | ${s.url || '-'} | ${fetchTime} | ${status.replace(/\|/g, '-')} | ${excerpt} |`);
       });
     } else {
       lines.push('*（本次研究暂无外部网络引文来源）*');
@@ -251,7 +334,16 @@ export function createTaskHarness({
       fileName: reportFileName,
       sha256,
       sizeBytes: stat.size,
-      summary: reportSummary
+      summary: reportSummary,
+      sourceCount: usableSources.length,
+      failedSourceCount: failedSources.length,
+      evidence: usableSources.map(s => ({
+        url: s.url,
+        title: s.title,
+        snippet: s.snippet.slice(0, 300),
+        statusCode: s.statusCode ?? 200,
+        truncated: Boolean(s.truncated)
+      }))
     };
 
     ledger.updateTask(task.taskId, { artifact });
@@ -268,7 +360,7 @@ export function createTaskHarness({
     if (activeTask.delivery?.status === 'delivered') {
       return { ok: true, status: 'delivered', messageId: activeTask.delivery.messageId, idempotent: true };
     }
-    if (['delivery_unknown', 'rejected'].includes(activeTask.delivery?.status)) {
+    if (['delivering', 'delivery_unknown', 'rejected'].includes(activeTask.delivery?.status)) {
       return { ok: false, status: 'delivery_unknown', code: 'OWNER_REPLY_UNKNOWN', error: '此前的送达结果未知。', hint: '查询平台消息和任务状态，不要自动重发。' };
     }
 
@@ -277,17 +369,24 @@ export function createTaskHarness({
     }
 
     const { platform, conversationKey } = activeTask.requestor;
-    const sourcesSummary = (activeTask.sources || [])
+    const allSources = activeTask.sources || [];
+    const usableSources = allSources.filter(s => !s?.error && typeof s?.snippet === 'string' && s.snippet.trim());
+    const failedSources = allSources.filter(s => s?.error);
+    const sourcesSummary = usableSources
       .slice(0, 3)
       .map((s, idx) => `  ${idx + 1}. ${s.title}: ${s.url}`)
       .join('\n');
+    const failedSummary = failedSources.length
+      ? `【失败来源】${failedSources.length} 个：${failedSources.slice(0, 3).map(s => `${s.url}${s.statusCode ? `（HTTP ${s.statusCode}）` : ''}`).join('，')}`
+      : '';
 
     const messageText = resultText ?? [
       `📋 任务完成：${activeTask.goal}`,
       `【任务编号】${activeTask.taskId}`,
       `【研究摘要】${activeTask.artifact.summary}`,
       `【产物文件】${activeTask.artifact.path} (${activeTask.artifact.sizeBytes} 字节，哈希 ${activeTask.artifact.sha256.slice(0, 8)}…)`,
-      sourcesSummary ? `【核心来源】\n${sourcesSummary}` : ''
+      sourcesSummary ? `【核心来源】\n${sourcesSummary}` : '',
+      failedSummary
     ].filter(Boolean).join('\n');
 
     ledger.updateTask(task.taskId, {
@@ -308,46 +407,99 @@ export function createTaskHarness({
         taskId: task.taskId,
         phase: 'delivery',
         ...(validate ? { validate } : {}),
-        artifact: activeTask.artifact
+        artifact: activeTask.artifact,
+        task: activeTask
       });
 
-      if (ledger.getTask(task.taskId)?.status === 'cancelled') {
-        const acknowledged = sendReceipt?.ok === true && sendReceipt?.delivery === 'delivered' && sendReceipt?.messageId != null;
-        ledger.updateTask(task.taskId, { delivery: { platform, targetKey: conversationKey, status: acknowledged ? 'delivered' : 'delivery_unknown', messageId: acknowledged ? sendReceipt.messageId : null, at: now() } });
+      const acknowledged = sendReceipt?.ok === true
+        && (!sendReceipt?.delivery || sendReceipt.delivery === 'delivered')
+        && sendReceipt?.messageId != null;
+
+      let latestTask = null;
+      let postSendLedgerError = null;
+      try {
+        latestTask = ledger.getTask(task.taskId);
+      } catch (readError) {
+        postSendLedgerError = readError;
+        log('[Harness] 回执后读取任务账本失败: ' + readError.message);
+      }
+
+      if (latestTask?.status === 'cancelled') {
+        try {
+          ledger.updateTask(task.taskId, {
+            delivery: {
+              platform,
+              targetKey: conversationKey,
+              status: acknowledged ? 'delivered' : 'delivery_unknown',
+              messageId: acknowledged ? sendReceipt.messageId : null,
+              at: now()
+            }
+          });
+        } catch (recordError) {
+          log('[Harness] 取消态回执写入账本失败: ' + recordError.message);
+        }
         return { ok: false, status: 'cancelled', code: 'TASK_CANCELLED', error: '任务在回执期间已取消。', hint: '查询平台消息和任务状态，不要自动重发。' };
       }
-      if ((sendReceipt?.delivery && sendReceipt.delivery !== 'delivered') || sendReceipt?.ok !== true || sendReceipt?.messageId == null) {
+      if (!acknowledged) {
         const rejected = sendReceipt?.delivery === 'rejected';
         const result = { ok: false, status: rejected ? 'rejected' : 'delivery_unknown', code: sendReceipt?.code || (rejected ? 'OWNER_REPLY_REJECTED' : 'OWNER_REPLY_UNKNOWN'), error: sendReceipt?.error || '送达结果未知。', hint: sendReceipt?.hint || '查询任务和平台消息，不要自动重发。' };
-        ledger.updateTask(task.taskId, { status: 'unknown', error: result.error, delivery: { platform, targetKey: conversationKey, status: result.status, messageId: null, error: result.error, at: now() } });
+        try {
+          ledger.updateTask(task.taskId, { status: 'unknown', error: result.error, delivery: { platform, targetKey: conversationKey, status: result.status, messageId: null, error: result.error, at: now() } });
+        } catch (recordError) {
+          log('[Harness] 未知/拒绝回执写入账本失败: ' + recordError.message);
+        }
         return result;
       }
 
-      ledger.updateTask(task.taskId, {
-        status: 'completed',
-        delivery: {
-          platform,
-          targetKey: conversationKey,
-          status: 'delivered',
-          messageId: sendReceipt?.messageId || null,
-          at: now()
+      let recorded = !postSendLedgerError;
+      if (recorded) {
+        try {
+          ledger.updateTask(task.taskId, {
+            status: 'completed',
+            delivery: {
+              platform,
+              targetKey: conversationKey,
+              status: 'delivered',
+              messageId: sendReceipt?.messageId || null,
+              at: now()
+            }
+          });
+        } catch (recordError) {
+          recorded = false;
+          log('[Harness] 回执已送达但账本未能记录: ' + recordError.message);
         }
-      });
-
+      }
+      if (!recorded) {
+        return {
+          ok: true,
+          status: 'delivery_unknown',
+          taskId: task.taskId,
+          delivery: 'delivered',
+          messageId: sendReceipt.messageId,
+          code: 'DELIVERY_RECEIPT_UNRECORDED',
+          error: '消息已送达，但任务账本未能记录回执。',
+          hint: '请核对任务 ' + task.taskId + ' 的平台消息和状态；不要自动重发。',
+          messageText
+        };
+      }
       return { ok: true, status: 'delivered', messageText };
     } catch (err) {
       log(`[Harness] 发送交付失败/结果未知: ${err.message}`);
-      ledger.updateTask(task.taskId, {
-        status: 'unknown',
-        error: `Delivery error: ${err.message}`,
-        delivery: {
-          platform,
-          targetKey: conversationKey,
-          status: 'delivery_unknown',
-          error: err.message,
-          at: now()
-        }
-      });
+      try {
+        ledger.updateTask(task.taskId, {
+          status: 'unknown',
+          error: `Delivery error: ${err.message}`,
+          delivery: {
+            platform,
+            targetKey: conversationKey,
+            status: 'delivery_unknown',
+            error: err.message,
+            at: now()
+          }
+        });
+      } catch (recordError) {
+        log('[Harness] 交付异常后写入账本失败: ' + recordError.message);
+      }
       return { ok: false, status: 'delivery_unknown', code: 'OWNER_REPLY_UNKNOWN', error: err.message, hint: '查询任务和平台消息，不要自动重发。' };
     }
   }
@@ -413,14 +565,34 @@ export function createTaskHarness({
       return admission;
     }
 
-    // 创建或复用任务
-    const task = ledger.createTask({
-      ...(taskId ? { taskId } : {}),
-      goal,
-      type: 'research',
-      requestor,
-      steps: ['admission', 'research', 'synthesis', 'delivery']
-    });
+    const urlList = (Array.isArray(urls) ? urls : [])
+      .filter(url => typeof url === 'string' && url.trim())
+      .map(url => url.trim());
+
+    // 仅关键词、还没有可核验网址：先提示补齐，不建单、不执行、也不复用旧任务。
+    if (!urlList.length && !taskId) {
+      return {
+        ok: false,
+        code: 'RESEARCH_URLS_REQUIRED',
+        error: '仅有研究目标，缺少可核验的来源网址。',
+        hint: '请补充网址后重试，例如：任务：<研究目标> https://example.com'
+      };
+    }
+
+    // 创建或复用任务。账本不可读时这里必须停住：不能执行研究，也不能投递报告。
+    let task;
+    try {
+      task = ledger.createTask({
+        ...(taskId ? { taskId } : {}),
+        goal,
+        type: 'research',
+        requestor,
+        steps: ['admission', 'research', 'synthesis', 'delivery']
+      });
+    } catch (error) {
+      log(`[Harness] 任务账本创建失败，已停止执行: ${error.message}`);
+      return ledgerFailure(error, { taskId: taskId || null, status: 'failed' });
+    }
 
     if (task.requestor?.conversationKey !== requestor.conversationKey || String(task.requestor?.userId) !== String(requestor.userId) || task.goal !== goal) {
       return { ok: false, status: 'rejected', code: 'TASK_OWNER_MISMATCH', error: '任务归属或目标不匹配。', hint: '查询原任务后使用正确的请求身份。' };
@@ -428,7 +600,7 @@ export function createTaskHarness({
     if (task.status === 'cancelled') {
       return { ok: false, taskId: task.taskId, status: 'cancelled', code: 'TASK_CANCELLED', error: '任务已取消。', hint: '查询任务状态；如需执行请新建任务。' };
     }
-    if (['delivery_unknown', 'rejected'].includes(task.delivery?.status)) {
+    if (['delivering', 'delivery_unknown', 'rejected'].includes(task.delivery?.status)) {
       return { ok: false, taskId: task.taskId, status: 'unknown', code: 'OWNER_REPLY_UNKNOWN', error: '此前的送达结果尚未确认。', hint: '查询平台消息和任务状态，不要自动重发。' };
     }
 
@@ -437,9 +609,23 @@ export function createTaskHarness({
       return { ok: true, taskId: task.taskId, status: 'completed', artifact: task.artifact, idempotent: true };
     }
 
+    // 只有研究目标/关键词、没有可核验网址：不拿空来源合成报告。
+    if (!urlList.length) {
+      const error = Object.assign(new Error('仅有研究目标，缺少可核验的来源网址。'), {
+        code: 'RESEARCH_URLS_REQUIRED',
+        hint: '请补充网址后重试，例如：任务：<研究目标> https://example.com'
+      });
+      try {
+        ledger.updateTask(task.taskId, { status: 'failed', error: error.message });
+      } catch (ledgerError) {
+        return ledgerFailure(ledgerError, { taskId: task.taskId, status: 'failed' });
+      }
+      return { ok: false, taskId: task.taskId, status: 'failed', code: error.code, error: error.message, hint: error.hint };
+    }
+
     try {
       // 步骤 1：网页研究
-      await executeResearchStep(task, { urls });
+      await executeResearchStep(task, { urls: urlList });
 
       // 步骤 2：报告生成
       const artifact = await executeSynthesisStep(task, { findings });
@@ -455,19 +641,29 @@ export function createTaskHarness({
         delivery
       };
     } catch (error) {
-      if (ledger.getTask(task.taskId)?.status === 'cancelled') {
+      let current = null;
+      try { current = ledger.getTask(task.taskId); } catch {}
+      if (current?.status === 'cancelled') {
         return { ok: false, taskId: task.taskId, status: 'cancelled', code: 'TASK_CANCELLED', error: '任务已取消。', hint: '查询任务状态；如需执行请新建任务。' };
       }
       log(`[Harness] Pipeline failure: ${error.message}`);
-      ledger.updateTask(task.taskId, {
-        status: 'failed',
-        error: error.message
-      });
+      try {
+        ledger.updateTask(task.taskId, {
+          status: 'failed',
+          error: error.message
+        });
+      } catch (ledgerError) {
+        // 账本在流水线中途损坏/不可写：不再读写账本，直接向入口返回可展示的失败。
+        log(`[Harness] 任务账本不可用，无法记录失败状态: ${ledgerError.message}`);
+        return ledgerFailure(ledgerError, { taskId: task.taskId, status: 'failed' });
+      }
       return {
         ok: false,
         taskId: task.taskId,
         status: 'failed',
-        error: error.message
+        code: error?.code || 'TASK_PIPELINE_FAILED',
+        error: error.message,
+        hint: error?.hint || '检查来源网址、报告目录写入权限和本机任务账本后重试。'
       };
     }
   }
