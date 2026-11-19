@@ -111,7 +111,9 @@ try {
   }
   assertBadLedger('truncated', '{"version":1,"tasks":[{"taskId":"task-old"');
   assertBadLedger('structure', JSON.stringify({ version: 1, tasks: {} }));
-  pass('截断 JSON 与 tasks 结构错误均 fail-closed，原字节/摘要不变');
+  assertBadLedger('future-version', JSON.stringify({ version: 999, tasks: [{}] }));
+  assertBadLedger('bad-record', JSON.stringify({ version: 1, tasks: [{ taskId: 'task-old', status: 'bogus' }] }));
+  pass('截断 JSON、结构错误、未来版本与坏记录均 fail-closed，原字节/摘要不变');
 
   // 4. 确定的读取错误：非 root 用 000 权限；root 下用同名目录制造 EISDIR。
   {
@@ -166,7 +168,7 @@ try {
       safeFetchImpl: async () => { throw new Error('不应触达抓取'); },
       sendCallback: async () => { sends += 1; return { ok: true, messageId: 1 }; }
     });
-    const result = await harness.runTaskPipeline({ requestor, goal: '账本损坏时不得执行' });
+    const result = await harness.runTaskPipeline({ requestor, goal: '账本损坏时不得执行 https://source.example/blocked', urls: ['https://source.example/blocked'] });
     assert.equal(result.ok, false);
     assert.equal(result.status, 'failed');
     assert.equal(result.code, 'TASK_LEDGER_UNAVAILABLE');
@@ -215,7 +217,7 @@ try {
         assert.ok(!text.includes('收到电脑研究任务'), `${label}: 不得声称已创建工单`);
         assert.ok(!text.includes('任务完成'), `${label}: 不得声称完成`);
       };
-      assertVisibleFailure(await send('任务：调研量子计算'), '创建');
+      assertVisibleFailure(await send('任务：调研量子计算 https://source.example/r2'), '创建');
       assertVisibleFailure(await send('任务状态'), '查询');
       assertVisibleFailure(await send('取消任务'), '取消');
       const reportsDir = path.join(h.temp, 'state', 'reports');
@@ -224,6 +226,161 @@ try {
       pass('QQ 入口创建/查询/取消失败可见，执行与投递 0 次');
     } finally {
       await h.close();
+    }
+  }
+
+  // 7. 第二次读取失败：管理回执用已发生动作的快照，不再读账本改口。
+  {
+    const baseConfig = {
+      ownerQQ: 10001,
+      allow: { private: ['10001'], groups: [] },
+      deny: { private: [], groups: [], users: [] },
+      slang: { enabled: false },
+      socialV2: { tokenGuard: { enabled: false } }
+    };
+    const makeOwnerBridge = async (options = {}) => {
+      const h = await bridgeHarness({ config: baseConfig, ...options });
+      const send = async (raw) => {
+        const from = h.calls.sent.length;
+        await h.handleIncoming('private', 10001, {
+          post_type: 'message', message_type: 'private', self_id: 10001,
+          user_id: 10001, message_id: crypto.randomInt(1e6, 2e6),
+          raw_message: raw, message: [{ type: 'text', data: { text: raw } }],
+          sender: { user_id: 10001, nickname: '主人' }
+        }, h.cfg);
+        return h.calls.sent.slice(from);
+      };
+      return { h, send };
+    };
+    const secondReadError = Object.assign(new Error('第二次读取账本失败'), {
+      code: 'TASK_LEDGER_UNAVAILABLE',
+      error: '第二次读取账本失败。',
+      hint: '按任务编号重新查询，不要重复执行。'
+    });
+
+    // 7a. 查询：入口已读到任务，但详情回执的二次读取失败，仍须显示详情。
+    {
+      const { h, send } = await makeOwnerBridge();
+      try {
+        const task = h.taskLedger.createTask({ goal: '二次读取查询', requestor });
+        const originalGetTask = h.taskLedger.getTask.bind(h.taskLedger);
+        let reads = 0;
+        h.taskLedger.getTask = (...args) => {
+          reads += 1;
+          if (reads === 2) throw secondReadError;
+          return originalGetTask(...args);
+        };
+        const sends = await send('任务状态 ' + task.taskId);
+        assert.equal(sends.length, 1, '查询详情只回一条');
+        const text = String(sends[0].text);
+        assert.ok(text.includes('【任务详情】' + task.taskId), text);
+        assert.ok(!text.includes('[任务账本不可用]'), text);
+        h.taskLedger.getTask = originalGetTask;
+        assert.equal(h.taskLedger.getTask(task.taskId).status, 'queued');
+        pass('查询详情二次读取失败仍按已读快照回执');
+      } finally { await h.close(); }
+    }
+
+    // 7b. 取消：写入已生效，回执二次读取失败，仍须明确说已取消。
+    {
+      const { h, send } = await makeOwnerBridge();
+      try {
+        const task = h.taskLedger.createTask({ goal: '二次读取取消', requestor });
+        const originalCancel = h.taskLedger.cancelTask.bind(h.taskLedger);
+        const originalGetTask = h.taskLedger.getTask.bind(h.taskLedger);
+        let cancelled = false;
+        h.taskLedger.cancelTask = (...args) => {
+          const res = originalCancel(...args);
+          if (res) cancelled = true;
+          return res;
+        };
+        h.taskLedger.getTask = (...args) => {
+          if (cancelled) throw secondReadError;
+          return originalGetTask(...args);
+        };
+        const sends = await send('取消任务 ' + task.taskId);
+        assert.equal(sends.length, 1, '取消回执只回一条');
+        const text = String(sends[0].text);
+        assert.ok(text.includes('任务 [' + task.taskId + '] 状态已置为 cancelled'), text);
+        assert.ok(!text.includes('[任务账本不可用]'), text);
+        cancelled = false;
+        assert.equal(h.taskLedger.getTask(task.taskId).status, 'cancelled');
+        pass('取消写入生效后二次读取失败仍按已发生事实回执');
+      } finally { await h.close(); }
+    }
+
+    // 7c. 创建后账本才坏：启动回执与失败回执都不再读账本；恢复后仍可查/取消。
+    {
+      const GOOD_BYTES = JSON.stringify({
+        version: 1,
+        tasks: [legacyTask('task-old', '旧任务')]
+      }, null, 2);
+      const BROKEN = '{"version":1,"tasks":[{"taskId":"task-old"';
+      const { h, send } = await makeOwnerBridge({
+        files: { 'state/tasks.json': GOOD_BYTES },
+        globals: {
+          safeFetch: async (url) => ({ url, statusCode: 200, body: '<html>ok</html>', truncated: false })
+        }
+      });
+      try {
+        const ledgerPath = path.join(h.temp, 'state', 'tasks.json');
+        const originalCreate = h.taskLedger.createTask.bind(h.taskLedger);
+        let createdTask = null;
+        let goodBytes = null;
+        let corruptOnce = true;
+        h.taskLedger.createTask = (...args) => {
+          const task = originalCreate(...args);
+          if (corruptOnce) {
+            corruptOnce = false;
+            createdTask = task;
+            goodBytes = fs.readFileSync(ledgerPath);
+            fs.writeFileSync(ledgerPath, BROKEN);
+          }
+          return task;
+        };
+        const sends = await send('任务：创建后才坏 https://source.example/r2');
+        assert.ok(createdTask, '入口必须已创建工单');
+        assert.ok(sends.some(s => String(s.text).includes('收到电脑研究任务')), '创建回执必须按已发生事实显示');
+        assert.ok(!sends.some(s => String(s.text).includes('[任务账本不可用]')), '已创建工单不得改口为账本不可用');
+        assert.equal(fs.readFileSync(ledgerPath, 'utf8'), BROKEN, '账本变坏后不得被回执覆写');
+
+        fs.writeFileSync(ledgerPath, goodBytes);
+        assert.equal(h.taskLedger.getTask(createdTask.taskId).status, 'queued', '任务应保留排队状态');
+        const statusSends = await send('任务状态 ' + createdTask.taskId);
+        assert.ok(statusSends.some(s => String(s.text).includes('【任务详情】' + createdTask.taskId)));
+        const cancelSends = await send('取消任务 ' + createdTask.taskId);
+        assert.ok(cancelSends.some(s => String(s.text).includes('任务 [' + createdTask.taskId + '] 状态已置为 cancelled')));
+        assert.equal(h.taskLedger.getTask(createdTask.taskId).status, 'cancelled');
+        pass('创建后账本变坏仍保留排队任务，恢复后可按编号查询取消');
+      } finally { await h.close(); }
+    }
+
+    // 7d. 初始坏账本 + 可执行网址任务：不得抓取，也不得投递任何报告。
+    {
+      const BAD = '{"version":999,"tasks":[{}]}';
+      const fetchCalls = [];
+      const { h, send } = await makeOwnerBridge({
+        files: { 'state/tasks.json': BAD },
+        globals: {
+          safeFetch: async (url, maxChars) => {
+            fetchCalls.push({ url, maxChars });
+            return { url, statusCode: 200, body: '<html>不应执行</html>', truncated: false };
+          }
+        }
+      });
+      try {
+        const ledgerPath = path.join(h.temp, 'state', 'tasks.json');
+        const originalBytes = fs.readFileSync(ledgerPath);
+        const sends = await send('任务：坏账本不执行 https://source.example/blocked');
+        assert.equal(fetchCalls.length, 0, '坏账本时不得抓取');
+        const reportSends = sends.filter(s => /任务完成|研究摘要|产物文件/.test(String(s.text)));
+        assert.equal(reportSends.length, 0, '坏账本时不得投递报告');
+        assert.ok(sends.some(s => String(s.text).includes('[任务账本不可用]')), '必须显示账本不可用');
+        const reportsDir = path.join(h.temp, 'state', 'reports');
+        assert.ok(!fs.existsSync(reportsDir) || fs.readdirSync(reportsDir).length === 0, '不得生成报告');
+        assert.deepEqual(fs.readFileSync(ledgerPath), originalBytes, '坏账本字节不得被改写');
+        pass('初始坏账本带回址任务零抓取、零报告投递');
+      } finally { await h.close(); }
     }
   }
 

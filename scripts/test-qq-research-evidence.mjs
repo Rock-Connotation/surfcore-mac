@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createTaskLedger } from '../src/task-ledger.js';
 import { createTaskHarness } from '../src/task-harness.js';
+import { safeFetch } from '../src/safe-fetch.js';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
 const created = [];
@@ -193,6 +194,69 @@ try {
     pass('空正文按失败处理，0 次成功投递');
   }
 
+  // 4b. 本次只有失败来源时，旧摘录不得充当本次成功证据。
+  {
+    const OLD = 'https://source.example/old';
+    const NEW = 'https://source.example/only-503';
+    const { dir, ledger, harness, fetchCalls, sends } = makeHarness({ responses: {
+      [OLD]: { statusCode: 200, body: htmlWith('旧资料'), truncated: false },
+      [NEW]: { statusCode: 503, body: '', truncated: false }
+    } });
+    const task = ledger.createTask({ goal: '旧摘录不得计入本次', type: 'research', requestor, steps: ['admission', 'research', 'synthesis', 'delivery'] });
+    ledger.updateTask(task.taskId, { sources: [{ url: OLD, requestedUrl: OLD, title: '旧来源', snippet: '旧资料', fetchedAt: 1, byteLength: 6, statusCode: 200, ok: true }] });
+    const result = await harness.runTaskPipeline({ taskId: task.taskId, requestor, goal: task.goal, urls: [NEW] });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'RESEARCH_NO_SOURCES');
+    assert.ok(result.error.includes('HTTP 503'));
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(sends.length, 0);
+    const saved = ledger.getTask(task.taskId);
+    assert.equal(saved.status, 'failed');
+    assert.equal(saved.artifact ?? null, null);
+    assert.ok(!(saved.sources || []).some(s => s.ok && s.url === OLD), '旧摘录不得留在本次来源中');
+    const reports = path.join(dir, 'reports');
+    assert.ok(!fs.existsSync(reports) || fs.readdirSync(reports).length === 0);
+    pass('本次仅有失败来源时旧摘录不得计入成功');
+  }
+
+  // 4c. 受控结构、旧 text() 与原生 Response 三种形态都必须读到真实正文。
+  {
+    const CONTROL = 'https://source.example/controlled';
+    const LEGACY = 'https://source.example/legacy-text';
+    const STANDARD = 'https://source.example/standard-response';
+    const snippets = ['受控结构正文可复现。', '旧接口正文可复现。', '标准响应正文可复现。'];
+    const responses = {
+      [CONTROL]: { statusCode: 200, body: htmlWith(snippets[0]), truncated: false },
+      [LEGACY]: { status: 200, url: LEGACY, text: async () => htmlWith(snippets[1]) },
+      [STANDARD]: new Response(htmlWith(snippets[2]), { status: 200 })
+    };
+    const { harness, sends } = makeHarness({ responses });
+    for (let i = 0; i < snippets.length; i += 1) {
+      const url = [CONTROL, LEGACY, STANDARD][i];
+      const result = await harness.runTaskPipeline({ requestor, goal: '三形态正文 ' + url, urls: [url] });
+      assert.equal(result.ok, true, result.error || '');
+      assert.equal(result.artifact.sourceCount, 1);
+      assert.ok(result.artifact.evidence[0].snippet.includes(snippets[i]));
+      assert.ok(!JSON.stringify(result).includes('[object ReadableStream]'));
+    }
+    assert.equal(sends.length, 3);
+    pass('三种抓取返回形态均读取真实正文');
+  }
+
+  // 4d. 仅有 Login 标题的页面不是研究证据。
+  {
+    const LOGIN = 'https://source.example/login';
+    const { harness, sends } = makeHarness({ responses: {
+      [LOGIN]: { statusCode: 200, body: '<html><head><title>Login</title></head><body></body></html>', truncated: false }
+    } });
+    const result = await harness.runTaskPipeline({ requestor, goal: '登录页 ' + LOGIN, urls: [LOGIN] });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'RESEARCH_NO_SOURCES');
+    assert.ok(result.error.includes('来源正文为空'));
+    assert.equal(sends.length, 0);
+    pass('仅 Login 标题页面不得完成');
+  }
+
   // 5. 仅关键词：明确提示补充网址，保留重试；不执行、不投递成功报告。
   {
     const { ledger, harness, sends } = makeHarness({ responses: {} });
@@ -201,12 +265,12 @@ try {
       goal: '量子计算最新进展'
     });
     assert.equal(result.ok, false);
-    assert.equal(result.status, 'failed');
     assert.equal(result.code, 'RESEARCH_URLS_REQUIRED');
     assert.ok(result.hint.includes('请补充网址'), '必须明确提示补充网址');
+    assert.equal(result.taskId ?? null, null, '仅关键词不得创建工单');
     assert.equal(sends.length, 0);
-    assert.equal(ledger.getTask(result.taskId).status, 'failed');
-    pass('仅关键词：提示补充网址，未投递报告');
+    assert.equal(ledger.listTasks({ conversationKey: requestor.conversationKey }).length, 0);
+    pass('仅关键词：先提示补充网址，未创建工单、未投递报告');
   }
 
   // 6. 送达未知：维持 delivery_unknown；重试不自动重发。
@@ -285,11 +349,12 @@ try {
       };
 
       const keywordSends = await send('任务：量子计算最新进展');
-      assert.equal(keywordSends.length, 2, '先创建工单，再回失败与下一步');
-      assert.ok(keywordSends.some(item => String(item.text).includes('收到电脑研究任务')));
+      assert.equal(keywordSends.length, 1, '仅关键词只回一条补网址提示');
       assert.ok(keywordSends.some(item => String(item.text).includes('请补充网址')), '入口必须提示补充网址');
+      assert.ok(!keywordSends.some(item => String(item.text).includes('收到电脑研究任务')), '未创建工单不得声称已开始执行');
       assert.ok(!keywordSends.some(item => String(item.text).includes('任务完成')));
       assert.equal(fetchCalls.length, 0, '仅关键词不得发起抓取');
+      assert.equal(h.taskLedger.listTasks({ conversationKey: 'private:10001' }).length, 0, '仅关键词不得建单或复用旧任务');
 
       responses.set('https://source.example/bridge', {
         url: 'https://source.example/bridge',
@@ -327,6 +392,22 @@ try {
     } finally {
       await h.close();
     }
+  }
+
+  // 8. 正式装配仍走 src/safe-fetch.js 的受控契约；测试替身只用于受控抓取，不替代正式策略。
+  {
+    const harnessSrc = fs.readFileSync(new URL('../src/task-harness.js', import.meta.url), 'utf8');
+    const bridgeSrc = fs.readFileSync(new URL('../src/bridge.js', import.meta.url), 'utf8');
+    const safeSrc = fs.readFileSync(new URL('../src/safe-fetch.js', import.meta.url), 'utf8');
+    assert.match(harnessSrc, /import\s+\{\s*safeFetch\s*\}\s+from\s+'\.\/safe-fetch\.js'/);
+    assert.match(harnessSrc, /safeFetchImpl\s*=\s*safeFetch/);
+    assert.match(bridgeSrc, /safeFetchImpl:\s*safeFetch/);
+    assert.match(safeSrc, /export async function safeFetch\(urlString, maxChars = 50000\)/);
+    assert.match(safeSrc, /const MAX_REDIRECTS = 5/);
+    await assert.rejects(() => safeFetch('ftp://example.com/a'), /仅允许 http\/https/);
+    await assert.rejects(() => safeFetch('https://example.com/a', 0), /maxChars 必须为正整数/);
+    await assert.rejects(() => safeFetch('http://127.0.0.1:9/'), /禁止访问内网\/本机地址/);
+    pass('正式抓取装配与目标/限额/内网策略保持原样');
   }
 
   console.log(`\n${passed} 组 QQ 研究证据测试通过。`);

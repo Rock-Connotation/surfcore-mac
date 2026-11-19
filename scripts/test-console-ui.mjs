@@ -47,21 +47,13 @@ try {
   browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, serviceWorkers: 'block' });
   // Even if a future console accidentally references an external endpoint, tests cannot reach it.
-  // `/api/voice/packs` 是控制台在 DOMContentLoaded 就调用的语音包探测接口；离线夹具还没实现它
-  // （夹具文件不在本批修改范围）。这里用空列表兑现，避免每次页面加载都留下一个假 404；
-  // 其它未知路由仍然落到夹具的 404，并由最后一条断言继续拦截。
-  const fixtureGaps = new Map([
-    ['/api/voice/packs', { ok: true, packs: [], packsDir: '(offline fixture)' }],
-  ]);
+  // All console APIs, including GET /api/voice/packs, must come from the official offline fixture.
   async function installRoutes(target) {
     await target.route('**/*', async route => {
       const requested = new URL(route.request().url());
       if (requested.origin !== fixture.url) {
         blockedRequests.push(route.request().url());
         return route.abort('blockedbyclient');
-      }
-      if (fixtureGaps.has(requested.pathname)) {
-        return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(fixtureGaps.get(requested.pathname)) });
       }
       return route.continue();
     });
@@ -74,6 +66,15 @@ try {
   page.on('dialog', dialog => dialog.accept());
   await page.goto(fixture.url);
   await page.waitForFunction(() => document.getElementById('v2AgentPreset')?.value === 'qq-chat-v2' && document.getElementById('wlGroups')?.value.includes('123456789'));
+  await test('GET /api/voice/packs is served by the offline fixture', async () => {
+    const response = await page.request.get(new URL('/api/voice/packs', fixture.url).toString());
+    assert.equal(response.status(), 200, 'fixture must answer GET /api/voice/packs itself');
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.packs), 'packs must be an array');
+    assert.equal(typeof body.packsDir, 'string', 'packsDir must be present');
+    assert.ok(body.packsDir.length > 0, 'packsDir must expose the offline fixture path');
+  });
 
   async function navigate(view) {
     if (original) return;

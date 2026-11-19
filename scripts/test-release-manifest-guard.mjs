@@ -152,6 +152,23 @@ async function listen(server) {
   ok(r.status !== 0, '数据文件缺失：非零退出', output(r));
   ok(/缺失：package\.json/.test(r.stdout), '数据文件缺失：输出缺失路径', r.stdout);
 }
+{
+  // 目录里多出可安装的普通程序文件：清单没变也必须阻断，并报出具体路径。
+  const dir = freshCandidate('extra-file');
+  const extra = 'scripts/unlisted-extra.mjs';
+  fs.writeFileSync(path.join(dir, extra), 'console.log(1);\n');
+  const r = runRelease(['--verify', dir, '--ref', 'HEAD']);
+  ok(r.status !== 0, '额外程序文件：非零退出', output(r));
+  ok(output(r).includes(extra), '额外程序文件：错误包含文件路径', output(r));
+}
+{
+  // 排除项仍是既有契约：_backups 里的用户/备份文件不应被当成可安装程序文件。
+  const dir = freshCandidate('excluded-extra');
+  fs.mkdirSync(path.join(dir, '_backups'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '_backups', 'keep.json'), '{}\n');
+  const r = runRelease(['--verify', dir, '--ref', 'HEAD']);
+  ok(r.status === 0, '排除目录内多出文件：仍退出 0', output(r));
+}
 
 // ── 3) 清单结构自检（两个校验分支共用的纯函数）───────────────────────────────
 {
@@ -352,6 +369,178 @@ try {
 } finally {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 }
+
+  // ── 客户端：暂存校验集合必须同时决定备份集合与实际覆盖集合（ID 05/06）──
+  {
+    const crypto = await import('node:crypto');
+    const { testHome, shareTestRoot } = await import('../plugins/surfcore/scripts/isolate-test-home.mjs');
+    const { createUpdatesService } = await import('../plugins/surfcore/lib/updates.js');
+    const artifactRoot = path.join(testHome, 'artifact-r2');
+    fs.mkdirSync(artifactRoot, { recursive: true });
+
+    const sha = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+    const makeTarget = (name) => {
+      const dir = path.join(artifactRoot, name);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify({ name: 'surfcore', version: '1.0.0', type: 'module' }, null, 2)}\n`);
+      fs.writeFileSync(path.join(dir, '.surfcore-install.json'), `${JSON.stringify({ schemaVersion: 1, kind: 'source', sourceRepo: 'test/repo', updateOwner: 'surfcore-updater', version: '1.0.0' }, null, 2)}\n`);
+      fs.writeFileSync(path.join(dir, '.installed-manifest.json'), `${JSON.stringify({ schemaVersion: 1, version: '1.0.0', files: {} }, null, 2)}\n`);
+      fs.writeFileSync(path.join(dir, 'config.json'), '{"keep":"user-data"}\n');
+      for (const rel of ['scripts/apply-update.mjs', 'src/install-identity.js']) {
+        const dest = path.join(dir, rel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(path.join(ROOT, rel), dest);
+      }
+      return dir;
+    };
+    const makeArchive = (name, { missing = [], extra = [] } = {}) => {
+      const base = path.join(artifactRoot, 'zips', name);
+      const src = path.join(base, 'surfcore-main');
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.mkdirSync(path.join(src, 'plugins', 'surfcore', 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(src, 'release'), { recursive: true });
+      fs.writeFileSync(path.join(src, 'package.json'), `${JSON.stringify({ name: 'surfcore', version: '9.9.9', type: 'module' }, null, 2)}\n`);
+      fs.writeFileSync(path.join(src, 'plugins', 'surfcore', 'package.json'), `${JSON.stringify({ name: 'surfcore-plugin', version: '9.9.9' }, null, 2)}\n`);
+      fs.writeFileSync(path.join(src, 'plugins', 'surfcore', 'lib', 'verified-r2.txt'), 'verified\n');
+      const files = {};
+      for (const rel of ['package.json', 'plugins/surfcore/package.json', 'plugins/surfcore/lib/verified-r2.txt']) files[rel] = sha(path.join(src, rel));
+      for (const rel of missing) {
+        fs.writeFileSync(path.join(src, rel), 'required\n');
+        files[rel] = sha(path.join(src, rel));
+        fs.rmSync(path.join(src, rel), { force: true });
+      }
+      fs.writeFileSync(path.join(src, 'release', 'install-manifest.json'), `${JSON.stringify({ schemaVersion: 1, version: '9.9.9', files }, null, 2)}\n`);
+      for (const rel of extra) {
+        const dest = path.join(src, rel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, 'unverified\n');
+      }
+      const zip = path.join(base, 'pkg.zip');
+      execFileSync('zip', ['-qr', zip, 'surfcore-main'], { cwd: base });
+      return fs.readFileSync(zip);
+    };
+    const REMOTE_SHA = 'a'.repeat(40);
+    const stubFetch = (zip) => {
+      const real = globalThis.fetch;
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes('/commits/main')) return new Response(JSON.stringify({ sha: REMOTE_SHA }), { status: 200 });
+        if (u.includes('/contents/package.json')) {
+          const content = Buffer.from(JSON.stringify({ version: '9.9.9' }), 'utf8').toString('base64');
+          return new Response(JSON.stringify({ content }), { status: 200 });
+        }
+        if (u.includes('/archive/')) return new Response(zip, { status: 200 });
+        return new Response('{}', { status: 200 });
+      };
+      return () => { globalThis.fetch = real; };
+    };
+    const mkService = (dir) => createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{
+        id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version',
+        versionRepo: 'test/repo', archiveUrl: 'https://example.com/archive/main.zip',
+      }],
+      pluginLog: () => {},
+    });
+    const structured = (row) => !!row && row.ok === false
+      && typeof row.code === 'string' && row.code.length > 0
+      && typeof row.error === 'string' && row.error.length > 0
+      && typeof row.hint === 'string' && row.hint.length > 0;
+    const assertNoSideEffects = (dir, label) => {
+      ok(!fs.existsSync(path.join(dir, '.state', 'backups')), `${label}：备份未创建`);
+      ok(!fs.existsSync(path.join(dir, '.state', 'updates-pending.json')), `${label}：pending 未创建`);
+      ok(JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version === '1.0.0', `${label}：目标版本未变`);
+    };
+
+    process.env.SURFCORE_UPDATE_NO_SPAWN = '1';
+    try {
+      for (const [name, options, label, needle] of [
+        ['client-missing', { missing: ['plugins/surfcore/lib/required-r2.txt'] }, '清单缺文件', 'plugins/surfcore/lib/required-r2.txt'],
+        ['client-extra', { extra: ['plugins/surfcore/lib/extra-r2.txt'] }, '暂存多出未校验文件', 'plugins/surfcore/lib/extra-r2.txt'],
+      ]) {
+        const dir = makeTarget(name);
+        const restore = stubFetch(makeArchive(name, options));
+        try {
+          const svc = mkService(dir);
+          await svc.check({ fetch: true });
+          const result = await svc.apply(['surfcore']);
+          const row = result.results?.[0];
+          ok(structured(row), `${label}：失败结构带 code/error/hint`, JSON.stringify(row));
+          ok(JSON.stringify(row ?? {}).includes(needle), `${label}：错误包含具体路径`, JSON.stringify(row));
+          assertNoSideEffects(dir, label);
+        } finally { restore(); }
+      }
+
+      const dir = makeTarget('client-valid');
+      const restore = stubFetch(makeArchive('client-valid'));
+      try {
+        const svc = mkService(dir);
+        await svc.check({ fetch: true });
+        const result = await svc.apply(['surfcore']);
+        const row = result.results?.[0];
+        ok(row?.ok === true && row?.staged === true, '合法候选：进入待重启', JSON.stringify(row));
+        const pendingFile = path.join(dir, '.state', 'updates-pending.json');
+        ok(fs.existsSync(pendingFile), '合法候选：pending 文件存在', pendingFile);
+        if (pendingFile) {
+          const pending = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+          ok(Array.isArray(pending.verifiedFiles) && pending.verifiedFiles.includes('plugins/surfcore/lib/verified-r2.txt'), '合法候选：pending 含同一份校验集合', JSON.stringify(pending.verifiedFiles));
+          const mutated = path.join(pending.staging, 'plugins', 'surfcore', 'lib', 'mutated-r2.txt');
+          fs.mkdirSync(path.dirname(mutated), { recursive: true });
+          fs.writeFileSync(mutated, 'not verified\n');
+          pending.waitPid = 999999;
+          fs.writeFileSync(pendingFile, `${JSON.stringify(pending, null, 2)}\n`);
+          execFileSync(process.execPath, [path.join(dir, 'scripts', 'apply-update.mjs'), '--pending', pendingFile], {
+            cwd: dir, env: { ...process.env, ...shareTestRoot() }, stdio: 'pipe', timeout: 10_000,
+          });
+          ok(JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version === '9.9.9', '合法候选：新版本已落地');
+          ok(fs.existsSync(path.join(dir, 'plugins', 'surfcore', 'lib', 'verified-r2.txt')), '合法候选：已校验文件已落地');
+          ok(!fs.existsSync(path.join(dir, 'plugins', 'surfcore', 'lib', 'mutated-r2.txt')), '合法候选：暂存后多出的未校验文件未落地');
+          ok(fs.readFileSync(path.join(dir, 'config.json'), 'utf8').includes('user-data'), '合法候选：用户数据保持原位');
+          ok(!fs.existsSync(pendingFile), '合法候选：pending 已清理');
+        }
+      } finally { restore(); }
+
+      // R2 follow-up: verifiedFiles 必须拦住根目录用户目录子文件（如 models/foo.bin），且在写盘前完成全量预检不留半套覆盖。
+      for (const [caseName, mutatePending, needle] of [
+        ['apply-reject-root-user-dir', (pending) => {
+          const userFile = path.join(pending.staging, 'models', 'keep.bin');
+          fs.mkdirSync(path.dirname(userFile), { recursive: true });
+          fs.writeFileSync(userFile, 'overwrite\n');
+          pending.verifiedFiles = ['package.json', 'models/keep.bin'];
+        }, 'models/keep.bin'],
+        ['apply-preflight-atomic', (pending) => {
+          pending.verifiedFiles = ['package.json', 'plugins/surfcore/lib/nonexistent-r2.txt'];
+        }, 'nonexistent-r2.txt'],
+      ]) {
+        const dir2 = makeTarget(caseName);
+        const restore2 = stubFetch(makeArchive(caseName));
+        try {
+          const svc2 = mkService(dir2);
+          await svc2.check({ fetch: true });
+          await svc2.apply(['surfcore']);
+          const pendingFile2 = path.join(dir2, '.state', 'updates-pending.json');
+          const pending2 = JSON.parse(fs.readFileSync(pendingFile2, 'utf8'));
+          mutatePending(pending2);
+          pending2.waitPid = 999999;
+          fs.writeFileSync(pendingFile2, `${JSON.stringify(pending2, null, 2)}\n`);
+          let failedCode = 0;
+          try {
+            execFileSync(process.execPath, [path.join(dir2, 'scripts', 'apply-update.mjs'), '--pending', pendingFile2], {
+              cwd: dir2, env: { ...process.env, ...shareTestRoot() }, stdio: 'pipe', timeout: 10_000,
+            });
+          } catch (err) {
+            failedCode = err?.status ?? 1;
+          }
+          ok(failedCode !== 0, `${caseName}：apply-update 非零退出`, String(failedCode));
+          const failedPath = `${pendingFile2}.failed`;
+          ok(fs.existsSync(failedPath) && fs.readFileSync(failedPath, 'utf8').includes(needle), `${caseName}：失败记录包含目标路径`, failedPath);
+          ok(JSON.parse(fs.readFileSync(path.join(dir2, 'package.json'), 'utf8')).version === '1.0.0', `${caseName}：预检失败前不覆盖 package.json`);
+        } finally { restore2(); }
+      }
+    } finally {
+      delete process.env.SURFCORE_UPDATE_NO_SPAWN;
+    }
+  }
 
 if (failures) {
   console.error(`\n${failures} 项失败`);

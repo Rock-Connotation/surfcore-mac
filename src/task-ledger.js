@@ -32,7 +32,12 @@ export function createTaskLedger({
     try {
       const content = fs.readFileSync(filePath, 'utf8');
       const parsed = JSON.parse(content);
-      if (!Array.isArray(parsed?.tasks)) throw new Error('Invalid task ledger.');
+      if (parsed?.version !== 1 || !Array.isArray(parsed.tasks)) throw new Error('Invalid task ledger.');
+      for (const task of parsed.tasks) {
+        if (!task || typeof task !== 'object' || Array.isArray(task)) throw new Error('Invalid task ledger.');
+        if (typeof task.taskId !== 'string' || !task.taskId || typeof task.goal !== 'string') throw new Error('Invalid task ledger.');
+        if (!VALID_STATUSES.has(task.status) || !task.requestor || typeof task.requestor !== 'object' || Array.isArray(task.requestor)) throw new Error('Invalid task ledger.');
+      }
       return parsed;
     } catch (error) {
       // 只有“文件确实不存在”才能初始化空账本；截断 JSON、结构错误、权限或 IO

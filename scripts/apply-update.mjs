@@ -77,7 +77,7 @@ async function waitExit(pid, timeoutMs = 60 * 60_000) {
   return false;
 }
 
-function copyZip(staging, target) {
+function copyZip(staging, target, verifiedFiles = null) {
   // robocopy 比 cpSync 可靠：能处理大量文件、失败会返回码。
   // 2026-10-29：从 /MIR 改成 /E —— **只覆盖、不删除**。
   // /MIR 会删掉"源里没有"的文件，连用户自建文件一起删；现在宁可留旧文件也不误删。
@@ -85,14 +85,46 @@ function copyZip(staging, target) {
   const exFiles = ['config.json', 'bili.config.json', 'updates-pending.json'];
   // These are user-owned only at the install root; e.g. src/perception is product code.
   const rootUserDirs = ['roles', 'model', 'models', 'perception'];
+  const excludedDir = (name) => exDirs.some((pattern) => pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern);
+  const excludedFile = (name) => exFiles.includes(name);
+  const rejectSymlink = (p, label) => {
+    try {
+      if (fs.lstatSync(p).isSymbolicLink()) throw new Error(`${label}包含不允许的符号链接：${p}`);
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  };
+  // 新版 pending 带上暂存校验集合：助手只覆盖这份集合，暂存后多出的文件不得落地。
+  // 老 pending 没有该字段时仍走原来的整树复制，避免跨版本排队任务失效。
+  if (Array.isArray(verifiedFiles) && verifiedFiles.length) {
+    try {
+      const root = path.resolve(staging);
+      const destination = path.resolve(target);
+      rejectSymlink(root, '暂存目录');
+      rejectSymlink(destination, '目标目录');
+      const planned = [];
+      for (const rel of verifiedFiles) {
+        const parts = String(rel).split(/[\\/]/).filter(Boolean);
+        if (!parts.length || parts.some((p) => p === '.' || p === '..' || excludedDir(p))
+          || excludedFile(parts[parts.length - 1]) || rootUserDirs.includes(parts[0])) {
+          throw new Error(`校验集合包含不允许的路径：${rel}`);
+        }
+        const source = path.join(root, ...parts);
+        const dest = path.join(destination, ...parts);
+        const stat = fs.lstatSync(source);
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`校验集合不是普通文件：${rel}`);
+        rejectSymlink(dest, '目标文件');
+        planned.push({ source, dest, mode: stat.mode & 0o7777 });
+      }
+      for (const item of planned) {
+        fs.mkdirSync(path.dirname(item.dest), { recursive: true });
+        fs.copyFileSync(item.source, item.dest);
+        fs.chmodSync(item.dest, item.mode);
+      }
+      return { ok: true, verified: planned.length };
+    } catch (error) {
+      return { ok: false, error: `校验集合复制失败：${String(error?.message ?? error)}` };
+    }
+  }
   if (process.platform !== 'win32') {
-    const excludedDir = (name) => exDirs.some((pattern) => pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern);
-    const excludedFile = (name) => exFiles.includes(name);
-    const rejectSymlink = (p, label) => {
-      try {
-        if (fs.lstatSync(p).isSymbolicLink()) throw new Error(`${label}包含不允许的符号链接：${p}`);
-      } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    };
     const root = path.resolve(staging);
     const destination = path.resolve(target);
     const preflight = (from, to) => {
@@ -200,7 +232,7 @@ try {
 
   const result = jobKind === 'git'
     ? gitPull(pending.target, pending.branch)
-    : copyZip(pending.staging, pending.target);
+    : copyZip(pending.staging, pending.target, pending.verifiedFiles);
 
   if (!result.ok) {
     log(`[apply-update] 失败：${result.error}`);

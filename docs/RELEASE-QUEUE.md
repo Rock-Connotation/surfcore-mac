@@ -19,6 +19,22 @@
 > **2026-11-15 补充**：远端 `dev` **分支**已同步（含 setup-dsh 基座 bundle 修复、抖音共享记录零帧边界修复、存量红复核文档），并且这两批已随 `v0.9.0-dev.2` 发成 Pre-release——测试机通过「检查更新」即可收到。
 > **本次未交付的已知残余**（详见 `docs/HANDOFF.md` 顶部）：AC4/AC5 需在真桌面外壳内才能取产品级证据；Electron/Chromium 与非 Node 子进程的出站未做系统级审计。（`scripts/setup-dsh.mjs` 的基座 bundle 缺口已在 2026-11-15 第二批修复，见下；`plugins/surfcore/lib/memory-v2-host.mjs` 不感知 `frameSamples` 属**设计分工**（通用适配器不做领域校验），非缺陷，见第三批。）
 
+### 2026-11-19 审核返工 R2（编号 01–12，本地候选）
+
+**建议**：与上一批 A–D 一起随下一次发布带上；版本由发布会话判断（无接口删除，但 B站状态新增 resume/receipt 键）。
+
+**改了什么**：按权威设计补齐 01–12 的证据与缺口——B站分页恢复/离线大队列/原文 hydration/终态回执、
+任务账本 fail-closed、QQ 研究证据与投递可见、发布清单双向校验与 staging 前置失败、记忆库 ACL 回读、
+macOS locale 守卫、控制台夹具补齐 voice/packs、QQ 模式在线/离线双回执。
+
+**覆盖提交**：候选分支 `fix/review-2026-11-19-r2`，基线 `dev@4069552`；本地候选 `c4722c6`（B站）、`8c60dcf`（QQ）、`d555674`（制品）、`52863d6`（运行时）、`fae7ac6`（文档），清单重生成提交见分支末端。
+
+**验证**：`test:audit` 208/208；`test:regressions` 17/17；插件全量见交付报告；`test:memory-v2` 51 scripts；
+`test:console-ui` 22/22；`lint:failures` 0；`doc-facts` 0；`release-manifest --verify-ref HEAD` 最终候选 HEAD 1123/1123 问题 0。
+
+**case**：`docs/cases/2026-11-19-surfcore-review-r2.md`（内含可直接转发的发布交接块）。
+
+---
 ### 2026-11-19 审核修复 A–D（编号 01–12）
 
 **建议**：随下一次发布带上；同时修复「用户数据被覆盖」「漏私信」「假完成」「更新校验可被绕过」四类高风险，建议 patch 或 minor 由发布会话判断（无接口层破坏，但 B 站状态新增键、报告格式变化）。

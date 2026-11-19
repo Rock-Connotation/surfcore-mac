@@ -32,7 +32,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const MANIFEST_REL = 'release/install-manifest.json';
 
 export const EXCLUDE_DIRS = new Set([
-  'state', 'backups', 'node_modules', '.git', 'logs', 'staging', 'pet', 'characters',
+  'state', 'backups', '_backups', 'node_modules', '.git', 'logs', 'staging', 'pet', 'characters',
   'voice-packs', 'dist', 'video', 'release', 'tmp-update',
   // 内容/个人数据目录：不进公开镜像，也不进清单（它们不是"我们的代码文件"）
   'roles', 'assets', 'audio', 'pet', 'characters', 'examples',
@@ -48,14 +48,34 @@ export function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
+export function isManagedRel(rel) {
+  const parts = rel.split('/');
+  if (parts.some((x) => EXCLUDE_DIRS.has(x))) return false;
+  if (EXCLUDE_FILES.has(parts[parts.length - 1])) return false;
+  if (rel === MANIFEST_REL) return false;
+  return true;
+}
+
 export function filterTracked(list) {
-  return list.filter((rel) => {
-    const parts = rel.split('/');
-    if (parts.some((x) => EXCLUDE_DIRS.has(x))) return false;
-    if (EXCLUDE_FILES.has(parts[parts.length - 1])) return false;
-    if (rel === MANIFEST_REL) return false;
-    return true;
-  });
+  return list.filter(isManagedRel);
+}
+
+/** 枚举目录里所有“会被安装包带上去”的受管文件，复用发布端的排除规则。 */
+export function listManagedFiles(dir) {
+  const dirAbs = path.resolve(dir);
+  const found = [];
+  const visit = (abs) => {
+    for (const ent of fs.readdirSync(abs, { withFileTypes: true })) {
+      const rel = path.relative(dirAbs, path.join(abs, ent.name)).split(path.sep).join('/');
+      if (ent.isDirectory()) {
+        if (isManagedRel(rel + '/.probe')) visit(path.join(abs, ent.name));
+      } else if ((ent.isFile() || ent.isSymbolicLink()) && isManagedRel(rel)) {
+        found.push(rel);
+      }
+    }
+  };
+  visit(dirAbs);
+  return found.sort();
 }
 
 /**
@@ -246,6 +266,9 @@ function verifyDir(dir, ref) {
   const trackedSet = new Set(tracked);
   const files = manifest.files;
   problems.push(...manifestScopeProblems(files, tracked));
+  for (const rel of listManagedFiles(dirAbs)) {
+    if (!trackedSet.has(rel)) problems.push('目录多出未受清单保护的程序文件：' + rel);
+  }
   const version = refVersion(ref);
   if (manifest.version !== version) problems.push(`${MANIFEST_REL}：清单版本 ${manifest.version} 与 package.json ${version} 不一致`);
 

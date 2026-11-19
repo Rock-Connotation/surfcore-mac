@@ -7,6 +7,12 @@ import { canonical, characterId, digest, fail, identifier, requireThat, SCHEMA_V
 
 const FORMAT = 1;
 const KERNEL = 2;
+const posix = process.platform !== 'win32';
+const permissions = (label) => ({
+  code: 'MEMORY_PERMISSIONS_UNSAFE',
+  error: `${label} cannot be restricted to the current user.`,
+  hint: 'Fix the ownership or ACL of this managed memory folder, then reopen the memory service. Do not share the memory store between accounts.'
+});
 const compatible = (version) => Number.isSafeInteger(version) && version >= FORMAT && version <= KERNEL;
 const ROLE_TABLES = ['metadata', 'events', 'memories', 'memory_versions', 'links', 'operations', 'ingest_offsets', 'search_docs', 'terms', 'jobs', 'source_sequence', 'source_clock'];
 const json = JSON.parse;
@@ -15,14 +21,23 @@ const uid = (value) => { requireThat(typeof value === 'string' && /^[a-z]+-[a-f0
 // V2 生命周期的目录是专属目录：只建/收紧自己这一层，父目录沿用既有部署契约。
 function ensurePrivateDir(dir, label) {
   fs.mkdirSync(dir, { recursive: true });
+  const receipt = permissions(label), stat = fs.lstatSync(dir);
+  requireThat(stat.isDirectory() && !stat.isSymbolicLink(), receipt.code, `${receipt.error} (not a dedicated directory)`, receipt.hint);
+  if (posix && typeof process.getuid === 'function') requireThat(stat.uid === process.getuid(), receipt.code, `${receipt.error} (owned by another user)`, receipt.hint);
   const result = hardenDir(dir);
-  requireThat(result.ok, 'MEMORY_PERMISSIONS_UNSAFE', `${label} cannot be restricted to the current user. (${result.detail})`, 'Fix the ownership or ACL of the memory folder, then reopen the memory service. Do not share the memory store between accounts.');
-  if (process.platform !== 'win32') requireThat((fs.statSync(dir).mode & 0o777) === 0o700, 'MEMORY_PERMISSIONS_UNSAFE', `${label} is still accessible to other accounts.`, 'Fix the folder permissions (chmod 700) and reopen the memory service.');
+  requireThat(result.ok, receipt.code, `${receipt.error} (${result.detail})`, result.hint ?? receipt.hint);
+  if (posix) {
+    const mode = fs.statSync(dir).mode & 0o777;
+    requireThat(mode === 0o700, receipt.code, `${receipt.error} (mode is ${mode.toString(8)})`, receipt.hint);
+  }
 }
 function secureFile(file, label) {
+  const receipt = permissions(label), stat = fs.lstatSync(file, { throwIfNoEntry: false });
+  requireThat(stat && stat.isFile() && !stat.isSymbolicLink(), receipt.code, `${receipt.error} (not an ordinary file)`, receipt.hint);
+  if (posix && typeof process.getuid === 'function') requireThat(stat.uid === process.getuid(), receipt.code, `${receipt.error} (owned by another user)`, receipt.hint);
   const result = hardenFile(file);
-  requireThat(result.ok, 'MEMORY_PERMISSIONS_UNSAFE', `${label} cannot be restricted to the current user. (${result.detail})`, 'Fix the ownership or ACL of the memory folder, then reopen the memory service. Do not share the memory store between accounts.');
-  if (process.platform !== 'win32') requireThat((fs.statSync(file).mode & 0o077) === 0, 'MEMORY_PERMISSIONS_UNSAFE', `${label} is still accessible to other accounts.`, 'Fix the file permissions (chmod 600) and reopen the memory service.');
+  requireThat(result.ok, receipt.code, `${receipt.error} (${result.detail})`, result.hint ?? receipt.hint);
+  if (posix) requireThat((fs.statSync(file).mode & 0o077) === 0, receipt.code, `${receipt.error} (mode is ${(fs.statSync(file).mode & 0o777).toString(8)})`, receipt.hint);
 }
 function sync(file) { const fd = fs.openSync(file, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }
 function syncDir(dir) { const fd = fs.openSync(dir, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }
