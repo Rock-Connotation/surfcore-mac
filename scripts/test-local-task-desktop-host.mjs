@@ -587,6 +587,35 @@ export async function apply(ctx, config) {
   assert.equal(blockedImg.status, 403);
   assert.equal(blockedImgJson.code, 'NOTIFY_IMAGE_BLOCKED');
   assert.ok(blockedImgJson.hint);
+
+  // Task interaction approval mentioning /Users/... workspace or Desktop path must pass through to Owner QQ,
+  // while secrets or .ssh paths in interaction text must still be blocked with actionable hint.
+  const sentBeforeInteraction = bridge.calls.sent.length;
+  const okInteraction = await fetch(notifyUrl, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      message: `【需要授权 t1a2b3c4】任务 task-int-1\n工具：bash\n说明：允许写入 /Users/owner/Desktop/report.txt\n请回复：通过 t1a2b3c4 或 拒绝 t1a2b3c4`,
+      taskInteraction: { id: 't1a2b3c4', kind: 'approval', taskId: 'task-int-1' },
+    }),
+  });
+  const okInteractionJson = await okInteraction.json();
+  assert.equal(okInteraction.status, 200, JSON.stringify(okInteractionJson));
+  assert.equal(okInteractionJson.ok, true);
+  assert.equal(bridge.calls.sent.length, sentBeforeInteraction + 1);
+
+  const badInteraction = await fetch(notifyUrl, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      message: '【需要授权 t1a2b3c5】任务 task-int-2\n说明：读取 /Users/owner/.ssh/id_rsa',
+      taskInteraction: { id: 't1a2b3c5', kind: 'approval', taskId: 'task-int-2' },
+    }),
+  });
+  const badInteractionJson = await badInteraction.json();
+  assert.equal(badInteraction.status, 403);
+  assert.equal(badInteractionJson.code, 'NOTIFY_SENSITIVE');
+  assert.ok(badInteractionJson.hint && badInteractionJson.hint.includes('设置页'));
   console.log('PASS Real bridge /api/notify/owner enforces task path audit, delivers base64 image segments, and blocks unsafe paths');
 
   const exitPromise = new Promise((resolve) => hostProc.once('exit', (code, signal) => resolve({ code, signal })));

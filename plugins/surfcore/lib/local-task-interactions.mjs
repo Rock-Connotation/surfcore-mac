@@ -126,14 +126,34 @@ export function createLocalTaskInteractions({
     try {
       const res = await callBridge('/api/notify/owner', {
         method: 'POST',
-        body: { message: text },
+        body: {
+          message: text,
+          taskInteraction: {
+            id: entry.id,
+            kind: entry.kind,
+            ...(entry.taskId ? { taskId: entry.taskId } : {}),
+          },
+        },
         timeoutMs: 15000,
       })
       if (!res || res.status >= 400 || res.data?.ok === false) {
-        log(`[local-task-interactions] failed to notify owner for ${entry.id}: status=${res?.status ?? 'none'}`)
+        const code = typeof res?.data?.code === 'string' && res.data.code ? res.data.code : 'LOCAL_TASK_INTERACTION_NOTIFY_FAILED'
+        const error = typeof res?.data?.error === 'string' && res.data.error ? res.data.error : '确认消息未能发到 QQ 私聊'
+        const hint = typeof res?.data?.hint === 'string' && res.data.hint ? res.data.hint : '请到 DSH 设置页查看待确认项并决定是否允许'
+        entry.notifyError = { code, error, hint, status: res?.status ?? null }
+        log(`[local-task-interactions] failed to notify owner for ${entry.id}: status=${res?.status ?? 'none'} code=${code} error=${error} | ${hint}`)
+      } else {
+        entry.notifyError = null
       }
     } catch (error) {
-      log(`[local-task-interactions] notify owner error for ${entry.id}:`, error?.message ?? error)
+      const msg = String(error?.message ?? error)
+      entry.notifyError = {
+        code: 'LOCAL_TASK_INTERACTION_NOTIFY_ERROR',
+        error: msg || '确认消息推送异常',
+        hint: '请检查 QQ 桥接状态，或直接到 DSH 设置页确认',
+        status: null,
+      }
+      log(`[local-task-interactions] notify owner error for ${entry.id}:`, msg)
     }
   }
 
@@ -253,6 +273,7 @@ export function createLocalTaskInteractions({
         allowAlways: entry.allowAlways,
         isBinaryApproval: entry.isBinaryApproval,
         createdAt: entry.createdAt,
+        ...(entry.notifyError ? { notifyError: entry.notifyError } : {}),
       })
     }
     return items

@@ -86,13 +86,19 @@ export function createLocalTaskApi({ stateDir, currentDshUrl, getRuntime, getDef
     return reply(`已接收，任务号 ${taskId}`, { taskId, queued: false })
   }
 
+  function formatPendingSummary(item, includeTaskId = false) {
+    const base = includeTaskId ? `${item.id} [${item.taskId ?? '-'}] ${item.title}` : `${item.id} (${item.title})`
+    if (!item?.notifyError) return base
+    return `${base}（QQ通知未送达:${item.notifyError.code}，请到设置页确认）`
+  }
+
   function describeAll(runtime, taskId) {
     const pendingInteractions = runtime.interactions?.listPending?.(taskId ? { taskId } : {}) ?? []
     if (taskId) {
       const one = runtime.service.queryTask({ taskId })
       if (!one.ok) return one
       const extra = pendingInteractions.length
-        ? `\n等待确认：${pendingInteractions.map((i) => `${i.id} (${i.title})`).join('; ')}`
+        ? `\n等待确认：${pendingInteractions.map((i) => formatPendingSummary(i, false)).join('; ')}`
         : ''
       return reply(runtime.service.describeTask(one.task) + extra, { taskId, pendingInteractions })
     }
@@ -100,7 +106,7 @@ export function createLocalTaskApi({ stateDir, currentDshUrl, getRuntime, getDef
     const prefix = all.quarantined ? '⚠️ 存储域已隔离核对，当前暂停派发新任务。\n' : ''
     const tasks = all.tasks.slice(0, 10)
     const pendingLine = pendingInteractions.length
-      ? `\n等待确认：${pendingInteractions.map((i) => `${i.id} [${i.taskId ?? '-'}] ${i.title}`).join('；')}`
+      ? `\n等待确认：${pendingInteractions.map((i) => formatPendingSummary(i, true)).join('；')}`
       : ''
     if (!tasks.length && !pendingInteractions.length) return reply(prefix ? prefix.trim() : '还没有任务', { pendingInteractions })
     const lines = tasks.map((task) => runtime.service.describeTask(task).split('\n')[0])

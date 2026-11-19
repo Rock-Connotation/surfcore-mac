@@ -410,6 +410,9 @@ function makeMemoryDomain() {
   assert.equal(pending1.length, 1);
   assert.equal(bridgeMessages.length, 1);
   assert.ok(bridgeMessages[0].body.message.includes(pending1[0].id));
+  assert.equal(bridgeMessages[0].body.taskInteraction?.id, pending1[0].id);
+  assert.equal(bridgeMessages[0].body.taskInteraction?.kind, 'user-question');
+  assert.equal(bridgeMessages[0].body.taskInteraction?.taskId, sub.task.taskId);
 
   // Non-owner actor cannot answer
   const forbid = interactions.answer({ id: pending1[0].id, decision: 'allow', actor: { userId: 'stranger-2' } });
@@ -457,6 +460,36 @@ function makeMemoryDomain() {
   ac.abort();
   await assert.rejects(abortPromise, (e) => e?.code === 'ASK_CANCELLED');
   assert.equal(interactions.listPending().length, 0);
+
+  // When bridge rejects notify with 403 NOTIFY_SENSITIVE, listPending exposes structured notifyError
+  const failHandlers = new Map();
+  const failCleanups = [];
+  const failInteractions = createLocalTaskInteractions({
+    scoped: {
+      on(evt, fn) { failHandlers.set(evt, fn); return () => failHandlers.delete(evt); },
+      effect(fn) { failCleanups.push(fn()); },
+    },
+    service,
+    ownsSession: (sid) => sid === 'sess-owned-1',
+    callBridge: async () => ({
+      ok: false,
+      status: 403,
+      data: { ok: false, code: 'NOTIFY_SENSITIVE', error: '通知正文疑似含敏感信息', hint: '请直接到 DSH 设置页查看并决定是否允许' },
+    }),
+  });
+  const blockedApproval = failHandlers.get('approval/request')({
+    agent: { session: { id: 'sess-owned-1' } },
+    toolName: 'bash',
+    reason: 'Access /Users/owner/.ssh/id_rsa',
+  }, async () => 'unavailable');
+  await new Promise((r) => setTimeout(r, 15));
+  const failedList = failInteractions.listPending();
+  assert.equal(failedList.length, 1);
+  assert.equal(failedList[0].notifyError?.code, 'NOTIFY_SENSITIVE');
+  assert.ok(failedList[0].notifyError?.hint);
+  assert.equal(failInteractions.answer({ id: failedList[0].id, decision: 'reject' }).ok, true);
+  assert.equal(await blockedApproval, 'rejected');
+  for (const fn of failCleanups) fn?.();
 
   for (const fn of cleanups) fn?.();
   pass('local-task-interactions bridges CUA, mouse control, ask_user_question, and sandbox approvals cleanly');

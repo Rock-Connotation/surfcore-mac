@@ -9431,13 +9431,20 @@ async function main() {
           const taskResultId = typeof body.taskResult?.taskId === 'string' && /^task-[A-Za-z0-9-]+$/.test(body.taskResult.taskId)
             ? body.taskResult.taskId
             : '';
-          const sensitive = taskResultId ? hasSensitiveTaskOutput(message) : SENSITIVE_RE.test(message);
+          const taskInteractionId = typeof body.taskInteraction?.id === 'string' && /^t[a-f0-9]{7}$/.test(body.taskInteraction.id)
+            ? body.taskInteraction.id
+            : '';
+          const sensitive = (taskResultId || taskInteractionId) ? hasSensitiveTaskOutput(message) : SENSITIVE_RE.test(message);
           if (sensitive) {
             sendJson({
               ok: false,
               code: 'NOTIFY_SENSITIVE',
               error: '通知正文疑似含敏感信息，已阻止发送',
-              hint: taskResultId ? '任务结果含密钥、凭据或受限系统路径；去掉敏感内容后再补发' : '检查日记里是否带路径/令牌；去掉后再推',
+              hint: taskInteractionId
+                ? '确认说明含密钥、凭据或受限系统路径，已阻止发往 QQ；请直接到 DSH 设置页查看并决定是否允许'
+                : taskResultId
+                  ? '任务结果含密钥、凭据或受限系统路径；去掉敏感内容后再补发'
+                  : '检查日记里是否带路径/令牌；去掉后再推',
             }, 403);
             return;
           }
