@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-24 | [红豆不回群消息：重启后内存态来源丢失 + 失败静默](2026-11-24-qq-hongdou-no-reply.md) | 启动时水合磁盘已提交 QQ 源、失败结构化发 QQ、断线/首次连接留队重连重放与补唤醒；根治而非放宽授权 | live 53/53 + 209/209、当前树 50/50 + 195/195 全绿，真机待验 |
 | 2026-11-12 | [A6 失败可见性：ok:false 三件套静态检查](2026-11-12-a6-failure-visibility.md) | lint-failures 棘轮基线（669 处债务入册只许降不许升），B站扫码/更新/TTS/语音包 P0 链路补齐 code+hint 并加失败分支断言 | 本地验收，未发布 |
 | 2026-11-12 | [PRD 拍板修订（定位/双平台/默认QQ/无分级/V1清单）](2026-11-12-prd-revision.md) | 六条拍板逐条落档 docs/product/ 四份；设置分叉核查实证无分叉；V1 清单只盘不删按安全→痛排序 | 本地验收，未发布 |
 | 2026-11-12 | [文档平台事实错误与易腐数字校正 + doc-facts 校验](2026-11-12-doc-facts-and-platform-correction.md) | 修正“不支持 macOS”等事实错误与版本/标签/模块/路径数字，新增离线可执行校验 | 未发布（文档+开发脚本） |
@@ -188,3 +189,4 @@
 - [2026-11-12 QQ Native语音与白名单启用流程](2026-11-12-qq-native-voice-access.md)
 
 - [V1 退役破坏式重构](2026-11-12-v1-retirement.md)：六项 V1 按 2026-11-12 拍板退役中（Memory 路由 V2-only、QQ 一代 preset/reserved/人格过滤层、B站 V1 会话层、控制台与设置窗口一代入口）；含七步完整逻辑、失败路径、已知残留与发布交接块。
+- [红豆不回群消息：系统提示自毁循环与退役黑话触发](2026-11-25-qq-hongdou-system-failure-self-destruct.md)：`flushSystemFailures` 改走 `sendOwnerManagementReply` 管理直发通道避免误触 `MEMORY_PRESET_UNSAFE` 清空 `qqMemory`，停止 V2 下 `maybeQueueSlangExtraction` 自动触发；实机重启后已取得真实 Native QQ 发送回执。

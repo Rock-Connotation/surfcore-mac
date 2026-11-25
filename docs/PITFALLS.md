@@ -4504,3 +4504,30 @@ QQ旧MCP注册qq_send_voice不代表私有NativeOwner拥有语音工具；Owner/
 - 新增 `src/core/memory-v2-preflight.js` 只读预检：fresh / ready / retired-v1 / control-only / route-only / corrupt / reader-too-new / unreadable 分状态，处理计划明确「不删 routing、不删控制库、不改权限」。
 - QQ 模式来源分离：`absent` 按明确 `chat` 契约；权威 `retired`/`invalid`/`unreadable`/`unavailable` 进入可见 blocked，且不被本地低优先级值掩盖。
 - 回归：`scripts/test-v2-real-integration.mjs`、`scripts/test-issue-regressions.mjs`（R07/R03 四项）、`plugins/surfcore/scripts/test-memory-v2-runtime.mjs`（正式授权后 capture/prepare 可用）。
+
+---
+
+## #164（2026-11-24，P0）桥接重启把内存态来源清零，12 秒后补唤醒必踩 `MEMORY_SOURCE_PENDING`；失败只记日志等于没做
+
+**现象**（详见 [case](cases/2026-11-24-qq-hongdou-no-reply.md)）：给红豆发群消息，入站抓到了但没有 Native 回复，QQ 侧也没有任何错误提示；日志出现在桥接两次重启后约 12 秒。
+
+**根因与预防**：
+- `latest/history` 是内存 Map，`qq-producer` 元数据在磁盘；重启后入口查表为空，但 `wakeBacklogConversations('boot')` 仍照常触发，`prepareReply()` 读到空 `latest` 直接 `MEMORY_SOURCE_PENDING`。
+- 诊断教训：先核对“磁盘 producer 已提交数”与“内存 latest 是否为空”，再查失败是否真的发到 QQ；`memoryV2Failure()` 只写 map/activity 时，UI 显示运行中并不代表用户看得见失败。
+- 正确修法是在补唤醒前只读水合当前角色/纪元的 committed 记录（逐条校验游标=文件大小、角色/纪元、ref 版本），失败路径统一 `code/error/hint` + 脱敏 + 去重 + 断线留队重连重放；**禁止**放宽 `MEMORY_SOURCE_PENDING` 或用假 captured source 绕过授权（11-11 曾因此打穿 scope）。
+- 残留缺口：启动时 SnowLuma 从未连过（everConnected=false），通道门槛跳过的 boot 补唤醒在首次连接时因 `!downNotified` 提前 return 永不重试；用 `backlogWakePending` 标记 + `notifySendChannelUp()` 无条件重放/有标记时重排 `wakeBacklogConversations('reconnect')` 补上。
+
+**怎么验证**：`node scripts/test-memory-v2-qq-system-failure.mjs`、`node scripts/test-memory-v2-snowluma-backlog-retry.mjs`、`node scripts/test-memory-v2-qq.mjs`、`npm run test:memory-v2`（live 53/53 / 当前树 50/50）、`npm run test:audit`（live 209/209 / 当前树 195/195）、`npm run test:regressions`；真机需重启桥接后发一条群消息确认 Native 回复或 QQ 可见提示。早前当前树的两处 `MEMORY_BACKEND_UNSUPPORTED` 在完整重跑中未复现。
+
+---
+
+## #165（2026-11-25，P0）系统失败提示直调 `sendToQQ` 撞 `MEMORY_PRESET_UNSAFE` 并清空 `qqMemory`，叠加退役黑话每 10 条群消息点火
+
+**现象**（详见 [case](cases/2026-11-25-qq-hongdou-system-failure-self-destruct.md)）：红豆正常回复后突然失声；`qq-activity.log` 先出现 `MEMORY_DERIVATION_UNAVAILABLE`（群聊每 10 条消息）或 `SNOWLUMA_OFFLINE` 重连补发，紧接着连报 2 次 `MEMORY_PRESET_UNSAFE`，随后主动唤醒报 `MEMORY_SOURCE_PENDING` 并触发连续失败 30 分钟暂停，QQ 侧既无回复也无系统提示。
+
+**根因与预防**：
+- `flushSystemFailures` 调 `sendToQQ` 未带 `managementSendTickets`，被 `bot[method]` 包装器拦进 `beginMemoryV2Send` → `requireMemoryV2SessionSafety(key, state.sessions[key])`；V2 Native 不建旧会话必败 `MEMORY_PRESET_UNSAFE`，进而**递归触发 `memoryV2Failure` 并调用 `qqMemory.retire(key)` 清空该会话内存里的 `latest/history`**，把正常会话打成 `MEMORY_SOURCE_PENDING` 死循环。
+- 已退役的 `runSlangExtraction` 无条件调用 `memoryV2Failure(MEMORY_DERIVATION_UNAVAILABLE)`，而 `maybeQueueSlangExtraction` 仍在普通群聊每 10 条消息自动触发它。
+- 预防：桥接侧确定性系统提示必须走 `sendOwnerManagementReply({ ..., phase: 'management', system: true, validate })`（复用一次性 `managementSendTickets` 与 ACK 校验），禁止直调 `sendToQQ`；已退役的派生任务不得在入站热路径自动排程；新增系统提示测试必须过真实 `bridgeHarness` + `everConnected: true`，不能只测纯队列 helper。
+
+**怎么验证**：`node scripts/test-memory-v2-qq-system-failure.mjs`、`npm run test:audit`（live 209/209 / 当前树 195/195）、`npm run test:regressions`、`npm run lint:failures`；重启 live 桥接确认水合已提交源、真实 Native QQ 发送回执及 `memoryV2.failures=[]`。
