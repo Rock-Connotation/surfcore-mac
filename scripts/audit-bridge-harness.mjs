@@ -2,6 +2,7 @@ import { createMemoryClient } from '../src/core/memory-v2-client.js';
 import { createNativeQQChannel } from '../src/core/qq-native-channel.js';
 import { deriveMemoryProviderRouteId } from '../src/core/memory-v2-routing.js';
 import { createQQMemoryBridge } from '../src/core/memory-v2-qq.js';
+import { createSystemFailureQueue, formatSystemFailureNotice } from '../src/core/memory-v2-qq-system-failure.mjs';
 import { buildCharacterContext } from '../src/core/context.js';
 import { voiceGroupPolicies, voiceMentionBlock } from '../src/voice-group-policy.js';
 // Execute the real bridge initialization/functions against temporary files and fake peers.
@@ -232,7 +233,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
-    qqMemory, nativeQQ, retireMemoryV2Session, memoryV2Failures, memoryV2Route, validateMemoryV2ProviderRoute, beginMemoryV2Send, finishMemoryV2Send,
+    qqMemory, nativeQQ, retireMemoryV2Session, memoryV2Failures, memoryV2Failure, queueSystemFailure, flushSystemFailures, systemFailureQueue, memoryV2Route, validateMemoryV2ProviderRoute, beginMemoryV2Send, finishMemoryV2Send,
+    feedSlangWindow, runSlangExtraction,
     sendOwnerManagementReply, managementDelivery, modeAdmissionSnapshot, assertModeAdmission,
     setSelfUserId(value) { selfUserId = Number(value); },
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, deliverPromptNow, drainPromptQueue,
@@ -259,6 +261,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     getModeBlocked() { return modeBlocked; },
     clearModeBlock() { modeBlocked = null; modeStatus = { state: 'default', source: 'none', requested: null }; },
     setSnowlumaHealth(patch = {}) { Object.assign(snowlumaHealth, patch); },
+    snowlumaHealth,
+    notifySendChannelUp, notifySendChannelDown, wakeBacklogConversations,
     setSelfIdentity(display, id) {
       selfDisplayName = String(display ?? '');
       selfUserId = String(id ?? '');
@@ -318,7 +322,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...dshHealth,
     synthesizeToFile: synthesizeImpl, createVoiceManagement: voiceManagementImpl, encodeVoiceRecord, readVolcKey, startVoxdCloud, voiceSendBudget, commitQqConfigPatch, transactQqConfig, persistSnowLumaEndpoint, persistToken, voiceGroupPolicies, voiceMentionBlock,
     ...tokenBudget,
-    createQQMemoryBridge, createMemoryClient, createNativeQQChannel, buildCharacterContext, deriveMemoryProviderRouteId,
+    createQQMemoryBridge, createSystemFailureQueue, formatSystemFailureNotice, createMemoryClient, createNativeQQChannel, buildCharacterContext, deriveMemoryProviderRouteId,
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
