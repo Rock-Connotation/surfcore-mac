@@ -14,6 +14,48 @@
 
 ## 待发布
 
+### 2026-11-25 红豆失声根治：系统提示改走管理通道 + 停用 V2 退役黑话自动触发（本地候选，覆盖 live 与 main 两工作区未提交改动）
+
+**建议**：与 2026-11-24 候选合并交付；无破坏性接口变更，版本号由发布会话定。
+
+**改了什么**：出站彻底分层——新增 `sendBridgeSystemNotice` 把全部 25+ 处确定性系统提示/斜杠命令/交互回执收口到 `sendOwnerManagementReply`（`sendToQQ` 仅保留旧 AI 正文）；`qqMemory.prepareReply` 支持按单 key 从当前角色/纪元磁盘 `qq-producer` 按需自愈，会话/发送异常 `qqMemory.retire` 统一带 `{ preserveSources: true }` 不擦已提交源；`noteSendFailure` 排除 `MEMORY_*`/`CHARACTER_*`/`QQ_MODE_*`/`OWNER_REPLY_*` 防止误熔断；V2 下停止 `maybeQueueSlangExtraction` 自动排程。
+
+**case**：`docs/cases/2026-11-25-qq-hongdou-system-failure-self-destruct.md`。
+
+**验证**（2026-11-25）：live 树 `test:memory-v2` 53/53、`test:audit` 209/209、`test:regressions`、`lint:failures` 全绿；主树 `test:memory-v2` 50/50、`test:audit` 195/195、`test:regressions`、`lint:failures` 全绿；实机重启后 `group:1135502130` 已取得真实 Native QQ 发送回执，`memoryV2.failures=[]`。
+
+```text
+【合并请求】
+范围：红豆失声全局最优根治——确定性系统/命令/交互出站彻底分层 + qqMemory 磁盘真源按需自愈与保留已提交源 + 通道熔断过滤策略码 + 停用 V2 退役黑话自动排程
+文件：src/bridge.js、src/core/memory-v2-qq.js、scripts/audit-bridge-harness.mjs、scripts/test-memory-v2-qq.mjs、scripts/test-memory-v2-qq-system-failure.mjs、docs/cases/2026-11-25-qq-hongdou-system-failure-self-destruct.md、docs/PITFALLS.md、docs/cases/README.md、docs/RELEASE-QUEUE.md
+测试：live test:memory-v2 53/53 + test:audit 209/209 + test:regressions + lint:failures 全绿；主树 test:memory-v2 50/50 + test:audit 195/195 + test:regressions + lint:failures 全绿；实机重启验收通过
+失败路径：确定性系统提示经管理通道发送且失败留队重连重放；非传输层策略错误不触发 30 分钟通道熔断；真正无源会话仍 fail-closed 返回 MEMORY_SOURCE_PENDING；显式 runSlangExtraction 保留 code/hint
+风险/未验证：未改动 SnowLuma/DSH 主进程；发布前需从合并 HEAD 重生成安装清单
+回滚：撤销 src/bridge.js 与 src/core/memory-v2-qq.js 改动并重启 QQ 桥接，无数据变更
+建议版本：patch（与 2026-11-24 候选合并交付，版本号由发布会话定）
+```
+
+### 2026-11-24 红豆群消息静默根治（本地候选，覆盖 live 与 main 两个工作区未提交改动）
+
+**建议**：待真机 QQ 群消息验收通过后随下一次发布带上；无破坏性接口变更。版本号由发布会话定。
+
+**改了什么**：桥接启动在补唤醒前从 `qq-producer` 只读水合当前角色/纪元的已提交源；`MEMORY_SOURCE_PENDING` / `SNOWLUMA_OFFLINE` 等系统失败以【系统提示】`code/error/hint` 发到 QQ，密钥脱敏、10 分钟去重、发送失败留队、重连重放；首次连接 SnowLuma 也补放被通道门槛跳过的 boot 补唤醒。
+
+**case**：`docs/cases/2026-11-24-qq-hongdou-no-reply.md`（内含可直接转发的发布交接块）。
+
+**验证**（2026-11-24 完整重跑）：live 树 `npm run test:memory-v2` 53/53、`npm run test:audit` 209/209、`npm run test:regressions` 全通过；当前树回写后 `npm run test:memory-v2` 50/50、`npm run test:audit` 195/195、`node --check`、helper、QQ 适配器、reconnect 测试、`lint:failures` 全通过（先前两处 `MEMORY_BACKEND_UNSUPPORTED` 为偶发前置问题，完整重跑未复现）。真机验收待用户发送一条群消息后补记。
+
+```text
+【合并请求】
+范围：红豆群消息静默根治——桥接重启后从磁盘水合已提交 QQ 源 + 系统失败 QQ 可见化 + 断线/首次连接重连重放与补唤醒
+文件：src/bridge.js、src/core/memory-v2-qq.js、src/core/memory-v2-qq-system-failure.mjs（新增）、scripts/test-memory-v2-qq.mjs、scripts/test-memory-v2-qq-system-failure.mjs（新增）、scripts/test-memory-v2-snowluma-backlog-retry.mjs（新增）、scripts/audit-bridge-harness.mjs、docs/cases/2026-11-24-qq-hongdou-no-reply.md、docs/PITFALLS.md、docs/cases/README.md、docs/RELEASE-QUEUE.md
+测试：node --check src/bridge.js 通过；test-memory-v2-qq-system-failure/test-memory-v2-qq/test-memory-v2-snowluma-backlog-retry PASS；npm run test:memory-v2 53/53；npm run test:audit 209/209；npm run test:regressions 全通过；npm run lint:failures 退出 0
+失败路径：MEMORY_SOURCE_PENDING / SNOWLUMA_OFFLINE 等以【系统提示】code/error/hint 发到 QQ，脱敏、10 分钟去重、发送失败留队、重连重放
+风险/未验证：真实 QQ 群消息验收待用户发送后补；未改 SnowLuma/ssh；发布前需从合并 HEAD 重生成安装清单
+回滚：撤销六个代码文件改动并重启桥接；hydrate 只读不写 producer 元数据
+建议版本：patch（版本号由发布会话定）
+```
+
 > **2026-11-15 稳定版 `v0.9.0` 已发布**：`Rock-Connotation/surfcore-mac` 的 `main` @ `29d8ff9`（tree 与本地 `9424cb7` 逐字节相同）、tag `v0.9.0`、Release `SurfCore v0.9.0`（非 Pre-release、`--latest`）；**下方全部批次随本次发布交付**。三条门禁：清单 `--verify-ref HEAD` 1113/1113 问题 0、远端 `verify-remote-manifest v0.9.0` 一致 1113 / 不符 0 / 缺失 0。
 > **2026-11-15 dev 测试构建**：**`v0.9.0-dev.2` 是通道最新**（tag / Pre-release @ 远端 `76310d7`；本地构建提交 `53f71db`，tree 逐字节相同 `9118306…`；三条门禁全过：本地 `--verify-ref HEAD` 1115/1115 问题 0、远端 `verify-remote-manifest v0.9.0-dev.2` 一致 1115/不符 0/缺失 0、Release 为 Pre-release 且 `/releases/latest` 仍是 `v0.9.0`）。测试机把更新通道切 **dev** 后点「检查更新」。上一版 `v0.9.0-dev.1`（@ `c5da206`）保留在通道里，更新器取 semver 最高的那个。
 > **2026-11-15 补充**：远端 `dev` **分支**已同步（含 setup-dsh 基座 bundle 修复、抖音共享记录零帧边界修复、存量红复核文档），并且这两批已随 `v0.9.0-dev.2` 发成 Pre-release——测试机通过「检查更新」即可收到。

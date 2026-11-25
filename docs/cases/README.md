@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-24 | [红豆不回群消息：重启后内存态来源丢失 + 失败静默](2026-11-24-qq-hongdou-no-reply.md) | 启动时水合磁盘已提交 QQ 源、失败结构化发 QQ、断线/首次连接留队重连重放与补唤醒；根治而非放宽授权 | live 53/53 + 209/209、当前树 50/50 + 195/195 全绿，真机待验 |
 | 2026-11-19 | [R2 复审补齐、本机任务审批 403 修复与双线合流](2026-11-19-qq-r2-followup-and-local-task-integration.md) | 补齐 R2 送达后读账本容错/delivering 防重发/Windows hardenFile/apply-update 预检，修复本机任务交互确认 403 静默拦截，并合入 dev（R1+R2） | 隔离真宿主/全套门禁通过，未切活进程、未发布 |
 | 2026-11-19 | [SurfCore 审核返工 R2（01–12）](2026-11-19-surfcore-review-r2.md) | B站分页恢复/原文/终态回执、任务账本严格校验、QQ 研究证据与送达容错、发布清单双向校验、记忆库 ACL 回读、控制台夹具与模式双回执 | 本地验收，未发布 |
 | 2026-11-19 | [SurfCore 审核修复 A–D（01–12）](2026-11-19-surfcore-review-a-d.md) | 账本损坏即拒写、B站按历史收件与离线重放、QQ 研究受控抓取+来源证据、归档行尾与包内清单校验、记忆库 0600/0700、中文路径识别、控制台 21/21 | 本地验收，未发布 |
@@ -205,6 +206,7 @@
 - [2026-11-12 QQ Native语音与白名单启用流程](2026-11-12-qq-native-voice-access.md)
 
 - [V1 退役破坏式重构](2026-11-12-v1-retirement.md)：六项 V1 按 2026-11-12 拍板退役中（Memory 路由 V2-only、QQ 一代 preset/reserved/人格过滤层、B站 V1 会话层、控制台与设置窗口一代入口）；含七步完整逻辑、失败路径、已知残留与发布交接块。
+- [红豆不回群消息：系统提示自毁循环与退役黑话触发](2026-11-25-qq-hongdou-system-failure-self-destruct.md)：`flushSystemFailures` 改走 `sendOwnerManagementReply` 管理直发通道避免误触 `MEMORY_PRESET_UNSAFE` 清空 `qqMemory`，停止 V2 下 `maybeQueueSlangExtraction` 自动触发；实机重启后已取得真实 Native QQ 发送回执。
 
 - [G7 Mac 实机取证（非侵入）：CLI 包装进程的孤儿后代与 SIGTERM 修复](2026-11-15-mac-real-machine-g7-evidence.md)：实机捕到 5 个 `PPID=1` 的 CLI 孤儿（最早 1.9 天），根因是 `plugins/surfcore/tools/bili.mjs` 只转发信号、自己不退出；修成有界退出 + 升级 SIGKILL（先红 7s 挂死 → 修后 3–4s 退出），并把实机环境证据（DSH 自带 node v24.21.0、桌面应用在跑、`~/.dsh/profiles` 三 profile）一并落档。
 
