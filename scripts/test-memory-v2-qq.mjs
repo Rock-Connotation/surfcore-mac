@@ -48,6 +48,13 @@ try {
   const prepared = await bridge.prepareReply({ key: 'group:300' }); assert.equal(prepared.ok, true); assert.equal(prepared.inputManifest.length, 2); assert.match(prepared.text, /qq:201/);
   assert.equal((await bridge.validate('group:300', { prepared: true })).ok, true);
   const lease = await bridge.authorizeSend({ key: 'group:300', loginAccountId: '100', objectId: 'send:one' }); assert.equal(lease.ok, true);
+  const restarted = createQQMemoryBridge({ stateDir: root, getCharacter: () => role, getRouting: () => route, client, prepareContext });
+  assert.equal((await restarted.prepareReply({ key: 'group:999' })).code, 'MEMORY_SOURCE_PENDING');
+  assert.equal((await restarted.prepareReply({ key: 'group:300' })).ok, true);
+  assert.equal((await restarted.validate('group:300')).ok, true);
+  const explicitHydration = await createQQMemoryBridge({ stateDir: root, getCharacter: () => role, getRouting: () => route, client, prepareContext }).hydrate();
+  assert.equal(explicitHydration.ok, true);
+  assert.equal(explicitHydration.restored, 2);
   role = { id: 'test', epoch: 2 };
   const sent = await bridge.recordSent(lease.lease, { text: 'actually sent under original role', messageId: '44', deliveryState: 'delivered' });
   assert.equal(sent.acceptance, 'queued_durable'); assert.equal(sent.sourceState, 'pending'); assert.equal((await bridge.drainPending()).outcomes[0].sourceState, 'committed');
