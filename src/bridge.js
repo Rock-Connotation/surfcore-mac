@@ -93,6 +93,7 @@ import {
 import { composePersonaLayers, personaSceneFromKey } from './persona-layers.js';
 import { buildCharacterContext } from './core/context.js';
 import { createQQMemoryBridge } from './core/memory-v2-qq.js';
+import { createSystemFailureQueue, formatSystemFailureNotice } from './core/memory-v2-qq-system-failure.mjs';
 import { createMemoryClient } from './core/memory-v2-client.js';
 import { createNativeQQChannel } from './core/qq-native-channel.js';
 import { deriveMemoryProviderRouteId } from './core/memory-v2-routing.js';
@@ -1963,13 +1964,50 @@ async function main() {
   const memoryV2Failures = new Map();
   const memoryV2Barriers = new Map();
   const memoryV2SelectedRoutes = new Map();
+  const systemFailureQueue = createSystemFailureQueue({ redact: redactKnownTokensOnly });
   state.memoryV2Retirements ??= {};
   state.memoryV2Sessions ??= {};
   function memoryV2Route() { return qqMemory.routing(); }
+  function queueSystemFailure(raw) {
+    const match = /^(group|private):[1-9][0-9]{0,19}$/.exec(String(raw?.key ?? ''));
+    if (!match || !isSessionAllowedInCurrentMode(match[0])) return;
+    const issue = systemFailureQueue.add(raw);
+    if (issue) void flushSystemFailures(issue.key);
+  }
+  // 桥接确定性系统/管理/交互控制提示统一走管理直发通道（带一次性 managementSendTickets 与 ACK 校验），
+  // 与 AI 模型回复（sendToQQ / sendNativeQQReply）彻底分层，绝不误入旧会话的 beginMemoryV2Send。
+  function sendBridgeSystemNotice(key, message) {
+    return sendOwnerManagementReply({
+      conversationKey: key,
+      text: message,
+      phase: 'management',
+      system: true,
+      validate: () => isSessionAllowedInCurrentMode(key),
+    });
+  }
+  const systemFailureFlushing = new Map();
+  function flushSystemFailures(key) {
+    if (systemFailureFlushing.has(key)) return systemFailureFlushing.get(key);
+    const task = (async () => {
+      while (snowlumaHealth.everConnected && !snowlumaHealth.downNotified) {
+        const issue = systemFailureQueue.list(key)[0];
+        if (!issue) break;
+        const res = await sendBridgeSystemNotice(key, formatSystemFailureNotice(issue));
+        if (!res?.ok) break;
+        systemFailureQueue.ack(key, issue);
+      }
+    })().finally(() => { systemFailureFlushing.delete(key); });
+    systemFailureFlushing.set(key, task);
+    return task;
+  }
+  function replaySystemFailures() {
+    for (const key of systemFailureQueue.keys()) void flushSystemFailures(key);
+  }
   function memoryV2Failure(key, result) {
     const issue = { ok: false, code: result?.code ?? 'MEMORY_QQ_BLOCKED', error: result?.error ?? 'QQ memory authorization did not complete.', hint: result?.hint ?? 'Check Host memory diagnostics and original receipts; keep queued sources and retire old sessions.' };
     memoryV2Failures.set(key, issue);
     appendActivity(`${key} 记忆安全阻断 ${issue.code}：${issue.error} ${issue.hint}`);
+    queueSystemFailure({ key, ...issue });
     return issue;
   }
   function validateMemoryV2ProviderRoute(key, sessionId, selected = null) {
@@ -1990,7 +2028,7 @@ async function main() {
     const proof = await qqMemory.validateSessionSafety({ sessionId, preset: modePreset(key, currentMode, cfg) });
     if (!proof.ok || !isCurrentSession(key, sessionId)) {
       const issue = memoryV2Failure(key, proof.ok ? { code: 'MEMORY_SESSION_STALE', error: 'The QQ session changed during its native safety check.', hint: 'Prepare a fresh authorized reply after retiring the old session.' } : proof);
-      await retireMemoryV2Session(key); await qqMemory.retire(key); throw Object.assign(new Error(issue.error), issue);
+      await retireMemoryV2Session(key); await qqMemory.retire(key, { preserveSources: true }); throw Object.assign(new Error(issue.error), issue);
     }
   }
   async function beginMemoryV2Send(key) {
@@ -2000,7 +2038,7 @@ async function main() {
     await requireMemoryV2SessionSafety(key, state.sessions[key]);
     assertModeAdmission(admission);
     const route = validateMemoryV2ProviderRoute(key, state.sessions[key]);
-    if (!route.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); throw Object.assign(new Error(route.error), route); }
+    if (!route.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key, { preserveSources: true }); throw Object.assign(new Error(route.error), route); }
     assertModeAdmission(admission);
     const result = await qqMemory.authorizeSend({ key, loginAccountId: selfUserId });
     if (!result.ok) throw Object.assign(new Error(result.error), memoryV2Failure(key, result));
@@ -2008,7 +2046,7 @@ async function main() {
     await requireMemoryV2SessionSafety(key, state.sessions[key]);
     assertModeAdmission(admission);
     const after = validateMemoryV2ProviderRoute(key, state.sessions[key]);
-    if (!after.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); throw Object.assign(new Error(after.error), after); }
+    if (!after.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key, { preserveSources: true }); throw Object.assign(new Error(after.error), after); }
     return result.lease;
   }
   async function finishMemoryV2Send(lease, key, body, data, deliveryState = null) {
@@ -3444,16 +3482,8 @@ async function main() {
   }
 
   function maybeQueueSlangExtraction(key) {
-    if (cfg.slang?.enabled === false) return;
-    if (!dshReady) return;
-    const cooldown = Number(cfg.slang?.extractCooldownMs ?? 300000);
-    const last = slangExtractionCooldowns.get(key) ?? 0;
-    if (Date.now() - last < cooldown) return;
-    const messages = slangWindows.get(key) ?? [];
-    const min = Math.max(1, Number(cfg.slang?.extractMinMessages ?? 10));
-    if (messages.length < min) return;
-    slangExtractionCooldowns.set(key, Date.now());
-    queueSlangTask(() => runSlangExtraction(key));
+    // V2 下旧黑话提炼已退役；不在普通群聊里自动触发，避免每 10 条消息产生 MEMORY_DERIVATION_UNAVAILABLE。
+    return;
   }
 
   // 黑话学习素材入口：群聊普通消息进入滚动窗口（命令/角色控制语不学；
@@ -4306,6 +4336,12 @@ async function main() {
         if (cfg.purpose?.enabled !== false) {
           try { startPurposeLoop(); } catch (error) { log(`[目的] 启动失败：${error?.message ?? error}`); }
         }
+        // 已提交的 producer 源在磁盘上，但 latest/history 是内存态；重启后必须在补唤醒前恢复，
+        // 否则 wakeBacklogConversations 12 秒后必然撞 MEMORY_SOURCE_PENDING 并静默吞掉。
+        try {
+          const hydration = await qqMemory.hydrate?.();
+          if (hydration?.restored) log(`[记忆] 已恢复 ${hydration.restored} 条已提交 QQ 源（跳过 ${hydration.skipped}，异常 ${hydration.malformed}）`);
+        } catch (error) { log(`[记忆] 恢复已提交 QQ 源失败：${error?.message ?? error}`); }
         if (currentMode === 'reserved2') {
           // 首次确定模式为 reserved2 后再恢复持久化的有限睡眠定时器，
           // 避免在 initial chat 模式下设置定时器导致 timeout 唤醒被模式守卫吞掉。
@@ -4409,6 +4445,7 @@ async function main() {
     downNotified: false,  // 通道断开告警是否已发出（边沿触发）
     downTimer: null,      // close 后的观察窗口（重连很快时不该报 L2）
     downReason: '',
+    backlogWakePending: false, // 启动补唤醒被通道门槛挡下；SnowLuma 恢复后必须补一次
   };
 
   /** 记录一次"上游还活着"的证据。任何来自 SnowLuma 的事件包都算（含心跳）。 */
@@ -4628,6 +4665,7 @@ async function main() {
     });
     log('❌ SnowLuma 发送通道不可用；自动唤醒已暂停，避免空烧 token。');
     log('   处理：启动/重启 SnowLuma（launcher.bat），确认 HTTP :3000 与 WS :3001 可用；恢复后自动继续。');
+    queueSystemFailure({ key: `private:${String(cfg.ownerQQ ?? '')}`, code: 'SNOWLUMA_OFFLINE', error: message, hint: '启动或重启 SnowLuma（launcher.bat），确认 HTTP :3000 与 WS :3001 可用；恢复后会自动重发本提示。' });
   }
 
   function notifySendChannelUp() {
@@ -4638,8 +4676,15 @@ async function main() {
     // 不管告警是否真的发过，都把“未处理”的断线事件确认掉：
     // 重连成功后用户明明连着，不该再被 L2 弹窗追着确认（2026-10-31 用户反馈）。
     try { gateEvents.ackByDedupe('snowluma:send-channel-down'); } catch {}
-    if (!snowlumaHealth.downNotified) return;
+    const wasDownNotified = snowlumaHealth.downNotified;
     snowlumaHealth.downNotified = false;
+    replaySystemFailures();
+    if (snowlumaHealth.backlogWakePending) {
+      snowlumaHealth.backlogWakePending = false;
+      snowlumaHealth.backlogWakeRetried = true;
+      wakeBacklogConversations('reconnect');
+    }
+    if (!wasDownNotified) return;
     gateEvents.record({
       gate: 'snowluma',
       kind: 'fault',
@@ -4680,7 +4725,8 @@ async function main() {
   }
 
   function noteSendFailure(key, error) {
-    // 发送守卫/审计拒绝不是通道故障，不能拿它们去暂停唤醒。
+    // 发送守卫/审计/策略/记忆拒绝不是通道故障，不能拿它们去暂停唤醒。
+    if (/^(MEMORY|CHARACTER|QQ_MODE|OWNER_REPLY)_/.test(String(error?.code ?? ''))) return;
     if (/白名单|不在允许|审计|会话令牌|replyToMessageId|atUserId/.test(String(error?.message ?? error))) return;
     snowlumaHealth.lastSendFailAt = Date.now();
     snowlumaHealth.lastSendError = String(error?.message ?? error ?? '发送失败').slice(0, 200);
@@ -11112,7 +11158,7 @@ async function main() {
       } catch (error) {
         if (String(error?.code ?? '').startsWith('MEMORY_PROVIDER_')) {
           const key = reverse.get(sessionId);
-          if (key) { await retireMemoryV2Session(key); await qqMemory.retire(key); }
+          if (key) { await retireMemoryV2Session(key); await qqMemory.retire(key, { preserveSources: true }); }
           throw error;
         }
         lastError = error;
@@ -13118,7 +13164,7 @@ async function main() {
         if (cfg.ownerQQ && st.lastTargetWarnDate !== today) {
           writeGreetingsState({ lastTargetWarnDate: today });
           try {
-            await sendToQQ(`private:${cfg.ownerQQ}`,
+            await sendBridgeSystemNotice(`private:${cfg.ownerQQ}`,
               `⚠️ 早安问候没发出去：${reason}。\n去设置页把问候对象换成好友，或先用那个号加机器人好友。`);
           } catch (error) {
             log(`[早安] 给管理员发失败告警失败：${error?.message ?? error}`);
@@ -13226,7 +13272,7 @@ async function main() {
     contextTelemetry.wake({ wakeId: started.request.requestId, key, characterId: role.id, reason: opts.wakeReason ?? 'incoming' });
     return { ok: true, queued: true, requestId: started.request.requestId, providerAdmissionCoverage: 'native-owner' };
     } catch (error) {
-      if (!['MEMORY_MODE_REVISION_STALE', 'QQ_MODE_RETIRED', 'QQ_MODE_UNAVAILABLE', 'QQ_MODE_UNREADABLE', 'QQ_MODE_INVALID'].includes(error?.code)) { await retireMemoryV2Session(key); await qqMemory.retire(key); }
+      if (!['MEMORY_MODE_REVISION_STALE', 'QQ_MODE_RETIRED', 'QQ_MODE_UNAVAILABLE', 'QQ_MODE_UNREADABLE', 'QQ_MODE_INVALID'].includes(error?.code)) { await retireMemoryV2Session(key); await qqMemory.retire(key, { preserveSources: true }); }
       return memoryV2Failure(key, { code: error?.code ?? 'MEMORY_PROMPT_FAILED', error: 'The authorized QQ prompt could not be submitted.', hint: 'Check the restricted QQ preset and DSH status, then use a fresh input; old context remains blocked.' });
     }
 
@@ -14773,6 +14819,8 @@ async function main() {
     const autoWake = ['proactiveCheck', 'timeout', 'replyCheck', 'history', 'bootstrap'].includes(String(reason));
     const channel = qqSendChannelStatus();
     if (!channel.ok) {
+      // 补唤醒被通道门槛挡下时先记账；否则 hydrate 恢复的源会一直停在未读。
+      if (String(reason) === 'backlog') snowlumaHealth.backlogWakePending = true;
       if (!stForGuard.channelGateLoggedAt || Date.now() - stForGuard.channelGateLoggedAt > 10 * 60 * 1000) {
         stForGuard.channelGateLoggedAt = Date.now();
         log(`[channel-gate] 跳过唤醒 ${key}（${reason}）：${channel.reason}；不创建 DSH 会话，避免空烧 token`);
@@ -15500,9 +15548,9 @@ async function main() {
         if (past) {
           const statusText = past.status === 'confirmed' ? '已确认取消'
             : (past.status === 'rejected' ? '取消被拒绝' : '取消结果未知');
-          await sendToQQ(key, `⚠️ 请求 [${reqId}] 此前已结束（状态：${statusText}），不能再处理该回复。`);
+          await sendBridgeSystemNotice(key, `⚠️ 请求 [${reqId}] 此前已结束（状态：${statusText}），不能再处理该回复。`);
         } else {
-          await sendToQQ(key, '⚠️ 该编号已结束或不存在，请等待新请求。');
+          await sendBridgeSystemNotice(key, '⚠️ 该编号已结束或不存在，请等待新请求。');
         }
         return;
       }
@@ -15725,7 +15773,7 @@ async function main() {
 
     // 控制类话语：仅管理员（ownerQQ）可下达；群友触发直接拦截
     if (!isOwner && /进入角色扮演|退出角色扮演|切换角色|设置角色|改角色|换角色|关闭角色扮演|开启角色扮演/.test(plainContent)) {
-      await sendToQQ(key, '角色切换仅管理员可在管理端操作，群内不支持。');
+      await sendBridgeSystemNotice(key, '角色切换仅管理员可在管理端操作，群内不支持。');
       return;
     }
 
@@ -15742,7 +15790,7 @@ async function main() {
             ref: { session: key },
           });
         }
-        await sendToQQ(key, '管理命令仅管理员可用。');
+        await sendBridgeSystemNotice(key, '管理命令仅管理员可用。');
         return;
       }
       if (plainContent === '/reset' || plainContent === '/new') {
@@ -15795,13 +15843,13 @@ async function main() {
           try { await withTimeout(api.stopSessionWork(old), DSH_CONTROL_TIMEOUT_MS, 'stopSessionWork'); }
           catch (error) { log(`⚠️ 停止旧会话失败 ${key}：${error?.message ?? error}；请在 DSH 检查旧任务`); }
           try { await withTimeout(api.workspace.archiveSession({ sessionId: old }), DSH_CONTROL_TIMEOUT_MS, 'archiveSession'); } catch {}
-          await sendToQQ(key, '已重置会话，下次消息将开新上下文');
+          await sendBridgeSystemNotice(key, '已重置会话，下次消息将开新上下文');
         }
         return;
       }
       if (plainContent === '/status') {
         const rs = readRoleState();
-        await sendToQQ(key, `会话 ${state.sessions[key] ?? '未创建'}；白名单 ${allowed(kind, id, cfg) ? '通过' : '拦截'}；角色 ${rs.role ?? '无'}；模式 ${rs.mode}`);
+        await sendBridgeSystemNotice(key, `会话 ${state.sessions[key] ?? '未创建'}；白名单 ${allowed(kind, id, cfg) ? '通过' : '拦截'}；角色 ${rs.role ?? '无'}；模式 ${rs.mode}`);
         return;
       }
       if (plainContent === '/role' || plainContent.startsWith('/role ')) {
@@ -15814,11 +15862,11 @@ async function main() {
             decision: 'allow',
             ref: { session: key, role: '(clear)' },
           });
-          await sendToQQ(key, '已清除角色，恢复正常人格。');
+          await sendBridgeSystemNotice(key, '已清除角色，恢复正常人格。');
         } else {
           const roleFile = path.join(QQ_DATA_PATHS.personaDir, name + '.md');
           if (!fs.existsSync(roleFile)) {
-            await sendToQQ(key, `角色「${name}」不存在。角色文件放当前 QQ 人格目录。`);
+            await sendBridgeSystemNotice(key, `角色「${name}」不存在。角色文件放当前 QQ 人格目录。`);
           } else {
             writeRoleState(name, roleState.mode);
             auditOwner('role.switch', {
@@ -15827,19 +15875,19 @@ async function main() {
               decision: 'allow',
               ref: { session: key, role: name },
             });
-            await sendToQQ(key, `已切换角色：${name}。`);
+            await sendBridgeSystemNotice(key, `已切换角色：${name}。`);
           }
         }
         return;
       }
       if (plainContent === '/silent' || plainContent === '/quiet') {
         writeRoleState(roleState.role, 'silent');
-        await sendToQQ(key, '已进入静默模式：群友消息不再回复，仅管理员可对话。');
+        await sendBridgeSystemNotice(key, '已进入静默模式：群友消息不再回复，仅管理员可对话。');
         return;
       }
       if (plainContent === '/active' || plainContent === '/speak') {
         writeRoleState(roleState.role, 'active');
-        await sendToQQ(key, '已退出静默模式，恢复正常回复。');
+        await sendBridgeSystemNotice(key, '已退出静默模式，恢复正常回复。');
         return;
       }
       // 其余 / 开头内容照常发给 DSH（DSH 的斜杠命令原样执行，如 /model）
@@ -16021,7 +16069,7 @@ async function main() {
       const match = p.kind === 'approval' ? /^(\S+)\s+([a-f0-9]{8})$/i.exec(answer) : /^([a-f0-9]{8})\s+([\s\S]+)$/i.exec(answer);
       const code = p.kind === 'approval' ? match?.[2] : match?.[1];
       if (!match || code.toLowerCase() !== p.requestId) {
-        await sendToQQ(key, p.kind === 'approval' ? `请回复「通过 ${p.requestId}」或「拒绝 ${p.requestId}」。` : `请回复「${p.requestId} 答案」。`);
+        await sendBridgeSystemNotice(key, p.kind === 'approval' ? `请回复「通过 ${p.requestId}」或「拒绝 ${p.requestId}」。` : `请回复「${p.requestId} 答案」。`);
         return;
       }
       answer = p.kind === 'approval' ? match[1] : match[2];
@@ -16050,18 +16098,18 @@ async function main() {
       } catch (error) {
         if (error?.outcomeKnown && pending.get(key) === p) {
           p.responding = false; armInteractionTimeout(key, p);
-          await sendToQQ(key, '⚠️ DSH 明确拒绝回答回执，请检查 DSH 后重试。');
+          await sendBridgeSystemNotice(key, '⚠️ DSH 明确拒绝回答回执，请检查 DSH 后重试。');
         } else {
           if (pending.get(key) === p) pending.delete(key);
           log('回答回执结果未知:', error.message);
-          await sendToQQ(key, '⚠️ 回答回执结果未知，请在 DSH 核对，不要重复提交。');
+          await sendBridgeSystemNotice(key, '⚠️ 回答回执结果未知，请在 DSH 核对，不要重复提交。');
         }
       }
       return;
     }
     if (p.kind === 'approval') {
       if (!isOwner) {
-        await sendToQQ(key, '审批仅管理员可操作');
+        await sendBridgeSystemNotice(key, '审批仅管理员可操作');
         return;
       }
       const t = answer.trim().toLowerCase();
@@ -16069,7 +16117,7 @@ async function main() {
       for (const w of APPROVE_WORDS) if (t === w) outcome = 'allowed-once';
       for (const w of REJECT_WORDS) if (t === w) outcome = 'rejected';
       if (!outcome) {
-        await sendToQQ(key, '请回复「通过」或「拒绝」来决定这个审批');
+        await sendBridgeSystemNotice(key, '请回复「通过」或「拒绝」来决定这个审批');
         return;
       }
       p.responding = true; clearTimeout(p.timer);
@@ -16081,7 +16129,7 @@ async function main() {
         }), 5000, '审批回执');
         assertInteractionReceipt(receipt);
         log(`已处理审批 (${key}): ${outcome}`, receipt);
-        await sendToQQ(key, outcome === 'allowed-once' ? '✅ 已通过审批' : '❌ 已拒绝审批');
+        await sendBridgeSystemNotice(key, outcome === 'allowed-once' ? '✅ 已通过审批' : '❌ 已拒绝审批');
         auditOwner('approval.answer', {
           actor: auditActor(senderId, isOwner),
           rule: 'ownerQQ',
@@ -16093,11 +16141,11 @@ async function main() {
       } catch (error) {
         if (error?.outcomeKnown && pending.get(key) === p) {
           p.responding = false; armInteractionTimeout(key, p);
-          await sendToQQ(key, '⚠️ DSH 明确拒绝审批回执，请检查 DSH 后重试。');
+          await sendBridgeSystemNotice(key, '⚠️ DSH 明确拒绝审批回执，请检查 DSH 后重试。');
         } else {
           if (pending.get(key) === p) pending.delete(key);
           log('审批回执结果未知:', error.message);
-          await sendToQQ(key, '⚠️ 审批回执结果未知，请在 DSH 核对，不要重复提交。');
+          await sendBridgeSystemNotice(key, '⚠️ 审批回执结果未知，请在 DSH 核对，不要重复提交。');
         }
       }
       return;
@@ -16184,11 +16232,11 @@ async function main() {
       }
 
       if (outcome.status === 'confirmed') {
-        await sendToQQ(key, '⏰ 等待回答超时，已确认取消该请求');
+        await sendBridgeSystemNotice(key, '⏰ 等待回答超时，已确认取消该请求');
       } else if (outcome.status === 'rejected') {
-        await sendToQQ(key, `⏰ 等待回答超时，取消请求被拒绝（${outcome.code || 'DSH_REJECTED'}），请在 DSH 检查任务`);
+        await sendBridgeSystemNotice(key, `⏰ 等待回答超时，取消请求被拒绝（${outcome.code || 'DSH_REJECTED'}），请在 DSH 检查任务`);
       } else {
-        await sendToQQ(key, '⏰ 等待回答超时，取消结果未知（未能收到 DSH 确认），已断开本地等待，请在 DSH 检查任务');
+        await sendBridgeSystemNotice(key, '⏰ 等待回答超时，取消结果未知（未能收到 DSH 确认），已断开本地等待，请在 DSH 检查任务');
       }
     }, Math.max(0, entry.deadline - Date.now()));
   }
@@ -16203,7 +16251,7 @@ async function main() {
     if (identity && interactionEvents.size >= 10000) {
       log('交互去重表已满，拒绝新请求；请检查 DSH 并重启桥接。');
       void cancelPendingEntry(entry);
-      void sendToQQ(key, '⚠️ 交互记录已满，请检查 DSH 并重启 QQ 桥接。');
+      void sendBridgeSystemNotice(key, '⚠️ 交互记录已满，请检查 DSH 并重启 QQ 桥接。');
       return false;
     }
     if (identity) interactionEvents.add(identity);
@@ -16302,7 +16350,7 @@ async function main() {
       catch (error) { log(`⚠️ 取消回合失败 ${key || sessionId}：${error?.message ?? error}`); }
       if (!key) return;
       try {
-        await sendToQQ(key, `【SurfCore】本轮已停止，避免继续消耗：${stop.reason}。修复后回复「继续」可开新回合；详情见设置 → 诊断。`);
+        await sendBridgeSystemNotice(key, `【SurfCore】本轮已停止，避免继续消耗：${stop.reason}。修复后回复「继续」可开新回合；详情见设置 → 诊断。`);
       } catch (error) {
         log(`⚠️ 回合止血通知发送失败 ${key}：${error?.message ?? error}`);
       }
@@ -16380,9 +16428,9 @@ async function main() {
             if (key) {
               const selected = frame.event?.type === 'model/selection' ? frame.event.data ?? {} : null;
               const route = validateMemoryV2ProviderRoute(key, frame.sessionId, selected);
-              if (!route.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key); continue; }
+              if (!route.ok) { await retireMemoryV2Session(key); await qqMemory.retire(key, { preserveSources: true }); continue; }
               const admission = await qqMemory.validate(key);
-              if (!admission.ok) { memoryV2Failure(key, admission); await retireMemoryV2Session(key); await qqMemory.retire(key); continue; }
+              if (!admission.ok) { memoryV2Failure(key, admission); await retireMemoryV2Session(key); await qqMemory.retire(key, { preserveSources: true }); continue; }
               try { await requireMemoryV2SessionSafety(key, frame.sessionId); } catch { continue; }
             }
             if (key) {
@@ -16644,7 +16692,7 @@ async function main() {
                   log(`⚠️ 回复被安全策略拦截 (${key})，疑似包含敏感信息${hasKnownToken ? '（含会话令牌）' : ''}`);
                   appendActivity(`${key} agent 回复被拦截（疑似敏感信息${hasKnownToken ? '/会话令牌' : ''}）`);
                   if (cfg.security?.interceptNotify !== false) {
-                    await sendToQQ(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。');
+                    await sendBridgeSystemNotice(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。');
                   }
                   if (isFarewell) {
                     const st = socialState(key);
@@ -16750,7 +16798,7 @@ async function main() {
                 // 群聊只记日志：模型/工具错误对群友无意义，还会泄露内部实现细节。
                 // 私聊仍回给当事人，便于他/她知道这次没处理成功。
                 if (String(key).startsWith('private:')) {
-                  await sendToQQ(key, `⚠️ agent 处理出错：${safeMsg}`);
+                  await sendBridgeSystemNotice(key, `⚠️ agent 处理出错：${safeMsg}`);
                 }
                 if (isFarewell) {
                   const st = socialState(key);
@@ -16763,7 +16811,7 @@ async function main() {
                 }
               } else if (ended.reason.kind === 'aborted') {
                 log(`⏹️ 回合被中止 (${key})`);
-                await sendToQQ(key, '⏹️ 已停止');
+                await sendBridgeSystemNotice(key, '⏹️ 已停止');
                 if (isFarewell) {
                   const st = socialState(key);
                   if (st.phase === 'exiting') {
@@ -16835,7 +16883,7 @@ async function main() {
               return s;
             });
             const questionHint = cfg.interaction.requireRequestId ? `（回复时先写编号 ${entry.requestId}，空格后写你选的完整选项文字或自己的回答；不要照抄“答案”）` : '（直接回复选项文字或输入你的回答）';
-            void sendToQQ(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n' + questionHint).catch((error) => log(`提问通知失败 (${key}): ${error?.message ?? error}`));
+            void sendBridgeSystemNotice(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n' + questionHint).catch((error) => log(`提问通知失败 (${key}): ${error?.message ?? error}`));
           } else if (frame.type === 'approval/requested') {
             const key = reverse.get(frame.sessionId);
             if (!key) continue;
@@ -16856,7 +16904,7 @@ async function main() {
             if (sensitiveTool) log(`⚠️ 审批工具名含敏感信息，已隐藏 (${key})`);
             const safeToolName = sensitiveTool ? '（含敏感信息，已隐藏）' : rawToolName;
             const approvalHint = cfg.interaction.requireRequestId ? `回复「通过 ${entry.requestId}」或「拒绝 ${entry.requestId}」` : '回复「通过」或「拒绝」';
-            void sendToQQ(key, `🔐 agent 请求审批：${safeToolName}${reason}\n${approvalHint}`).catch((error) => log(`审批通知失败 (${key}): ${error?.message ?? error}`));
+            void sendBridgeSystemNotice(key, `🔐 agent 请求审批：${safeToolName}${reason}\n${approvalHint}`).catch((error) => log(`审批通知失败 (${key}): ${error?.message ?? error}`));
           } else if (frame.type === 'interaction/cancelled') {
             for (const [key, entry] of pending) {
               if (entry.eventId !== frame.eventId || entry.clientId !== frame.clientId) continue;
