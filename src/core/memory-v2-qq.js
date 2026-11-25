@@ -55,6 +55,50 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     if (!entries.some((entry) => entry.segmentId === record.segmentId)) entries.push(record);
     history.set(record.key, entries.slice(-7));
   }
+  const recordTime = (record) => {
+    try { return fs.statSync(record.file).mtimeMs; } catch { return 0; }
+  };
+  // 重启或缓存缺失时，latest/history 是内存态，而已提交的 producer 元数据在磁盘上。
+  // 只恢复当前角色/纪元且字节游标自洽的记录；后续 capture/bind/sourceText 仍逐条复核授权。
+  async function hydrate({ key: targetKey = null } = {}) {
+    const role = roleOf(getCharacter);
+    const byKey = new Map();
+    let restored = 0, skipped = 0, malformed = 0;
+    if (fs.existsSync(directory)) for (const roleDir of fs.readdirSync(directory)) {
+      if (roleDir !== role.id) continue;
+      const epochRoot = path.join(directory, roleDir);
+      for (const epochDir of fs.readdirSync(epochRoot)) {
+        if (String(Number(epochDir)) !== String(role.epoch)) continue;
+        const currentRoot = path.join(epochRoot, epochDir);
+        for (const name of fs.readdirSync(currentRoot)) {
+          if (!name.endsWith('.json')) continue;
+          try {
+            const record = JSON.parse(fs.readFileSync(path.join(currentRoot, name), 'utf8'));
+            if (targetKey && record.key !== targetKey) continue;
+            const valid = record.version === 1 && record.role?.id === role.id && record.role?.epoch === role.epoch &&
+              record.segmentId === path.basename(name, '.json') && typeof record.key === 'string' && /^(group|private):[1-9][0-9]{0,19}$/.test(record.key) &&
+              record.sourceState === 'committed' && typeof record.registrationId === 'string' && record.registrationId.length > 0 &&
+              Array.isArray(record.refs) && record.refs.length > 0 && record.refs.every((ref) => ref && typeof ref.id === 'string' && typeof ref.payloadDigest === 'string' && ref.revision === 1 && ref.type === 'event') &&
+              record.sourceStamp?.conversationKey && record.sourceFacts?.objectId && typeof record.file === 'string' &&
+              Number.isSafeInteger(record.cursor) && record.cursor >= 0 && fs.statSync(record.file).size === record.cursor &&
+              (record.sourceFacts.direction === 'inbound' || record.deliveryState === 'delivered');
+            if (!valid) { skipped++; continue; }
+            const entries = byKey.get(record.key) ?? [];
+            entries.push(record); byKey.set(record.key, entries); restored++;
+          } catch { malformed++; }
+        }
+      }
+    }
+    for (const [key, records] of byKey) {
+      const merged = [...(history.get(key) ?? []), ...records]
+        .filter((record, index, all) => all.findIndex((item) => item.segmentId === record.segmentId) === index)
+        .sort((a, b) => recordTime(a) - recordTime(b) || a.segmentId.localeCompare(b.segmentId));
+      history.set(key, merged.slice(-7));
+      const current = merged.at(-1);
+      if (current && (!latest.has(key) || recordTime(current) >= recordTime(latest.get(key)))) latest.set(key, current);
+    }
+    return { ok: malformed === 0, restored, skipped, malformed };
+  }
   const safeError = (error) => error?.code?.startsWith('MEMORY_') || error?.code?.startsWith('CHARACTER_') ? problem(error.code, error.error ?? error.message, error.hint) : problem('MEMORY_QQ_FAILED', 'The QQ memory operation did not complete.');
   async function flush(record, handle, { recovery = false } = {}) {
     const check = () => { if (!recovery) checkRole(record.role); };
@@ -148,6 +192,7 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     try {
       const role = roleOf(getCharacter), route = requireRoute();
       await sourceChain; checkRole(role);
+      if (!latest.get(key) && !failures.get(key)) { await hydrate({ key }); checkRole(role); }
       const current = latest.get(key);
       if (!current || current.sourceState !== 'committed') return failures.get(key) ?? problem('MEMORY_SOURCE_PENDING', 'The current QQ input is not committed and authorized.');
       checkRole(current.role);
@@ -315,5 +360,5 @@ export function createQQMemoryBridge({ stateDir, getCharacter, getRouting = () =
     }
     return { ok: outcomes.every((result) => result.ok), outcomes };
   }
-  return Object.freeze({ routing, captureSource, prepareReply, validate, exportNativeSources, validateSessionSafety, authorizeSend, recordSent, retire, drainPending, status: (key) => ({ sourceState: latest.get(key)?.sourceState ?? 'not_saved', active: active.has(key), failure: failures.get(key) ?? null }) });
+  return Object.freeze({ routing, hydrate, captureSource, prepareReply, validate, exportNativeSources, validateSessionSafety, authorizeSend, recordSent, retire, drainPending, status: (key) => ({ sourceState: latest.get(key)?.sourceState ?? 'not_saved', active: active.has(key), failure: failures.get(key) ?? null }) });
 }
